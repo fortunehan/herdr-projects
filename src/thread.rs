@@ -38,6 +38,10 @@ pub enum Kind {
     /// main checkout, asked for explicitly with `thread start --kind checkout`.
     Checkout,
     Adopted,
+    /// A tab in the project workspace whose working directory is the
+    /// project's design folder: it interviews the user and writes glossary
+    /// and decision records, never code (`thread start --kind design`).
+    Design,
 }
 
 impl Kind {
@@ -46,7 +50,8 @@ impl Kind {
             "worktree" => Ok(Kind::Worktree),
             "tab" => Ok(Kind::Tab),
             "checkout" => Ok(Kind::Checkout),
-            other => bail!("`{other}` is not a thread kind (worktree, tab or checkout)"),
+            "design" => Ok(Kind::Design),
+            other => bail!("`{other}` is not a thread kind (worktree, tab, checkout or design)"),
         }
     }
 }
@@ -128,6 +133,9 @@ pub struct Thread {
     /// The agent's own last activity and percent (local threads).
     pub activity: String,
     pub percent: Option<u8>,
+    /// A design thread's first wait for the user has been announced; its
+    /// later questions are the interview and announce nothing.
+    pub interview_announced: bool,
 }
 
 impl Thread {
@@ -334,6 +342,11 @@ pub struct BriefInput<'a> {
     /// `<binary> --root <root>` for `report`; empty for a remote thread,
     /// whose machine has its own binary (or none).
     pub report_prefix: &'a str,
+    /// The project's design folder on the home machine, empty when it does
+    /// not exist yet.
+    pub design_folder: &'a str,
+    /// A design thread gets `DESIGN.md` in place of `THREAD.md`.
+    pub design: bool,
 }
 
 /// The header block every brief opens with: what the worker acts on, never
@@ -355,6 +368,10 @@ fn brief_header(input: &BriefInput) -> String {
     }
     let uploads_note = if input.remote { " (on the home machine; not copied to yours)" } else { "" };
     out.push_str(&format!("- Uploads, files from the user: `{}`{uploads_note}\n", input.uploads_path));
+    if !input.design_folder.is_empty() {
+        let access = if input.design { "yours to write, except `repos/`" } else { "read-only" };
+        out.push_str(&format!("- Design folder, the project's glossary and decisions ({access}): `{}`{uploads_note}\n", input.design_folder));
+    }
     out.push_str(&format!("- Library, files for the user: `{}`\n", input.library_path));
     out.push_str(&format!("- Report: `{}`\n", input.report_path));
     out
@@ -363,9 +380,12 @@ fn brief_header(input: &BriefInput) -> String {
 pub fn compose_brief(input: &BriefInput) -> String {
     let mut brief = brief_header(input);
     brief.push('\n');
-    brief.push_str(include_str!("../skill/THREAD.md").trim_end());
+    let rules = if input.design { include_str!("../skill/DESIGN.md") } else { include_str!("../skill/THREAD.md") };
+    brief.push_str(rules.trim_end());
     brief.push_str("\n\n");
-    if input.restart {
+    if input.restart && input.design {
+        brief.push_str("**A previous attempt at this interview exists.** Read its report at the report path below and what it wrote in the design folder, then continue the interview from there.\n\n");
+    } else if input.restart {
         brief.push_str(
             "**A previous attempt at this task exists on this branch.** Read its report at the report path below first, look at what is already on the branch, and continue from there.\n\n",
         );
@@ -436,6 +456,8 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
             regular.then(|| std::fs::read_to_string(&path).ok()).flatten().map(|text| (name, text))
         })
         .collect();
+    let design_folder = project.design_dir();
+    let design_folder = if design_folder.is_dir() { design_folder.to_string_lossy().into_owned() } else { String::new() };
     Ok(compose_brief(&BriefInput {
         project_name: &project_name,
         slug: &project.slug,
@@ -451,6 +473,8 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
         report_path: &thread.report_path(),
         library_path: &thread.library_path(),
         report_prefix: &prefix,
+        design_folder: &design_folder,
+        design: thread.kind == Kind::Design,
     }))
 }
 
@@ -1159,8 +1183,8 @@ mod tests {
             ("c.md".to_string(), "gamma fact".to_string()),
         ];
         let repos = vec![
-            project::Repo { path: "/srv/app".into(), machine: Some("box".into()) },
-            project::Repo { path: "/home/me/lib".into(), machine: None },
+            project::Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None },
+            project::Repo { path: "/home/me/lib".into(), machine: None, name: None },
         ];
         let input = BriefInput {
             project_name: "Demo",
@@ -1177,6 +1201,8 @@ mod tests {
             report_path: "/wt/.herdr-project/demo-t-0001/report.md",
             library_path: "/wt/.herdr-project/demo-t-0001/library",
             report_prefix: "/bin/hp --root /r",
+            design_folder: "",
+            design: false,
         };
         let brief = compose_brief(&input);
         let pos = |needle: &str| brief.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
@@ -1203,6 +1229,17 @@ mod tests {
         assert!(!fresh.contains("previous attempt"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));
+        assert!(!fresh.contains("Design folder"));
+
+        // A worker sees the design folder read-only; a design thread gets its
+        // own rules instead of the thread brief.
+        let worker = compose_brief(&BriefInput { design_folder: "/root/demo/design", ..input });
+        assert!(worker.contains("- Design folder, the project's glossary and decisions (read-only): `/root/demo/design`\n"));
+        assert!(worker.contains("# Thread brief"));
+        let design = compose_brief(&BriefInput { design_folder: "/root/demo/design", design: true, restart: false, ..input });
+        assert!(design.contains("(yours to write, except `repos/`)"));
+        assert!(design.contains("# Design thread brief") && !design.contains("# Thread brief"));
+        assert!(design.contains("load the `grilling` and `domain-modeling` skills"));
     }
 
     #[test]

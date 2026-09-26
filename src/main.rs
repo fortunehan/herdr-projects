@@ -6,6 +6,7 @@ mod brief;
 mod cli;
 mod command_link;
 mod coordinator;
+mod design;
 mod doctor;
 mod grouping;
 mod herdr;

@@ -25,6 +25,7 @@ How Herdr Projects works, what it writes where, what its safety settings do and 
   routines/<name>.md      routines, including pr-followup.md; the coordinator's
   uploads/                files you give the threads
   scratch/                the coordinator's temporary files
+  design/                 design threads' folder: glossary, context map, decision records, tickets
   threads/<id>.toml       thread record          threads/<id>.md       home copy of its report
   threads/<id>.task.md    the task and every forwarded prompt (## Follow-ups)
   threads/<id>.next.md    Next lines the coordinator added    threads/<id>/  a tab thread's folder
@@ -39,7 +40,16 @@ How Herdr Projects works, what it writes where, what its safety settings do and 
 
 Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`: `brief.md` (written by the binary), `report.md` and `library/` (written by the agent). In a git repository that folder is in `info/exclude`, so nothing in it is committed. Git therefore treats it as clean and removing a worktree deletes it, which is why a resolve keeps the worktree when the final copy home was partial.
 
-`PROJECT.md` settings, all changeable from the popup's settings section, from chat, or with `herdr-projects set <project> <key> <value>`: `name` (the workspace label), `goal`, `repos` (`repos.add PATH[@MACHINE]`, `repos.remove PATH`), `coordinator_profile` and `thread_profile` (the default [profiles](#agent-profiles); the old names `coordinator_agent` and `thread_agent` still read), `max_parallel_threads` (10), `auto_resolve_days` (7), `nudge` (`true`), `mute` (`false`).
+`PROJECT.md` settings, all changeable from the popup's settings section, from chat, or with `herdr-projects set <project> <key> <value>`: `name` (the workspace label), `goal`, `repos` (`repos.add PATH[@MACHINE]`, `repos.remove PATH`), `coordinator_profile` and `thread_profile` (the default [profiles](#agent-profiles); the old names `coordinator_agent` and `thread_agent` still read), `design_profile` (a [design thread](#design-threads)'s default, a Claude Code profile; empty means `thread_profile`), `max_parallel_threads` (10), `auto_resolve_days` (7), `nudge` (`true`), `mute` (`false`).
+
+## Design threads
+
+A requirement the user wants grilled before any work is planned gets a design thread: `thread start <project> --kind design --title T --task-file F`, with no `--repo`. It is a tab of the project's workspace working in `<project>/design/`, and it loads the `grilling` and `domain-modeling` skills itself, so its profile must run Claude Code (`design_profile`, else `thread_profile`). The user answers it in its pane.
+
+- **The design folder** holds the glossary and the decision records of every repository in the project, never the repositories themselves: `CONTEXT-MAP.md`, `<name>/CONTEXT.md`, `<name>/docs/adr/`, cross-repository decisions in `docs/adr/`, tickets in `.scratch/<feature>/`. Each start links every local repository at `repos/<name>` (its `name` in `[[repos]]`, else the last part of its path) and drops links for repositories no longer listed; a repository on another machine gets no link. `AGENTS.md` (with a `CLAUDE.md` link) and `docs/agents/issue-tracker.md` and `domain.md` are written only when missing and are yours to edit afterwards. The folder is not a git repository.
+- **Other threads** see the design folder in their brief, read-only, once it exists.
+- **The interview stays in its pane.** Waiting on the user between questions writes no inbox item and wakes no coordinator; the first wait sends one notification. A screen that wants a key press and a closed pane are reported as for any thread. A design thread does not count toward `max_parallel_threads` and is never auto-resolved.
+- **It ends with one report and one outcome**: tickets (the user types `/to-spec` and `/to-tickets` in its pane; the coordinator lists them in `TASKS.md` and proposes a thread per unblocked ticket), one task for one thread, or nothing to build.
 
 ## Commands
 
@@ -50,7 +60,7 @@ Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`
 | `context <project> [--peek]` | The digest the coordinator reads every turn. |
 | `assignable <project> [--refresh] [--check OWNER]` | Who TASKS.md tasks may be assigned to (see [Task owners](#task-owners)); `--check` refuses an owner that is not valid. |
 | `coordinator prompt <project> --text-file F` | A sentence to the coordinator (the popup's task keys use it). |
-| `thread start <project> --title T [--repo PATH] [--kind worktree\|tab\|checkout] [--profile P] [--machine M] [--base REF] --task-file F [--from-task TITLE]` | New thread; `-` reads the task from standard input. `--kind` is the placement; `--profile` is the agent, one the project allows. `--from-task` adds a TASKS.md task's notes and takes `--profile` and `--machine` from its owner. |
+| `thread start <project> --title T [--repo PATH] [--kind worktree\|tab\|checkout\|design] [--profile P] [--machine M] [--base REF] --task-file F [--from-task TITLE]` | New thread; `-` reads the task from standard input. `--kind` is the placement; `--profile` is the agent, one the project allows. `--from-task` adds a TASKS.md task's notes and takes `--profile` and `--machine` from its owner. A design thread takes neither `--repo` nor `--machine`. |
 | `thread prompt`, `thread next [--line N \| --add TEXT]`, `thread stop`, `thread restart [--profile P]` | Steer a thread. Prompts are recorded in its task file. |
 | `thread read [--lines N]`, `thread keys [KEY]... [--text T]`, `thread brief` | Answer a thread's pane without going there: print what it shows (a trust dialog, a question menu, a permission prompt), then type text and press keys (`up`, `down`, `enter`, `esc`, `tab`, a digit). `thread keys` refuses a trust screen when `trust_screens` is `user`. `thread brief` sends a brief the ticker has not delivered yet (the ticker waits for a settled, empty input box, counts a brief sent only once the agent starts working, never types it twice, and after three unconfirmed tries leaves an inbox item). |
 | `thread list/show [--json]`, `thread ack`, `thread adopt` | Look at threads. |

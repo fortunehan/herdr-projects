@@ -537,8 +537,14 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
             let _ = writeln!(out, "Goal: {}", if settings.goal.is_empty() { "(none set)" } else { &settings.goal });
             let _ = writeln!(
                 out,
-                "Settings: coordinator_profile={} thread_profile={} max_parallel_threads={} auto_resolve_days={} nudge={} mute={}",
-                settings.coordinator_profile, settings.thread_profile, settings.max_parallel_threads, settings.auto_resolve_days, settings.nudge, settings.mute
+                "Settings: coordinator_profile={} thread_profile={} design_profile={} max_parallel_threads={} auto_resolve_days={} nudge={} mute={}",
+                settings.coordinator_profile,
+                settings.thread_profile,
+                if settings.design_profile.is_empty() { &settings.thread_profile } else { &settings.design_profile },
+                settings.max_parallel_threads,
+                settings.auto_resolve_days,
+                settings.nudge,
+                settings.mute
             );
             out.push_str(&crate::profiles::context_text(ctx, project, &settings));
             out.push_str(&crate::assign::context_line(ctx, project));
@@ -547,9 +553,12 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
             }
             for repo in &settings.repos {
                 match &repo.machine {
-                    Some(machine) => { let _ = writeln!(out, "Repo: {} (machine {machine})", repo.path); }
-                    None => { let _ = writeln!(out, "Repo: {}", repo.path); }
+                    Some(machine) => { let _ = writeln!(out, "Repo: {} (machine {machine}, name {})", repo.path, repo.short_name()); }
+                    None => { let _ = writeln!(out, "Repo: {} (name {})", repo.path, repo.short_name()); }
                 }
+            }
+            if project.design_dir().is_dir() {
+                let _ = writeln!(out, "Design folder: {}", project.design_dir().display());
             }
         }
         Err(error) => {
@@ -588,7 +597,7 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
     let _ = writeln!(out, "\n## Open threads ({})", open.len());
     for row in open {
         let t = &row.thread;
-        let place = if t.repo.is_empty() { "no repo".to_string() } else { t.repo.clone() };
+        let place = if t.kind == crate::thread::Kind::Design { "design".to_string() } else if t.repo.is_empty() { "no repo".to_string() } else { t.repo.clone() };
         let _ = writeln!(out, "- {} [{}] ({}) {} — {} — {}", t.id, row.group.label(), row.note, t.title, place, if t.profile.is_empty() { &t.agent } else { &t.profile });
         for line in crate::thread::all_next(project, &t.id) {
             let _ = writeln!(out, "  next: {line}");

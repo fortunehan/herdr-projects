@@ -123,6 +123,19 @@ pub struct Repo {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// The short name in the design folder (`repos/<name>`, `<name>/CONTEXT.md`
+    /// and a ticket's `Repo:` line); the last part of `path` when not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Repo {
+    pub fn short_name(&self) -> String {
+        match &self.name {
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => Path::new(self.path.trim_end_matches('/')).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        }
+    }
 }
 
 /// `PROJECT.md` front matter. `repos` is last so the TOML tables follow the
@@ -139,6 +152,10 @@ pub struct Settings {
     /// The profile a thread starts with when none is chosen.
     #[serde(alias = "thread_agent")]
     pub thread_profile: String,
+    /// The profile a design thread starts with when none is chosen; empty
+    /// means `thread_profile`. It must run Claude Code.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub design_profile: String,
     pub max_parallel_threads: u32,
     pub auto_resolve_days: u32,
     pub nudge: bool,
@@ -154,6 +171,7 @@ impl Default for Settings {
             goal: String::new(),
             coordinator_profile: "claude".into(),
             thread_profile: "claude".into(),
+            design_profile: String::new(),
             max_parallel_threads: 10,
             auto_resolve_days: 7,
             // On by default (W15): the ticker prompts only a coordinator that
@@ -335,6 +353,12 @@ impl Project {
 
     pub fn state_dir(&self) -> PathBuf {
         self.dir().join(".state")
+    }
+
+    /// Where design threads work and where the glossary and decision records
+    /// of every repository in the project live, never in the repositories.
+    pub fn design_dir(&self) -> PathBuf {
+        self.dir().join("design")
     }
 
     /// The canonical folder (symlinks resolved): the key of the project's
@@ -525,12 +549,14 @@ pub fn parse_repo_arg(arg: &str) -> Repo {
             return Repo {
                 path: path.to_string(),
                 machine: Some(machine.to_string()),
+                name: None,
             };
         }
     }
     Repo {
         path: arg.to_string(),
         machine: None,
+        name: None,
     }
 }
 
@@ -561,7 +587,8 @@ pub fn agents_md(name: &str, slug: &str, prefix: &str) -> String {
         "# {name}\n\n\
          This folder is the home of the Herdr project \"{name}\" (`{slug}`). Written by herdr-projects; `doctor --fix` refreshes it.\n\n\
          If your working directory is exactly this folder, you are the coordinator of {name}: run `{prefix} skill` now and follow what it prints, and run `{prefix} context {slug}` now and whenever you need project state.\n\n\
-         If your working directory is under `threads/`, you are a thread: your brief is in your own folder (`.herdr-project/{slug}-<id>/brief.md`); ignore the rest of this file.\n"
+         If your working directory is under `threads/`, you are a thread: your brief is in your own folder (`.herdr-project/{slug}-<id>/brief.md`); ignore the rest of this file.\n\n\
+         If your working directory is `design/`, you are a design thread: follow `design/AGENTS.md` and your brief (`.herdr-project/{slug}-<id>/brief.md` there); ignore the rest of this file.\n"
     )
 }
 
@@ -682,6 +709,7 @@ pub fn create(root: &Path, name: &str, goal: &str, repos: Vec<Repo>) -> Result<P
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or(repo.path),
                 machine: None,
+                name: repo.name,
             },
         })
         .collect();
@@ -804,8 +832,8 @@ mod tests {
         assert_eq!(
             settings.repos,
             vec![
-                Repo { path: "/srv/app".into(), machine: Some("box".into()) },
-                Repo { path: "/no/such/repo".into(), machine: None },
+                Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None },
+                Repo { path: "/no/such/repo".into(), machine: None, name: None },
             ]
         );
         assert!(body.starts_with("# Instructions"));

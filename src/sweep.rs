@@ -122,7 +122,7 @@ pub fn find(ctx: &Ctx, project: &Project) -> Vec<Orphan> {
     }
 
     for t in threads.iter().filter(|t| t.status == Status::Resolved && !t.is_remote()) {
-        if matches!(t.kind, Kind::Tab | Kind::Checkout)
+        if matches!(t.kind, Kind::Tab | Kind::Checkout | Kind::Design)
             && let Some(view) = &view
             && !t.pane_id.is_empty()
             && thread::live_state(t, &view.agents, &view.panes, now).pane_exists

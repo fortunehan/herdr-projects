@@ -157,6 +157,8 @@ pub fn render(project: &Project, rows: &[Row]) -> String {
                 t.branch.clone()
             } else if t.kind == thread::Kind::Tab {
                 "tab".to_string()
+            } else if t.kind == thread::Kind::Design {
+                "design".to_string()
             } else {
                 "-".to_string()
             };

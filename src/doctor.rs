@@ -563,7 +563,7 @@ mod tests {
         let root = home.path().join("root");
         let repo = home.path().join("app");
         std::fs::create_dir_all(&repo).unwrap();
-        project::create(&root, "demo", "", vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None }]).unwrap();
+        project::create(&root, "demo", "", vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None, name: None }]).unwrap();
         let on_host = |cmd: &Cmd| cmd.program == "gh" && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into()));
         for reachable in [true, false] {
             let runner = FakeRunner::new();

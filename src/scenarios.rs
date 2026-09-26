@@ -2024,6 +2024,55 @@ fn a_tab_thread_gets_a_brief_with_the_project_header_and_prompts_are_recorded() 
 }
 
 #[test]
+fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the_inbox() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let repo = world.home.path().join("code/app-ios");
+    std::fs::create_dir_all(&repo).unwrap();
+    let text = std::fs::read_to_string(project.project_md()).unwrap();
+    std::fs::write(project.project_md(), text.replacen("repos = []", &format!("[[repos]]\npath = \"{}\"\nname = \"ios\"", repo.display()), 1)).unwrap();
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    let design = project.design_dir();
+    let cwd = design.clone();
+    world.runner.on_fn(
+        |cmd| cmd.display().contains("tab create"),
+        move |_| Ok(ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","cwd":"{}"}}}}}}"#, cwd.display()))),
+    );
+    world.runner.on("pane get", ok(r#"{"result":{"pane":{"cwd":""}}}"#));
+    world.runner.on("notification show", ok(r#"{"result":{}}"#));
+    let ctx = world.ctx();
+    let args = |repo: Option<String>, profile: Option<&str>| StartArgs { title: "design: otp".into(), repo, machine: None, profile: profile.map(str::to_string), kind: Some(Kind::Design), base: None, task: "## Requirement\n\nMove OTP first.".into() };
+
+    assert!(threads::start(&ctx, "demo", args(Some(repo.to_string_lossy().into_owned()), None)).unwrap_err().to_string().contains("takes no --repo"));
+    assert!(threads::start(&ctx, "demo", args(None, Some("codex"))).unwrap_err().to_string().contains("needs a Claude Code profile"));
+    let t = threads::start(&ctx, "demo", args(None, None)).unwrap();
+    assert_eq!((t.kind, Path::new(&t.cwd)), (Kind::Design, std::fs::canonicalize(&design).unwrap().as_path()));
+    assert_eq!(std::fs::read_link(design.join("repos/ios")).unwrap(), repo);
+    assert!(design.join("AGENTS.md").is_file());
+    let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+    assert!(brief.contains("# Design thread brief") && brief.contains("Move OTP first."));
+    assert!(brief.contains(&format!("(yours to write, except `repos/`): `{}`", design.display())));
+
+    // Every wait between questions is the interview: one notification for the
+    // first, no inbox item. A screen that wants a key press is reported.
+    let notifier = crate::notify::Notifier::new(&ctx, &project);
+    let mut state = crate::steps::State::default();
+    let waiting = |note: &str| crate::steps::Transition { id: t.id.clone(), to: thread::Group::WaitingOnYou, note: note.into() };
+    let idle = crate::steps::Transition { id: t.id.clone(), to: thread::Group::Idle, note: "idle".into() };
+    crate::steps::write_thread_items(&project, &mut state, &[waiting("idle"), idle.clone(), waiting("idle")], false, &Default::default(), &notifier).unwrap();
+    assert_eq!(world.runner.count("notification show"), 1);
+    assert!(crate::inbox::unhandled(&project).is_empty());
+    crate::steps::write_thread_items(&project, &mut state, &[waiting("blocked")], false, &Default::default(), &notifier).unwrap();
+    let items = crate::inbox::unhandled(&project);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].summary.contains("only the user answers it"), "{}", items[0].summary);
+
+    // A worker's brief points at the design folder, read-only.
+    let worker = thread::brief_for(&project, &Thread { kind: Kind::Tab, ..Thread::default() }, "t", false).unwrap();
+    assert!(worker.contains(&format!("(read-only): `{}`", design.display())));
+}
+
+#[test]
 fn sweep_leaves_kept_worktrees_and_copies_a_resolved_threads_files_first() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
@@ -2648,22 +2697,27 @@ fn a_remote_threads_profile_is_resolved_on_its_machine() {
     world.runner.on("resolve -- fast", ok(r#"{"name":"fast","agent":"codex","args":["--model","gpt-5.5"]}"#));
     world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":["--model","opus"]}"#));
     let ctx = world.ctx();
-    let fast = crate::threads::thread_profile(&ctx, &project, "box", Some("fast")).unwrap();
+    let settings = crate::project::Settings::default();
+    let profile = |machine: &str, name: Option<&str>| crate::threads::thread_profile(&ctx, &project, &settings, Kind::Worktree, machine, name);
+    let fast = profile("box", Some("fast")).unwrap();
     assert_eq!((fast.name.as_str(), fast.agent.as_str(), fast.remote_args.clone().unwrap()), ("fast", "codex", vec!["--model".to_string(), "gpt-5.5".into()]));
     // `(@box)`: box's own default thread profile.
-    let default = crate::threads::thread_profile(&ctx, &project, "box", None).unwrap();
+    let default = profile("box", None).unwrap();
     assert_eq!((default.name.as_str(), default.agent.as_str()), ("deep", "claude"));
     // A local thread never asks another machine.
     let calls = world.runner.count("ssh");
-    let local = crate::threads::thread_profile(&ctx, &project, "", Some("claude")).unwrap();
+    let local = profile("", Some("claude")).unwrap();
     assert!(local.remote_args.is_none() && world.runner.count("ssh") == calls);
     // This project's allow-list still applies to the name.
     std::fs::create_dir_all(&ctx.config_dir).unwrap();
     std::fs::write(ctx.config_dir.join("config.toml"), "[safety.default]\nthread_profiles = [\"claude\"]\n").unwrap();
-    assert!(crate::threads::thread_profile(&ctx, &project, "box", Some("fast")).is_err());
+    assert!(profile("box", Some("fast")).is_err());
     // A machine known only from config.toml profiles has no SSH target: no start.
     std::fs::write(ctx.config_dir.join("config.toml"), "[machines.vm]\nprofiles = [\"claude\"]\n").unwrap();
-    assert!(crate::threads::thread_profile(&ctx, &project, "vm", Some("claude")).unwrap_err().to_string().contains("no SSH target"));
+    assert!(profile("vm", Some("claude")).unwrap_err().to_string().contains("no SSH target"));
+    // A design thread runs only here.
+    let design = crate::threads::thread_profile(&ctx, &project, &settings, Kind::Design, "box", None).unwrap_err().to_string();
+    assert!(design.contains("runs on this machine only"), "{design}");
 }
 
 // ---------------------------------------------------------------- rename
@@ -2751,6 +2805,34 @@ fn rename_moves_the_folder_and_every_reference_to_it() {
     // A status change keeps the former slug.
     home.set_status(project::Status::Paused).unwrap();
     assert_eq!(home.former_slugs(), ["scratch"]);
+}
+
+#[test]
+fn rename_keeps_the_design_folder_and_its_threads_records_valid() {
+    let world = World::new();
+    let project = world.project("scratch", "a.sock");
+    let old = project.canonical_dir();
+    let repo = world.home.path().join("code/app");
+    std::fs::create_dir_all(&repo).unwrap();
+    let settings = project::Settings { repos: vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None, name: None }], ..project::Settings::default() };
+    crate::design::prepare(&project, &settings).unwrap();
+    let design = world.thread(&project, &old.join("design"), |t| {
+        t.kind = Kind::Design;
+        t.status = Status::Resolved;
+        t.worktree_path.clear();
+    });
+    let ctx = world.ctx();
+    world.runner.on("workspace rename", ok(r#"{"result":{}}"#));
+
+    crate::rename::run(&ctx, &rename_args("scratch", "home", None, false)).unwrap();
+
+    let home = Project::load(&world.root, "home").unwrap();
+    let dir = home.design_dir();
+    assert!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap().contains("# Design folder"), "the relative CLAUDE.md link still resolves");
+    assert_eq!(std::fs::read_link(dir.join("repos/app")).unwrap(), repo);
+    let t = thread::load(&home, &design.id).unwrap();
+    assert_eq!(t.cwd, home.canonical_dir().join("design").to_string_lossy());
+    assert!(t.thread_dir.starts_with(&*home.canonical_dir().to_string_lossy()), "{}", t.thread_dir);
 }
 
 #[test]

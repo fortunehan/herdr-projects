@@ -202,6 +202,19 @@ pub fn write_thread_items(project: &Project, state: &mut State, transitions: &[T
         let Ok(t) = thread::load(project, &change.id) else {
             continue;
         };
+        // A design thread waits on the user after every question and is idle
+        // between answers: that is the interview, not news for the
+        // coordinator. Only its first wait reaches the user; a screen that
+        // wants a key press, an agent that exited and a closed pane are
+        // reported as for any thread.
+        let interview = t.kind == thread::Kind::Design && !matches!(change.note.as_str(), "blocked" | "no agent" | "pane closed") && t.status != Status::Failed;
+        if interview {
+            if change.to == Group::WaitingOnYou && !t.interview_announced {
+                notifier.send(&t.id, &format!("needs you · design interview in pane {}", t.pane_id), crate::notify::Sound::Request, false);
+                thread::update(project, &t.id, |t| t.interview_announced = true)?;
+            }
+            continue;
+        }
         let mut summary = format!("{} is now {} ({})", thread_label(&t), change.to.label(), change.note);
         if change.to == Group::WaitingOnYou && !t.pane_id.is_empty() && change.note == "blocked" {
             // A screen waits for a key press (trust dialog, question menu,
@@ -211,6 +224,9 @@ pub fn write_thread_items(project: &Project, state: &mut State, transitions: &[T
                 "; its pane {}{machine} shows a prompt: `thread read {} {}` shows it, `thread keys {} {}` answers it",
                 t.pane_id, project.slug, t.id, project.slug, t.id
             ));
+            if t.kind == thread::Kind::Design {
+                summary.push_str("; a question menu there is the design interview and only the user answers it");
+            }
         } else if change.to == Group::WaitingOnYou && !t.pane_id.is_empty() {
             summary.push_str(&format!("; it needs the user in pane {}", t.pane_id));
             if t.is_remote() {
@@ -643,7 +659,8 @@ pub fn auto_resolve(ctx: &Ctx, project: &Project, settings: &Settings, memory: &
         return errors;
     }
     for t in thread::list(project) {
-        if t.status != Status::Open || t.last_group != Group::Idle.token() {
+        // A design thread is resolved only on the user's word.
+        if t.status != Status::Open || t.last_group != Group::Idle.token() || t.kind == thread::Kind::Design {
             continue;
         }
         // The later of the three reference times is the smallest elapsed time.

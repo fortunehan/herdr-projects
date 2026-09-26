@@ -75,8 +75,8 @@ pub struct StartArgs {
     /// The profile (`--profile`), default `thread_profile` in PROJECT.md;
     /// it must be on the project's allow-list.
     pub profile: Option<String>,
-    /// Placement (`--kind worktree|tab|checkout`); default worktree with a
-    /// repo, tab without one.
+    /// Placement (`--kind worktree|tab|checkout|design`); default worktree
+    /// with a repo, tab without one.
     pub kind: Option<Kind>,
     pub base: Option<String>,
     pub task: String,
@@ -101,12 +101,25 @@ impl ThreadProfile {
 }
 
 /// A local thread's profile is this machine's (`requested`, else the
-/// project's `thread_profile`). A remote thread's is its machine's own
-/// definition, looked up there (`requested`, else that machine's default
-/// thread profile), so it need not exist here. Either name must be on this
-/// project's allow-list.
-pub fn thread_profile(ctx: &Ctx, project: &Project, machine: &str, requested: Option<&str>) -> Result<ThreadProfile> {
+/// project's `thread_profile`, or `design_profile` for a design thread). A
+/// remote thread's is its machine's own definition, looked up there
+/// (`requested`, else that machine's default thread profile), so it need not
+/// exist here. Either name must be on this project's allow-list. A design
+/// thread runs only here and only Claude Code: it loads the `grilling` and
+/// `domain-modeling` skills itself.
+pub fn thread_profile(ctx: &Ctx, project: &Project, settings: &project::Settings, kind: Kind, machine: &str, requested: Option<&str>) -> Result<ThreadProfile> {
     use crate::profiles::Role;
+    if kind == Kind::Design {
+        if !machine.is_empty() {
+            bail!("a design thread runs on this machine only, in the project's design folder; leave out --machine");
+        }
+        let requested = requested.or((!settings.design_profile.is_empty()).then_some(settings.design_profile.as_str()));
+        let profile = crate::profiles::for_project(ctx, project, Role::Thread, requested)?;
+        if profile.agent() != "claude" {
+            bail!("a design thread needs a Claude Code profile; `{}` runs {}", profile.name, profile.agent());
+        }
+        return Ok(ThreadProfile { name: profile.name.clone(), agent: profile.agent().to_string(), remote_args: None });
+    }
     if machine.is_empty() {
         let profile = crate::profiles::for_project(ctx, project, Role::Thread, requested)?;
         return Ok(ThreadProfile { name: profile.name.clone(), agent: profile.agent().to_string(), remote_args: None });
@@ -125,6 +138,7 @@ pub fn placement(kind: Option<Kind>, has_repo: bool, remote: bool) -> Result<Kin
         (None, false) => Ok(Kind::Tab),
         (Some(Kind::Worktree), false) | (Some(Kind::Checkout), false) => bail!("a worktree or checkout thread needs --repo"),
         (Some(Kind::Adopted), _) => bail!("an adopted thread is made with `thread adopt`"),
+        (Some(Kind::Design), true) => bail!("a design thread takes no --repo: it reads every local repository in `repos` through the design folder"),
         (Some(Kind::Tab), _) | (Some(Kind::Checkout), _) if remote => bail!("a tab or checkout thread runs in the project's own workspace, which is local; a remote repo needs a worktree thread"),
         (Some(kind), _) => Ok(kind),
     }
@@ -152,6 +166,9 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
     ticker::start(ctx)?;
     let view = require_session(ctx, &project)?;
 
+    if args.kind == Some(Kind::Design) && args.machine.is_some() {
+        bail!("a design thread runs on this machine only, in the project's design folder; leave out --machine");
+    }
     let listed = args.repo.as_ref().and_then(|repo| settings.repos.iter().find(|r| &r.path == repo));
     let machine = args.machine.clone().or_else(|| listed.and_then(|r| r.machine.clone())).unwrap_or_default();
     let repo = match (&args.repo, machine.is_empty()) {
@@ -174,16 +191,17 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
         eprintln!("warning: {repo} on {machine} is not listed in `repos` in PROJECT.md");
     }
 
-    let open_count = thread::list(&project).iter().filter(|t| t.status == Status::Open || t.status == Status::Starting).count();
-    if open_count as u32 >= settings.max_parallel_threads {
+    let kind = placement(args.kind, !repo.is_empty(), !machine.is_empty())?;
+    // Design threads wait on the user's answers, not on a slot.
+    let open_count = thread::list(&project).iter().filter(|t| (t.status == Status::Open || t.status == Status::Starting) && t.kind != Kind::Design).count();
+    if kind != Kind::Design && open_count as u32 >= settings.max_parallel_threads {
         eprintln!(
             "warning: {open_count} threads are already open; max_parallel_threads is {}",
             settings.max_parallel_threads
         );
     }
 
-    let profile = thread_profile(ctx, &project, &machine, args.profile.as_deref())?;
-    let kind = placement(args.kind, !repo.is_empty(), !machine.is_empty())?;
+    let profile = thread_profile(ctx, &project, &settings, kind, &machine, args.profile.as_deref())?;
     let record = thread::allocate(&project, |t| {
         t.title = args.title.trim().to_string();
         t.kind = kind;
@@ -273,7 +291,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
                 t.pane_id = created.pane_id;
             })?
         }
-        Kind::Tab | Kind::Checkout => place_tab(project, view, &record)?,
+        Kind::Tab | Kind::Checkout | Kind::Design => place_tab(project, view, &record)?,
         Kind::Adopted => bail!("an adopted thread is not placed by the binary"),
     };
     write_brief(ctx, project, &placed, restart)?;
@@ -303,7 +321,8 @@ fn write_brief(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> 
 }
 
 /// A tab in the project workspace: in `threads/<id>/` for a tab thread, in the
-/// repo's main checkout for a checkout thread.
+/// repo's main checkout for a checkout thread, in the design folder for a
+/// design thread.
 fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<Thread> {
     let coordinator = project.coordinator().context("the project has never been opened")?;
     let workspace = coordinator::project_workspace(&coordinator, &view.panes);
@@ -312,6 +331,9 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
     }
     let folder = if record.kind == Kind::Checkout {
         std::path::PathBuf::from(&record.repo)
+    } else if record.kind == Kind::Design {
+        let (settings, _) = project.read_project_md()?;
+        crate::design::prepare(project, &settings)?
     } else {
         let folder = project.dir().join("threads").join(&record.id);
         let _lock = project.lock()?;
@@ -350,7 +372,7 @@ fn write_brief_local(ctx: &Ctx, project: &Project, placed: &Thread, restart: boo
     let brief = thread::brief_for(project, &with_dir, &task, restart)?;
 
     std::fs::create_dir_all(Path::new(&dir).join("library")).with_context(|| format!("could not create {dir}"))?;
-    if placed.kind != Kind::Tab {
+    if !matches!(placed.kind, Kind::Tab | Kind::Design) {
         exclude_from_git(ctx.runner, &placed.cwd)?;
     }
     project::write_atomic(&Path::new(&dir).join("brief.md"), brief.as_bytes())?;
@@ -396,6 +418,7 @@ fn finish_placement(project: &Project, view: &SessionView, id: &str) -> Result<T
         t.error.clear();
         t.last_state.clear();
         t.last_state_change = project::now();
+        t.interview_announced = false;
     })?;
     report_thread_tokens(&view.herdr, &thread, &project.slug, Group::Working);
     Ok(thread)
@@ -415,7 +438,7 @@ pub enum RestartPlan {
 pub fn restart_plan(thread: &Thread, live: &Live, branch_exists: bool, now: jiff::Timestamp) -> Result<RestartPlan> {
     match thread.kind {
         Kind::Adopted => bail!("an adopted thread cannot be restarted; adopt a new pane instead"),
-        Kind::Worktree | Kind::Tab | Kind::Checkout => {}
+        Kind::Worktree | Kind::Tab | Kind::Checkout | Kind::Design => {}
     }
     if thread.status == Status::Resolved {
         bail!("{} is resolved; `thread resolve --reopen` first", thread.id);
@@ -443,7 +466,7 @@ pub fn restart_plan(thread: &Thread, live: &Live, branch_exists: bool, now: jiff
         }
         return Ok(RestartPlan::Create);
     }
-    if matches!(thread.kind, Kind::Tab | Kind::Checkout) && thread.pane_id.is_empty() {
+    if matches!(thread.kind, Kind::Tab | Kind::Checkout | Kind::Design) && thread.pane_id.is_empty() {
         return Ok(RestartPlan::Create);
     }
     if live.pane_exists {
@@ -468,8 +491,9 @@ fn lists_for(view: &SessionView, record: &Thread) -> Result<(Vec<Agent>, Vec<Pan
 pub fn restart(ctx: &Ctx, slug: &str, id: &str, profile: Option<&str>) -> Result<Thread> {
     let project = Project::load(&ctx.root, slug)?;
     if let Some(name) = profile {
-        let machine = thread::load(&project, id)?.machine;
-        let profile = thread_profile(ctx, &project, &machine, Some(name))?;
+        let (settings, _) = project.read_project_md()?;
+        let record = thread::load(&project, id)?;
+        let profile = thread_profile(ctx, &project, &settings, record.kind, &record.machine, Some(name))?;
         // The profile carries the whole setup: old model flags no longer apply.
         thread::update(&project, id, |t| {
             profile.apply(t);
@@ -885,7 +909,7 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
                 }
             }
         }
-        Kind::Tab | Kind::Checkout => match &view {
+        Kind::Tab | Kind::Checkout | Kind::Design => match &view {
             Some(view) if !t.pane_id.is_empty() && thread::live_state(t, &view.agents, &view.panes, jiff::Timestamp::now()).pane_exists => {
                 // The live pane's tab, not the recorded one: ids move after a restart.
                 let tab = view.panes.iter().find(|p| thread::pane_matches(t, p)).map(|p| p.tab_id.clone()).or_else(|| view.agents.iter().find(|a| thread::agent_matches(t, a)).map(|a| a.tab_id.clone())).unwrap_or_else(|| t.tab_id.clone());

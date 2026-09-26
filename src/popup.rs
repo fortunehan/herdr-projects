@@ -431,6 +431,7 @@ pub fn build(ctx: &Ctx, section: Section, scope: Option<&str>) -> Vec<Row> {
                         ("goal", s.goal.clone()),
                         ("coordinator_profile", s.coordinator_profile.clone()),
                         ("thread_profile", s.thread_profile.clone()),
+                        ("design_profile", if s.design_profile.is_empty() { format!("{} (thread_profile)", s.thread_profile) } else { s.design_profile.clone() }),
                         ("coordinator_profiles", allowed_text(ctx, Some(&project), Role::Coordinator)),
                         ("thread_profiles", allowed_text(ctx, Some(&project), Role::Thread)),
                         ("max_parallel_threads", s.max_parallel_threads.to_string()),
@@ -1191,10 +1192,10 @@ impl<'a> Popup<'a> {
                 KeyCode::Enter => {
                     let action = vec!["set".to_string(), slug.clone(), name.clone()];
                     self.mode = match name.as_str() {
-                        "coordinator_profile" | "thread_profile" => {
+                        "coordinator_profile" | "thread_profile" | "design_profile" => {
                             let mut action = action;
                             action.push("{}".into());
-                            let role = if name == "thread_profile" { Role::Thread } else { Role::Coordinator };
+                            let role = if name == "coordinator_profile" { Role::Coordinator } else { Role::Thread };
                             self.profile_picker(&name, &slug, role, &value, action)
                         }
                         "thread_profiles" => self.allow_toggle(&slug, Role::Thread),

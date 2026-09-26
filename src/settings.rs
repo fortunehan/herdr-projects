@@ -11,11 +11,12 @@ use crate::paths::Ctx;
 use crate::project::{self, Project, Settings};
 
 /// The keys `set` accepts, with what they hold.
-pub const KEYS: [(&str, &str); 10] = [
+pub const KEYS: [(&str, &str); 11] = [
     ("name", "text"),
     ("goal", "text"),
     ("coordinator_profile", "profile name"),
     ("thread_profile", "profile name"),
+    ("design_profile", "profile name (empty = thread_profile)"),
     ("max_parallel_threads", "number"),
     ("auto_resolve_days", "number (0 = never)"),
     ("nudge", "true/false"),
@@ -89,6 +90,13 @@ pub fn set_in(text: &str, key: &str, value: &str) -> Result<String> {
             doc.remove(&format!("{role}_agent"));
             doc[&format!("{role}_profile")] = toml_edit::value(value);
         }
+        "design_profile" if value.is_empty() => {
+            doc.remove(key);
+        }
+        "design_profile" => {
+            crate::profiles::validate_name(value)?;
+            doc[key] = toml_edit::value(value);
+        }
         "max_parallel_threads" | "auto_resolve_days" => {
             let n: i64 = value.parse().ok().filter(|n: &i64| *n >= 0 && *n <= 1000).with_context(|| format!("`{value}` is not a number from 0 to 1000"))?;
             if key == "max_parallel_threads" && n == 0 {
@@ -142,12 +150,18 @@ pub fn set_in(text: &str, key: &str, value: &str) -> Result<String> {
 /// `set <slug> <key> <value>`.
 pub fn set(ctx: &Ctx, slug: &str, key: &str, value: &str) -> Result<()> {
     let project = Project::load(&ctx.root, slug)?;
-    if let Some(role) = key.strip_suffix("_profile").or(key.strip_suffix("_agent")) {
-        // A default must be a profile this project may use.
-        let role = crate::profiles::Role::parse(role)?;
+    if let Some(role) = key.strip_suffix("_profile").or(key.strip_suffix("_agent"))
+        && !(key == "design_profile" && value.trim().is_empty())
+    {
+        // A default must be a profile this project may use; a design
+        // thread's is a thread profile that runs Claude Code.
+        let role = if role == "design" { crate::profiles::Role::Thread } else { crate::profiles::Role::parse(role)? };
         let config = crate::profiles::load(&ctx.config_dir)?;
-        config.get(value.trim()).with_context(|| format!("there is no profile `{}`; `profile list` shows them", value.trim()))?;
+        let profile = config.get(value.trim()).with_context(|| format!("there is no profile `{}`; `profile list` shows them", value.trim()))?;
         crate::profiles::check_allowed(&config, &project.safety(&ctx.config_dir)?, role, value.trim(), slug)?;
+        if key == "design_profile" && profile.agent() != "claude" {
+            bail!("a design thread needs a Claude Code profile; `{}` runs {}", profile.name, profile.agent());
+        }
     }
     let text = std::fs::read_to_string(project.project_md())?;
     let edited = set_in(&text, key, value)?;
@@ -262,6 +276,10 @@ mod tests {
         let old = set_in("+++\nthread_agent = \"claude\"\n+++\n", "thread_agent", "luna").unwrap();
         assert_eq!(old, "+++\nthread_profile = \"luna\"\n+++\n");
         assert_eq!(project::parse_project_md(&set_in(&old, "coordinator_profile", "sol").unwrap()).unwrap().0.coordinator_profile, "sol");
+        // An empty design_profile removes the key: design threads fall back to thread_profile.
+        let design = set_in(&old, "design_profile", "opus").unwrap();
+        assert_eq!(project::parse_project_md(&design).unwrap().0.design_profile, "opus");
+        assert_eq!(set_in(&design, "design_profile", "").unwrap(), old);
         assert!(set_in(MD, "whatever", "x").is_err());
         let muted = set_in(MD, "mute", "on").unwrap();
         assert!(project::parse_project_md(&muted).unwrap().0.mute);
