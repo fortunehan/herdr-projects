@@ -127,12 +127,15 @@ pub fn popup_toggle(ctx: &Ctx) -> String {
 // ---------------------------------------------------------------- tokens
 
 /// What the priority view knows of one project agent.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Rank {
     /// In the needs-you group (never while the project is paused).
     pub needs: bool,
     /// An implementation thread: after every other agent at the same attention.
     pub implementation: bool,
+    /// A design thread's own Space, whose label keeps [`DESIGN_MARK`]; none
+    /// for a design thread started as a tab of the home Space.
+    pub design_space: Option<String>,
 }
 
 /// One session's project agents, by pane.
@@ -146,14 +149,16 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
         let terminal = agents.iter().find(|a| a.pane_id == c.pane_id).map(|a| a.terminal_id.clone()).unwrap_or_default();
         let report = crate::progress::self_report(&ctx.root, &record.socket, &c.pane_id, &terminal);
         let needs = !paused && crate::coordinator::row_state(c, report.as_ref()).0 == Group::WaitingOnYou;
-        out.push((c.pane_id.clone(), Rank { needs, implementation: false }));
+        out.push((c.pane_id.clone(), Rank { needs, ..Rank::default() }));
     }
     if !record.pane_id.is_empty() && !out.iter().any(|(pane, _)| pane == &record.pane_id) {
         out.push((record.pane_id.clone(), Rank::default()));
     }
     for t in thread::list(project).into_iter().filter(|t| !t.is_remote() && matches!(t.status, thread::Status::Open | thread::Status::Starting) && !t.pane_id.is_empty()) {
         let needs = !paused && Group::from_token(&t.last_group) == Some(Group::WaitingOnYou);
-        out.push((t.pane_id.clone(), Rank { needs, implementation: t.kind != thread::Kind::Design }));
+        let design = t.kind == thread::Kind::Design;
+        let design_space = (design && !t.workspace_id.is_empty() && t.workspace_id != record.workspace_id).then(|| t.workspace_id.clone());
+        out.push((t.pane_id.clone(), Rank { needs, implementation: !design, design_space }));
     }
     out
 }
@@ -161,7 +166,7 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
 /// A pane's tokens: every agent gets a tier (`0` unless an implementation
 /// thread); `hp_needs` is cleared, not set to 0, when it does not apply.
 pub fn tokens(rank: Option<&Rank>) -> Tokens {
-    let rank = rank.copied().unwrap_or_default();
+    let rank = rank.cloned().unwrap_or_default();
     vec![
         ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
         ("hp_needs".to_string(), rank.needs.then(|| "1".to_string())),
@@ -189,13 +194,73 @@ fn due(socket: &str, pane: &str, tokens: &Tokens) -> bool {
     }
 }
 
-/// Writes the priority tokens on every agent pane of one session.
+/// Writes the priority tokens on every agent pane of one session, and puts
+/// [`DESIGN_MARK`] back on a design Space label that lost it.
 pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent]) {
     for agent in agents {
         let tokens = tokens(ranks.and_then(|r| r.get(&agent.pane_id)));
         if due(socket, &agent.pane_id, &tokens) {
             crate::grouping::report(herdr, "pane", &agent.pane_id, &tokens);
         }
+    }
+    mark_design_spaces(herdr, socket, ranks, agents);
+}
+
+// ---------------------------------------------------------------- design threads
+
+/// Starts a design thread's display name and its own Space's label, so the
+/// agent and Space cells' `contains` rule colours them (see [`config_edit`]).
+/// Zero-width and apart from `grouping::HEAD_MARK` (U+200B) and
+/// `grouping::HOME_MARK` (U+2800). At the start, because Herdr keeps only
+/// the first 80 characters of a display name.
+pub const DESIGN_MARK: char = '\u{2060}';
+
+/// A thread's row name: a design thread's starts with [`DESIGN_MARK`].
+pub fn thread_display(thread: &thread::Thread) -> String {
+    let display = crate::sidebar::thread_display(thread);
+    if thread.kind == thread::Kind::Design { design_label(&display) } else { display }
+}
+
+/// `label` with [`DESIGN_MARK`] in front, once.
+pub fn design_label(label: &str) -> String {
+    if label.contains(DESIGN_MARK) { label.to_string() } else { format!("{DESIGN_MARK}{label}") }
+}
+
+/// Design Spaces checked per `(socket, Space)`, so the labels are listed
+/// again only every [`RESEND`].
+static CHECKED: Mutex<Option<HashMap<(String, String), Instant>>> = Mutex::new(None);
+
+fn check_due(socket: &str, space: &str) -> bool {
+    let mut checked = CHECKED.lock().unwrap_or_else(|e| e.into_inner());
+    let checked = checked.get_or_insert_with(HashMap::new);
+    let key = (socket.to_string(), space.to_string());
+    match checked.get(&key) {
+        Some(at) if at.elapsed() < RESEND => false,
+        _ => {
+            checked.insert(key, Instant::now());
+            true
+        }
+    }
+}
+
+/// Like upstream's `grouping::unmarked_homes` for home Spaces: a design
+/// thread's own Space, while its pane is still there (ids repeat after a
+/// server restart), keeps [`DESIGN_MARK`] when renamed by hand.
+fn mark_design_spaces(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent]) {
+    let Some(ranks) = ranks else {
+        return;
+    };
+    let mut spaces: Vec<&str> = agents.iter().filter_map(|a| ranks.get(&a.pane_id)?.design_space.as_deref().filter(|s| *s == a.workspace_id)).collect();
+    spaces.dedup();
+    spaces.retain(|s| check_due(socket, s));
+    if spaces.is_empty() {
+        return;
+    }
+    let Ok(workspaces) = herdr.workspace_list() else {
+        return;
+    };
+    for w in workspaces.iter().filter(|w| spaces.contains(&w.workspace_id.as_str()) && !w.label.is_empty() && !w.label.contains(DESIGN_MARK)) {
+        let _ = herdr.workspace_rename(&w.workspace_id, &design_label(&w.label));
     }
 }
 
@@ -262,7 +327,8 @@ const HEAD_COLOUR: &str = "#7aa2f7";
 /// The fork's part of `configure`'s `config.toml` edit, run after upstream's
 /// (and before it with `remove`, so upstream still recognises its own card):
 /// the coordinator name's colour on every agent card (`rows` and each
-/// `rows_by_agent` override), and the `[[keys.command]]` entry binding
+/// `rows_by_agent` override), the design threads' colour there and on the
+/// Space card, and the `[[keys.command]]` entry binding
 /// [`KEY`] to [`ACTION`]. An existing key entry keeps the user's key; a taken
 /// key adds nothing and says so.
 pub fn config_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Result<(String, Option<String>)> {
@@ -301,43 +367,69 @@ pub fn config_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Re
     Ok((doc.to_string(), None))
 }
 
+/// Design threads' names and Space labels: Tokyo Night's purple, apart from
+/// the coordinators' blue and the state colours. Not bold, which marks the
+/// heads; not italic, which Herdr 0.9.3's rules do not offer.
+const DESIGN_COLOUR: &str = "#bb9af7";
+
 /// Sets (or with `remove` drops) [`HEAD_COLOUR`] on the head rule of every
-/// `agent` cell in the agents rows. Only that rule is ours; other cells and
-/// rules are the user's and stay as they are.
+/// `agent` cell in the agents rows, and the [`DESIGN_MARK`] rule after the
+/// head rule of every `agent` cell and of the Space rows' `workspace` cell.
+/// Only those rules are ours; other cells and rules are the user's and stay
+/// as they are.
 fn colour_heads(doc: &mut DocumentMut, remove: bool) {
-    let Some(agents) = doc
-        .as_table_mut()
-        .get_mut("ui")
-        .and_then(Item::as_table_like_mut)
-        .and_then(|ui| ui.get_mut("sidebar"))
-        .and_then(Item::as_table_like_mut)
-        .and_then(|sidebar| sidebar.get_mut("agents"))
-        .and_then(Item::as_table_like_mut)
-    else {
+    let Some(sidebar) = doc.as_table_mut().get_mut("ui").and_then(Item::as_table_like_mut).and_then(|ui| ui.get_mut("sidebar")).and_then(Item::as_table_like_mut) else {
         return;
     };
-    if let Some(rows) = agents.get_mut("rows").and_then(Item::as_value_mut) {
-        colour_rows(rows, remove);
-    }
-    if let Some(overrides) = agents.get_mut("rows_by_agent").and_then(Item::as_table_like_mut) {
-        for (_, rows) in overrides.iter_mut() {
-            if let Some(rows) = rows.as_value_mut() {
-                colour_rows(rows, remove);
+    if let Some(agents) = sidebar.get_mut("agents").and_then(Item::as_table_like_mut) {
+        if let Some(rows) = agents.get_mut("rows").and_then(Item::as_value_mut) {
+            colour_rows(rows, "agent", crate::grouping::HEAD_MARK, Some(HEAD_COLOUR), remove);
+        }
+        if let Some(overrides) = agents.get_mut("rows_by_agent").and_then(Item::as_table_like_mut) {
+            for (_, rows) in overrides.iter_mut() {
+                if let Some(rows) = rows.as_value_mut() {
+                    colour_rows(rows, "agent", crate::grouping::HEAD_MARK, Some(HEAD_COLOUR), remove);
+                }
             }
         }
     }
+    if let Some(rows) = sidebar.get_mut("spaces").and_then(Item::as_table_like_mut).and_then(|s| s.get_mut("rows")).and_then(Item::as_value_mut) {
+        colour_rows(rows, "workspace", crate::grouping::HOME_MARK, None, remove);
+    }
 }
 
-fn colour_rows(rows: &mut Value, remove: bool) {
-    let head = crate::grouping::HEAD_MARK.to_string();
+fn mark_rule(rule: &Value, mark: char) -> bool {
+    rule.as_inline_table().and_then(|r| r.get("contains")).and_then(Value::as_str).is_some_and(|c| c.chars().eq([mark]))
+}
+
+/// The `token` cells of upstream's card (those with the `head` rule): the
+/// head rule gets `head_colour`, and one design rule follows it. Herdr
+/// applies the first rule that matches, and no name carries both marks.
+fn colour_rows(rows: &mut Value, token: &str, head: char, head_colour: Option<&str>, remove: bool) {
     let cells = rows.as_array_mut().into_iter().flat_map(|rows| rows.iter_mut()).filter_map(Value::as_array_mut).flat_map(|row| row.iter_mut());
-    for cell in cells.filter_map(Value::as_inline_table_mut).filter(|c| c.get("token").and_then(Value::as_str) == Some("agent")) {
-        let rules = cell.get_mut("rules").and_then(Value::as_array_mut).into_iter().flat_map(|r| r.iter_mut()).filter_map(Value::as_inline_table_mut);
-        for rule in rules.filter(|r| r.get("contains").and_then(Value::as_str) == Some(head.as_str())) {
-            let changed = if remove { rule.remove("fg").is_some() } else { rule.get("fg").and_then(Value::as_str) != Some(HEAD_COLOUR) && rule.insert("fg", HEAD_COLOUR.into()).is_none() };
-            if changed {
-                rule.fmt();
+    for cell in cells.filter_map(Value::as_inline_table_mut).filter(|c| c.get("token").and_then(Value::as_str) == Some(token)) {
+        let Some(rules) = cell.get_mut("rules").and_then(Value::as_array_mut).filter(|r| r.iter().any(|rule| mark_rule(rule, head))) else {
+            continue;
+        };
+        if let Some(colour) = head_colour {
+            for rule in rules.iter_mut().filter(|r| mark_rule(r, head)).filter_map(Value::as_inline_table_mut) {
+                let changed = if remove { rule.remove("fg").is_some() } else { rule.get("fg").and_then(Value::as_str) != Some(colour) && rule.insert("fg", colour.into()).is_none() };
+                if changed {
+                    rule.fmt();
+                }
             }
+        }
+        let mut design = InlineTable::new();
+        design.insert("contains", DESIGN_MARK.to_string().into());
+        design.insert("fg", DESIGN_COLOUR.into());
+        let current: Vec<usize> = rules.iter().enumerate().filter(|(_, r)| mark_rule(r, DESIGN_MARK)).map(|(i, _)| i).collect();
+        let in_place = current.len() == 1 && rules.get(current[0]).and_then(Value::as_inline_table).is_some_and(|r| r.to_string().split_whitespace().eq(design.to_string().split_whitespace()));
+        if (remove && !current.is_empty()) || (!remove && !in_place) {
+            rules.retain(|r| !mark_rule(r, DESIGN_MARK));
+            if !remove {
+                rules.push(design);
+            }
+            rules.fmt();
         }
     }
 }
@@ -429,7 +521,7 @@ mod tests {
                 _ => thread_key(a.slug, a.group.rank(), a.name),
             };
             parts.entry(a.slug.to_string()).or_default().panes.push(PaneRow { pane: a.name.into(), key, sub: String::new() });
-            ranks.insert(a.name.into(), Rank { needs: a.group == Group::WaitingOnYou && !paused.contains(&a.slug), implementation: a.kind == 't' });
+            ranks.insert(a.name.into(), Rank { needs: a.group == Group::WaitingOnYou && !paused.contains(&a.slug), implementation: a.kind == 't', ..Rank::default() });
         }
         let list: Vec<Agent> = agents.iter().map(|a| Agent { pane_id: a.name.into(), ..Default::default() }).collect();
         let layout = crate::grouping::plan(&parts, &list, &[]);
@@ -543,7 +635,7 @@ mod tests {
     #[test]
     fn every_pane_gets_a_tier_and_hp_needs_is_cleared_when_it_does_not_apply() {
         assert_eq!(tokens(None), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None)]);
-        let blocked = Rank { needs: true, implementation: true };
+        let blocked = Rank { needs: true, implementation: true, ..Rank::default() };
         assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), Some("1".to_string()))]);
     }
 
@@ -644,5 +736,89 @@ mod tests {
         assert_eq!(first_match(&quiet), None, "dim, as the cell's base style");
         assert_eq!(first_match("needs you · ~45%"), Some("needs you"), "a coordinator or design thread stays red");
         assert_eq!(first_match("review · report"), Some("review"));
+    }
+
+    /// Herdr's `normalize_presentation_text` (0.9.3) for a display name.
+    fn herdr_display(value: &str) -> String {
+        let normalized: String = value.trim().chars().filter(|c| !c.is_control()).take(80).collect();
+        normalized.trim().to_string()
+    }
+
+    /// Herdr's rule match on one cell: the first rule whose `contains` is in the value.
+    fn first_rule(rules: &Value, value: &str) -> Option<InlineTable> {
+        rules.as_array()?.iter().filter_map(Value::as_inline_table).find(|r| r.get("contains").and_then(Value::as_str).is_some_and(|c| value.contains(c))).cloned()
+    }
+
+    #[test]
+    fn a_design_threads_name_and_space_label_carry_their_own_zero_width_mark() {
+        let marks = [DESIGN_MARK, crate::grouping::HEAD_MARK, crate::grouping::HOME_MARK, QUIET_MARK];
+        assert!(marks[1..].iter().all(|m| *m != DESIGN_MARK));
+        // Not whitespace or a control character, so Herdr's trim and filter keep it.
+        assert!(!DESIGN_MARK.is_whitespace() && !DESIGN_MARK.is_control());
+        let design = thread::Thread { id: "t-0010".into(), title: "x".repeat(90), kind: thread::Kind::Design, ..thread::Thread::default() };
+        let worker = thread::Thread { id: "t-0011".into(), title: "Task".into(), kind: thread::Kind::Worktree, ..thread::Thread::default() };
+        let name = thread_display(&design);
+        assert!(name.starts_with(DESIGN_MARK) && name.ends_with('x'));
+        assert!(herdr_display(&name).starts_with(DESIGN_MARK), "kept when Herdr cuts a long name at 80 characters");
+        assert_eq!(thread_display(&worker), "t-0011 · Task");
+        assert_eq!(design_label("design: otp"), format!("{DESIGN_MARK}design: otp"));
+        assert_eq!(design_label(&design_label("design: otp")), design_label("design: otp"), "marked once");
+    }
+
+    fn sidebar_cells(text: &str) -> (Value, Value, Value) {
+        let doc = text.parse::<DocumentMut>().unwrap();
+        let cell = |rows: &Item, token: &str| -> Value {
+            rows.as_array().unwrap().iter().flat_map(|r| r.as_array().unwrap().iter()).find(|c| c.as_inline_table().is_some_and(|t| t.get("token").and_then(Value::as_str) == Some(token))).unwrap().as_inline_table().unwrap().get("rules").unwrap().clone()
+        };
+        let agents = &doc["ui"]["sidebar"]["agents"];
+        (cell(&agents["rows"], "agent"), cell(&agents["rows_by_agent"]["claude"], "agent"), cell(&doc["ui"]["sidebar"]["spaces"]["rows"], "workspace"))
+    }
+
+    #[test]
+    fn design_threads_are_purple_in_both_lists_upgraded_in_place_and_removed_by_unconfigure() {
+        let spec = crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() };
+        let (head, home) = (crate::grouping::HEAD_MARK, crate::grouping::HOME_MARK);
+        // The rows the previous fork configure wrote on this machine.
+        let card = format!("[\"state_icon\", {{ token = \"agent\", bold = false, dim = false, rules = [{{ contains = \"{head}\", bold = true, fg = \"{HEAD_COLOUR}\" }}] }}, \"state_text\"]");
+        let earlier = format!(
+            "[ui.sidebar.agents]\nrows = [{card}, [{{ token = \"$hp_sub\", dim = true }}]]\n\n[ui.sidebar.agents.rows_by_agent]\nclaude = [{card}]\n\n[ui.sidebar.spaces]\nrows = [[\"state_icon\", {{ token = \"workspace\", rules = [{{ contains = \"{home}\", bold = true }}] }}, {{ token = \"branch\", dim = true }}, \"git_status\"]]\n"
+        );
+        let configure = |text: &str| config_edit(&crate::sidebar::config_edit(text, &spec, false).unwrap(), &[], false).unwrap().0;
+        let once = configure(&earlier);
+        assert_eq!(configure(&once), once, "idempotent");
+        assert_eq!(once.matches(DESIGN_COLOUR).count(), 3, "{once}");
+        assert!(once.contains(&format!("{{ contains = \"{DESIGN_MARK}\", fg = \"{DESIGN_COLOUR}\" }}")), "{once}");
+        // What `doctor`'s `sidebar_current` checks: our tab-bar entry and sub-line, no legacy token.
+        assert!(once.contains("/bin/hp needs-you --line") && once.contains("\"$hp_sub\"") && !crate::grouping::legacy().iter().any(|t| once.contains(&format!("\"${t}\""))));
+
+        let (agent, by_agent, space) = sidebar_cells(&once);
+        assert_eq!(agent.to_string(), by_agent.to_string());
+        let fg = |rule: Option<InlineTable>| rule.and_then(|r| r.get("fg").and_then(Value::as_str).map(str::to_string));
+        let bold = |rule: Option<InlineTable>| rule.and_then(|r| r.get("bold").and_then(Value::as_bool));
+        // First match wins: coordinators stay bold blue, design threads purple and not bold, others plain.
+        let coordinator = format!("Projects Plugin{head}");
+        let design = format!("{DESIGN_MARK}t-0010 · Colour design threads");
+        assert_eq!((fg(first_rule(&agent, &coordinator)).as_deref(), bold(first_rule(&agent, &coordinator))), (Some(HEAD_COLOUR), Some(true)));
+        assert_eq!((fg(first_rule(&agent, &design)).as_deref(), bold(first_rule(&agent, &design))), (Some(DESIGN_COLOUR), None));
+        assert!(first_rule(&agent, "t-0011 · Task").is_none());
+        let home_label = format!("Projects Plugin{home}");
+        let design_space = format!("{DESIGN_MARK}design: otp");
+        assert_eq!((fg(first_rule(&space, &home_label)), bold(first_rule(&space, &home_label))), (None, Some(true)));
+        assert_eq!(fg(first_rule(&space, &design_space)).as_deref(), Some(DESIGN_COLOUR));
+        assert!(first_rule(&space, "repo").is_none());
+
+        // A design rule in another colour is replaced, not doubled.
+        let recoloured = configure(&once.replace(DESIGN_COLOUR, "#000000"));
+        assert_eq!(recoloured, once);
+
+        // Unconfigure: ours first, then upstream's, which still finds its cards and puts Herdr's rows back.
+        let (stripped, _) = config_edit(&once, &[], true).unwrap();
+        assert!(!stripped.contains(DESIGN_MARK) && !stripped.contains(DESIGN_COLOUR), "{stripped}");
+        let removed = crate::sidebar::config_edit(&stripped, &spec, true).unwrap();
+        let doc = removed.parse::<DocumentMut>().unwrap();
+        assert!(doc["ui"]["sidebar"]["agents"]["rows"].to_string().contains("\"machine\""), "{removed}");
+        assert!(!doc["ui"]["sidebar"]["spaces"]["rows"].to_string().contains(home), "Herdr's Space rows are back: {removed}");
+        // Unconfigure on rows without our rules changes nothing.
+        assert_eq!(config_edit(&stripped, &[], true).unwrap().0, stripped);
     }
 }

@@ -711,7 +711,7 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             })?;
         }
         if live.pane_exists {
-            crate::sidebar::report_pane(herdr, &t.pane_id, &crate::sidebar::thread_display(t), slug, group);
+            crate::sidebar::report_pane(herdr, &t.pane_id, &crate::views::thread_display(t), slug, group);
         }
     }
     Ok(pass)

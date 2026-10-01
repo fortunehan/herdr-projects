@@ -1591,11 +1591,12 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
         assert!(tokens.contains("--token hp_tier=0") && tokens.contains("--clear-token hp_needs"), "{coordinator}: {tokens}");
     }
 
-    // A design thread is not demoted.
+    // A design thread is not demoted, and its name starts with the design mark.
     thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
     let from = world.runner.calls.borrow().len();
     ticker::tick_for_test(&ctx, &mut memory);
     assert!(last(from, "w2:p1").contains("--token hp_tier=0"), "{}", last(from, "w2:p1"));
+    assert!(world.runner.count(&format!("--display-agent {}t-0001 · Task", crate::views::DESIGN_MARK)) >= 1);
 
     // Paused: its thread keeps its tier from the session another project lists, and needs no one.
     thread::update(&project, &t.id, |t| t.kind = Kind::Worktree).unwrap();
@@ -1604,6 +1605,45 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     ticker::tick_for_test(&ctx, &mut memory);
     let paused = last(from, "w2:p1");
     assert!(paused.contains("--token hp_tier=1") && paused.contains("--clear-token hp_needs"), "{paused}");
+}
+
+#[test]
+fn the_ticker_keeps_a_design_threads_own_space_marked_and_leaves_tab_ones_alone() {
+    let mark = crate::views::DESIGN_MARK;
+    let spaces = |design_label: &str| format!(r#"{{"result":{{"workspaces":[{{"workspace_id":"w1","label":"Demo{}"}},{{"workspace_id":"w2","label":"{design_label}"}}]}}}}"#, crate::grouping::HOME_MARK);
+    // Renamed by hand: the mark comes back, the home Space is left as it is.
+    let (world, project, t) = finished_world("working");
+    thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
+    world.runner.on("workspace list", ok(&spaces("Task")));
+    world.runner.on("workspace rename", ok(r#"{"result":{}}"#));
+    let ctx = world.ctx();
+    ticker::tick_for_test(&ctx, &mut Memory::new(&ctx));
+    assert_eq!(world.runner.count(&format!("workspace rename w2 {mark}Task")), 1);
+    assert_eq!(world.runner.count("workspace rename"), 1);
+
+    // Already marked: nothing to do.
+    let (world, project, t) = finished_world("working");
+    thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
+    world.runner.on("workspace list", ok(&spaces(&format!("{mark}Task"))));
+    world.runner.on("workspace rename", ok(r#"{"result":{}}"#));
+    let ctx = world.ctx();
+    ticker::tick_for_test(&ctx, &mut Memory::new(&ctx));
+    assert_eq!(world.runner.count("workspace rename"), 0);
+
+    // An implementation thread's Space, and a design thread started as a tab of the home Space, keep their labels.
+    for (kind, workspace) in [(Kind::Worktree, "w2"), (Kind::Design, "w1")] {
+        let (world, project, t) = finished_world("working");
+        thread::update(&project, &t.id, |t| {
+            t.kind = kind;
+            t.workspace_id = workspace.into();
+        })
+        .unwrap();
+        world.runner.on("workspace list", ok(&spaces("Task")));
+        world.runner.on("workspace rename", ok(r#"{"result":{}}"#));
+        let ctx = world.ctx();
+        ticker::tick_for_test(&ctx, &mut Memory::new(&ctx));
+        assert_eq!(world.runner.count("workspace rename"), 0, "{kind:?} in {workspace}");
+    }
 }
 
 // ------------------------------------------------------------------ stage 6
@@ -2100,9 +2140,9 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     assert!(threads::start(&ctx, "demo", args(None, Some("codex"))).unwrap_err().to_string().contains("needs a Claude Code profile"));
     let t = threads::start(&ctx, "demo", args(None, None)).unwrap();
     assert_eq!((t.kind, Path::new(&t.cwd)), (Kind::Design, std::fs::canonicalize(&design).unwrap().as_path()));
-    // Its own Space, labelled with its title, never a tab of the home Space.
+    // Its own Space, labelled with its title and the design mark, never a tab of the home Space.
     assert_eq!((t.workspace_id.as_str(), world.runner.count("tab create")), ("w3", 0));
-    assert_eq!(world.runner.count(&format!("workspace create --cwd {} --label design: otp", std::fs::canonicalize(&design).unwrap().display())), 1);
+    assert_eq!(world.runner.count(&format!("workspace create --cwd {} --label {}design: otp", std::fs::canonicalize(&design).unwrap().display(), crate::views::DESIGN_MARK)), 1);
     assert_eq!(std::fs::read_link(design.join("repos/ios")).unwrap(), repo);
     assert!(design.join("AGENTS.md").is_file());
     let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();

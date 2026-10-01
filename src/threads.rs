@@ -61,7 +61,7 @@ fn git(runner: &dyn Runner, repo: &str, args: &[&str], timeout: Duration) -> Res
 }
 
 pub fn report_thread_tokens(herdr: &Herdr, thread: &Thread, slug: &str, group: Group) {
-    crate::sidebar::report_pane(&herdr.on_machine(&thread.machine), &thread.pane_id, &crate::sidebar::thread_display(thread), slug, group);
+    crate::sidebar::report_pane(&herdr.on_machine(&thread.machine), &thread.pane_id, &crate::views::thread_display(thread), slug, group);
 }
 
 fn clear_thread_tokens(herdr: &Herdr, thread: &Thread) {
@@ -346,7 +346,7 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
     let created = match workspace {
         // Answered by the user, like the coordinator: its own Space, which
         // the grouping puts in the project's block.
-        _ if record.kind == Kind::Design => view.herdr.workspace_create(&folder, &record.title, false)?,
+        _ if record.kind == Kind::Design => view.herdr.workspace_create(&folder, &crate::views::design_label(&record.title), false)?,
         Some(id) => view.herdr.tab_create(&id, &folder, &record.title, false)?,
         // The coordinator runs in a pane of another workspace: the thread
         // opens the project's own.
