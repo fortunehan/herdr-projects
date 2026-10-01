@@ -113,7 +113,7 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
-    /// Show only one project's panes in the sidebar, sorted by attention
+    /// Show only one project's panes in the sidebar: coordinators, then threads by need
     Focus { slug: Option<String> },
     /// Clear the sidebar view (herdr holds one, so this clears any tool's view)
     Unfocus {

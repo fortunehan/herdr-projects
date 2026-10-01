@@ -1553,6 +1553,57 @@ fn a_paused_project_is_skipped_by_the_ticker() {
     assert!(calls.is_empty(), "{:?}", calls.iter().map(|c| c.display()).collect::<Vec<_>>());
 }
 
+#[test]
+fn the_ticker_writes_the_attention_order_tokens_on_every_agent_pane() {
+    let (world, project, t) = finished_world("blocked");
+    // Blocked for longer than the debounce: the thread needs the user.
+    thread::update(&project, &t.id, |t| t.last_state = "blocked".into()).unwrap();
+    let other = world.project("other", "a.sock");
+    other.update_coordinator(|c| {
+        c.workspace_id = "w5".into();
+        c.tab_id = "w5:t1".into();
+        c.pane_id = "w5:p1".into();
+    })
+    .unwrap();
+    let agents = world.agents.borrow().clone();
+    let extra = [
+        agent_json("w5", "w5:t1", "w5:p1", &other.canonical_dir().to_string_lossy(), "hp-other-coordinator", "idle"),
+        agent_json("w9", "w9:t1", "w9:p1", "/elsewhere", "", "working"),
+    ];
+    *world.agents.borrow_mut() = format!("{},{}]", agents.trim_end_matches(']'), extra.join(","));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    // The last tokens sent to a pane in calls from `from` on.
+    let last = |from: usize, pane: &str| -> String {
+        let calls = world.runner.calls.borrow();
+        calls[from..].iter().map(|c| c.display()).rfind(|c| c.contains(&format!("pane report-metadata {pane} ")) && c.contains("hp_tier")).unwrap_or_default()
+    };
+
+    ticker::tick_for_test(&ctx, &mut memory);
+    let thread = last(0, "w2:p1");
+    assert!(thread.contains("--token hp_tier=1") && thread.contains("--token hp_needs=1"), "a blocked implementation thread: {thread}");
+    let outside = last(0, "w9:p1");
+    assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs"), "an outside agent: {outside}");
+    for coordinator in ["w1:p1", "w5:p1"] {
+        let tokens = last(0, coordinator);
+        assert!(tokens.contains("--token hp_tier=0") && tokens.contains("--clear-token hp_needs"), "{coordinator}: {tokens}");
+    }
+
+    // A design thread is not demoted.
+    thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
+    let from = world.runner.calls.borrow().len();
+    ticker::tick_for_test(&ctx, &mut memory);
+    assert!(last(from, "w2:p1").contains("--token hp_tier=0"), "{}", last(from, "w2:p1"));
+
+    // Paused: its thread keeps its tier from the session another project lists, and needs no one.
+    thread::update(&project, &t.id, |t| t.kind = Kind::Worktree).unwrap();
+    project.set_status(project::Status::Paused).unwrap();
+    let from = world.runner.calls.borrow().len();
+    ticker::tick_for_test(&ctx, &mut memory);
+    let paused = last(from, "w2:p1");
+    assert!(paused.contains("--token hp_tier=1") && paused.contains("--clear-token hp_needs"), "{paused}");
+}
+
 // ------------------------------------------------------------------ stage 6
 
 fn remote_world() -> (World, Project) {

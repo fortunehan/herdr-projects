@@ -1,7 +1,7 @@
 //! What the Herdr sidebar shows for projects: per agent row a name
 //! (`--display-agent`); the project grouping of `grouping` (order and a bold
 //! head row) in the agents and the Spaces list; a tab-bar count; the default
-//! agent view, grouped by project.
+//! agent view in attention order, and the focus view grouped by project.
 //! Also the `config.toml` edit `configure` makes to render them.
 
 use std::path::Path;
@@ -178,17 +178,25 @@ pub fn needs_you_line(root: &Path) -> Option<String> {
 
 // ---------------------------------------------------------------- agent view
 
-/// The default view: agents in project blocks (`hp_group`, see `grouping`),
-/// each by need; agents without it last.
+/// The default view, the attention order (ADR 0003): project agents that need
+/// the user first (`hp_needs`), then Herdr's attention; at the same attention
+/// implementation threads (`hp_tier` 1) after every other agent; then the
+/// latest state change. `grouping` writes both tokens on every agent pane.
 pub fn default_view() -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
         "label": "projects",
-        "sort": [{ "field": { "token": "hp_group" }, "order": "asc" }, { "field": { "token": "hp_rank" }, "order": "asc" }],
+        "sort": [
+            { "field": { "token": "hp_needs" }, "order": "desc" },
+            { "field": "attention", "order": "desc" },
+            { "field": { "token": "hp_tier" }, "order": "asc" },
+            { "field": "state_change_seq", "order": "desc" },
+        ],
     })
 }
 
-/// `focus <slug>`: only that project's agents, by need.
+/// `focus <slug>`: only that project's agents, in its `grouping` block order
+/// (coordinators, then threads by need).
 pub fn project_view(slug: &str) -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
@@ -735,5 +743,184 @@ sidebar = { agents = { rows = [[{ token = "$hp_top", fg = "#cba6f7", bold = true
         assert_eq!(project_line(&[Landing], false), "1 landing");
         assert_eq!(project_line(&[Idle], false), "idle");
         assert_eq!(project_line(&[WaitingOnYou], true), "paused");
+    }
+
+    /// An agent as Herdr's agent view sort sees it.
+    struct Row {
+        name: &'static str,
+        tokens: std::collections::BTreeMap<String, String>,
+        attention: u64,
+        seq: u64,
+    }
+
+    /// Herdr's view sort: stable, keys in order, missing values after present
+    /// ones whatever the direction, tokens compared as strings; a filter keeps
+    /// only rows whose token equals its value.
+    fn herdr_sort(view: &serde_json::Value, rows: Vec<Row>) -> Vec<&'static str> {
+        use std::cmp::Ordering;
+        let mut rows: Vec<Row> = match view.get("filter") {
+            Some(filter) => rows.into_iter().filter(|r| r.tokens.get(filter["field"]["token"].as_str().unwrap()).map(String::as_str) == filter["value"].as_str()).collect(),
+            None => rows,
+        };
+        let sort = view["sort"].as_array().unwrap().clone();
+        rows.sort_by(|a, b| {
+            for key in &sort {
+                let desc = key["order"] == "desc";
+                let value = |r: &Row| -> Option<String> {
+                    match &key["field"] {
+                        serde_json::Value::String(f) if f == "attention" => Some(format!("{:020}", r.attention)),
+                        serde_json::Value::String(f) if f == "state_change_seq" => Some(format!("{:020}", r.seq)),
+                        field => r.tokens.get(field["token"].as_str().unwrap()).cloned(),
+                    }
+                };
+                let ordering = match (value(a), value(b)) {
+                    (Some(x), Some(y)) if desc => y.cmp(&x),
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                };
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            Ordering::Equal
+        });
+        rows.iter().map(|r| r.name).collect()
+    }
+
+    // Herdr's `tab_attention_priority`.
+    const BLOCKED: u64 = 4;
+    const DONE: u64 = 3;
+    const WORKING: u64 = 2;
+    const IDLE: u64 = 1;
+
+    /// One agent of the scene: `slug` is empty for an outside agent; `kind` is
+    /// `c` (coordinator), `t` (implementation thread) or `d` (design thread).
+    struct Seen {
+        name: &'static str,
+        slug: &'static str,
+        kind: char,
+        group: Group,
+        attention: u64,
+        seq: u64,
+    }
+
+    fn seen(name: &'static str, slug: &'static str, kind: char, group: Group, attention: u64, seq: u64) -> Seen {
+        Seen { name, slug, kind, group, attention, seq }
+    }
+
+    fn outside(name: &'static str, attention: u64, seq: u64) -> Seen {
+        seen(name, "", 'o', Group::Idle, attention, seq)
+    }
+
+    /// The rows Herdr sorts, tokens as the ticker writes them: `grouping` on
+    /// every pane in the session (Herdr's list order), `report_pane`'s
+    /// `hp_project` and `hp_rank` on project agents. Paused projects keep their
+    /// part but never need the user.
+    fn scene(agents: &[Seen], paused: &[&str]) -> Vec<Row> {
+        use crate::grouping::{PaneRow, Parts, coordinator_key, thread_key};
+        let mut parts = Parts::new();
+        for a in agents.iter().filter(|a| !a.slug.is_empty()) {
+            let key = match a.kind {
+                'c' => coordinator_key(a.slug, a.name),
+                _ => thread_key(a.slug, a.group.rank(), a.name),
+            };
+            let needs = a.group == Group::WaitingOnYou && !paused.contains(&a.slug);
+            parts.entry(a.slug.to_string()).or_default().panes.push(PaneRow { pane: a.name.into(), key, sub: String::new(), needs, implementation: a.kind == 't' });
+        }
+        let list: Vec<crate::herdr::Agent> = agents.iter().map(|a| crate::herdr::Agent { pane_id: a.name.into(), ..Default::default() }).collect();
+        let layout = crate::grouping::plan(&parts, &list, &[]);
+        agents
+            .iter()
+            .map(|a| {
+                let mut tokens: std::collections::BTreeMap<String, String> = layout.agents.iter().find(|(p, _)| p == a.name).unwrap().1.iter().filter_map(|(n, v)| Some((n.clone(), v.clone()?))).collect();
+                if !a.slug.is_empty() {
+                    tokens.insert("hp_project".into(), a.slug.into());
+                    tokens.insert("hp_rank".into(), a.group.rank().to_string());
+                }
+                Row { name: a.name, tokens, attention: a.attention, seq: a.seq }
+            })
+            .collect()
+    }
+
+    fn default_order(agents: &[Seen]) -> Vec<&'static str> {
+        herdr_sort(&default_view(), scene(agents, &[]))
+    }
+
+    #[test]
+    fn the_default_view_is_the_attention_order() {
+        assert_eq!(
+            default_view()["sort"],
+            serde_json::json!([
+                {"field":{"token":"hp_needs"},"order":"desc"},
+                {"field":"attention","order":"desc"},
+                {"field":{"token":"hp_tier"},"order":"asc"},
+                {"field":"state_change_seq","order":"desc"},
+            ])
+        );
+        assert!(default_view().get("filter").is_none());
+    }
+
+    #[test]
+    fn implementation_threads_yield_only_within_their_attention_level() {
+        let agents = [
+            outside("outside-idle", IDLE, 90),
+            seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
+            outside("outside-working", WORKING, 10),
+            seen("thread-blocked", "demo", 't', Group::Working, BLOCKED, 5),
+            seen("thread-done", "demo", 't', Group::ReadyForReview, DONE, 4),
+        ];
+        assert_eq!(default_order(&agents), ["thread-blocked", "thread-done", "outside-working", "thread-working", "outside-idle"]);
+    }
+
+    #[test]
+    fn coordinators_and_design_threads_are_not_demoted() {
+        let agents = [
+            seen("thread", "demo", 't', Group::Working, WORKING, 99),
+            seen("design", "demo", 'd', Group::Working, WORKING, 20),
+            outside("outside", WORKING, 30),
+            seen("coordinator", "demo", 'c', Group::Working, WORKING, 10),
+        ];
+        assert_eq!(default_order(&agents), ["outside", "design", "coordinator", "thread"]);
+    }
+
+    #[test]
+    fn needs_you_rows_lead_and_idle_review_threads_sit_with_idle_agents() {
+        let agents = [
+            outside("outside-blocked", BLOCKED, 50),
+            // Self-reported waiting while Herdr shows idle, and a failed thread.
+            seen("coordinator-waiting", "demo", 'c', Group::WaitingOnYou, IDLE, 1),
+            seen("thread-failed", "other", 't', Group::WaitingOnYou, IDLE, 2),
+            seen("thread-review", "demo", 't', Group::ReadyForReview, IDLE, 70),
+            outside("outside-idle", IDLE, 3),
+            outside("outside-working", WORKING, 4),
+        ];
+        assert_eq!(default_order(&agents), ["coordinator-waiting", "thread-failed", "outside-blocked", "outside-working", "outside-idle", "thread-review"]);
+    }
+
+    #[test]
+    fn a_paused_projects_threads_stay_demoted_but_never_need_you() {
+        let agents = [
+            outside("outside", WORKING, 1),
+            seen("paused-thread", "zzz", 't', Group::WaitingOnYou, WORKING, 9),
+            seen("paused-coordinator", "zzz", 'c', Group::WaitingOnYou, WORKING, 8),
+        ];
+        assert_eq!(herdr_sort(&default_view(), scene(&agents, &["zzz"])), ["paused-coordinator", "outside", "paused-thread"]);
+    }
+
+    #[test]
+    fn the_focus_view_lists_one_projects_block_coordinators_first_then_threads_by_need() {
+        let agents = [
+            outside("outside", BLOCKED, 99),
+            seen("t-0003", "demo", 't', Group::Working, BLOCKED, 50),
+            seen("t-0001", "demo", 't', Group::Idle, IDLE, 1),
+            seen("other-coordinator", "other", 'c', Group::WaitingOnYou, IDLE, 70),
+            seen("t-0004", "demo", 'd', Group::WaitingOnYou, IDLE, 2),
+            seen("coordinator", "demo", 'c', Group::Working, WORKING, 3),
+            seen("t-0002", "demo", 't', Group::ReadyForReview, IDLE, 4),
+            seen("t-0005", "demo", 't', Group::Working, WORKING, 60),
+        ];
+        assert_eq!(herdr_sort(&project_view("demo"), scene(&agents, &[])), ["coordinator", "t-0004", "t-0002", "t-0003", "t-0005", "t-0001"]);
     }
 }

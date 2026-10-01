@@ -501,7 +501,8 @@ fn routine_pass(ctx: &Ctx, project: &Project, state: &mut steps::State, coordina
 }
 
 /// A paused project is skipped, but its panes and Spaces keep their place in
-/// the sidebar grouping.
+/// the sidebar grouping, and its threads their `hp_tier`, so they are not
+/// taken for outside agents.
 fn mark_paused(ctx: &Ctx, project: &Project, sessions: &mut Sessions) {
     let Some(record) = project.coordinator() else {
         return;
@@ -516,7 +517,8 @@ fn mark_paused(ctx: &Ctx, project: &Project, sessions: &mut Sessions) {
 /// A project's agents and Spaces in sidebar order: coordinators, then local
 /// threads by need; the home Space, then each thread's repository Space and
 /// its own. Each agent carries its sub-line (the state line's fact and its
-/// fresh self-reported activity).
+/// fresh self-reported activity), whether it needs the user (never while
+/// paused) and whether it is an implementation thread.
 fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinators: &[coordinator::LivePane], agents: &[Agent], paused: bool) -> crate::grouping::ProjectPart {
     let slug = &project.slug;
     let threads = open_threads(project, false);
@@ -533,15 +535,24 @@ fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinator
             continue;
         }
         let (report, text) = activity(&pane);
-        let line = coordinators.iter().find(|c| c.pane_id == pane).map(|c| coordinator::row_state(c, report.as_ref()).1).unwrap_or_default();
+        let state = coordinators.iter().find(|c| c.pane_id == pane).map(|c| coordinator::row_state(c, report.as_ref()));
+        let needs = !paused && state.as_ref().is_some_and(|(group, _)| *group == thread::Group::WaitingOnYou);
+        let line = state.map(|(_, line)| line).unwrap_or_default();
         let sub = if paused { String::new() } else { crate::sidebar::sub_line(&line, &text) };
-        panes.push(crate::grouping::PaneRow { key: crate::grouping::coordinator_key(slug, &pane), pane, sub });
+        panes.push(crate::grouping::PaneRow { key: crate::grouping::coordinator_key(slug, &pane), pane, sub, needs, implementation: false });
     }
     for t in &threads {
-        let rank = thread::Group::from_token(&t.last_group).map(thread::Group::rank).unwrap_or(9);
+        let group = thread::Group::from_token(&t.last_group);
+        let rank = group.map(thread::Group::rank).unwrap_or(9);
         if !t.pane_id.is_empty() {
             let sub = if paused { String::new() } else { crate::sidebar::sub_line(&t.state_line, &activity(&t.pane_id).1) };
-            panes.push(crate::grouping::PaneRow { pane: t.pane_id.clone(), key: crate::grouping::thread_key(slug, rank, &t.id), sub });
+            panes.push(crate::grouping::PaneRow {
+                pane: t.pane_id.clone(),
+                key: crate::grouping::thread_key(slug, rank, &t.id),
+                sub,
+                needs: !paused && group == Some(thread::Group::WaitingOnYou),
+                implementation: t.kind != thread::Kind::Design,
+            });
         }
     }
     let mut spaces: Vec<String> = Vec::new();

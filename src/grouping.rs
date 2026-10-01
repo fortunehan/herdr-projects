@@ -9,8 +9,11 @@
 //! display name. A mark in the name, not a list of names in the config,
 //! because a client draws another machine's rows with its own config.
 //!
-//! Agents sort by `$hp_group` in the agent view; Spaces are moved into one
+//! The focus view sorts agents by `$hp_group`; Spaces are moved into one
 //! block per project with `workspace.move`. Anything in no project comes last.
+//! The default view is the attention order instead (ADR 0003): every agent
+//! pane of the session, outside agents included, also gets `$hp_tier`, and a
+//! project agent that needs the user `$hp_needs`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -28,14 +31,15 @@ const OTHER: &str = "~";
 
 /// Every token this module writes.
 pub fn tokens() -> Vec<String> {
-    ["hp_sub", "hp_group"].map(String::from).to_vec()
+    ["hp_sub", "hp_group", "hp_tier", "hp_needs"].map(String::from).to_vec()
 }
 
-/// Tokens of earlier layouts: the 0.2.17/0.2.18 headings and the 0.2.19
-/// rails. Cleared with a pane's or Space's own tokens, and otherwise left to
-/// expire (they had a TTL and have no rows any more).
+/// Tokens of earlier layouts: the 0.2.17/0.2.18 headings, the 0.2.19 rails
+/// and the fork's `hp_pos` focus order (ADR 0002). Cleared with a pane's or
+/// Space's own tokens, and otherwise left to expire (they had a TTL and have
+/// no rows any more).
 pub fn legacy() -> Vec<String> {
-    let mut all: Vec<String> = ["hp_top", "hp_other", "hp_note", "hp_tail", "hp", "hp_state", "hp_activity", "hp_gap", "hp_home"].map(String::from).to_vec();
+    let mut all: Vec<String> = ["hp_top", "hp_other", "hp_note", "hp_tail", "hp", "hp_state", "hp_activity", "hp_gap", "hp_home", "hp_pos"].map(String::from).to_vec();
     for slot in ["top", "con", "sub", "end"] {
         for rail in ["n", "w", "i", "o"] {
             all.push(format!("hp_{slot}_{rail}"));
@@ -51,6 +55,11 @@ pub struct PaneRow {
     pub key: String,
     /// `review · report`, `~40% · Writing tests`, or empty.
     pub sub: String,
+    /// In the needs-you group: sorts first in the default view.
+    pub needs: bool,
+    /// An implementation thread: after every other agent at the same
+    /// attention in the default view.
+    pub implementation: bool,
 }
 
 /// One project's part of a session, as its tick saw it.
@@ -101,17 +110,26 @@ pub fn plan(parts: &Parts, agents: &[Agent], workspaces: &[Workspace]) -> Plan {
             owner.entry(row.pane.as_str()).or_insert(row);
         }
     }
-    let mut rows: Vec<(String, &str, &str)> = agents
+    let mut rows: Vec<(String, &str, Option<&PaneRow>)> = agents
         .iter()
         .enumerate()
         .map(|(i, a)| match owner.get(a.pane_id.as_str()) {
-            Some(row) => (row.key.clone(), a.pane_id.as_str(), row.sub.as_str()),
-            None => (format!("{OTHER}!{i:04}"), a.pane_id.as_str(), ""),
+            Some(row) => (row.key.clone(), a.pane_id.as_str(), Some(*row)),
+            None => (format!("{OTHER}!{i:04}"), a.pane_id.as_str(), None),
         })
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
-    for (key, pane, sub) in rows {
-        let tokens = vec![("hp_sub".to_string(), (!sub.is_empty()).then(|| sub.to_string())), ("hp_group".to_string(), Some(key))];
+    for (key, pane, row) in rows {
+        let sub = row.map(|r| r.sub.as_str()).filter(|s| !s.is_empty());
+        let tier = if row.is_some_and(|r| r.implementation) { "1" } else { "0" };
+        // Cleared, not set to 0: Herdr sorts a missing token last both ways.
+        let needs = row.is_some_and(|r| r.needs).then(|| "1".to_string());
+        let tokens = vec![
+            ("hp_sub".to_string(), sub.map(str::to_string)),
+            ("hp_group".to_string(), Some(key)),
+            ("hp_tier".to_string(), Some(tier.to_string())),
+            ("hp_needs".to_string(), needs),
+        ];
         out.agents.push((pane.to_string(), tokens));
     }
 
@@ -255,7 +273,8 @@ mod tests {
     }
 
     fn row(pane: &str, key: String, sub: &str) -> PaneRow {
-        PaneRow { pane: pane.into(), key, sub: sub.into() }
+        let implementation = key.contains("!1!");
+        PaneRow { pane: pane.into(), key, sub: sub.into(), implementation, ..PaneRow::default() }
     }
 
     fn parts() -> Parts {
@@ -291,12 +310,32 @@ mod tests {
         assert_eq!(get(t["a1"], "hp_sub"), None, "an empty sub-line is cleared, so no row is drawn");
         assert!(t["a1"].iter().any(|(n, v)| n == "hp_sub" && v.is_none()));
         // No card carries a row of ours besides its own sub-line.
-        assert!(layout.agents.iter().all(|(_, t)| t.iter().all(|(n, _)| n == "hp_sub" || n == "hp_group")));
+        assert!(layout.agents.iter().all(|(_, t)| t.iter().all(|(n, _)| tokens().contains(n))));
         // The sort key the agent view uses reproduces this order.
         let keys: Vec<&str> = layout.agents.iter().map(|(_, t)| get(t, "hp_group").unwrap()).collect();
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn every_agent_gets_a_tier_and_only_project_agents_that_need_you_get_hp_needs() {
+        let mut parts = parts();
+        let alpha = parts.get_mut("alpha").unwrap();
+        alpha.panes[0].needs = true;
+        alpha.panes[1].needs = true;
+        let design = row("a4", thread_key("alpha", 4, "t-0004"), "");
+        alpha.panes.push(PaneRow { implementation: false, ..design });
+        let agents: Vec<Agent> = ["x1", "a1", "a2", "a3", "a4"].into_iter().map(agent).collect();
+        let layout = plan(&parts, &agents, &[]);
+        let t: HashMap<&str, &Tokens> = layout.agents.iter().map(|(p, t)| (p.as_str(), t)).collect();
+        let tier = |pane: &str| get(t[pane], "hp_tier");
+        assert_eq!((tier("x1"), tier("a1"), tier("a2"), tier("a3"), tier("a4")), (Some("0"), Some("0"), Some("1"), Some("1"), Some("0")));
+        let needs = |pane: &str| get(t[pane], "hp_needs");
+        assert_eq!((needs("a1"), needs("a2")), (Some("1"), Some("1")));
+        for pane in ["x1", "a3", "a4"] {
+            assert!(t[pane].iter().any(|(n, v)| n == "hp_needs" && v.is_none()), "{pane}: hp_needs is cleared, not left stale");
+        }
     }
 
     #[test]
