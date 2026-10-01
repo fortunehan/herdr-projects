@@ -1582,6 +1582,8 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     ticker::tick_for_test(&ctx, &mut memory);
     let thread = last(0, "w2:p1");
     assert!(thread.contains("--token hp_tier=1") && thread.contains("--token hp_needs=1"), "a blocked implementation thread: {thread}");
+    // Its sub-line says needs you, but starts with the quiet mark, so it is not coloured.
+    assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
     assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs"), "an outside agent: {outside}");
     for coordinator in ["w1:p1", "w5:p1"] {

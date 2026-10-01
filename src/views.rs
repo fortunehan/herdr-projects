@@ -199,6 +199,23 @@ pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent
     }
 }
 
+/// Starts an implementation thread's needs-you sub-line, so the sub-line
+/// cell's `starts_with = "needs you"` rule (bold red) does not match it: the
+/// user answers such a thread through the coordinator, whose own row stays
+/// red. Zero-width, like `grouping::HEAD_MARK`, so the text reads the same.
+pub const QUIET_MARK: char = '\u{200B}';
+
+/// A thread's sub-line as the sidebar shows it: an implementation thread
+/// that needs the user gets [`QUIET_MARK`] in front and stays dim; a design
+/// thread, answered in its own pane, keeps the colour.
+pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
+    if thread.kind != thread::Kind::Design && sub.starts_with("needs you") {
+        format!("{QUIET_MARK}{sub}")
+    } else {
+        sub
+    }
+}
+
 // ---------------------------------------------------------------- config.toml
 
 /// Colours of the sub-line's group word, as the fork's sidebar had them
@@ -611,5 +628,21 @@ mod tests {
         assert!(doc["ui"]["sidebar"]["agents"]["rows"].to_string().contains("\"machine\""), "Herdr's built-in rows are back: {removed}");
         // Upstream leaves per-harness overrides to the user: the card there stays, only our colour is gone.
         assert!(doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"].to_string().contains(crate::grouping::HEAD_MARK));
+    }
+
+    #[test]
+    fn an_implementation_threads_needs_you_stays_dim_and_a_design_threads_keeps_its_colour() {
+        let worker = thread::Thread { kind: thread::Kind::Worktree, ..thread::Thread::default() };
+        let design = thread::Thread { kind: thread::Kind::Design, ..thread::Thread::default() };
+        let quiet = thread_sub(&worker, "needs you · ~45%".into());
+        assert_eq!(quiet, format!("{QUIET_MARK}needs you · ~45%"));
+        assert_eq!(thread_sub(&design, "needs you · blocked".into()), "needs you · blocked");
+        assert_eq!(thread_sub(&worker, "review · report".into()), "review · report", "review keeps its yellow");
+        assert_eq!(thread_sub(&worker, "~40% · Writing tests".into()), "~40% · Writing tests");
+        // The sub-line rules as Herdr applies them: the first `starts_with` that matches wins.
+        let first_match = |value: &str| STATE_COLOURS.iter().find(|(word, _, _)| value.starts_with(word)).map(|(word, _, _)| *word);
+        assert_eq!(first_match(&quiet), None, "dim, as the cell's base style");
+        assert_eq!(first_match("needs you · ~45%"), Some("needs you"), "a coordinator or design thread stays red");
+        assert_eq!(first_match("review · report"), Some("review"));
     }
 }

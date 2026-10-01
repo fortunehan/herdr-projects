@@ -544,7 +544,7 @@ fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinator
     for t in &threads {
         let rank = thread::Group::from_token(&t.last_group).map(thread::Group::rank).unwrap_or(9);
         if !t.pane_id.is_empty() {
-            let sub = if paused { String::new() } else { crate::sidebar::sub_line(&t.state_line, &activity(&t.pane_id).1) };
+            let sub = if paused { String::new() } else { crate::views::thread_sub(t, crate::sidebar::sub_line(&t.state_line, &activity(&t.pane_id).1)) };
             panes.push(crate::grouping::PaneRow { pane: t.pane_id.clone(), key: crate::grouping::thread_key(slug, rank, &t.id), sub });
         }
     }
