@@ -396,7 +396,7 @@ fn table_mut<'a>(parent: &'a mut Item, key: &str) -> Result<&'a mut Item> {
 /// rows, keys and entries of the user are never touched. Idempotent.
 pub fn config_edit(input: &str, spec: &Spec, remove: bool) -> Result<String> {
     let mut doc = input.parse::<DocumentMut>().context("config.toml does not parse")?;
-    let agent_last = [sub_row()];
+    let agent_last = [crate::views::with_state_colours(sub_row())];
     let (agent_card, space_card) = (agent_card(), space_card());
     let (old_agent_card, old_space_card) = cards_0_2_19();
 

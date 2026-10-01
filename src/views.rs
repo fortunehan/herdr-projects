@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::coordinator::LivePane;
 use crate::grouping::Tokens;
@@ -200,6 +200,41 @@ pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent
 }
 
 // ---------------------------------------------------------------- config.toml
+
+/// Colours of the sub-line's group word, as the fork's sidebar had them
+/// before the port: needs-you bold red, review yellow, both undimmed; the
+/// rest of the sub-line stays dim.
+const STATE_COLOURS: [(&str, &str, bool); 2] = [("needs you", "#f38ba8", true), ("review", "#f9e2af", false)];
+
+/// `row` (upstream's `$hp_sub` row) with Herdr rules that colour a sub-line
+/// starting with a group word. The first matching rule wins, and its `dim`
+/// overrides the cell's.
+pub fn with_state_colours(row: Value) -> Value {
+    let Value::Array(mut cells) = row else {
+        return row;
+    };
+    for cell in cells.iter_mut() {
+        let Value::InlineTable(cell) = cell else {
+            continue;
+        };
+        if cell.get("token").and_then(Value::as_str) != Some("$hp_sub") {
+            continue;
+        }
+        let mut rules = Array::new();
+        for (word, colour, bold) in STATE_COLOURS {
+            let mut rule = InlineTable::new();
+            rule.insert("starts_with", word.into());
+            rule.insert("fg", colour.into());
+            if bold {
+                rule.insert("bold", true.into());
+            }
+            rule.insert("dim", false.into());
+            rules.push(rule);
+        }
+        cell.insert("rules", rules.into());
+    }
+    Value::Array(cells)
+}
 
 /// Adds (or with `remove` drops) the `[[keys.command]]` entry binding [`KEY`]
 /// to [`ACTION`]. An existing entry keeps the user's key; a taken key adds
@@ -473,5 +508,28 @@ mod tests {
         // With the popup key in the same list.
         let both = crate::sidebar::config_edit(&added, &crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() }, false).unwrap();
         assert!(both.contains(ACTION) && both.contains(crate::sidebar::POPUP_ACTION));
+    }
+
+    #[test]
+    fn the_sub_line_colours_needs_you_and_review_and_configure_keeps_it_in_place() {
+        let spec = crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() };
+        let added = crate::sidebar::config_edit("", &spec, false).unwrap();
+        let doc = added.parse::<DocumentMut>().unwrap();
+        let rows = doc["ui"]["sidebar"]["agents"]["rows"].as_array().unwrap();
+        let sub = rows.get(1).unwrap().as_array().unwrap().get(0).unwrap().as_inline_table().unwrap();
+        assert_eq!((sub.get("token").and_then(Value::as_str), sub.get("dim").and_then(Value::as_bool)), (Some("$hp_sub"), Some(true)));
+        let rules = sub.get("rules").unwrap().as_array().unwrap();
+        let rule = |i: usize, key: &str| rules.get(i).unwrap().as_inline_table().unwrap().get(key).cloned();
+        assert_eq!(rule(0, "starts_with").unwrap().as_str(), Some("needs you"));
+        assert_eq!((rule(0, "fg").unwrap().as_str(), rule(0, "bold").unwrap().as_bool(), rule(0, "dim").unwrap().as_bool()), (Some("#f38ba8"), Some(true), Some(false)));
+        assert_eq!((rule(1, "starts_with").unwrap().as_str(), rule(1, "fg").unwrap().as_str(), rule(1, "bold").is_none()), (Some("review"), Some("#f9e2af"), true));
+        // Idempotent, and a plain sub row of an earlier configure is replaced, not doubled.
+        assert_eq!(crate::sidebar::config_edit(&added, &spec, false).unwrap(), added);
+        let plain = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"], [{ token = \"$hp_sub\", dim = true }]]\n";
+        let upgraded = crate::sidebar::config_edit(plain, &spec, false).unwrap();
+        assert_eq!(upgraded.matches("$hp_sub").count(), 1, "{upgraded}");
+        assert!(upgraded.contains("#f38ba8") && upgraded.contains("#f9e2af"), "{upgraded}");
+        // Unconfigure still takes it out.
+        assert!(!crate::sidebar::config_edit(&added, &spec, true).unwrap().contains("$hp_sub"));
     }
 }
