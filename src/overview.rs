@@ -200,23 +200,24 @@ pub fn run(ctx: &Ctx, slug: Option<&str>, wait: bool) -> Result<()> {
     Ok(())
 }
 
-/// `focus`: show only this project's panes in the sidebar, coordinators first, then threads by need.
+/// `focus`: show only this project's panes in the sidebar, by attention.
 pub fn focus(ctx: &Ctx, slug: Option<&str>) -> Result<()> {
     let slug = require_slug(ctx, slug)?;
     let project = Project::load(&ctx.root, &slug)?;
     let view = threads::session_view(ctx, &project)
         .ok_or_else(|| anyhow::anyhow!("the herdr session of `{slug}` is not reachable; run `open {slug}` first"))?;
     view.herdr.agent_view_set(crate::sidebar::project_view(&slug)).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("sidebar focused on `{slug}`; `unfocus` restores the attention order (this replaced any view another tool had set)");
+    println!("sidebar focused on `{slug}`; `unfocus` restores the by-need order (this replaced any view another tool had set)");
     Ok(())
 }
 
-/// `unfocus`: back to the default view, every agent in attention order.
+/// `unfocus`: back to the default view, every agent sorted by need.
 pub fn unfocus(ctx: &Ctx, session: &crate::paths::SessionFlags) -> Result<()> {
     let session = crate::paths::resolve_session(session, ctx.env, ctx.runner)?;
     let herdr = crate::herdr::Herdr::new(ctx.env.herdr_bin(), &session.socket, ctx.runner);
-    herdr.agent_view_set(crate::sidebar::default_view()).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("sidebar shows every agent in attention order");
+    let chosen = crate::views::chosen(&ctx.root);
+    herdr.agent_view_set(chosen.spec()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("sidebar shows every agent in the `{}` view", chosen.name());
     Ok(())
 }
 

@@ -113,10 +113,17 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
-    /// Show only one project's panes in the sidebar: coordinators, then threads by need
+    /// Show only one project's panes in the sidebar, sorted by attention
     Focus { slug: Option<String> },
     /// Clear the sidebar view (herdr holds one, so this clears any tool's view)
     Unfocus {
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Switch the sidebar's agents view: projects (blocks) or priority (attention order); toggle flips it
+    View {
+        #[arg(value_name = "projects|priority|toggle")]
+        which: String,
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -696,6 +703,7 @@ pub fn run() -> Result<()> {
         Command::Overview { slug, wait } => overview::run(&ctx, slug.as_deref(), wait),
         Command::Focus { slug } => overview::focus(&ctx, slug.as_deref()),
         Command::Unfocus { session } => overview::unfocus(&ctx, &session.into()),
+        Command::View { which, session } => crate::views::cli(&ctx, &session.into(), &which),
         Command::Inbox { command } => match command {
             InboxCommand::Done { slug, ids, all } => {
                 let project = Project::load(&ctx.root, &slug)?;

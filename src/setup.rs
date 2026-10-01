@@ -136,7 +136,7 @@ pub fn removal_baseline(previous: &Owned, current: &Owned) -> Result<Option<Stri
 fn remove_ours(kind: &str, text: &str, command: Option<&str>) -> Result<String> {
     match kind {
         "hooks" => hooks(text, command.context("missing hook command")?, true),
-        "config" => crate::sidebar::config_edit(text, &crate::sidebar::Spec { key: String::new(), tab_command: command.unwrap_or("").to_string() }, true),
+        "config" => crate::sidebar::config_edit(text, &crate::sidebar::Spec { key: String::new(), tab_command: command.unwrap_or("").to_string() }, true).and_then(|text| Ok(crate::views::key_edit(&text, &[], true)?.0)),
         other => bail!("unknown ownership kind {other}"),
     }
 }
@@ -420,6 +420,8 @@ pub fn configure(ctx: &Ctx, options: &ConfigureOptions) -> Result<Vec<String>> {
         }
         let command = tab_command(&binary, &ctx.root);
         let after = crate::sidebar::config_edit(&text, &crate::sidebar::Spec { key: key.clone(), tab_command: command.clone() }, false)?;
+        let (after, note) = crate::views::key_edit(&after, &builtin, false)?;
+        notes.extend(note);
         if before.as_deref() == Some(after.as_str()) {
             notes.push(format!("{}: sidebar rows, popup key `{key}` and tab-bar entry already in place", file.display()));
         } else {
@@ -547,7 +549,7 @@ pub fn apply_view(ctx: &Ctx) {
         return;
     }
     if let Some(herdr) = session_herdr(ctx) {
-        let _ = herdr.agent_view_set(crate::sidebar::default_view());
+        let _ = herdr.agent_view_set(crate::views::chosen(&ctx.root).spec());
     }
 }
 

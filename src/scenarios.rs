@@ -1554,7 +1554,7 @@ fn a_paused_project_is_skipped_by_the_ticker() {
 }
 
 #[test]
-fn the_ticker_writes_the_attention_order_tokens_on_every_agent_pane() {
+fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     let (world, project, t) = finished_world("blocked");
     // Blocked for longer than the debounce: the thread needs the user.
     thread::update(&project, &t.id, |t| t.last_state = "blocked".into()).unwrap();
@@ -2376,7 +2376,8 @@ fn an_agent_started_by_hand_in_a_never_opened_project_becomes_its_coordinator() 
     assert_eq!(crate::coordinator::live(&project).len(), 1);
     // Its row once, named for its project and marked as the group's head,
     // then its place in the grouping.
-    assert_eq!(world.runner.count("pane report-metadata wGM:p1"), 2);
+    // ... and the priority view's tier (`views`).
+    assert_eq!(world.runner.count("pane report-metadata wGM:p1"), 3);
     assert_eq!(world.runner.count("--display-agent Auto\u{200B}"), 1);
     assert_eq!(world.runner.count("hp_group=auto!0!wGM:p1"), 1);
     // Spaces carry no tokens of ours.

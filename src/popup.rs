@@ -953,6 +953,7 @@ impl<'a> Popup<'a> {
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::Char(c @ ('P' | '/')) => self.mode = Mode::Projects(Picker::new(picker_rows(&self.ctx.root), self.scope.as_deref(), c == '/')),
+            KeyCode::Char('v') => self.message = crate::views::popup_toggle(self.ctx),
             _ => match section {
                 Section::Threads => self.thread_key(key),
                 Section::Tasks => self.task_key(key),
@@ -1413,7 +1414,7 @@ impl<'a> Popup<'a> {
         let footer = height.saturating_sub(2) as u16;
         queue!(out, cursor::MoveTo(0, footer), Print("─".repeat(width)), cursor::MoveTo(0, footer + 1))?;
         let hint = match &self.mode {
-            Mode::List => format!("{}  P project  / find  tab section  esc close", SECTIONS[self.section].keys()),
+            Mode::List => format!("{}  P project  / find  v view  tab section  esc close", SECTIONS[self.section].keys()),
             Mode::Projects(Picker { filter: Some(_), .. }) => "type to filter  ↑↓ choose  ↵ switch  esc clear/close".into(),
             Mode::Projects(_) => "↑↓ choose  ↵ switch  / filter  esc close".into(),
             Mode::Detail { files, .. } if !files.is_empty() => "↑↓ file  ↵ open  y copy path  esc back".into(),

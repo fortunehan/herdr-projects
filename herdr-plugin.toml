@@ -43,6 +43,12 @@ contexts = ["workspace"]
 command = ["target/release/herdr-projects", "action", "unfocus"]
 
 [[actions]]
+id = "toggle-view"
+title = "Projects: switch the agents view (projects / priority)"
+contexts = ["global", "workspace"]
+command = ["target/release/herdr-projects", "view", "toggle"]
+
+[[actions]]
 id = "adopt-workspace"
 title = "Projects: continue this workspace as a project"
 contexts = ["workspace"]
