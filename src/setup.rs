@@ -136,7 +136,7 @@ pub fn removal_baseline(previous: &Owned, current: &Owned) -> Result<Option<Stri
 fn remove_ours(kind: &str, text: &str, command: Option<&str>) -> Result<String> {
     match kind {
         "hooks" => hooks(text, command.context("missing hook command")?, true),
-        "config" => crate::sidebar::config_edit(text, &crate::sidebar::Spec { key: String::new(), tab_command: command.unwrap_or("").to_string() }, true).and_then(|text| Ok(crate::views::key_edit(&text, &[], true)?.0)),
+        "config" => crate::views::config_edit(text, &[], true).and_then(|(text, _)| crate::sidebar::config_edit(&text, &crate::sidebar::Spec { key: String::new(), tab_command: command.unwrap_or("").to_string() }, true)),
         other => bail!("unknown ownership kind {other}"),
     }
 }
@@ -420,7 +420,7 @@ pub fn configure(ctx: &Ctx, options: &ConfigureOptions) -> Result<Vec<String>> {
         }
         let command = tab_command(&binary, &ctx.root);
         let after = crate::sidebar::config_edit(&text, &crate::sidebar::Spec { key: key.clone(), tab_command: command.clone() }, false)?;
-        let (after, note) = crate::views::key_edit(&after, &builtin, false)?;
+        let (after, note) = crate::views::config_edit(&after, &builtin, false)?;
         notes.extend(note);
         if before.as_deref() == Some(after.as_str()) {
             notes.push(format!("{}: sidebar rows, popup key `{key}` and tab-bar entry already in place", file.display()));

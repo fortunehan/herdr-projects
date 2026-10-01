@@ -236,11 +236,21 @@ pub fn with_state_colours(row: Value) -> Value {
     Value::Array(cells)
 }
 
-/// Adds (or with `remove` drops) the `[[keys.command]]` entry binding [`KEY`]
-/// to [`ACTION`]. An existing entry keeps the user's key; a taken key adds
-/// nothing and says so.
-pub fn key_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Result<(String, Option<String>)> {
+/// The coordinator's name colour, added to upstream's bold `contains = U+200B`
+/// rule: Tokyo Night's blue (Herdr's accent there, as on the view label),
+/// apart from the sub-line's needs-you red and review yellow and from the
+/// state icons' yellow, red, teal and green.
+const HEAD_COLOUR: &str = "#7aa2f7";
+
+/// The fork's part of `configure`'s `config.toml` edit, run after upstream's
+/// (and before it with `remove`, so upstream still recognises its own card):
+/// the coordinator name's colour on every agent card (`rows` and each
+/// `rows_by_agent` override), and the `[[keys.command]]` entry binding
+/// [`KEY`] to [`ACTION`]. An existing key entry keeps the user's key; a taken
+/// key adds nothing and says so.
+pub fn config_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Result<(String, Option<String>)> {
     let mut doc = text.parse::<DocumentMut>().context("config.toml does not parse")?;
+    colour_heads(&mut doc, remove);
     let ours = |t: &Table| t.get("command").and_then(Item::as_str) == Some(ACTION);
     let existing = doc.get("keys").and_then(|k| k.get("command")).and_then(Item::as_array_of_tables).is_some_and(|c| c.iter().any(ours));
     if remove {
@@ -250,10 +260,10 @@ pub fn key_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Resul
         return Ok((doc.to_string(), None));
     }
     if existing {
-        return Ok((text.to_string(), None));
+        return Ok((doc.to_string(), None));
     }
     if let Some(conflict) = crate::sidebar::key_conflict(text, KEY, builtin) {
-        return Ok((text.to_string(), Some(format!("{conflict}, so no key toggles the agents view; bind `{ACTION}` yourself or run `herdr-projects view toggle`"))));
+        return Ok((doc.to_string(), Some(format!("{conflict}, so no key toggles the agents view; bind `{ACTION}` yourself or run `herdr-projects view toggle`"))));
     }
     if doc.get("keys").is_none() {
         let mut keys = Table::new();
@@ -272,6 +282,47 @@ pub fn key_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Resul
     entry["description"] = toml_edit::value("Projects: switch the agents view (projects / priority)");
     commands.push(entry);
     Ok((doc.to_string(), None))
+}
+
+/// Sets (or with `remove` drops) [`HEAD_COLOUR`] on the head rule of every
+/// `agent` cell in the agents rows. Only that rule is ours; other cells and
+/// rules are the user's and stay as they are.
+fn colour_heads(doc: &mut DocumentMut, remove: bool) {
+    let Some(agents) = doc
+        .as_table_mut()
+        .get_mut("ui")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|ui| ui.get_mut("sidebar"))
+        .and_then(Item::as_table_like_mut)
+        .and_then(|sidebar| sidebar.get_mut("agents"))
+        .and_then(Item::as_table_like_mut)
+    else {
+        return;
+    };
+    if let Some(rows) = agents.get_mut("rows").and_then(Item::as_value_mut) {
+        colour_rows(rows, remove);
+    }
+    if let Some(overrides) = agents.get_mut("rows_by_agent").and_then(Item::as_table_like_mut) {
+        for (_, rows) in overrides.iter_mut() {
+            if let Some(rows) = rows.as_value_mut() {
+                colour_rows(rows, remove);
+            }
+        }
+    }
+}
+
+fn colour_rows(rows: &mut Value, remove: bool) {
+    let head = crate::grouping::HEAD_MARK.to_string();
+    let cells = rows.as_array_mut().into_iter().flat_map(|rows| rows.iter_mut()).filter_map(Value::as_array_mut).flat_map(|row| row.iter_mut());
+    for cell in cells.filter_map(Value::as_inline_table_mut).filter(|c| c.get("token").and_then(Value::as_str) == Some("agent")) {
+        let rules = cell.get_mut("rules").and_then(Value::as_array_mut).into_iter().flat_map(|r| r.iter_mut()).filter_map(Value::as_inline_table_mut);
+        for rule in rules.filter(|r| r.get("contains").and_then(Value::as_str) == Some(head.as_str())) {
+            let changed = if remove { rule.remove("fg").is_some() } else { rule.get("fg").and_then(Value::as_str) != Some(HEAD_COLOUR) && rule.insert("fg", HEAD_COLOUR.into()).is_none() };
+            if changed {
+                rule.fmt();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -492,18 +543,18 @@ mod tests {
     #[test]
     fn the_toggle_key_is_added_once_kept_when_rebound_skipped_when_taken_and_removed() {
         let builtin = vec![("split_vertical".to_string(), "prefix+v".to_string())];
-        let (added, note) = key_edit("# mine\n[ui]\nsidebar_width = 30\n", &builtin, false).unwrap();
+        let (added, note) = config_edit("# mine\n[ui]\nsidebar_width = 30\n", &builtin, false).unwrap();
         assert!(note.is_none());
         assert_eq!(added.matches(ACTION).count(), 1);
         assert!(added.contains(KEY) && added.contains("plugin_action") && added.starts_with("# mine"), "{added}");
-        assert_eq!(key_edit(&added, &builtin, false).unwrap().0, added);
+        assert_eq!(config_edit(&added, &builtin, false).unwrap().0, added);
         let rebound = added.replace(KEY, "alt+v");
-        assert_eq!(key_edit(&rebound, &builtin, false).unwrap().0, rebound, "the user's own key stays");
+        assert_eq!(config_edit(&rebound, &builtin, false).unwrap().0, rebound, "the user's own key stays");
         let taken = "[[keys.command]]\nkey = \"prefix+shift+v\"\ntype = \"shell\"\ncommand = \"mine\"\n";
-        let (kept, note) = key_edit(taken, &builtin, false).unwrap();
+        let (kept, note) = config_edit(taken, &builtin, false).unwrap();
         assert_eq!(kept, taken);
         assert!(note.unwrap().contains("bind `herdr-projects.toggle-view` yourself"));
-        let (removed, _) = key_edit(&added, &builtin, true).unwrap();
+        let (removed, _) = config_edit(&added, &builtin, true).unwrap();
         assert!(!removed.contains(ACTION) && removed.contains("# mine"));
         // With the popup key in the same list.
         let both = crate::sidebar::config_edit(&added, &crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() }, false).unwrap();
@@ -531,5 +582,34 @@ mod tests {
         assert!(upgraded.contains("#f38ba8") && upgraded.contains("#f9e2af"), "{upgraded}");
         // Unconfigure still takes it out.
         assert!(!crate::sidebar::config_edit(&added, &spec, true).unwrap().contains("$hp_sub"));
+    }
+
+    #[test]
+    fn coordinator_names_get_their_colour_upgraded_in_place_and_unconfigure_restores_herdrs_rows() {
+        let spec = crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() };
+        // The rows upstream's configure wrote on this machine, plus a per-harness override with the same card.
+        let card = format!("[\"state_icon\", {{ token = \"agent\", bold = false, dim = false, rules = [{{ contains = \"{}\", bold = true }}] }}, \"state_text\"]", crate::grouping::HEAD_MARK);
+        let plain = format!("[ui.sidebar.agents]\nrows = [{card}, [{{ token = \"$hp_sub\", dim = true }}]]\n\n[ui.sidebar.agents.rows_by_agent]\nclaude = [{card}]\n");
+        let (coloured, _) = config_edit(&plain, &[], false).unwrap();
+        let doc = coloured.parse::<DocumentMut>().unwrap();
+        let head_rule = |rows: &Item| -> Option<String> {
+            rows.as_array()?.get(0)?.as_array()?.iter().find_map(|c| c.as_inline_table().filter(|t| t.get("token").and_then(Value::as_str) == Some("agent")))?.get("rules")?.as_array()?.get(0)?.as_inline_table()?.get("fg")?.as_str().map(str::to_string)
+        };
+        assert_eq!(head_rule(&doc["ui"]["sidebar"]["agents"]["rows"]).as_deref(), Some(HEAD_COLOUR), "{coloured}");
+        assert_eq!(head_rule(&doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]).as_deref(), Some(HEAD_COLOUR), "{coloured}");
+        assert_eq!(coloured.matches(HEAD_COLOUR).count(), 2);
+        // Bold stays, the rule reads cleanly, and configure (upstream's edit, then ours) is idempotent.
+        assert!(coloured.contains(&format!("{{ contains = \"{}\", bold = true, fg = \"{HEAD_COLOUR}\" }}", crate::grouping::HEAD_MARK)), "{coloured}");
+        let configure = |text: &str| config_edit(&crate::sidebar::config_edit(text, &spec, false).unwrap(), &[], false).unwrap().0;
+        let once = configure(&coloured);
+        assert_eq!(configure(&once), once);
+        // Unconfigure: ours first, then upstream's, which then still finds its card and puts Herdr's rows back.
+        let (stripped, _) = config_edit(&coloured, &[], true).unwrap();
+        let removed = crate::sidebar::config_edit(&stripped, &spec, true).unwrap();
+        assert!(!removed.contains(HEAD_COLOUR), "{removed}");
+        let doc = removed.parse::<DocumentMut>().unwrap();
+        assert!(doc["ui"]["sidebar"]["agents"]["rows"].to_string().contains("\"machine\""), "Herdr's built-in rows are back: {removed}");
+        // Upstream leaves per-harness overrides to the user: the card there stays, only our colour is gone.
+        assert!(doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"].to_string().contains(crate::grouping::HEAD_MARK));
     }
 }
