@@ -321,8 +321,8 @@ fn write_brief(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> 
 }
 
 /// A tab in the project workspace: in `threads/<id>/` for a tab thread, in the
-/// repo's main checkout for a checkout thread, in the design folder for a
-/// design thread.
+/// repo's main checkout for a checkout thread; a design thread gets its own
+/// Space in the design folder.
 fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<Thread> {
     let coordinator = project.coordinator().context("the project has never been opened")?;
     let workspace = coordinator::project_workspace(&coordinator, &view.panes);
@@ -344,6 +344,9 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
     };
     let folder = std::fs::canonicalize(&folder)?;
     let created = match workspace {
+        // Answered by the user, like the coordinator: its own Space, which
+        // the grouping puts in the project's block.
+        _ if record.kind == Kind::Design => view.herdr.workspace_create(&folder, &record.title, false)?,
         Some(id) => view.herdr.tab_create(&id, &folder, &record.title, false)?,
         // The coordinator runs in a pane of another workspace: the thread
         // opens the project's own.
@@ -914,6 +917,7 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
                 // The live pane's tab, not the recorded one: ids move after a restart.
                 let tab = view.panes.iter().find(|p| thread::pane_matches(t, p)).map(|p| p.tab_id.clone()).or_else(|| view.agents.iter().find(|a| thread::agent_matches(t, a)).map(|a| a.tab_id.clone())).unwrap_or_else(|| t.tab_id.clone());
                 match view.herdr.call(&["tab", "close", &tab], crate::herdr::CALL_TIMEOUT) {
+                    Ok(_) if t.kind == Kind::Design => notes.push("its tab was closed, and with it its Space unless you opened more tabs there".into()),
                     Ok(_) => notes.push("its tab was closed".into()),
                     Err(error) => notes.push(format!("its tab could not be closed ({error})")),
                 }

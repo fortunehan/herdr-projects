@@ -38,9 +38,9 @@ pub enum Kind {
     /// main checkout, asked for explicitly with `thread start --kind checkout`.
     Checkout,
     Adopted,
-    /// A tab in the project workspace whose working directory is the
-    /// project's design folder: it interviews the user and writes glossary
-    /// and decision records, never code (`thread start --kind design`).
+    /// Its own Space whose working directory is the project's design
+    /// folder: it interviews the user and writes glossary and decision
+    /// records, never code (`thread start --kind design`).
     Design,
 }
 

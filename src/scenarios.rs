@@ -2086,8 +2086,8 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     let design = project.design_dir();
     let cwd = design.clone();
     world.runner.on_fn(
-        |cmd| cmd.display().contains("tab create"),
-        move |_| Ok(ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2","cwd":"{}"}}}}}}"#, cwd.display()))),
+        |cmd| cmd.display().contains("workspace create"),
+        move |_| Ok(ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w3","tab_id":"w3:t1","pane_id":"w3:p1","cwd":"{}"}}}}}}"#, cwd.display()))),
     );
     world.runner.on("pane get", ok(r#"{"result":{"pane":{"cwd":""}}}"#));
     world.runner.on("notification show", ok(r#"{"result":{}}"#));
@@ -2098,6 +2098,9 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     assert!(threads::start(&ctx, "demo", args(None, Some("codex"))).unwrap_err().to_string().contains("needs a Claude Code profile"));
     let t = threads::start(&ctx, "demo", args(None, None)).unwrap();
     assert_eq!((t.kind, Path::new(&t.cwd)), (Kind::Design, std::fs::canonicalize(&design).unwrap().as_path()));
+    // Its own Space, labelled with its title, never a tab of the home Space.
+    assert_eq!((t.workspace_id.as_str(), world.runner.count("tab create")), ("w3", 0));
+    assert_eq!(world.runner.count(&format!("workspace create --cwd {} --label design: otp", std::fs::canonicalize(&design).unwrap().display())), 1);
     assert_eq!(std::fs::read_link(design.join("repos/ios")).unwrap(), repo);
     assert!(design.join("AGENTS.md").is_file());
     let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
@@ -2121,6 +2124,35 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     // A worker's brief points at the design folder, read-only.
     let worker = thread::brief_for(&project, &Thread { kind: Kind::Tab, ..Thread::default() }, "t", false).unwrap();
     assert!(worker.contains(&format!("(read-only): `{}`", design.display())));
+}
+
+#[test]
+fn archive_closes_a_design_threads_space_and_tab_threads_never_land_in_one() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let design = project.design_dir();
+    std::fs::create_dir_all(&design).unwrap();
+    let cwd = std::fs::canonicalize(&design).unwrap().to_string_lossy().into_owned();
+    world.thread(&project, Path::new(&cwd), |t| {
+        t.kind = Kind::Design;
+        t.worktree_path.clear();
+        t.workspace_id = "w3".into();
+        t.tab_id = "w3:t1".into();
+        t.pane_id = "w3:p1".into();
+    });
+    let home = world.coordinator_pane(&project);
+    *world.panes.borrow_mut() = format!("[{home},{}]", pane_json("w3", "w3:t1", "w3:p1", &cwd));
+    world.runner.on("workspace close", ok(r#"{"result":{}}"#));
+    let ctx = world.ctx();
+
+    // With the home Space closed, a pane in the design folder is not the project's workspace.
+    let record = project.coordinator().unwrap();
+    let only_design = vec![crate::herdr::Pane { workspace_id: "w3".into(), tab_id: "w3:t1".into(), pane_id: "w3:p1".into(), cwd: cwd.clone(), ..Default::default() }];
+    assert_eq!(crate::coordinator::project_workspace(&record, &only_design), None);
+
+    crate::lifecycle::set_status(&ctx, "demo", project::Status::Archived).unwrap();
+    assert_eq!(world.runner.count("workspace close w3"), 1, "the design thread's Space");
+    assert_eq!(world.runner.count("workspace close w1"), 1, "the home Space, once");
 }
 
 #[test]

@@ -68,7 +68,7 @@ pub fn project_workspace(record: &Coordinator, panes: &[Pane]) -> Option<String>
     if workspace_open(record, panes) {
         return Some(record.workspace_id.clone());
     }
-    panes.iter().find(|p| !record.cwd.is_empty() && Path::new(&p.cwd).starts_with(&record.cwd)).map(|p| p.workspace_id.clone())
+    panes.iter().find(|p| !record.cwd.is_empty() && Path::new(&p.cwd).starts_with(&record.cwd) && !Path::new(&p.cwd).starts_with(Path::new(&record.cwd).join("design"))).map(|p| p.workspace_id.clone())
 }
 
 /// The record `open` would write for the most recently active agent working

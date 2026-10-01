@@ -44,7 +44,7 @@ Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`
 
 ## Design threads
 
-A requirement the user wants grilled before any work is planned gets a design thread: `thread start <project> --kind design --title T --task-file F`, with no `--repo`. It is a tab of the project's workspace working in `<project>/design/`, and it loads the `grilling` and `domain-modeling` skills itself, so its profile must run Claude Code (`design_profile`, else `thread_profile`). The user answers it in its pane.
+A requirement the user wants grilled before any work is planned gets a design thread: `thread start <project> --kind design --title T --task-file F`, with no `--repo`. It opens in its own Space, which the sidebar puts in the project's block, working in `<project>/design/`, and it loads the `grilling` and `domain-modeling` skills itself, so its profile must run Claude Code (`design_profile`, else `thread_profile`). The user answers it in its pane.
 
 - **The design folder** holds the glossary and the decision records of every repository in the project, never the repositories themselves: `CONTEXT-MAP.md`, `<name>/CONTEXT.md`, `<name>/docs/adr/`, cross-repository decisions in `docs/adr/`, tickets in `.scratch/<feature>/`. Each start links every local repository at `repos/<name>` (its `name` in `[[repos]]`, else the last part of its path) and drops links for repositories no longer listed; a repository on another machine gets no link. `AGENTS.md` (with a `CLAUDE.md` link) and `docs/agents/issue-tracker.md` and `domain.md` are written only when missing and are yours to edit afterwards. The folder is not a git repository.
 - **Other threads** see the design folder in their brief, read-only, once it exists.
