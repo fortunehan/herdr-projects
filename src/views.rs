@@ -70,18 +70,18 @@ impl View {
     }
 }
 
-/// The attention order (ADR 0003): project agents that need the user first
-/// (`hp_needs`), then Herdr's attention; at the same attention implementation
-/// threads (`hp_tier` 1) after every other agent; then the latest state
-/// change. Herdr sorts a missing token last in both directions.
+/// The attention order (ADR 0003): coordinators and design threads that need
+/// the user first (`hp_needs`), then every other agent before implementation
+/// threads (`hp_tier` 1), each tier by Herdr's attention, then the latest
+/// state change. Herdr sorts a missing token last in both directions.
 pub fn priority_view() -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
         "label": "priority",
         "sort": [
             { "field": { "token": "hp_needs" }, "order": "desc" },
-            { "field": "attention", "order": "desc" },
             { "field": { "token": "hp_tier" }, "order": "asc" },
+            { "field": "attention", "order": "desc" },
             { "field": "state_change_seq", "order": "desc" },
         ],
     })
@@ -131,7 +131,7 @@ pub fn popup_toggle(ctx: &Ctx) -> String {
 pub struct Rank {
     /// In the needs-you group (never while the project is paused).
     pub needs: bool,
-    /// An implementation thread: after every other agent at the same attention.
+    /// An implementation thread: after every other agent, never `hp_needs`.
     pub implementation: bool,
     /// A design thread's own Space, whose label keeps [`DESIGN_MARK`]; none
     /// for a design thread started as a tab of the home Space.
@@ -164,12 +164,14 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
 }
 
 /// A pane's tokens: every agent gets a tier (`0` unless an implementation
-/// thread); `hp_needs` is cleared, not set to 0, when it does not apply.
+/// thread); `hp_needs` is cleared, not set to 0, when it does not apply. An
+/// implementation thread never gets it: its coordinator, which then needs
+/// the user too, is where the user resolves it.
 pub fn tokens(rank: Option<&Rank>) -> Tokens {
     let rank = rank.cloned().unwrap_or_default();
     vec![
         ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
-        ("hp_needs".to_string(), rank.needs.then(|| "1".to_string())),
+        ("hp_needs".to_string(), (rank.needs && !rank.implementation).then(|| "1".to_string())),
     ]
 }
 
@@ -549,8 +551,8 @@ mod tests {
             priority_view()["sort"],
             serde_json::json!([
                 {"field":{"token":"hp_needs"},"order":"desc"},
-                {"field":"attention","order":"desc"},
                 {"field":{"token":"hp_tier"},"order":"asc"},
+                {"field":"attention","order":"desc"},
                 {"field":"state_change_seq","order":"desc"},
             ])
         );
@@ -560,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn implementation_threads_yield_only_within_their_attention_level() {
+    fn implementation_threads_follow_every_other_agent_and_sort_by_attention_among_themselves() {
         let agents = [
             outside("outside-idle", IDLE, 90),
             seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
@@ -568,7 +570,7 @@ mod tests {
             seen("thread-blocked", "demo", 't', Group::Working, BLOCKED, 5),
             seen("thread-done", "demo", 't', Group::ReadyForReview, DONE, 4),
         ];
-        assert_eq!(priority(&agents), ["thread-blocked", "thread-done", "outside-working", "thread-working", "outside-idle"]);
+        assert_eq!(priority(&agents), ["outside-working", "outside-idle", "thread-blocked", "thread-done", "thread-working"]);
     }
 
     #[test]
@@ -583,17 +585,22 @@ mod tests {
     }
 
     #[test]
-    fn needs_you_rows_lead_and_idle_review_threads_sit_with_idle_agents() {
+    fn needs_you_coordinators_and_design_threads_lead_but_needs_you_implementation_threads_do_not() {
         let agents = [
             outside("outside-blocked", BLOCKED, 50),
             // Self-reported waiting while Herdr shows idle, and a failed thread.
             seen("coordinator-waiting", "demo", 'c', Group::WaitingOnYou, IDLE, 1),
             seen("thread-failed", "other", 't', Group::WaitingOnYou, IDLE, 2),
             seen("thread-review", "demo", 't', Group::ReadyForReview, IDLE, 70),
+            seen("thread-done", "demo", 't', Group::WaitingOnYou, DONE, 80),
+            seen("design-waiting", "demo", 'd', Group::WaitingOnYou, IDLE, 6),
             outside("outside-idle", IDLE, 3),
             outside("outside-working", WORKING, 4),
         ];
-        assert_eq!(priority(&agents), ["coordinator-waiting", "thread-failed", "outside-blocked", "outside-working", "outside-idle", "thread-review"]);
+        assert_eq!(
+            priority(&agents),
+            ["design-waiting", "coordinator-waiting", "outside-blocked", "outside-working", "outside-idle", "thread-done", "thread-review", "thread-failed"]
+        );
     }
 
     #[test]
@@ -633,10 +640,12 @@ mod tests {
     }
 
     #[test]
-    fn every_pane_gets_a_tier_and_hp_needs_is_cleared_when_it_does_not_apply() {
+    fn every_pane_gets_a_tier_and_hp_needs_only_on_coordinators_and_design_threads() {
         assert_eq!(tokens(None), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None)]);
         let blocked = Rank { needs: true, implementation: true, ..Rank::default() };
-        assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), Some("1".to_string()))]);
+        assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None)]);
+        let waiting = Rank { needs: true, ..Rank::default() };
+        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string()))]);
     }
 
     #[test]

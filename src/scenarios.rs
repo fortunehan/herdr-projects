@@ -1556,7 +1556,7 @@ fn a_paused_project_is_skipped_by_the_ticker() {
 #[test]
 fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     let (world, project, t) = finished_world("blocked");
-    // Blocked for longer than the debounce: the thread needs the user.
+    // Blocked for longer than the debounce: the thread needs the user, through its coordinator.
     thread::update(&project, &t.id, |t| t.last_state = "blocked".into()).unwrap();
     let other = world.project("other", "a.sock");
     other.update_coordinator(|c| {
@@ -1581,7 +1581,7 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
 
     ticker::tick_for_test(&ctx, &mut memory);
     let thread = last(0, "w2:p1");
-    assert!(thread.contains("--token hp_tier=1") && thread.contains("--token hp_needs=1"), "a blocked implementation thread: {thread}");
+    assert!(thread.contains("--token hp_tier=1") && thread.contains("--clear-token hp_needs"), "a blocked implementation thread: {thread}");
     // Its sub-line says needs you, but starts with the quiet mark, so it is not coloured.
     assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
@@ -1591,11 +1591,12 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
         assert!(tokens.contains("--token hp_tier=0") && tokens.contains("--clear-token hp_needs"), "{coordinator}: {tokens}");
     }
 
-    // A design thread is not demoted, and its name starts with the design mark.
+    // A design thread is not demoted, leads when it needs the user, and its name starts with the design mark.
     thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
     let from = world.runner.calls.borrow().len();
     ticker::tick_for_test(&ctx, &mut memory);
-    assert!(last(from, "w2:p1").contains("--token hp_tier=0"), "{}", last(from, "w2:p1"));
+    let design = last(from, "w2:p1");
+    assert!(design.contains("--token hp_tier=0") && design.contains("--token hp_needs=1"), "{design}");
     assert!(world.runner.count(&format!("--display-agent {}t-0001 · Task", crate::views::DESIGN_MARK)) >= 1);
 
     // Paused: its thread keeps its tier from the session another project lists, and needs no one.
