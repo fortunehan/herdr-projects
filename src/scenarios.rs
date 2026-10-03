@@ -1586,10 +1586,12 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
     assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs"), "an outside agent: {outside}");
-    for coordinator in ["w1:p1", "w5:p1"] {
-        let tokens = last(0, coordinator);
-        assert!(tokens.contains("--token hp_tier=0") && tokens.contains("--clear-token hp_needs"), "{coordinator}: {tokens}");
-    }
+    // Its coordinator carries the need; another project's does not.
+    let own = last(0, "w1:p1");
+    assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1"), "{own}");
+    let other = last(0, "w5:p1");
+    assert!(other.contains("--token hp_tier=0") && other.contains("--clear-token hp_needs"), "{other}");
+    assert!(world.runner.count("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub=needs you · 1 blocked") >= 1);
 
     // A design thread is not demoted, leads when it needs the user, and its name starts with the design mark.
     thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();

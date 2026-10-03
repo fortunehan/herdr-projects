@@ -536,9 +536,9 @@ fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinator
         if panes.iter().any(|p| p.pane == pane) {
             continue;
         }
-        let (report, text) = activity(&pane);
+        let (report, _) = activity(&pane);
         let line = coordinators.iter().find(|c| c.pane_id == pane).map(|c| coordinator::row_state(c, report.as_ref()).1).unwrap_or_default();
-        let sub = if paused { String::new() } else { crate::sidebar::sub_line(&line, &text) };
+        let sub = if paused { String::new() } else { crate::views::coordinator_sub(&threads, &line, report.as_ref()) };
         panes.push(crate::grouping::PaneRow { key: crate::grouping::coordinator_key(slug, &pane), pane, sub });
     }
     for t in &threads {

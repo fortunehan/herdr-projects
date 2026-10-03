@@ -145,16 +145,18 @@ pub type Ranks = HashMap<String, Rank>;
 /// ones, then the recorded pane) and its open local threads.
 pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinators: &[LivePane], agents: &[Agent], paused: bool) -> Vec<(String, Rank)> {
     let mut out = Vec::new();
+    let threads: Vec<thread::Thread> = thread::list(project).into_iter().filter(|t| !t.is_remote() && matches!(t.status, thread::Status::Open | thread::Status::Starting)).collect();
+    let thread_needs = threads.iter().any(|t| Group::from_token(&t.last_group) == Some(Group::WaitingOnYou));
     for c in coordinators {
         let terminal = agents.iter().find(|a| a.pane_id == c.pane_id).map(|a| a.terminal_id.clone()).unwrap_or_default();
         let report = crate::progress::self_report(&ctx.root, &record.socket, &c.pane_id, &terminal);
-        let needs = !paused && crate::coordinator::row_state(c, report.as_ref()).0 == Group::WaitingOnYou;
+        let needs = !paused && (thread_needs || crate::coordinator::row_state(c, report.as_ref()).0 == Group::WaitingOnYou);
         out.push((c.pane_id.clone(), Rank { needs, ..Rank::default() }));
     }
     if !record.pane_id.is_empty() && !out.iter().any(|(pane, _)| pane == &record.pane_id) {
         out.push((record.pane_id.clone(), Rank::default()));
     }
-    for t in thread::list(project).into_iter().filter(|t| !t.is_remote() && matches!(t.status, thread::Status::Open | thread::Status::Starting) && !t.pane_id.is_empty()) {
+    for t in threads.into_iter().filter(|t| !t.pane_id.is_empty()) {
         let needs = !paused && Group::from_token(&t.last_group) == Some(Group::WaitingOnYou);
         let design = t.kind == thread::Kind::Design;
         let design_space = (design && !t.workspace_id.is_empty() && t.workspace_id != record.workspace_id).then(|| t.workspace_id.clone());
@@ -281,6 +283,34 @@ pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
     } else {
         sub
     }
+}
+
+/// A coordinator's sub-line: `needs you` when it or one of its threads needs
+/// the user (so the red rule applies), its open local threads by group, then
+/// its own last report. Unlike a thread's, the report is shown however old:
+/// a coordinator waiting on its threads reports once and then sits idle.
+pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> String {
+    let groups: Vec<Group> = threads.iter().filter_map(|t| Group::from_token(&t.last_group)).collect();
+    let mut parts: Vec<String> = Vec::new();
+    if state_line.starts_with("needs you") || groups.contains(&Group::WaitingOnYou) {
+        parts.push("needs you".into());
+    }
+    let labels = [(Group::WaitingOnYou, "blocked"), (Group::Working, "working"), (Group::ReadyForReview, "review"), (Group::Landing, "landing"), (Group::Idle, "idle")];
+    for (group, label) in labels {
+        let n = groups.iter().filter(|g| **g == group).count();
+        if n > 0 {
+            parts.push(format!("{n} {label}"));
+        }
+    }
+    if let Some(r) = report.filter(|r| r.reported()) {
+        if let Some(p) = r.percent.filter(|p| *p < 100) {
+            parts.push(format!("~{p}%"));
+        }
+        if !r.activity.trim().is_empty() && !r.waiting() {
+            parts.push(r.activity.trim().to_string());
+        }
+    }
+    parts.join(" · ")
 }
 
 // ---------------------------------------------------------------- config.toml
@@ -729,6 +759,27 @@ mod tests {
         assert!(doc["ui"]["sidebar"]["agents"]["rows"].to_string().contains("\"machine\""), "Herdr's built-in rows are back: {removed}");
         // Upstream leaves per-harness overrides to the user: the card there stays, only our colour is gone.
         assert!(doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"].to_string().contains(crate::grouping::HEAD_MARK));
+    }
+
+    #[test]
+    fn a_coordinators_sub_line_counts_its_threads_and_ends_with_its_own_report() {
+        let t = |group: Group, kind: thread::Kind| thread::Thread { last_group: group.token().into(), kind, ..thread::Thread::default() };
+        let worker = thread::Kind::Worktree;
+        let report = |percent: Option<u8>, activity: &str| crate::progress::Record { percent, activity: activity.into(), reported_at: 1, ..Default::default() };
+        let waiting_on_thread = report(Some(50), "Waiting on thread");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "1 working · ~50% · Waiting on thread");
+        let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design)];
+        assert_eq!(coordinator_sub(&two, "idle", None), "2 working · 1 review");
+        assert_eq!(coordinator_sub(&[t(Group::WaitingOnYou, worker), t(Group::Resolved, worker)], "idle", None), "needs you · 1 blocked");
+        // Its own question: the waiting activity is what `needs you` already says.
+        let asks = report(Some(40), crate::progress::WAITING);
+        assert_eq!(coordinator_sub(&[], "needs you · ~40%", Some(&asks)), "needs you · ~40%");
+        assert_eq!(coordinator_sub(&[], "idle", Some(&report(Some(100), "Done"))), "Done");
+        assert_eq!(coordinator_sub(&[], "idle", Some(&crate::progress::Record::default())), "", "no report this session: no row");
+        // Red only when it leads with needs you; a leading count is never taken for a thread's review.
+        let first_match = |value: &str| STATE_COLOURS.iter().find(|(word, _, _)| value.starts_with(word)).map(|(word, _, _)| *word);
+        assert_eq!(first_match(&coordinator_sub(&[t(Group::WaitingOnYou, worker)], "idle", None)), Some("needs you"));
+        assert_eq!(first_match(&coordinator_sub(&[t(Group::ReadyForReview, worker)], "idle", None)), None);
     }
 
     #[test]
