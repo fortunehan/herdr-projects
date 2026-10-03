@@ -287,8 +287,9 @@ pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
 
 /// A coordinator's sub-line: `needs you` when it or one of its threads needs
 /// the user (so the red rule applies), its open local threads by group, then
-/// its own last report. Unlike a thread's, the report is shown however old:
-/// a coordinator waiting on its threads reports once and then sits idle.
+/// its own last reported percentage. Unlike a thread's, the percentage is
+/// shown however old: a coordinator waiting on its threads reports once and
+/// then sits idle. Its activity is left out to keep the line short.
 pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> String {
     let groups: Vec<Group> = threads.iter().filter_map(|t| Group::from_token(&t.last_group)).collect();
     let mut parts: Vec<String> = Vec::new();
@@ -302,13 +303,8 @@ pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Opt
             parts.push(format!("{n} {label}"));
         }
     }
-    if let Some(r) = report.filter(|r| r.reported()) {
-        if let Some(p) = r.percent.filter(|p| *p < 100) {
-            parts.push(format!("~{p}%"));
-        }
-        if !r.activity.trim().is_empty() && !r.waiting() {
-            parts.push(r.activity.trim().to_string());
-        }
+    if let Some(p) = report.filter(|r| r.reported()).and_then(|r| r.percent).filter(|p| *p < 100) {
+        parts.push(format!("~{p}%"));
     }
     parts.join(" · ")
 }
@@ -762,19 +758,19 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinators_sub_line_counts_its_threads_and_ends_with_its_own_report() {
+    fn a_coordinators_sub_line_counts_its_threads_and_ends_with_its_own_percentage() {
         let t = |group: Group, kind: thread::Kind| thread::Thread { last_group: group.token().into(), kind, ..thread::Thread::default() };
         let worker = thread::Kind::Worktree;
         let report = |percent: Option<u8>, activity: &str| crate::progress::Record { percent, activity: activity.into(), reported_at: 1, ..Default::default() };
         let waiting_on_thread = report(Some(50), "Waiting on thread");
-        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "1 working · ~50% · Waiting on thread");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "1 working · ~50%", "no activity text");
         let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design)];
         assert_eq!(coordinator_sub(&two, "idle", None), "2 working · 1 review");
         assert_eq!(coordinator_sub(&[t(Group::WaitingOnYou, worker), t(Group::Resolved, worker)], "idle", None), "needs you · 1 blocked");
-        // Its own question: the waiting activity is what `needs you` already says.
         let asks = report(Some(40), crate::progress::WAITING);
-        assert_eq!(coordinator_sub(&[], "needs you · ~40%", Some(&asks)), "needs you · ~40%");
-        assert_eq!(coordinator_sub(&[], "idle", Some(&report(Some(100), "Done"))), "Done");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "needs you · ~40%", Some(&asks)), "needs you · 1 working · ~40%");
+        assert_eq!(coordinator_sub(&[], "idle", Some(&report(Some(100), "Done"))), "", "done: no percentage and no activity");
+        assert_eq!(coordinator_sub(&[], "idle", Some(&report(None, "Reading code"))), "");
         assert_eq!(coordinator_sub(&[], "idle", Some(&crate::progress::Record::default())), "", "no report this session: no row");
         // Red only when it leads with needs you; a leading count is never taken for a thread's review.
         let first_match = |value: &str| STATE_COLOURS.iter().find(|(word, _, _)| value.starts_with(word)).map(|(word, _, _)| *word);

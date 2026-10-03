@@ -1571,6 +1571,16 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
         agent_json("w9", "w9:t1", "w9:p1", "/elsewhere", "", "working"),
     ];
     *world.agents.borrow_mut() = format!("{},{}]", agents.trim_end_matches(']'), extra.join(","));
+    // The coordinator reported an hour ago: its percentage still shows, its activity never does.
+    let report = crate::progress::Record {
+        socket: project.coordinator().unwrap().socket,
+        pane_id: "w1:p1".into(),
+        activity: "Waiting on thread".into(),
+        percent: Some(50),
+        reported_at: jiff::Timestamp::now().as_second() - 3600,
+        ..Default::default()
+    };
+    crate::progress::save(&project.root, &report).unwrap();
     let ctx = world.ctx();
     let mut memory = Memory::new(&ctx);
     // The last tokens sent to a pane in calls from `from` on.
@@ -1591,7 +1601,8 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1"), "{own}");
     let other = last(0, "w5:p1");
     assert!(other.contains("--token hp_tier=0") && other.contains("--clear-token hp_needs"), "{other}");
-    assert!(world.runner.count("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub=needs you · 1 blocked") >= 1);
+    assert!(world.runner.count("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub=needs you · 1 blocked · ~50% ") >= 1);
+    assert_eq!(world.runner.count("Waiting on thread"), 0);
 
     // A design thread is not demoted, leads when it needs the user, and its name starts with the design mark.
     thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
