@@ -274,11 +274,26 @@ fn mark_design_spaces(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents
 /// red. Zero-width, like `grouping::HEAD_MARK`, so the text reads the same.
 pub const QUIET_MARK: char = '\u{200B}';
 
+/// Starts a coordinator's and a design thread's sub-line, so the sub-line
+/// cell's rules show it in [`CLEAR_COLOUR`] instead of dim. Zero-width, and
+/// apart from [`QUIET_MARK`] and [`DESIGN_MARK`], so unconfigure's checks
+/// for those marks still hold.
+pub const CLEAR_MARK: char = '\u{200C}';
+
+/// `sub` with [`CLEAR_MARK`] in front; an empty one stays empty, so no row
+/// is drawn.
+fn clear_sub(sub: String) -> String {
+    if sub.is_empty() { sub } else { format!("{CLEAR_MARK}{sub}") }
+}
+
 /// A thread's sub-line as the sidebar shows it: an implementation thread
 /// that needs the user gets [`QUIET_MARK`] in front and stays dim; a design
-/// thread, answered in its own pane, keeps the colour.
+/// thread, answered in its own pane, keeps the colour and reads clearly
+/// ([`CLEAR_MARK`]).
 pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
-    if thread.kind != thread::Kind::Design && sub.starts_with("needs you") {
+    if thread.kind == thread::Kind::Design {
+        clear_sub(sub)
+    } else if sub.starts_with("needs you") {
         format!("{QUIET_MARK}{sub}")
     } else {
         sub
@@ -289,7 +304,8 @@ pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
 /// the user (so the red rule applies), its open local threads by group, then
 /// its own last reported percentage. Unlike a thread's, the percentage is
 /// shown however old: a coordinator waiting on its threads reports once and
-/// then sits idle. Its activity is left out to keep the line short.
+/// then sits idle. Its activity is left out to keep the line short. Starts
+/// with [`CLEAR_MARK`].
 pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> String {
     let groups: Vec<Group> = threads.iter().filter_map(|t| Group::from_token(&t.last_group)).collect();
     let mut parts: Vec<String> = Vec::new();
@@ -306,19 +322,32 @@ pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Opt
     if let Some(p) = report.filter(|r| r.reported()).and_then(|r| r.percent).filter(|p| *p < 100) {
         parts.push(format!("~{p}%"));
     }
-    parts.join(" · ")
+    clear_sub(parts.join(" · "))
 }
 
 // ---------------------------------------------------------------- config.toml
 
 /// Colours of the sub-line's group word, as the fork's sidebar had them
 /// before the port: needs-you bold red, review yellow, both undimmed; the
-/// rest of the sub-line stays dim.
+/// rest of the sub-line stays dim, except after [`CLEAR_MARK`].
 const STATE_COLOURS: [(&str, &str, bool); 2] = [("needs you", "#f38ba8", true), ("review", "#f9e2af", false)];
 
+/// A [`CLEAR_MARK`] sub-line without a group word: Tokyo Night's secondary
+/// foreground, readable but quieter than the coordinators' bold blue.
+const CLEAR_COLOUR: &str = "#a9b1d6";
+
+/// The sub-line rules as `(starts_with, fg, bold)`, in Herdr's order (the
+/// first match wins): each group word bare and after [`CLEAR_MARK`], then
+/// the mark alone.
+fn sub_rules() -> Vec<(String, &'static str, bool)> {
+    let bare = STATE_COLOURS.iter().map(|(word, colour, bold)| (word.to_string(), *colour, *bold));
+    let clear = STATE_COLOURS.iter().map(|(word, colour, bold)| (format!("{CLEAR_MARK}{word}"), *colour, *bold));
+    bare.chain(clear).chain([(CLEAR_MARK.to_string(), CLEAR_COLOUR, false)]).collect()
+}
+
 /// `row` (upstream's `$hp_sub` row) with Herdr rules that colour a sub-line
-/// starting with a group word. The first matching rule wins, and its `dim`
-/// overrides the cell's.
+/// starting with a group word or [`CLEAR_MARK`]. The first matching rule
+/// wins, and its `dim` overrides the cell's.
 pub fn with_state_colours(row: Value) -> Value {
     let Value::Array(mut cells) = row else {
         return row;
@@ -331,9 +360,9 @@ pub fn with_state_colours(row: Value) -> Value {
             continue;
         }
         let mut rules = Array::new();
-        for (word, colour, bold) in STATE_COLOURS {
+        for (start, colour, bold) in sub_rules() {
             let mut rule = InlineTable::new();
-            rule.insert("starts_with", word.into());
+            rule.insert("starts_with", start.into());
             rule.insert("fg", colour.into());
             if bold {
                 rule.insert("bold", true.into());
@@ -718,6 +747,13 @@ mod tests {
         assert_eq!(rule(0, "starts_with").unwrap().as_str(), Some("needs you"));
         assert_eq!((rule(0, "fg").unwrap().as_str(), rule(0, "bold").unwrap().as_bool(), rule(0, "dim").unwrap().as_bool()), (Some("#f38ba8"), Some(true), Some(false)));
         assert_eq!((rule(1, "starts_with").unwrap().as_str(), rule(1, "fg").unwrap().as_str(), rule(1, "bold").is_none()), (Some("review"), Some("#f9e2af"), true));
+        assert_eq!(rule(2, "starts_with").unwrap().as_str(), Some(format!("{CLEAR_MARK}needs you").as_str()));
+        assert_eq!(rule(3, "starts_with").unwrap().as_str(), Some(format!("{CLEAR_MARK}review").as_str()));
+        let last = rules.len() - 1;
+        assert_eq!((rule(last, "starts_with").unwrap().as_str(), rule(last, "fg").unwrap().as_str(), rule(last, "dim").unwrap().as_bool()), (Some(CLEAR_MARK.to_string().as_str()), Some(CLEAR_COLOUR), Some(false)));
+        // Herdr 0.9.3 rejects the whole config on any other rule key.
+        let keys = rules.iter().flat_map(|r| r.as_inline_table().unwrap().iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>());
+        assert!(keys.into_iter().all(|k| ["starts_with", "fg", "bold", "dim"].contains(&k.as_str())));
         // Idempotent, and a plain sub row of an earlier configure is replaced, not doubled.
         assert_eq!(crate::sidebar::config_edit(&added, &spec, false).unwrap(), added);
         let plain = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"], [{ token = \"$hp_sub\", dim = true }]]\n";
@@ -763,19 +799,19 @@ mod tests {
         let worker = thread::Kind::Worktree;
         let report = |percent: Option<u8>, activity: &str| crate::progress::Record { percent, activity: activity.into(), reported_at: 1, ..Default::default() };
         let waiting_on_thread = report(Some(50), "Waiting on thread");
-        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "1 working · ~50%", "no activity text");
+        let clear = |text: &str| format!("{CLEAR_MARK}{text}");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), clear("1 working · ~50%"), "no activity text");
         let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design)];
-        assert_eq!(coordinator_sub(&two, "idle", None), "2 working · 1 review");
-        assert_eq!(coordinator_sub(&[t(Group::WaitingOnYou, worker), t(Group::Resolved, worker)], "idle", None), "needs you · 1 blocked");
+        assert_eq!(coordinator_sub(&two, "idle", None), clear("2 working · 1 review"));
+        assert_eq!(coordinator_sub(&[t(Group::WaitingOnYou, worker), t(Group::Resolved, worker)], "idle", None), clear("needs you · 1 blocked"));
         let asks = report(Some(40), crate::progress::WAITING);
-        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "needs you · ~40%", Some(&asks)), "needs you · 1 working · ~40%");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "needs you · ~40%", Some(&asks)), clear("needs you · 1 working · ~40%"));
         assert_eq!(coordinator_sub(&[], "idle", Some(&report(Some(100), "Done"))), "", "done: no percentage and no activity");
         assert_eq!(coordinator_sub(&[], "idle", Some(&report(None, "Reading code"))), "");
         assert_eq!(coordinator_sub(&[], "idle", Some(&crate::progress::Record::default())), "", "no report this session: no row");
-        // Red only when it leads with needs you; a leading count is never taken for a thread's review.
-        let first_match = |value: &str| STATE_COLOURS.iter().find(|(word, _, _)| value.starts_with(word)).map(|(word, _, _)| *word);
-        assert_eq!(first_match(&coordinator_sub(&[t(Group::WaitingOnYou, worker)], "idle", None)), Some("needs you"));
-        assert_eq!(first_match(&coordinator_sub(&[t(Group::ReadyForReview, worker)], "idle", None)), None);
+        // Red only when it leads with needs you; a leading count is never taken for a thread's review, and reads clearly.
+        assert_eq!(first_match(&coordinator_sub(&[t(Group::WaitingOnYou, worker)], "idle", None)), Some(("#f38ba8", true)));
+        assert_eq!(first_match(&coordinator_sub(&[t(Group::ReadyForReview, worker)], "idle", None)), Some((CLEAR_COLOUR, false)));
     }
 
     #[test]
@@ -784,14 +820,22 @@ mod tests {
         let design = thread::Thread { kind: thread::Kind::Design, ..thread::Thread::default() };
         let quiet = thread_sub(&worker, "needs you · ~45%".into());
         assert_eq!(quiet, format!("{QUIET_MARK}needs you · ~45%"));
-        assert_eq!(thread_sub(&design, "needs you · blocked".into()), "needs you · blocked");
+        assert_eq!(thread_sub(&design, "needs you · blocked".into()), format!("{CLEAR_MARK}needs you · blocked"));
+        assert_eq!(thread_sub(&design, String::new()), "", "no row");
         assert_eq!(thread_sub(&worker, "review · report".into()), "review · report", "review keeps its yellow");
         assert_eq!(thread_sub(&worker, "~40% · Writing tests".into()), "~40% · Writing tests");
-        // The sub-line rules as Herdr applies them: the first `starts_with` that matches wins.
-        let first_match = |value: &str| STATE_COLOURS.iter().find(|(word, _, _)| value.starts_with(word)).map(|(word, _, _)| *word);
         assert_eq!(first_match(&quiet), None, "dim, as the cell's base style");
-        assert_eq!(first_match("needs you · ~45%"), Some("needs you"), "a coordinator or design thread stays red");
-        assert_eq!(first_match("review · report"), Some("review"));
+        assert_eq!(first_match("~40% · Writing tests"), None);
+        assert_eq!(first_match("review · report"), Some(("#f9e2af", false)));
+        assert_eq!(first_match(&thread_sub(&design, "needs you · blocked".into())), Some(("#f38ba8", true)), "a design thread stays red");
+        assert_eq!(first_match(&thread_sub(&design, "review · report".into())), Some(("#f9e2af", false)));
+        assert_eq!(first_match(&thread_sub(&design, "~40% · Writing tests".into())), Some((CLEAR_COLOUR, false)));
+    }
+
+    /// The sub-line rules as Herdr applies them: the first `starts_with` that
+    /// matches wins; `None` is the cell's dim base style.
+    fn first_match(value: &str) -> Option<(&'static str, bool)> {
+        sub_rules().into_iter().find(|(start, _, _)| value.starts_with(start.as_str())).map(|(_, colour, bold)| (colour, bold))
     }
 
     /// Herdr's `normalize_presentation_text` (0.9.3) for a display name.
