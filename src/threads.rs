@@ -60,8 +60,8 @@ fn git(runner: &dyn Runner, repo: &str, args: &[&str], timeout: Duration) -> Res
     Ok(out.stdout.trim().to_string())
 }
 
-pub fn report_thread_tokens(herdr: &Herdr, thread: &Thread, slug: &str, group: Group) {
-    crate::sidebar::report_pane(&herdr.on_machine(&thread.machine), &thread.pane_id, &crate::views::thread_display(thread), slug, group);
+pub fn report_thread_tokens(herdr: &Herdr, project: &Project, thread: &Thread, group: Group) {
+    crate::sidebar::report_pane(&herdr.on_machine(&thread.machine), &thread.pane_id, &crate::views::thread_display(project, thread), &project.slug, group);
 }
 
 fn clear_thread_tokens(herdr: &Herdr, thread: &Thread) {
@@ -421,7 +421,7 @@ fn finish_placement(project: &Project, view: &SessionView, id: &str) -> Result<T
         t.last_state_change = project::now();
         t.interview_announced = false;
     })?;
-    report_thread_tokens(&view.herdr, &thread, &project.slug, Group::Working);
+    report_thread_tokens(&view.herdr, project, &thread, Group::Working);
     Ok(thread)
 }
 

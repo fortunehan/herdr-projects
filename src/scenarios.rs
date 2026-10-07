@@ -1592,13 +1592,16 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     ticker::tick_for_test(&ctx, &mut memory);
     let thread = last(0, "w2:p1");
     assert!(thread.contains("--token hp_tier=1") && thread.contains("--clear-token hp_needs"), "a blocked implementation thread: {thread}");
+    // Its row names the project and the id; its title is the row below.
+    assert!(thread.contains("--token hp_title=Task"), "{thread}");
+    assert!(world.runner.count("pane report-metadata w2:p1 --source herdr-projects --display-agent Demo · t-0001 --ttl-ms") >= 1);
     // Its sub-line says needs you, but starts with the quiet mark, so it is not coloured.
     assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
-    assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs"), "an outside agent: {outside}");
+    assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs") && outside.contains("--clear-token hp_title"), "an outside agent: {outside}");
     // Its coordinator carries the need; another project's does not.
     let own = last(0, "w1:p1");
-    assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1"), "{own}");
+    assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1") && own.contains("--clear-token hp_title"), "{own}");
     let other = last(0, "w5:p1");
     assert!(other.contains("--token hp_tier=0") && other.contains("--clear-token hp_needs"), "{other}");
     assert!(world.runner.count(&format!("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub={}needs you · 1 blocked · ~50% ", crate::views::CLEAR_MARK)) >= 1);
@@ -1610,7 +1613,8 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     ticker::tick_for_test(&ctx, &mut memory);
     let design = last(from, "w2:p1");
     assert!(design.contains("--token hp_tier=0") && design.contains("--token hp_needs=1"), "{design}");
-    assert!(world.runner.count(&format!("--display-agent {}t-0001 · Task", crate::views::DESIGN_MARK)) >= 1);
+    assert!(design.contains("--token hp_title=Task"), "{design}");
+    assert!(world.runner.count(&format!("--display-agent {}Demo · t-0001 --ttl-ms", crate::views::DESIGN_MARK)) >= 1);
 
     // Paused: its thread keeps its tier from the session another project lists, and needs no one.
     thread::update(&project, &t.id, |t| t.kind = Kind::Worktree).unwrap();
@@ -1822,7 +1826,7 @@ fn a_long_machine_outage_gives_one_item_and_one_recovery_item() {
     let calls = scripted.runner.calls.borrow();
     let tokens = calls.iter().find(|c| is_machine_call(c) && c.display().contains("report-metadata")).expect("remote tokens");
     assert!(tokens.display().contains("--ttl-ms 300000"));
-    assert!(tokens.args.contains(&"t-0001 · Task".to_string()), "{}", tokens.display());
+    assert!(tokens.args.contains(&"Demo · t-0001 · Task".to_string()), "a remote thread keeps its title in its name: {}", tokens.display());
     assert!(tokens.display().contains("hp_project=demo"));
 }
 

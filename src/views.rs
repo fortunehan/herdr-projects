@@ -136,6 +136,8 @@ pub struct Rank {
     /// A design thread's own Space, whose label keeps [`DESIGN_MARK`]; none
     /// for a design thread started as a tab of the home Space.
     pub design_space: Option<String>,
+    /// A thread's title, the row under its name ([`TITLE_TOKEN`]).
+    pub title: Option<String>,
 }
 
 /// One session's project agents, by pane.
@@ -160,7 +162,8 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
         let needs = !paused && Group::from_token(&t.last_group) == Some(Group::WaitingOnYou);
         let design = t.kind == thread::Kind::Design;
         let design_space = (design && !t.workspace_id.is_empty() && t.workspace_id != record.workspace_id).then(|| t.workspace_id.clone());
-        out.push((t.pane_id.clone(), Rank { needs, implementation: !design, design_space }));
+        let title = Some(t.title.clone()).filter(|title| !title.trim().is_empty());
+        out.push((t.pane_id.clone(), Rank { needs, implementation: !design, design_space, title }));
     }
     out
 }
@@ -168,12 +171,14 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
 /// A pane's tokens: every agent gets a tier (`0` unless an implementation
 /// thread); `hp_needs` is cleared, not set to 0, when it does not apply. An
 /// implementation thread never gets it: its coordinator, which then needs
-/// the user too, is where the user resolves it.
+/// the user too, is where the user resolves it. A thread's title goes in
+/// [`TITLE_TOKEN`], cleared on every other pane.
 pub fn tokens(rank: Option<&Rank>) -> Tokens {
     let rank = rank.cloned().unwrap_or_default();
     vec![
         ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
         ("hp_needs".to_string(), (rank.needs && !rank.implementation).then(|| "1".to_string())),
+        (TITLE_TOKEN.to_string(), rank.title),
     ]
 }
 
@@ -219,10 +224,30 @@ pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent
 /// the first 80 characters of a display name.
 pub const DESIGN_MARK: char = '\u{2060}';
 
-/// A thread's row name: a design thread's starts with [`DESIGN_MARK`].
-pub fn thread_display(thread: &thread::Thread) -> String {
-    let display = crate::sidebar::thread_display(thread);
-    if thread.kind == thread::Kind::Design { design_label(&display) } else { display }
+/// The token of the agent card's second row: a thread's title, under the
+/// project name and id of its display name. Herdr skips a row whose tokens
+/// are all missing, so coordinators and outside agents draw none.
+pub const TITLE_TOKEN: &str = "hp_title";
+
+/// Herdr's cut of a display name, in characters.
+const DISPLAY_CHARS: usize = 80;
+
+/// A project's name as its coordinator's row shows it.
+pub fn project_name(project: &Project) -> String {
+    project.read_project_md().map(|(s, _)| project::display_name(&s.name, &project.slug)).unwrap_or_else(|_| project.slug.clone())
+}
+
+/// A thread's row name: `<project name> · <id>`, the name shortened so Herdr's
+/// cut never reaches the id; a design thread's starts with [`DESIGN_MARK`].
+/// A local thread's title is the row below ([`TITLE_TOKEN`]); a remote one,
+/// whose machine gets none of this module's tokens, keeps it in the name.
+pub fn thread_display(project: &Project, thread: &thread::Thread) -> String {
+    let mark = if thread.kind == thread::Kind::Design { DESIGN_MARK.to_string() } else { String::new() };
+    let id = format!(" · {}", thread.id);
+    let name = project_name(project);
+    let room = DISPLAY_CHARS.saturating_sub(mark.chars().count() + id.chars().count());
+    let name = if name.chars().count() > room { format!("{}…", name.chars().take(room.saturating_sub(1)).collect::<String>().trim_end()) } else { name };
+    if thread.is_remote() { format!("{mark}{name} · {}", crate::sidebar::thread_display(thread)) } else { format!("{mark}{name}{id}") }
 }
 
 /// `label` with [`DESIGN_MARK`] in front, once.
@@ -391,6 +416,7 @@ const HEAD_COLOUR: &str = "#7aa2f7";
 pub fn config_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Result<(String, Option<String>)> {
     let mut doc = text.parse::<DocumentMut>().context("config.toml does not parse")?;
     colour_heads(&mut doc, remove);
+    place_title_rows(&mut doc, remove);
     let ours = |t: &Table| t.get("command").and_then(Item::as_str) == Some(ACTION);
     let existing = doc.get("keys").and_then(|k| k.get("command")).and_then(Item::as_array_of_tables).is_some_and(|c| c.iter().any(ours));
     if remove {
@@ -452,6 +478,64 @@ fn colour_heads(doc: &mut DocumentMut, remove: bool) {
     }
     if let Some(rows) = sidebar.get_mut("spaces").and_then(Item::as_table_like_mut).and_then(|s| s.get_mut("rows")).and_then(Item::as_value_mut) {
         colour_rows(rows, "workspace", crate::grouping::HOME_MARK, None, remove);
+    }
+}
+
+/// Herdr 0.9.3's limit on rows per card.
+const MAX_ROWS: usize = 16;
+
+/// Whether a card row has a cell of `token`.
+fn row_names(row: &Value, token: &str) -> bool {
+    row.as_array().is_some_and(|cells| cells.iter().any(|c| c.as_str() == Some(token) || c.as_inline_table().and_then(|t| t.get("token")).and_then(Value::as_str) == Some(token)))
+}
+
+fn title_row(row: &Value) -> bool {
+    let token = format!("${TITLE_TOKEN}");
+    row.as_array().is_some_and(|cells| cells.len() == 1) && row_names(row, &token)
+}
+
+/// Puts (or with `remove` drops) the [`TITLE_TOKEN`] row right above the
+/// `$hp_sub` row of upstream's card, in `rows` and every `rows_by_agent`
+/// override. Upstream's edit keeps a row it does not own where it is and
+/// moves its sub-line to the bottom, so the title stays second.
+fn place_title_rows(doc: &mut DocumentMut, remove: bool) {
+    let Some(agents) = doc.as_table_mut().get_mut("ui").and_then(Item::as_table_like_mut).and_then(|ui| ui.get_mut("sidebar")).and_then(Item::as_table_like_mut).and_then(|s| s.get_mut("agents")).and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let mut lists: Vec<&mut Array> = Vec::new();
+    for (key, item) in agents.iter_mut() {
+        match key.get() {
+            "rows" => lists.extend(item.as_value_mut().and_then(Value::as_array_mut)),
+            "rows_by_agent" => {
+                if let Some(overrides) = item.as_table_like_mut() {
+                    lists.extend(overrides.iter_mut().filter_map(|(_, rows)| rows.as_value_mut().and_then(Value::as_array_mut)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let sub = "$hp_sub";
+    for rows in lists {
+        let titles = rows.iter().filter(|r| title_row(r)).count();
+        let at = rows.iter().position(|r| row_names(r, sub));
+        let in_place = titles == 1 && at.is_some_and(|i| i > 0 && rows.get(i - 1).is_some_and(title_row));
+        if remove {
+            rows.retain(|r| !title_row(r));
+            continue;
+        }
+        if at.is_none() || in_place {
+            continue;
+        }
+        rows.retain(|r| !title_row(r));
+        if rows.len() >= MAX_ROWS {
+            continue;
+        }
+        let mut cell = InlineTable::new();
+        cell.insert("token", format!("${TITLE_TOKEN}").into());
+        let mut row = Array::new();
+        row.push(cell);
+        let at = rows.iter().position(|r| row_names(r, sub)).unwrap_or(rows.len());
+        rows.insert(at, row);
     }
 }
 
@@ -696,11 +780,12 @@ mod tests {
 
     #[test]
     fn every_pane_gets_a_tier_and_hp_needs_only_on_coordinators_and_design_threads() {
-        assert_eq!(tokens(None), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None)]);
-        let blocked = Rank { needs: true, implementation: true, ..Rank::default() };
-        assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None)]);
+        let title = |t: Option<&str>| (TITLE_TOKEN.to_string(), t.map(str::to_string));
+        assert_eq!(tokens(None), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None), title(None)]);
+        let blocked = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
+        assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None), title(Some("Fix the build"))]);
         let waiting = Rank { needs: true, ..Rank::default() };
-        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string()))]);
+        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string())), title(None)]);
     }
 
     #[test]
@@ -855,14 +940,63 @@ mod tests {
         assert!(marks[1..].iter().all(|m| *m != DESIGN_MARK));
         // Not whitespace or a control character, so Herdr's trim and filter keep it.
         assert!(!DESIGN_MARK.is_whitespace() && !DESIGN_MARK.is_control());
+        let root = tempfile::tempdir().unwrap();
+        let project = project::create(root.path(), "Projects Plugin", "", vec![]).unwrap();
         let design = thread::Thread { id: "t-0010".into(), title: "x".repeat(90), kind: thread::Kind::Design, ..thread::Thread::default() };
-        let worker = thread::Thread { id: "t-0011".into(), title: "Task".into(), kind: thread::Kind::Worktree, ..thread::Thread::default() };
-        let name = thread_display(&design);
-        assert!(name.starts_with(DESIGN_MARK) && name.ends_with('x'));
-        assert!(herdr_display(&name).starts_with(DESIGN_MARK), "kept when Herdr cuts a long name at 80 characters");
-        assert_eq!(thread_display(&worker), "t-0011 · Task");
+        let name = thread_display(&project, &design);
+        assert_eq!(name, format!("{DESIGN_MARK}Projects Plugin · t-0010"));
+        assert!(herdr_display(&name).starts_with(DESIGN_MARK));
         assert_eq!(design_label("design: otp"), format!("{DESIGN_MARK}design: otp"));
         assert_eq!(design_label(&design_label("design: otp")), design_label("design: otp"), "marked once");
+    }
+
+    #[test]
+    fn a_threads_name_is_its_project_and_id_and_herdrs_cut_never_reaches_the_id() {
+        let root = tempfile::tempdir().unwrap();
+        let project = project::create(root.path(), "Projects Plugin", "", vec![]).unwrap();
+        let worker = thread::Thread { id: "t-0014".into(), title: "Project name in thread titles".into(), kind: thread::Kind::Worktree, ..thread::Thread::default() };
+        assert_eq!(thread_display(&project, &worker), "Projects Plugin · t-0014", "the title is the row below");
+        let remote = thread::Thread { machine: "mini".into(), ..worker.clone() };
+        assert!(remote.is_remote());
+        assert_eq!(thread_display(&project, &remote), "Projects Plugin · t-0014 · Project name in thread titles", "no title row on another machine");
+        // A name too long for Herdr's 80 characters is shortened; the id stays whole.
+        let long = project::create(root.path(), &format!("Long {}", "n".repeat(100)), "", vec![]).unwrap();
+        for kind in [thread::Kind::Worktree, thread::Kind::Design] {
+            let t = thread::Thread { id: "t-0099".into(), kind, ..thread::Thread::default() };
+            let name = thread_display(&long, &t);
+            assert!(name.chars().count() <= 80, "{name}");
+            assert!(herdr_display(&name).ends_with("… · t-0099"), "{name}");
+        }
+        // Without a readable PROJECT.md, the slug.
+        let gone = project::Project { root: root.path().to_path_buf(), slug: "lost".into() };
+        assert_eq!(thread_display(&gone, &worker), "lost · t-0014");
+    }
+
+    #[test]
+    fn the_title_row_sits_between_the_name_and_the_sub_line_and_unconfigure_takes_it_out() {
+        let spec = crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() };
+        let configure = |text: &str| config_edit(&crate::sidebar::config_edit(text, &spec, false).unwrap(), &[], false).unwrap().0;
+        let override_rows = "[ui.sidebar.agents.rows_by_agent]\nclaude = [[\"agent\"]]\n";
+        let once = configure(override_rows);
+        assert_eq!(configure(&once), once, "idempotent");
+        let doc = once.parse::<DocumentMut>().unwrap();
+        let tokens = |rows: &Item| -> Vec<String> { rows.as_array().unwrap().iter().map(|r| r.as_array().unwrap().iter().map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.as_inline_table().unwrap().get("token").unwrap().as_str().unwrap().to_string())).collect::<Vec<_>>().join(",")).collect() };
+        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", "$hp_sub"], "{once}");
+        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]), ["agent", "$hp_title", "$hp_sub"], "{once}");
+        // The title row has no style rule, so no key Herdr 0.9.3 would reject.
+        assert!(once.contains("[{ token = \"$hp_title\" }]"), "{once}");
+        // A title row the user moved is put back above the sub-line, once.
+        let moved = once.replacen("[{ token = \"$hp_title\" }], ", "", 1).replacen("[\"state_icon\"", "[{ token = \"$hp_title\" }], [\"state_icon\"", 1);
+        assert_eq!(tokens(&configure(&moved).parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", "$hp_sub"]);
+        // A full card gets no title row rather than a config Herdr rejects.
+        let full = format!("[ui.sidebar.agents]\nrows = [{}]\n", vec!["[\"agent\"]"; 15].join(","));
+        let capped = configure(&full);
+        assert!(!capped.contains("$hp_title") && capped.contains("$hp_sub"), "{capped}");
+        // Unconfigure: ours first, then upstream's, which then puts Herdr's rows back.
+        let (stripped, _) = config_edit(&once, &[], true).unwrap();
+        assert!(!stripped.contains("$hp_title"), "{stripped}");
+        let removed = crate::sidebar::config_edit(&stripped, &spec, true).unwrap();
+        assert!(removed.parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"].to_string().contains("\"machine\""), "{removed}");
     }
 
     fn sidebar_cells(text: &str) -> (Value, Value, Value) {
