@@ -139,12 +139,12 @@ pub fn placement(kind: Option<Kind>, has_repo: bool, remote: bool) -> Result<Kin
         (Some(Kind::Worktree), false) | (Some(Kind::Checkout), false) => bail!("a worktree or checkout thread needs --repo"),
         (Some(Kind::Adopted), _) => bail!("an adopted thread is made with `thread adopt`"),
         (Some(Kind::Design), true) => bail!("a design thread takes no --repo: it reads every local repository in `repos` through the design folder"),
-        (Some(Kind::Tab), _) | (Some(Kind::Checkout), _) if remote => bail!("a tab or checkout thread runs in the project's own workspace, which is local; a remote repo needs a worktree thread"),
+        (Some(Kind::Tab), _) | (Some(Kind::Checkout), _) if remote => bail!("a tab or checkout thread runs on this machine, in a folder of the project or the repo's main checkout; a remote repo needs a worktree thread"),
         (Some(kind), _) => Ok(kind),
     }
 }
 
-/// Creates the workspace or tab, the thread directory and the brief, then
+/// Creates the thread's Space, the thread directory and the brief, then
 /// returns. The agent is launched by the ticker, so there is one delivery path.
 pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
     let project = Project::load(&ctx.root, slug)?;
@@ -172,7 +172,7 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
     let listed = args.repo.as_ref().and_then(|repo| settings.repos.iter().find(|r| &r.path == repo));
     let machine = args.machine.clone().or_else(|| listed.and_then(|r| r.machine.clone())).unwrap_or_default();
     let repo = match (&args.repo, machine.is_empty()) {
-        (None, false) => bail!("a remote thread needs --repo: a task with no repository runs as a tab in the project's own workspace, which is local"),
+        (None, false) => bail!("a remote thread needs --repo: a task with no repository runs on this machine, in the project's `threads/` folder"),
         (None, true) => String::new(),
         // A remote path is stored as it is on its own machine.
         (Some(repo), false) => repo.clone(),
@@ -320,9 +320,9 @@ fn write_brief(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> 
     Ok(())
 }
 
-/// A tab in the project workspace: in `threads/<id>/` for a tab thread, in the
-/// repo's main checkout for a checkout thread; a design thread gets its own
-/// Space in the design folder.
+/// No worktree: its own Space in `threads/<id>/` for a tab thread, in the
+/// design folder for a design thread (see `own_space`); a tab in the project
+/// workspace, in the repo's main checkout, for a checkout thread.
 fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<Thread> {
     let coordinator = project.coordinator().context("the project has never been opened")?;
     let workspace = coordinator::project_workspace(&coordinator, &view.panes);
@@ -344,9 +344,7 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
     };
     let folder = std::fs::canonicalize(&folder)?;
     let created = match workspace {
-        // Answered by the user, like the coordinator: its own Space, which
-        // the grouping puts in the project's block.
-        _ if record.kind == Kind::Design => view.herdr.workspace_create(&folder, &crate::views::design_label(&record.title), false)?,
+        _ if crate::own_space::applies(record.kind) => view.herdr.workspace_create(&folder, &crate::own_space::label(record), false)?,
         Some(id) => view.herdr.tab_create(&id, &folder, &record.title, false)?,
         // The coordinator runs in a pane of another workspace: the thread
         // opens the project's own.
@@ -433,7 +431,7 @@ pub enum RestartPlan {
     Create,
     /// (c) the recorded pane is alive at a shell prompt: reuse it.
     ReusePane,
-    /// (e) open the existing worktree, or a new tab in `threads/<id>/`.
+    /// (e) open the existing worktree, or a new Space in the thread's folder.
     Reopen,
 }
 
@@ -490,7 +488,7 @@ fn lists_for(view: &SessionView, record: &Thread) -> Result<(Vec<Agent>, Vec<Pan
 }
 
 /// `thread restart [--profile NAME]`: brings a thread back in its pane,
-/// worktree or a new tab, with the same or another profile.
+/// worktree or a new Space, with the same or another profile.
 pub fn restart(ctx: &Ctx, slug: &str, id: &str, profile: Option<&str>) -> Result<Thread> {
     let project = Project::load(&ctx.root, slug)?;
     if let Some(name) = profile {
@@ -917,7 +915,7 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
                 // The live pane's tab, not the recorded one: ids move after a restart.
                 let tab = view.panes.iter().find(|p| thread::pane_matches(t, p)).map(|p| p.tab_id.clone()).or_else(|| view.agents.iter().find(|a| thread::agent_matches(t, a)).map(|a| a.tab_id.clone())).unwrap_or_else(|| t.tab_id.clone());
                 match view.herdr.call(&["tab", "close", &tab], crate::herdr::CALL_TIMEOUT) {
-                    Ok(_) if t.kind == Kind::Design => notes.push("its tab was closed, and with it its Space unless you opened more tabs there".into()),
+                    Ok(_) if crate::own_space::has_own(project, t) => notes.push("its tab was closed, and with it its Space unless you opened more tabs there".into()),
                     Ok(_) => notes.push("its tab was closed".into()),
                     Err(error) => notes.push(format!("its tab could not be closed ({error})")),
                 }

@@ -15,6 +15,7 @@ mod lifecycle;
 mod names;
 mod notify;
 mod overview;
+mod own_space;
 mod paths;
 mod popup;
 mod pr;

@@ -54,7 +54,7 @@ fn close_workspaces(project: &Project, view: &SessionView) -> Vec<String> {
             done.push(workspace);
         }
     }
-    for (workspace, what) in crate::design::spaces(project, &view.panes) {
+    for (workspace, what) in crate::own_space::spaces(project, &view.panes) {
         if !done.contains(&workspace) {
             close(&workspace, &what);
             done.push(workspace);

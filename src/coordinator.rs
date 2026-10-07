@@ -61,14 +61,16 @@ pub fn workspace_open(record: &Coordinator, panes: &[Pane]) -> bool {
     !record.workspace_id.is_empty() && !record.cwd.is_empty() && panes.iter().any(|p| p.workspace_id == record.workspace_id && Path::new(&p.cwd).starts_with(&record.cwd))
 }
 
-/// The workspace thread tabs go to: the recorded one while open, else any
-/// workspace with a shell in the project folder. A coordinator `open` started
-/// in some other workspace's pane leaves the record pointing there.
+/// The project's workspace: the recorded one while open, else any workspace
+/// with a shell in the project folder, but not in a thread's own Space
+/// (`design/`, `threads/`). A coordinator `open` started in some other
+/// workspace's pane leaves the record pointing there.
 pub fn project_workspace(record: &Coordinator, panes: &[Pane]) -> Option<String> {
     if workspace_open(record, panes) {
         return Some(record.workspace_id.clone());
     }
-    panes.iter().find(|p| !record.cwd.is_empty() && Path::new(&p.cwd).starts_with(&record.cwd) && !Path::new(&p.cwd).starts_with(Path::new(&record.cwd).join("design"))).map(|p| p.workspace_id.clone())
+    let own_space = |cwd: &Path| ["design", "threads"].iter().any(|d| cwd.starts_with(Path::new(&record.cwd).join(d)));
+    panes.iter().find(|p| !record.cwd.is_empty() && Path::new(&p.cwd).starts_with(&record.cwd) && !own_space(Path::new(&p.cwd))).map(|p| p.workspace_id.clone())
 }
 
 /// The record `open` would write for the most recently active agent working

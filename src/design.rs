@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::herdr::Pane;
 use crate::project::{Project, Settings};
-use crate::thread::{self, Kind, Status};
 
 const AGENTS_MD: &str = include_str!("../skill/design/AGENTS.md");
 const ISSUE_TRACKER_MD: &str = include_str!("../skill/design/issue-tracker.md");
@@ -81,20 +79,6 @@ fn link(path: &Path, target: &str) -> Result<()> {
         Err(_) => {}
     }
     std::os::unix::fs::symlink(target, path).with_context(|| format!("could not link {} to {target}", path.display()))
-}
-
-/// The open Spaces of the project's unresolved design threads, as
-/// `(workspace id, what)`: a listed pane of the Space still works in the
-/// thread's folder (ids repeat after a server restart). A design thread
-/// started as a tab of the home Space has none.
-pub fn spaces(project: &Project, panes: &[Pane]) -> Vec<(String, String)> {
-    let home = project.coordinator().map(|c| c.workspace_id).unwrap_or_default();
-    thread::list(project)
-        .into_iter()
-        .filter(|t| t.kind == Kind::Design && t.status != Status::Resolved && !t.workspace_id.is_empty() && t.workspace_id != home)
-        .filter(|t| panes.iter().any(|p| p.workspace_id == t.workspace_id && p.cwd == t.cwd))
-        .map(|t| (t.workspace_id.clone(), format!("{}'s Space", t.id)))
-        .collect()
 }
 
 fn write_missing(path: &Path, text: &str) -> Result<()> {

@@ -33,6 +33,9 @@ pub enum Status {
 pub enum Kind {
     #[default]
     Worktree,
+    /// Its own Space in `threads/<id>/`, no worktree: read-only work such as
+    /// research or code reading. The name is from when it was a tab of the
+    /// project workspace; records still say `tab`.
     Tab,
     /// A tab in the project workspace whose working directory is the repo's
     /// main checkout, asked for explicitly with `thread start --kind checkout`.
