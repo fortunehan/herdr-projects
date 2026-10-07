@@ -525,6 +525,34 @@ pub fn context(ctx: &Ctx, slug: &str, peek: bool) -> Result<()> {
     Ok(())
 }
 
+/// The folder where the coordinator keeps one file per pending proposal, so a
+/// proposal survives a context reset without becoming a task (ADR 0004).
+pub const PROPOSALS_DIR: &str = "scratch/proposals";
+
+/// One line per proposal file: its path in the project folder and its first
+/// non-empty line, in file-name order.
+pub fn pending_proposals(project: &Project) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(project.dir().join(PROPOSALS_DIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(String, std::path::PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok().map(|name| (name, e.path())))
+        .filter(|(name, _)| !name.starts_with('.'))
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|(name, path)| {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let first = text.lines().map(|l| l.trim().trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or("");
+            let first = crate::progress::clean(first, 100);
+            if first.is_empty() { format!("{PROPOSALS_DIR}/{name}") } else { format!("{PROPOSALS_DIR}/{name}: {first}") }
+        })
+        .collect()
+}
+
 /// The digest and the ids of the inbox items it showed.
 pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec<String>)> {
     let mut out = String::new();
@@ -593,6 +621,14 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
     let _ = writeln!(out, "\n## Tasks (TASKS.md)");
     let tasks = crate::tasks::compact(&crate::tasks::read(&project.dir()));
     let _ = writeln!(out, "{}", if tasks.trim().is_empty() { "(none)" } else { tasks.trim() });
+
+    let proposals = pending_proposals(project);
+    if !proposals.is_empty() {
+        let _ = writeln!(out, "\n## Awaiting your go-ahead ({}) — proposed, not started", proposals.len());
+        for line in &proposals {
+            let _ = writeln!(out, "- {line}");
+        }
+    }
 
     let rows = crate::threads::rows(ctx, project);
     let open: Vec<_> = rows.iter().filter(|r| r.group != crate::thread::Group::Resolved).collect();

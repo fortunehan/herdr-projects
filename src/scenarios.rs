@@ -1921,6 +1921,31 @@ fn the_digest_prints_the_task_list_or_none() {
     assert!(digest.contains("## Tasks (TASKS.md)\n(none)"));
 }
 
+#[test]
+fn the_digest_lists_pending_proposals_from_scratch_and_nothing_without_them() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(!digest.contains("Awaiting your go-ahead"), "{digest}");
+
+    std::fs::create_dir_all(project.dir().join("scratch")).unwrap();
+    std::fs::write(project.dir().join("scratch/notes.md"), "not a proposal\n").unwrap();
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(!digest.contains("Awaiting your go-ahead"), "other scratch files are not proposals: {digest}");
+
+    let proposals = project.dir().join("scratch/proposals");
+    std::fs::create_dir_all(&proposals).unwrap();
+    std::fs::write(proposals.join("login-fix.md"), "# Fix the login redirect\n\nRepo: /repo\nProfile: codex\n").unwrap();
+    std::fs::write(proposals.join("docs.md"), "Write the popup docs\n").unwrap();
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(
+        digest.contains("## Awaiting your go-ahead (2) — proposed, not started\n- scratch/proposals/docs.md: Write the popup docs\n- scratch/proposals/login-fix.md: Fix the login redirect\n"),
+        "{digest}"
+    );
+    assert!(digest.find("## Awaiting your go-ahead").unwrap() > digest.find("## Tasks (TASKS.md)").unwrap());
+    assert!(!crate::tasks::read(&project.dir()).contains("login"), "proposals stay out of TASKS.md");
+}
+
 // ------------------------------------------------------------------ slice 1
 
 #[test]

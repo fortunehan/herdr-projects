@@ -122,6 +122,8 @@ pub struct Current {
     pub pane_id: String,
     pub terminal_id: String,
     pub agent: String,
+    pub cwd: String,
+    pub foreground_cwd: String,
 }
 
 pub fn current(env: &Env, runner: &dyn Runner) -> Option<Current> {
@@ -144,6 +146,8 @@ pub fn current_within(env: &Env, runner: &dyn Runner, timeout: std::time::Durati
         pane_id,
         terminal_id: pane["terminal_id"].as_str().unwrap_or("").to_string(),
         agent: pane["agent"].as_str().unwrap_or("").to_string(),
+        cwd: pane["cwd"].as_str().unwrap_or("").to_string(),
+        foreground_cwd: pane["foreground_cwd"].as_str().unwrap_or("").to_string(),
     })
 }
 
@@ -218,6 +222,65 @@ pub fn reminder(prefix: &str) -> String {
     format!("Progress check-in is due if this is a natural boundary: `{prefix} report --percent N --activity '...'`. Reassess the current task; do not invent progress. Report `Waiting for you` before a question to the user.")
 }
 
+/// What the agent in a pane is to herdr-projects, for the context-reset note.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Role {
+    Coordinator { slug: String },
+    /// An implementation or design thread, with the path of its brief.
+    Thread { brief: String },
+    Other,
+}
+
+/// A thread is the open local thread recorded in this pane with one of these
+/// working directories, as the ticker matches it (`thread::pane_matches`); a
+/// coordinator is an agent working in a project folder
+/// (`coordinator::is_coordinator`). Pane ids repeat across Herdr servers, so
+/// a thread also needs the directory to match.
+pub fn role(root: &Path, pane_id: &str, cwds: &[&str]) -> Role {
+    let cwds: Vec<String> = cwds
+        .iter()
+        .filter(|c| !c.is_empty())
+        .flat_map(|c| [c.to_string(), std::fs::canonicalize(c).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()])
+        .filter(|c| !c.is_empty())
+        .collect();
+    for slug in crate::project::list_slugs(root) {
+        let Ok(project) = crate::project::Project::load(root, &slug) else {
+            continue;
+        };
+        let thread = crate::thread::list(&project)
+            .into_iter()
+            .find(|t| t.status != crate::thread::Status::Resolved && !t.is_remote() && t.pane_id == pane_id && cwds.contains(&t.cwd));
+        if let Some(t) = thread {
+            let dir = if t.thread_dir.is_empty() { crate::thread::thread_dir(&t.cwd, &slug, &t.id) } else { t.thread_dir };
+            return Role::Thread { brief: format!("{dir}/brief.md") };
+        }
+        let home = project.canonical_dir();
+        if cwds.iter().any(|c| Path::new(c) == home) {
+            return Role::Coordinator { slug };
+        }
+    }
+    Role::Other
+}
+
+/// A SessionStart source that keeps the agent's role but drops or summarises
+/// its conversation: a context reset.
+pub fn reset(source: &str) -> bool {
+    matches!(source, "compact" | "clear")
+}
+
+/// The note a `compact` or `clear` SessionStart adds after the Progress text
+/// (ADR 0004). Outside agents get none.
+pub fn reset_note(role: &Role, prefix: &str) -> Option<String> {
+    let body = match role {
+        Role::Coordinator { slug } => format!(
+            "Your conversation was just cleared or compacted; you are still the coordinator of `{slug}`. Before anything else run `{prefix} skill` and `{prefix} context {slug}`, and work from what they print: the rules and state you remember may be stale, and anything that was only in the conversation is lost. Proposals still waiting for the user's go-ahead are listed under \"Awaiting your go-ahead\"."
+        ),
+        Role::Thread { brief } => format!("Your conversation was just cleared or compacted. Re-read your brief, `{brief}`, before you continue."),
+        Role::Other => return None,
+    };
+    Some(format!("# Context reset (herdr-projects)\n\n{body}"))
+}
+
 /// Events the reporter reacts to: the top-level agent's own SessionStart,
 /// UserPromptSubmit and PostToolUse, never a subagent's, and never the
 /// PostToolUse of the `report` call itself.
@@ -239,14 +302,26 @@ pub fn eligible(event: &serde_json::Value) -> bool {
 }
 
 /// What the hook answers for one event: the text to inject, and whether the
-/// record changed. Pure, so it is testable without a pane.
-pub fn respond(record: &mut Record, kind: &str, prefix: &str, now: i64) -> Option<String> {
+/// record changed. `source` is SessionStart's (`startup`, `resume`, `clear`,
+/// `compact`, ...); `role` matters only on `compact` and `clear`. Pure, so it
+/// is testable without a pane.
+pub fn respond(record: &mut Record, kind: &str, source: &str, role: &Role, prefix: &str, now: i64) -> Option<String> {
     match kind {
         "SessionStart" => {
-            // A new session in this pane: the old report no longer describes it.
-            let keep = (record.socket.clone(), record.pane_id.clone(), record.terminal_id.clone(), record.agent.clone());
-            *record = Record { socket: keep.0, pane_id: keep.1, terminal_id: keep.2, agent: keep.3, session_started_at: now, reminded_at: now, ..Record::default() };
-            Some(instructions(prefix, &record.pane_id))
+            if matches!(source, "compact" | "resume" | "fork") {
+                // The same task goes on: its report still holds.
+                record.reminded_at = now;
+            } else {
+                // A new conversation in this pane: the old report no longer describes it.
+                let keep = (record.socket.clone(), record.pane_id.clone(), record.terminal_id.clone(), record.agent.clone());
+                *record = Record { socket: keep.0, pane_id: keep.1, terminal_id: keep.2, agent: keep.3, session_started_at: now, reminded_at: now, ..Record::default() };
+            }
+            let mut text = instructions(prefix, &record.pane_id);
+            if let Some(note) = reset(source).then(|| reset_note(role, prefix)).flatten() {
+                text.push_str("\n\n");
+                text.push_str(&note);
+            }
+            Some(text)
         }
         "UserPromptSubmit" => {
             record.reminded_at = now;
@@ -348,8 +423,14 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     record.terminal_id = pane.terminal_id.clone();
     record.agent = if pane.agent.is_empty() { agent.to_string() } else { pane.agent.clone() };
     let prefix = crate::coordinator::current_prefix(&ctx.root)?;
+    let source = event["source"].as_str().unwrap_or("");
+    let who = if kind == "SessionStart" && reset(source) {
+        role(&ctx.root, &pane.pane_id, &[event["cwd"].as_str().unwrap_or(""), &pane.cwd, &pane.foreground_cwd])
+    } else {
+        Role::Other
+    };
     let before = record.clone();
-    let text = respond(&mut record, &kind, &prefix, now());
+    let text = respond(&mut record, &kind, source, &who, &prefix, now());
     if kind == "SessionStart" {
         record.session_id = event["session_id"].as_str().unwrap_or("").to_string();
     }
@@ -408,7 +489,7 @@ mod tests {
     #[test]
     fn session_start_injects_instructions_and_resets_the_record() {
         let mut record = Record { pane_id: "w1:p1".into(), activity: "Old".into(), percent: Some(50), reported_at: 5, ..Record::default() };
-        let text = respond(&mut record, "SessionStart", "/p/hp --root /r", 1000).unwrap();
+        let text = respond(&mut record, "SessionStart", "startup", &Role::Other, "/p/hp --root /r", 1000).unwrap();
         assert!(text.contains("/p/hp --root /r report --percent 25"));
         assert!(text.contains("(w1:p1)"));
         assert_eq!(record.activity, "");
@@ -417,23 +498,105 @@ mod tests {
         assert_eq!(record.session_started_at, 1000);
     }
 
+    /// The hook's path for one SessionStart: normalize, respond, output.
+    fn session_start(agent: &str, source: &str, role: &Role, record: &mut Record) -> String {
+        let harness = crate::setup::harness(agent).unwrap();
+        let event = normalize(harness, json!({"hook_event_name":"SessionStart","source":source}));
+        assert!(eligible(&event));
+        let text = respond(record, event["hook_event_name"].as_str().unwrap(), event["source"].as_str().unwrap(), role, "/p/hp --root /r", 1000).unwrap();
+        output(harness, "SessionStart", &text)["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()
+    }
+
+    fn reported() -> Record {
+        Record { pane_id: "w1:p1".into(), activity: "Testing changes".into(), percent: Some(60), reported_at: 900, session_started_at: 100, ..Record::default() }
+    }
+
+    #[test]
+    fn a_context_reset_tells_a_coordinator_to_reload_its_skill_and_context() {
+        let coordinator = Role::Coordinator { slug: "demo".into() };
+        for agent in ["claude", "codex"] {
+            for source in ["compact", "clear"] {
+                let text = session_start(agent, source, &coordinator, &mut reported());
+                assert!(text.starts_with("# Progress (herdr-projects)"), "{agent} {source}");
+                assert!(text.contains("# Context reset (herdr-projects)"), "{agent} {source}");
+                assert!(text.contains("`/p/hp --root /r skill`"), "{agent} {source}");
+                assert!(text.contains("`/p/hp --root /r context demo`"), "{agent} {source}");
+                assert!(text.contains("only in the conversation is lost"), "{agent} {source}");
+                assert!(!text.contains("brief"), "{agent} {source}");
+            }
+            for source in ["startup", "resume", ""] {
+                let text = session_start(agent, source, &coordinator, &mut reported());
+                assert!(!text.contains("Context reset"), "{agent} {source}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_context_reset_tells_a_thread_to_reread_its_brief() {
+        let thread = Role::Thread { brief: "/wt/x/.herdr-project/demo-t-0001/brief.md".into() };
+        for agent in ["claude", "codex"] {
+            for source in ["compact", "clear"] {
+                let text = session_start(agent, source, &thread, &mut reported());
+                assert!(text.contains("Re-read your brief, `/wt/x/.herdr-project/demo-t-0001/brief.md`"), "{agent} {source}");
+                assert!(!text.contains(" skill`"), "{agent} {source}");
+            }
+            assert!(!session_start(agent, "startup", &thread, &mut reported()).contains("Context reset"), "{agent}");
+            assert!(!session_start(agent, "compact", &Role::Other, &mut reported()).contains("Context reset"), "{agent}: outside agent");
+        }
+    }
+
+    #[test]
+    fn compact_keeps_the_report_and_startup_and_clear_reset_it() {
+        for agent in ["claude", "codex"] {
+            for source in ["compact", "resume", "fork"] {
+                let mut record = reported();
+                session_start(agent, source, &Role::Coordinator { slug: "demo".into() }, &mut record);
+                assert_eq!((record.percent, record.activity.as_str(), record.reported_at, record.session_started_at), (Some(60), "Testing changes", 900, 100), "{agent} {source}");
+                assert_eq!(record.reminded_at, 1000);
+            }
+            for source in ["clear", "startup"] {
+                let mut record = reported();
+                session_start(agent, source, &Role::Coordinator { slug: "demo".into() }, &mut record);
+                assert_eq!((record.percent, record.activity.as_str(), record.reported_at, record.session_started_at), (None, "", 0, 1000), "{agent} {source}");
+                assert_eq!(record.pane_id, "w1:p1");
+            }
+        }
+    }
+
+    #[test]
+    fn the_role_comes_from_the_project_folder_or_the_threads_pane_and_folder() {
+        let world = crate::scenarios::World::new();
+        let project = world.project("demo", "a.sock");
+        let home = project.canonical_dir().to_string_lossy().into_owned();
+        assert_eq!(role(&world.root, "w9:p9", &["", &home]), Role::Coordinator { slug: "demo".into() });
+        let worktree = world.home.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let t = world.thread(&project, &worktree, |_| {});
+        let cwd = t.cwd.clone();
+        assert_eq!(role(&world.root, "w2:p1", &[&cwd]), Role::Thread { brief: format!("{}/brief.md", t.thread_dir) });
+        assert_eq!(role(&world.root, "w2:p1", &["/elsewhere"]), Role::Other, "same pane id, another folder");
+        assert_eq!(role(&world.root, "w3:p1", &[&cwd]), Role::Other, "same folder, another pane");
+        crate::thread::update(&project, &t.id, |t| t.status = crate::thread::Status::Resolved).unwrap();
+        assert_eq!(role(&world.root, "w2:p1", &[&cwd]), Role::Other, "a resolved thread's pane");
+    }
+
     #[test]
     fn reminders_are_throttled_to_once_a_minute_and_stop_at_done() {
         let mut record = Record { reminded_at: 1000, ..Record::default() };
-        assert!(respond(&mut record, "PostToolUse", "hp", 1030).is_none());
-        assert!(respond(&mut record, "PostToolUse", "hp", 1061).is_some());
+        assert!(respond(&mut record, "PostToolUse", "", &Role::Other, "hp", 1030).is_none());
+        assert!(respond(&mut record, "PostToolUse", "", &Role::Other, "hp", 1061).is_some());
         assert_eq!(record.reminded_at, 1061);
         // A fresh report also quiets the reminder for a minute.
         record.reported_at = 1100;
-        assert!(respond(&mut record, "PostToolUse", "hp", 1130).is_none());
-        assert!(respond(&mut record, "PostToolUse", "hp", 1200).is_some());
+        assert!(respond(&mut record, "PostToolUse", "", &Role::Other, "hp", 1130).is_none());
+        assert!(respond(&mut record, "PostToolUse", "", &Role::Other, "hp", 1200).is_some());
         record.percent = Some(100);
-        assert!(respond(&mut record, "PostToolUse", "hp", 9000).is_none());
-        assert!(respond(&mut record, "UserPromptSubmit", "hp", 9001).unwrap().contains("Waiting for you"));
+        assert!(respond(&mut record, "PostToolUse", "", &Role::Other, "hp", 9000).is_none());
+        assert!(respond(&mut record, "UserPromptSubmit", "", &Role::Other, "hp", 9001).unwrap().contains("Waiting for you"));
         let mut asked = Record { activity: WAITING.into(), percent: Some(40), reported_at: 5, ..Record::default() };
-        respond(&mut asked, "UserPromptSubmit", "hp", 10);
+        respond(&mut asked, "UserPromptSubmit", "", &Role::Other, "hp", 10);
         assert!(!asked.waiting(), "an answer clears the old question");
-        assert!(respond(&mut record, "Stop", "hp", 9002).is_none());
+        assert!(respond(&mut record, "Stop", "", &Role::Other, "hp", 9002).is_none());
     }
 
     #[test]
