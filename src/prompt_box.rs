@@ -153,13 +153,19 @@ fn is_labelled_rule(line: &[Cell]) -> bool {
 
 /// Drops a hint drawn at the end of a row as a key then an italic label
 /// (`⇧⇥ to change thinking effort`): what omp shows in an empty editor.
+/// The key may hold single spaces (`󰘶 󰌒` in omp 18.6); the wide gap of a
+/// right-aligned hint ends it.
 fn drop_hint(row: &mut Line) {
     let Some(end) = row.iter().rposition(|c| !c.ch.is_whitespace()) else { return };
     if !row[end].italic {
         return;
     }
     let Some(key) = row[..end].iter().rposition(|c| !c.italic && !c.ch.is_whitespace()) else { return };
-    let start = row[..key].iter().rposition(|c| c.ch.is_whitespace()).map_or(0, |i| i + 1);
+    let word_start = |at: usize| row[..at].iter().rposition(|c| c.ch.is_whitespace()).map_or(0, |i| i + 1);
+    let mut start = word_start(key);
+    while start >= 2 && !row[start - 2].ch.is_whitespace() && !row[start - 2].italic {
+        start = word_start(start - 1);
+    }
     row.truncate(start);
 }
 
@@ -315,6 +321,8 @@ mod tests {
     #[test]
     fn omp_drops_its_hint_and_reads_drafts_working_screens_and_menus() {
         assert_eq!(box_text("omp", &fixture("omp-empty")).as_deref(), Some(""));
+        // omp 18.6 draws the key as two glyphs: `󰘶 󰌒 to change thinking effort`.
+        assert_eq!(box_text("omp", &fixture("omp-18.6-empty")).as_deref(), Some(""));
         assert_eq!(box_text("omp", &fixture("omp-draft")).as_deref(), Some("hello draft"));
         assert_eq!(box_text("omp", &fixture("omp-draft-multiline")).as_deref(), Some("hello draft second line"));
         // While it works the editor stays empty; idleness is checked elsewhere.
