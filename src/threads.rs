@@ -958,7 +958,7 @@ fn last_pr_lookup(ctx: &Ctx, project: &Project, t: &Thread) -> Option<crate::pr:
             r.pr_state = state;
             r.pr_review = review;
         });
-        let _ = crate::inbox::write(project, "pr", &t.id, "PR found at resolve", &format!("{}: pull request {} (found at resolve)", crate::steps::thread_label(t), pr::describe_change(None, &summary)), "");
+        let _ = crate::inbox::write(project, "pr", &t.id, "PR found at resolve", &format!("{}: {}: {} (found at resolve)", crate::steps::thread_label(t), pr::named(&url), pr::describe_change(None, &summary)), "");
     }
     Some(summary)
 }

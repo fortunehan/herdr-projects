@@ -1042,6 +1042,7 @@ fn a_comment_gives_an_item_with_no_body_and_an_unchanged_summary_gives_nothing()
     let items = items_of(&project, "pr");
     assert_eq!(items.len(), 1);
     assert!(items[0].summary.contains("new commenters: mallory"));
+    assert!(items[0].summary.contains(&format!("PR #7 ({PR_URL}): state OPEN")), "{}", items[0].summary);
     let all = std::fs::read_dir(project.dir().join("inbox")).unwrap().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect::<String>();
     assert!(!all.contains("SECRET-BODY"));
     let t = thread::load(&project, "t-0001").unwrap();
@@ -1276,7 +1277,8 @@ fn resolving_a_thread_with_an_unlinked_merged_pull_request_deletes_its_branch() 
         assert_eq!((t.status, t.pr.as_str(), t.pr_state.as_str()), (Status::Resolved, PR_URL, "MERGED"), "pr_line={pr_line}");
         assert_eq!(world.runner.count("gh pr list"), usize::from(!pr_line));
         assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1, "pr_line={pr_line}");
-        assert!(items_of(&project, "pr")[0].summary.contains("state MERGED"));
+        let found = &items_of(&project, "pr")[0].summary;
+        assert!(found.contains(&format!("PR #7 ({PR_URL}): state MERGED")) && found.contains("found at resolve"), "{found}");
         let item = items_of(&project, "thread-state").into_iter().find(|i| i.summary.contains("resolved")).unwrap();
         assert!(item.summary.contains("deleted (its pull request is merged)"), "{}", item.summary);
     }
@@ -1323,7 +1325,7 @@ fn a_pull_request_from_another_branch_or_repository_is_ignored_with_one_item() {
     ticker::tick_project(&ctx, &project).unwrap();
     let items = items_of(&project, "pr");
     assert_eq!(items.len(), 1);
-    assert!(items[0].summary.contains("ignored"));
+    assert!(items[0].summary.contains(&format!("PR #7 ({PR_URL}) in its report is ignored")), "{}", items[0].summary);
     assert_eq!(thread::load(&project, "t-0001").unwrap().status, Status::Open);
 }
 
@@ -1925,6 +1927,23 @@ fn the_digest_prints_the_task_list_or_none() {
     std::fs::remove_file(&tasks).unwrap();
     let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
     assert!(digest.contains("## Tasks (TASKS.md)\n(none)"));
+}
+
+#[test]
+fn the_digest_names_each_thread_pull_request_with_its_full_url() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let linked = world.thread(&project, world.home.path(), |t| {
+        t.pr = PR_URL.into();
+        t.pr_state = "OPEN".into();
+    });
+    world.thread(&project, world.home.path(), |_| {});
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    let heading = digest.find("## Open threads").expect("threads heading");
+    let threads = &digest[heading..digest.find("## Inbox").unwrap()];
+    assert!(threads.contains(&format!("\n  pr: PR #7 ({PR_URL}), open\n")), "{threads}");
+    assert_eq!(threads.matches("  pr: ").count(), 1, "a thread with no pull request gets no pr line: {threads}");
+    assert!(threads.contains(&format!("- {} [", linked.id)));
 }
 
 #[test]

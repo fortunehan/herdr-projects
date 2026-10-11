@@ -637,6 +637,10 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
         let t = &row.thread;
         let place = if t.kind == crate::thread::Kind::Design { "design".to_string() } else if t.repo.is_empty() { "no repo".to_string() } else { t.repo.clone() };
         let _ = writeln!(out, "- {} [{}] ({}) {} — {} — {}", t.id, row.group.label(), row.note, t.title, place, if t.profile.is_empty() { &t.agent } else { &t.profile });
+        if !t.pr.is_empty() {
+            let state = if t.pr_state.is_empty() { String::new() } else { format!(", {}", t.pr_state.to_lowercase()) };
+            let _ = writeln!(out, "  pr: {}{state}", crate::pr::named(&t.pr));
+        }
         for line in crate::thread::all_next(project, &t.id) {
             let _ = writeln!(out, "  next: {line}");
         }

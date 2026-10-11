@@ -498,7 +498,7 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
             Ok(pr::Checked::Ignored(reason)) => {
                 if state.pr_ignored.get(&t.id) != Some(&url) {
                     state.pr_ignored.insert(t.id.clone(), url.clone());
-                    errors.extend(inbox::write(project, "pr", &t.id, "PR ignored", &format!("{}: the pull request in its report is ignored: {reason}", thread_label(&t)), "").err());
+                    errors.extend(inbox::write(project, "pr", &t.id, "PR ignored", &format!("{}: {} in its report is ignored: {reason}", thread_label(&t), pr::named(&url)), "").err());
                 }
             }
             Ok(pr::Checked::Summary(summary)) => {
@@ -517,7 +517,7 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
                     memory.own_id = pr::own_id(ctx.runner, &t.origin);
                 }
                 let events = pr_events(old.as_ref(), &summary, memory.own_id.as_deref());
-                errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: pull request {change}", thread_label(&t)), "").err());
+                errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: {}: {change}", thread_label(&t), pr::named(&url)), "").err());
                 let reference = pr::reference(&url).unwrap_or_default();
                 if merged {
                     notifier.send(&t.id, &format!("PR {reference} merged"), crate::notify::Sound::Done, false);

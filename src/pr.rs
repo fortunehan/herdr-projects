@@ -48,6 +48,16 @@ pub fn reference(url: &str) -> Option<String> {
     github::valid_pr_url(url).then(|| format!("#{}", url.rsplit('/').next().unwrap_or_default()))
 }
 
+/// The PR reference with the full URL, `PR #4 (https://…/pull/4)`, so the
+/// coordinator can link it without assembling a URL; the bare URL when it is
+/// no followed pull request.
+pub fn named(url: &str) -> String {
+    match reference(url) {
+        Some(reference) => format!("PR {reference} ({url})"),
+        None => url.to_string(),
+    }
+}
+
 /// Why a pull request could not be viewed.
 #[derive(Debug)]
 pub enum ViewError {
@@ -185,6 +195,7 @@ mod tests {
         assert_eq!(reference("https://github.com/o/r/pull/4").as_deref(), Some("#4"));
         assert_eq!(reference(""), None);
         assert_eq!(reference("https://github.com/o/r/issues/4"), None);
+        assert_eq!(named("https://github.com/o/r/pull/4"), "PR #4 (https://github.com/o/r/pull/4)");
     }
 
     #[test]
