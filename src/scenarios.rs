@@ -1386,9 +1386,14 @@ fn ado_answer(body: &str) -> Output {
 }
 
 fn ado_pr_json(status: &str) -> String {
+    ado_pr_json_with(status, "")
+}
+
+/// An ADO pull request with `extra` JSON members, e.g. its reviewers.
+fn ado_pr_json_with(status: &str, extra: &str) -> String {
     format!(
         r#"{{"pullRequestId":7,"status":"{status}","creationDate":"2026-01-01T00:00:00Z","sourceRefName":"refs/heads/hp/demo/t-0001-task",
-            "repository":{{"name":"app","project":{{"name":"My Project"}}}},"lastMergeSourceCommit":{{"commitId":"merged-head"}}}}"#
+            "repository":{{"name":"app","project":{{"id":"604a8802-0f38","name":"My Project"}}}},"lastMergeSourceCommit":{{"commitId":"merged-head"}}{extra}}}"#
     )
 }
 
@@ -1396,6 +1401,24 @@ fn ado_pr_json(status: &str) -> String {
 /// `hp/...` branch, as threads in ADO repositories do.
 fn ado_track_pr_json(status: &str) -> String {
     ado_pr_json(status).replace("refs/heads/hp/demo/t-0001-task", "refs/heads/feature/ADO-16885059-task")
+}
+
+/// What curl answers for pull request 7 and, while it is open, its policy
+/// evaluations, statuses and comment threads.
+struct AdoAnswers {
+    pr: Rc<RefCell<String>>,
+    evaluations: Rc<RefCell<String>>,
+    statuses: Rc<RefCell<String>>,
+    threads: Rc<RefCell<String>>,
+}
+
+/// A comment thread with one text comment per author id.
+fn ado_threads(authors: &[&str]) -> String {
+    let threads: Vec<String> = authors
+        .iter()
+        .map(|id| format!(r#"{{"comments":[{{"commentType":"text","author":{{"id":"{id}","displayName":"{id} SECRET-NAME"}},"content":"SECRET-BODY"}}]}}"#))
+        .collect();
+    format!(r#"{{"value":[{{"comments":[{{"commentType":"system","author":{{"id":"x"}}}}]}},{}]}}"#, threads.join(","))
 }
 
 fn is_curl_for(cmd: &Cmd, needle: &str) -> bool {
@@ -1406,6 +1429,11 @@ fn is_curl_for(cmd: &Cmd, needle: &str) -> bool {
 /// origin is an ADO repository, its report is `report`, and curl answers pull
 /// request 7 with the JSON in the returned cell.
 fn ado_world(report: &str, agent_state: &str) -> (World, Project, Rc<RefCell<String>>) {
+    let (world, project, answers) = ado_review_world(report, agent_state);
+    (world, project, answers.pr)
+}
+
+fn ado_review_world(report: &str, agent_state: &str) -> (World, Project, AdoAnswers) {
     let (mut world, project, t) = finished_world(agent_state);
     world.env = Env::for_test(world.home.path(), &[("AZURE_DEVOPS_PAT", ADO_PAT), ("HERDR_PROJECTS_ADO_PROXY", ADO_PROXY)]);
     thread::update(&project, &t.id, |t| {
@@ -1423,9 +1451,15 @@ fn ado_world(report: &str, agent_state: &str) -> (World, Project, Rc<RefCell<Str
     let answer = pr.clone();
     world.runner.on_fn(|cmd| is_curl_for(cmd, "/pullrequests/7?"), move |_| Ok(ado_answer(&answer.borrow())));
     world.runner.on_fn(|cmd| is_curl_for(cmd, "/connectionData?"), |_| Ok(ado_answer(r#"{"authenticatedUser":{"id":"me-id"}}"#)));
+    let empty = || Rc::new(RefCell::new(r#"{"value":[]}"#.to_string()));
+    let answers = AdoAnswers { pr, evaluations: empty(), statuses: empty(), threads: empty() };
+    for (needle, cell) in [("/policy/evaluations?", &answers.evaluations), ("/pullrequests/7/statuses?", &answers.statuses), ("/pullrequests/7/threads?", &answers.threads)] {
+        let answer = cell.clone();
+        world.runner.on_fn(move |cmd| is_curl_for(cmd, needle), move |_| Ok(ado_answer(&answer.borrow())));
+    }
     world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
     world.runner.on("branch -D", ok(""));
-    (world, project, pr)
+    (world, project, answers)
 }
 
 fn next_pr_pass(project: &Project) {
@@ -1764,6 +1798,81 @@ fn a_remote_azure_devops_thread_is_followed_from_the_local_ticker() {
     assert_eq!(state.prs["t-0001"].head_oid, "merged-head");
     assert_eq!(thread::load(&project, "t-0001").unwrap().pr_state, "MERGED");
     assert!(world.runner.calls.borrow().iter().all(|c| c.program != "ssh"));
+}
+
+fn routine_prompts(world: &World) -> Vec<String> {
+    world.runner.calls.borrow().iter().filter(|c| c.display().contains("agent prompt")).map(|c| prompt_text(c).to_string()).filter(|t| t.starts_with("[hp routine")).collect()
+}
+
+/// A failing Build policy, then a comment by a reviewer, each prompt the
+/// thread through the default pr-followup routine with an `ado` MCP hint; the
+/// thread's own reply does not.
+#[test]
+fn azure_devops_checks_and_review_comments_prompt_the_thread_but_its_own_replies_do_not() {
+    let (world, project, answers) = ado_review_world(&format!("PR: {ADO_PR_URL}\n## Report\nx\n"), "idle");
+    let ctx = world.ctx();
+    let hint = format!("inspect PR !7 ({ADO_PR_URL}) with the `ado` MCP server");
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert!(routine_prompts(&world).is_empty(), "opened only");
+
+    *answers.evaluations.borrow_mut() = r#"{"value":[
+        {"status":"rejected","configuration":{"type":{"id":"0609b952-1397-4640-95ec-e00a01b2c241","displayName":"Build"},"settings":{"displayName":null}},"context":{"buildDefinitionName":"app_pipeline"}},
+        {"status":"rejected","configuration":{"type":{"id":"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd","displayName":"Minimum number of reviewers"}}}]}"#
+        .into();
+    *answers.statuses.borrow_mut() = r#"{"value":[{"id":1,"state":"error","context":{"name":"sonar","genre":"ci"}}]}"#.into();
+    next_pr_pass(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(crate::steps::load_state(&project).prs["t-0001"].failing_checks, ["app_pipeline", "ci/sonar"]);
+    let prompts = routine_prompts(&world);
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].starts_with(&format!("[hp routine pr-followup] Your pull request {ADO_PR_URL} changed: 2 check(s) fail ({hint}).")), "{}", prompts[0]);
+    assert!(!prompts[0].contains("gh ") && !prompts[0].contains("app_pipeline"), "{}", prompts[0]);
+    assert_eq!(world.runner.count("PR !7 · checks failed"), 1);
+
+    *answers.threads.borrow_mut() = ado_threads(&["alice-id"]);
+    next_pr_pass(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    let prompts = routine_prompts(&world);
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[1].contains(&format!("1 comment(s), review review_required ({hint})")), "{}", prompts[1]);
+    assert!(!prompts[1].contains("SECRET") && !prompts[1].contains("alice"), "{}", prompts[1]);
+    assert_eq!(world.runner.count("PR !7 · new review activity"), 1);
+
+    *answers.threads.borrow_mut() = ado_threads(&["alice-id", "me-id", "me-id"]);
+    next_pr_pass(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(crate::steps::load_state(&project).prs["t-0001"].comment_count, 3, "the summary moved on");
+    assert_eq!(routine_prompts(&world).len(), 2, "the thread's own replies do not prompt it");
+    assert_eq!(world.runner.count("new review activity"), 1);
+
+    let inbox = std::fs::read_dir(project.dir().join("inbox")).unwrap().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect::<String>();
+    assert!(!inbox.contains("SECRET-BODY"));
+    assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "gh").count(), 0);
+    assert_no_secret_and_proxy_only_on_ado(&world, &project);
+}
+
+/// Every required reviewer approved: the thread is Landing and the popup
+/// reads like GitHub's.
+#[test]
+fn an_approved_azure_devops_pr_puts_its_thread_in_landing() {
+    let (world, project, answers) = ado_review_world(&format!("PR: {ADO_PR_URL}\n## Report\nx\n"), "idle");
+    *answers.pr.borrow_mut() = ado_pr_json_with("active", r#","reviewers":[{"vote":10,"isRequired":true},{"vote":0,"isRequired":false}]"#);
+    *answers.threads.borrow_mut() = ado_threads(&["alice-id", "bob-id"]);
+    let ctx = world.ctx();
+    ticker::tick_project(&ctx, &project).unwrap();
+    ticker::tick_project(&ctx, &project).unwrap();
+    let t = thread::load(&project, "t-0001").unwrap();
+    assert_eq!((t.pr_state.as_str(), t.pr_review.as_str(), t.last_group.as_str()), ("OPEN", "APPROVED", "landing"));
+    let state = crate::steps::load_state(&project);
+    assert_eq!(crate::popup::pr_facts(&t, state.prs.get("t-0001")), "PR !7 · approved · checks ✓ · 2 comments");
+
+    *answers.pr.borrow_mut() = ado_pr_json_with("active", r#","reviewers":[{"vote":10,"isRequired":true},{"vote":-5,"isRequired":false}]"#);
+    next_pr_pass(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    ticker::tick_project(&ctx, &project).unwrap();
+    let t = thread::load(&project, "t-0001").unwrap();
+    assert_eq!(t.pr_review, "CHANGES_REQUESTED");
+    assert_ne!(t.last_group, "landing");
 }
 
 fn write_routine(project: &Project, name: &str, text: &str) {

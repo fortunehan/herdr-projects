@@ -418,15 +418,19 @@ pub fn pr_events(old: Option<&pr::Summary>, new: &pr::Summary, own_login: Option
 }
 
 /// The prompt a `pr` routine sends a thread: the routine's text plus facts
-/// this binary generated. Nothing written on GitHub (check names, comment
-/// text, logins) is placed in a prompt; the thread reads it with `gh`.
+/// this binary generated. Nothing written on the forge (check names, comment
+/// text, logins) is placed in a prompt; the thread reads it with `gh`, or on
+/// Azure DevOps with the `ado` MCP server.
 pub fn pr_routine_prompt(name: &str, body: &str, url: &str, events: &[&str], summary: &pr::Summary) -> String {
+    let ado = pr::ado::parse_pr_url(url).map(|(_, id)| format!("inspect PR !{id} ({url}) with the `ado` MCP server"));
     let mut facts = Vec::new();
     if events.contains(&"checks-failed") {
-        facts.push(format!("{} check(s) fail (`gh pr checks {url}`)", summary.failing_checks.len()));
+        let hint = ado.clone().unwrap_or_else(|| format!("`gh pr checks {url}`"));
+        facts.push(format!("{} check(s) fail ({hint})", summary.failing_checks.len()));
     }
     if events.contains(&"review") {
-        facts.push(format!("{} comment(s), review {} (`gh pr view {url} --comments`)", summary.comment_count, if summary.review_decision.is_empty() { "none".to_string() } else { summary.review_decision.to_lowercase() }));
+        let hint = ado.clone().unwrap_or_else(|| format!("`gh pr view {url} --comments`"));
+        facts.push(format!("{} comment(s), review {} ({hint})", summary.comment_count, if summary.review_decision.is_empty() { "none".to_string() } else { summary.review_decision.to_lowercase() }));
     }
     if events.contains(&"opened") {
         facts.push("it was opened".into());
@@ -883,6 +887,11 @@ mod tests {
         let prompt = pr_routine_prompt("pr-followup", "Fix it.", "https://github.com/o/r/pull/4", &["checks-failed"], &failing);
         assert_eq!(prompt, "[hp routine pr-followup] Your pull request https://github.com/o/r/pull/4 changed: 1 check(s) fail (`gh pr checks https://github.com/o/r/pull/4`).\n\nFix it.");
         assert!(!prompt.contains("lint"), "check names are GitHub text and never reach a prompt");
+        let ado = "https://dev.azure.com/org/p/_git/r/pullrequest/42";
+        let prompt = pr_routine_prompt("pr-followup", "Fix it.", ado, &["checks-failed", "review"], &changes);
+        let hint = format!("inspect PR !42 ({ado}) with the `ado` MCP server");
+        assert_eq!(prompt, format!("[hp routine pr-followup] Your pull request {ado} changed: 1 check(s) fail ({hint}); 3 comment(s), review changes_requested ({hint}).\n\nFix it."));
+        assert!(!prompt.contains("gh "));
     }
 
     #[test]

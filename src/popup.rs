@@ -1600,6 +1600,8 @@ mod tests {
         let t = Thread { pr: "https://github.com/o/r/pull/4".into(), ..Thread::default() };
         let s = crate::pr::Summary { state: "OPEN".into(), review_decision: "APPROVED".into(), failing_checks: vec![], comment_count: 2, commenters: vec![], ..Default::default() };
         assert_eq!(pr_facts(&t, Some(&s)), "PR #4 · approved · checks ✓ · 2 comments");
+        let ado = Thread { pr: "https://dev.azure.com/org/p/_git/r/pullrequest/42".into(), ..Thread::default() };
+        assert_eq!(pr_facts(&ado, Some(&s)), "PR !42 · approved · checks ✓ · 2 comments");
         let failing = crate::pr::Summary { failing_checks: vec!["lint".into()], comment_count: 1, review_decision: String::new(), ..s };
         assert_eq!(pr_facts(&t, Some(&failing)), "PR #4 · checks ✗ 1 · 1 comment");
         assert_eq!(pr_facts(&Thread::default(), None), "");

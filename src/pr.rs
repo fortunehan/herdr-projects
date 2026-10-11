@@ -108,11 +108,10 @@ pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Ch
             github::reduce(&json, branch, origin).map_err(ViewError::BadOutput)
         }
         Some(Forge::AzureDevOps(remote)) => {
-            let Some((named, id)) = ado::parse_pr_url(url).filter(|(named, _)| named.same(&remote)) else {
+            let Some((_, id)) = ado::parse_pr_url(url).filter(|(named, _)| named.same(&remote)) else {
                 return Ok(Checked::Ignored("it is not a pull request of the thread's `origin`".into()));
             };
-            let json = client.ado.pull_request(&named, id).map_err(ViewError::Unreachable)?;
-            ado::reduce(&json, &remote).map_err(ViewError::BadOutput)
+            ado::view(&client.ado, &remote, id)
         }
     }
 }
