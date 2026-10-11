@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use super::{Checked, Summary, sanitize};
@@ -156,6 +156,25 @@ pub fn pr_line(report: &str, origin: &Remote) -> Result<Option<String>, String> 
     }
 }
 
+/// Azure DevOps did not accept the PAT, or there is none. Unlike a network
+/// failure this does not heal by waiting.
+#[derive(Debug)]
+pub struct AuthFailure(String);
+
+impl std::fmt::Display for AuthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AuthFailure {}
+
+/// Whether `error` is a missing PAT, an answer of HTTP 302 (to the sign-in
+/// page), 401 or 203, or a body that is not JSON.
+pub fn is_auth_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<AuthFailure>())
+}
+
 /// Azure DevOps for one thread during one pass. After a request fails, its
 /// later requests are skipped, so a slow proxy cannot stall the ticker.
 pub struct Client<'a> {
@@ -193,10 +212,10 @@ impl<'a> Client<'a> {
 
     fn request(&self, url: &str) -> Result<String> {
         let Some(pat) = &self.pat else {
-            bail!("{PAT_VAR} is not set");
+            return Err(AuthFailure(format!("{PAT_VAR} is not set")).into());
         };
         if pat.chars().any(char::is_control) {
-            bail!("{PAT_VAR} holds a control character");
+            return Err(AuthFailure(format!("{PAT_VAR} holds a control character")).into());
         }
         let mut cmd = Cmd::new("curl", CURL_TIMEOUT)
             .args(["--silent", "--show-error", "--config", "-", "--header", "Accept: application/json", "--write-out", "\\n%{http_code}"])
@@ -210,10 +229,14 @@ impl<'a> Client<'a> {
             bail!("curl: {}", sanitize(&out.error_text()));
         }
         let (body, status) = out.stdout.rsplit_once('\n').unwrap_or(("", &out.stdout));
-        if status.trim() != "200" {
-            bail!("HTTP {}", sanitize(status));
+        match status.trim() {
+            "200" => {}
+            "302" | "401" | "203" => return Err(AuthFailure(format!("HTTP {}", status.trim())).into()),
+            other => bail!("HTTP {}", sanitize(other)),
         }
-        serde_json::from_str::<serde::de::IgnoredAny>(body).context("the answer is not JSON")?;
+        if serde_json::from_str::<serde::de::IgnoredAny>(body).is_err() {
+            return Err(AuthFailure("the answer is not JSON".into()).into());
+        }
         Ok(body.to_string())
     }
 
@@ -228,6 +251,19 @@ impl<'a> Client<'a> {
         if let Some(id) = self.users.borrow().get(&key) {
             return Ok(id.clone());
         }
+        let id = self.authenticated_user(org)?.id;
+        self.users.borrow_mut().insert(key, id.clone());
+        Ok(id)
+    }
+
+    /// How the user the PAT belongs to in `org` is named, for `doctor`: its
+    /// display name, or its id when it has none.
+    pub fn user_name(&self, org: &str) -> Result<String> {
+        let user = self.authenticated_user(org)?;
+        Ok(if user.provider_display_name.is_empty() { user.id } else { user.provider_display_name })
+    }
+
+    fn authenticated_user(&self, org: &str) -> Result<Identity> {
         #[derive(Deserialize, Default)]
         #[serde(default, rename_all = "camelCase")]
         struct Connection {
@@ -235,13 +271,12 @@ impl<'a> Client<'a> {
         }
         // `connectionData` refuses a version without `-preview`.
         let json = self.get(&format!("https://dev.azure.com/{}/_apis/connectionData?api-version={API_VERSION}-preview", encode(org)))?;
-        let connection: Connection = serde_json::from_str(&json)?;
-        let id = sanitize(&connection.authenticated_user.unwrap_or_default().id);
-        if id.is_empty() {
+        let user = serde_json::from_str::<Connection>(&json)?.authenticated_user.unwrap_or_default();
+        let user = Identity { id: sanitize(&user.id), provider_display_name: sanitize(&user.provider_display_name) };
+        if user.id.is_empty() {
             bail!("connectionData names no user");
         }
-        self.users.borrow_mut().insert(key, id.clone());
-        Ok(id)
+        Ok(user)
     }
 
     fn list(&self, remote: &Remote, query: &[(&str, &str)]) -> Result<Vec<AdoPr>> {
@@ -302,9 +337,10 @@ struct AdoCommit {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 struct Identity {
     id: String,
+    provider_display_name: String,
 }
 
 /// OPEN, MERGED or CLOSED for an Azure DevOps status; a draft is `active`.
@@ -574,6 +610,42 @@ mod tests {
         let client = Client::new(&runner, &Env::for_test(home.path(), &[]));
         assert!(format!("{:#}", client.pull_request(&origin, 7).unwrap_err()).contains("AZURE_DEVOPS_PAT is not set"));
         assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_missing_or_refused_pat_is_an_auth_failure_and_a_network_failure_is_not() {
+        let home = tempfile::tempdir().unwrap();
+        let origin = parse_remote(ORIGIN).unwrap();
+        let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
+        let answer = |output: crate::runner::Output| {
+            let runner = FakeRunner::new();
+            runner.on("curl", output);
+            Client::new(&runner, &env).pull_request(&origin, 7).unwrap_err()
+        };
+        for status in ["302", "401", "203"] {
+            let error = answer(ok(&format!("<html>sign in</html>\n{status}")));
+            assert!(is_auth_failure(&error), "{status}");
+            assert_eq!(format!("{error:#}"), format!("HTTP {status}"));
+        }
+        assert!(is_auth_failure(&answer(ok("<html>sign in</html>\n200"))));
+        assert!(is_auth_failure(&Client::new(&FakeRunner::new(), &Env::for_test(home.path(), &[])).pull_request(&origin, 7).unwrap_err()));
+        for status in ["500", "503", "403", "404"] {
+            assert!(!is_auth_failure(&answer(ok(&format!("{{}}\n{status}")))), "{status}");
+        }
+        let error = answer(crate::runner::fake::fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+        assert!(!is_auth_failure(&error));
+    }
+
+    #[test]
+    fn the_user_is_named_by_display_name_or_id() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
+        let runner = FakeRunner::new();
+        runner.on("connectionData", ok("{\"authenticatedUser\":{\"id\":\"me-id\",\"providerDisplayName\":\"Han\\nFuqiang\"}}\n200"));
+        assert_eq!(Client::new(&runner, &env).user_name("org").unwrap(), "HanFuqiang");
+        let runner = FakeRunner::new();
+        runner.on("connectionData", ok("{\"authenticatedUser\":{\"id\":\"me-id\"}}\n200"));
+        assert_eq!(Client::new(&runner, &env).user_name("org").unwrap(), "me-id");
     }
 
     #[test]

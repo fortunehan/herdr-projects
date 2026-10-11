@@ -1581,8 +1581,173 @@ fn a_failing_azure_devops_request_is_logged_without_the_pat_and_leaves_gh_alone(
     let text: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
     assert_eq!(text, ["t-0001: Azure DevOps: HTTP 302"]);
     assert!(memory.gh.last_error.is_empty());
-    assert!(items_of(&project, "outage").is_empty());
+    assert!(items_of(&project, "outage").iter().all(|i| i.subject == crate::steps::ADO_SUBJECT));
     assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 1);
+}
+
+/// The branch lookup of `ado_world`'s thread answers with the returned cell.
+fn ado_branch_answer(world: &World, first: Output) -> Rc<RefCell<Output>> {
+    let answer = Rc::new(RefCell::new(first));
+    let cell = answer.clone();
+    world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), move |_| Ok(cell.borrow().clone()));
+    answer
+}
+
+fn pr_pass(ctx: &Ctx, project: &Project, memory: &mut Memory, now: jiff::Timestamp) {
+    let mut state = crate::steps::load_state(project);
+    state.last_pr_check.clear();
+    crate::steps::pull_requests(ctx, project, &mut state, memory, now);
+    crate::steps::save_state(project, &state).unwrap();
+}
+
+fn ado_items(project: &Project) -> Vec<(String, String)> {
+    items_of(project, "outage").into_iter().filter(|i| i.subject == crate::steps::ADO_SUBJECT).map(|i| (i.event, i.summary)).collect()
+}
+
+fn notifications(world: &World, needle: &str) -> usize {
+    world.runner.calls.borrow().iter().filter(|c| c.display().contains("notification show") && c.display().contains(needle)).count()
+}
+
+/// A refused PAT (302 to the sign-in page, or a body that is not JSON) is
+/// reported at once, once, with one notification; its recovery once.
+#[test]
+fn a_refused_pat_gives_one_item_and_notification_at_once_and_one_recovery_item() {
+    for refused in ["<html>sign in</html>\n302", "<html>sign in</html>\n200"] {
+        let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+        let answer = ado_branch_answer(&world, ok(refused));
+        let ctx = world.ctx();
+        let mut memory = Memory::new(&ctx);
+        let now = jiff::Timestamp::now();
+        for _ in 0..3 {
+            pr_pass(&ctx, &project, &mut memory, now);
+        }
+        let items = ado_items(&project);
+        assert_eq!(items.len(), 1, "{refused}: {items:?}");
+        assert_eq!(items[0].0, "sign-in failing");
+        assert!(items[0].1.contains("does not accept the PAT") && items[0].1.contains("AZURE_DEVOPS_PAT"), "{}", items[0].1);
+        assert_eq!(notifications(&world, "PAT is missing or refused"), 1, "{refused}");
+        assert_eq!(world.runner.count(ADO_BRANCH_QUERY), 3, "asked again every pass");
+
+        *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+        for _ in 0..2 {
+            pr_pass(&ctx, &project, &mut memory, now);
+        }
+        let items = ado_items(&project);
+        assert_eq!(items.len(), 2, "{refused}: {items:?}");
+        assert_eq!(items[1].0, "signed in again");
+        assert_eq!(notifications(&world, "PAT is missing or refused"), 1);
+        assert!(memory.gh.last_error.is_empty() && items_of(&project, "outage").len() == 2);
+        assert_no_secret_and_proxy_only_on_ado(&world, &project);
+    }
+}
+
+/// No PAT is an auth failure only while an open thread is in an Azure DevOps
+/// repository; nothing is asked without one.
+#[test]
+fn a_missing_pat_is_reported_once_and_only_while_an_azure_devops_thread_is_open() {
+    let (mut world, project, _) = ado_world("## Report\nworking\n", "idle");
+    world.env = Env::for_test(world.home.path(), &[("HERDR_PROJECTS_ADO_PROXY", ADO_PROXY)]);
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let now = jiff::Timestamp::now();
+    for _ in 0..2 {
+        pr_pass(&ctx, &project, &mut memory, now);
+    }
+    let items = ado_items(&project);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].1.contains("AZURE_DEVOPS_PAT is not set"), "{}", items[0].1);
+    assert_eq!(notifications(&world, "PAT is missing or refused"), 1);
+    assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 0);
+}
+
+/// With no open thread in an Azure DevOps repository nothing is asked and
+/// nothing reported, PAT or not.
+#[test]
+fn without_an_open_azure_devops_thread_nothing_is_asked_or_reported() {
+    for pat in [true, false] {
+        let (mut world, project, _) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\nx\n"), "idle");
+        if !pat {
+            world.env = Env::for_test(world.home.path(), &[]);
+        }
+        thread::update(&project, "t-0001", |t| t.status = Status::Resolved).unwrap();
+        world.thread(&project, world.home.path(), |t| {
+            t.kind = Kind::Tab;
+            t.origin = "git@github.com:Owner/App.git".into();
+        });
+        let ctx = world.ctx();
+        let mut memory = Memory::new(&ctx);
+        memory.outage_secs = 0;
+        for _ in 0..2 {
+            pr_pass(&ctx, &project, &mut memory, jiff::Timestamp::now());
+        }
+        assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 0, "pat={pat}");
+        assert!(items_of(&project, "outage").is_empty(), "pat={pat}");
+        assert!(!memory.ado_auth_failing);
+    }
+}
+
+/// Network failures, timeouts and 5xx are reported only once they last
+/// `outage_secs`, and their end once.
+#[test]
+fn an_azure_devops_outage_is_reported_only_after_outage_secs_and_its_end_once() {
+    let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    assert_eq!(memory.outage_secs, 600);
+    let start = jiff::Timestamp::now();
+    let at = |secs: i64| start + jiff::SignedDuration::from_secs(secs);
+    pr_pass(&ctx, &project, &mut memory, at(0));
+    *answer.borrow_mut() = ok("<html>bad gateway</html>\n503");
+    pr_pass(&ctx, &project, &mut memory, at(300));
+    assert!(ado_items(&project).is_empty());
+    assert_eq!(notifications(&world, "Azure DevOps"), 0);
+    pr_pass(&ctx, &project, &mut memory, at(600));
+    pr_pass(&ctx, &project, &mut memory, at(900));
+    let items = ado_items(&project);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].0, "failing");
+    assert!(items[0].1.contains("failing for 10 minutes") && items[0].1.contains("Last error: HTTP 503"), "{}", items[0].1);
+    assert_eq!(notifications(&world, "Azure DevOps keeps failing"), 1);
+
+    *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    pr_pass(&ctx, &project, &mut memory, at(1000));
+    pr_pass(&ctx, &project, &mut memory, at(1100));
+    let items = ado_items(&project);
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(items[1].0, "working again");
+    assert!(memory.gh.last_error.is_empty() && !memory.ado_auth_failing);
+    assert_no_secret_and_proxy_only_on_ado(&world, &project);
+}
+
+/// `gh` working does not end an Azure DevOps outage, nor the reverse.
+#[test]
+fn gh_and_azure_devops_outages_do_not_affect_each_other() {
+    let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+    let ado = ado_branch_answer(&world, fail(7, "curl: (7) Failed to connect"));
+    let gh_ok = Rc::new(RefCell::new(true));
+    let flag = gh_ok.clone();
+    world.runner.on_fn(|cmd| cmd.display().contains("gh pr view"), move |_| Ok(if *flag.borrow() { ok(r#"{"state":"OPEN","headRefName":"x"}"#) } else { fail(1, "could not resolve host") }));
+    let gh_thread = world.thread(&project, world.home.path(), |t| {
+        t.kind = Kind::Tab;
+        t.origin = "git@github.com:Owner/App.git".into();
+    });
+    std::fs::write(thread::home_report_path(&project, &gh_thread.id), format!("PR: {PR_URL}\n")).unwrap();
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    memory.outage_secs = 0;
+    let now = jiff::Timestamp::now();
+    let subjects = |project: &Project| items_of(project, "outage").into_iter().map(|i| format!("{} {}", i.subject, i.event)).collect::<Vec<_>>();
+
+    pr_pass(&ctx, &project, &mut memory, now);
+    pr_pass(&ctx, &project, &mut memory, now);
+    assert_eq!(subjects(&project), ["azure-devops failing"]);
+
+    *ado.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    *gh_ok.borrow_mut() = false;
+    pr_pass(&ctx, &project, &mut memory, now);
+    pr_pass(&ctx, &project, &mut memory, now);
+    assert_eq!(subjects(&project), ["azure-devops failing", "azure-devops working again", "gh failing"]);
 }
 
 /// Threads on remote machines are followed from the local ticker: curl runs

@@ -13,25 +13,86 @@ use crate::runner::{Cmd, Runner};
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// GitHub hosts of the `origin` remotes of this directory's repository and
-/// of each project's local repositories, with one `owner/repo` on each.
-fn github_hosts(root: &Path, runner: &dyn Runner) -> std::collections::BTreeMap<String, String> {
-    let mut dirs: Vec<String> = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).into_iter().collect();
+/// The forges of the `origin` remotes of each project's local repositories,
+/// and of this directory's repository (`None` when it has none).
+fn origins(root: &Path, runner: &dyn Runner) -> (Vec<crate::pr::Forge>, Option<crate::pr::Forge>) {
+    let forge_of = |dir: &str| {
+        let out = runner.run(&Cmd::new("git", TOOL_TIMEOUT).args(["-C", dir, "remote", "get-url", "origin"])).ok()?;
+        out.success().then(|| crate::pr::Forge::of(&out.stdout)).flatten()
+    };
+    let mut projects = Vec::new();
     for slug in project::list_slugs(root) {
         if let Ok((settings, _)) = project::Project::load(root, &slug).and_then(|p| p.read_project_md()) {
-            dirs.extend(settings.repos.into_iter().filter(|r| r.machine.is_none()).map(|r| r.path));
+            projects.extend(settings.repos.iter().filter(|r| r.machine.is_none()).filter_map(|r| forge_of(&r.path)));
         }
     }
+    let here = std::env::current_dir().ok().and_then(|d| forge_of(&d.to_string_lossy()));
+    (projects, here)
+}
+
+/// GitHub hosts among `forges`, with one `owner/repo` on each.
+fn github_hosts<'a>(forges: impl Iterator<Item = &'a crate::pr::Forge>) -> std::collections::BTreeMap<String, String> {
     let mut hosts = std::collections::BTreeMap::new();
-    for dir in dirs {
-        let Ok(out) = runner.run(&Cmd::new("git", TOOL_TIMEOUT).args(["-C", &dir, "remote", "get-url", "origin"])) else {
-            continue;
-        };
-        if let Some(crate::pr::Forge::GitHub(remote)) = out.success().then(|| crate::pr::Forge::of(&out.stdout)).flatten() {
-            hosts.entry(remote.host).or_insert(remote.repo);
+    for forge in forges {
+        if let crate::pr::Forge::GitHub(remote) = forge {
+            hosts.entry(remote.host.clone()).or_insert(remote.repo.clone());
         }
     }
     hosts
+}
+
+/// The Azure DevOps section, only for projects with a repository there: the
+/// PAT, the proxy variable, and per organisation whether `connectionData`
+/// names the PAT's user. Report only. It checks this shell's variables; the
+/// ticker has them only when started from such a shell.
+fn azure_devops(env: &Env, runner: &dyn Runner, forges: &[crate::pr::Forge], check: &mut dyn FnMut(Option<bool>, &str, String)) {
+    use crate::pr::ado;
+    let mut orgs: std::collections::BTreeMap<String, ado::Remote> = std::collections::BTreeMap::new();
+    for forge in forges {
+        if let crate::pr::Forge::AzureDevOps(remote) = forge {
+            orgs.entry(remote.org.to_lowercase()).or_insert_with(|| remote.clone());
+        }
+    }
+    if orgs.is_empty() {
+        return;
+    }
+    let pat = env.var(ado::PAT_VAR).is_some_and(|v| !v.is_empty());
+    if pat {
+        check(Some(true), "ado PAT", format!("{} is set", ado::PAT_VAR));
+    } else {
+        check(None, "ado PAT", format!("{} is not set; Azure DevOps pull requests are not followed. The ticker needs it in the shell that runs `ticker start`", ado::PAT_VAR));
+    }
+    match env.var(ado::PROXY_VAR).filter(|v| !v.is_empty()) {
+        Some(proxy) => check(Some(true), "ado proxy", format!("{} is {}", ado::PROXY_VAR, crate::pr::sanitize(&without_userinfo(proxy)))),
+        None => check(None, "ado proxy", format!("{} is not set; Azure DevOps requests use the inherited proxy variables", ado::PROXY_VAR)),
+    }
+    for (org, remote) in &orgs {
+        let label = format!("ado {org}");
+        if !pat {
+            check(None, &label, format!("not asked: {} is not set", ado::PAT_VAR));
+            continue;
+        }
+        let used = format!("used for {}", remote.url());
+        // A client per organisation: one failure must not skip the others.
+        match ado::Client::new(runner, env).user_name(&remote.org) {
+            Ok(name) => check(Some(true), &label, format!("signed in as {name} ({used})")),
+            Err(error) if ado::is_auth_failure(&error) => {
+                check(None, &label, format!("the PAT is refused ({}); renew {} ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PAT_VAR))
+            }
+            Err(error) => check(None, &label, format!("not reached ({}); check {} ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PROXY_VAR)),
+        }
+    }
+}
+
+/// A proxy URL without its `user:password@`.
+fn without_userinfo(url: &str) -> String {
+    match url.rsplit_once('@') {
+        Some((before, host)) => match before.split_once("://") {
+            Some((scheme, _)) => format!("{scheme}://{host}"),
+            None => host.to_string(),
+        },
+        None => url.to_string(),
+    }
 }
 
 /// Prints the report and returns whether every required check passed. With
@@ -148,7 +209,8 @@ fn report(
     // `gh` per GitHub host the repositories use: the one in this directory
     // and each project's local ones. Off `github.com` the check runs as the
     // pull request follow-up does, with `GH_HOST` set.
-    let hosts = github_hosts(root, runner);
+    let (project_forges, here) = origins(root, runner);
+    let hosts = github_hosts(project_forges.iter().chain(&here));
     if hosts.is_empty() || hosts.contains_key("github.com") {
         match runner.run(&Cmd::new("gh", TOOL_TIMEOUT).args(["auth", "status"])) {
             Ok(o) if o.success() => check(&mut out, Some(true), "gh auth", "logged in".into()),
@@ -181,6 +243,7 @@ fn report(
             Err(error) => check(&mut out, None, &label, format!("gh cannot reach {host} ({error:#}); pull requests of {repo} are not followed")),
         }
     }
+    azure_devops(env, runner, &project_forges, &mut |ok, label, detail| check(&mut out, ok, label, detail));
 
     if root.is_dir() {
         let count = project::list_slugs(root).len();
@@ -584,6 +647,57 @@ mod tests {
             assert!(!text.contains("] gh auth:"), "github.com is not in use: {text}");
             assert_eq!(runner.count("gh auth status"), 0);
         }
+    }
+
+    /// Shown only for a project repository on Azure DevOps; report only, and
+    /// the PAT never shows.
+    #[test]
+    fn an_azure_devops_repository_gets_the_pat_proxy_and_sign_in_checks() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("root");
+        let repo = home.path().join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        project::create(&root, "demo", "", vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None, name: None }]).unwrap();
+        let pat = "pat-SECRET-4711";
+        let run = |origin: &str, vars: &[(&str, &str)], curl: Option<crate::runner::Output>| {
+            let runner = runner_with_herdr("herdr 0.9.1\n");
+            let origin = format!("{origin}\n");
+            runner.on_fn(|cmd| cmd.display().ends_with("/app remote get-url origin"), move |_| Ok(ok(&origin)));
+            if let Some(answer) = curl {
+                runner.on("curl", answer);
+            }
+            let env = Env::for_test(home.path(), vars);
+            let (text, healthy) = report(&env, &root, &home.path().join("cfg"), &SessionFlags::default(), &runner, true, None);
+            assert!(healthy, "{text}");
+            assert!(!text.contains(pat), "{text}");
+            let curl: Vec<String> = runner.calls.borrow().iter().filter(|c| c.program == "curl").map(|c| c.display()).collect();
+            (text, curl)
+        };
+        let ado = "https://sc-ado@dev.azure.com/sc-ado/My%20Project/_git/app";
+
+        let (text, curl) = run("https://github.com/o/app.git", &[("AZURE_DEVOPS_PAT", pat)], None);
+        assert!(!text.contains("] ado"), "{text}");
+        assert!(curl.is_empty());
+
+        let (text, curl) = run(ado, &[], None);
+        assert!(text.contains("[warn] ado PAT: AZURE_DEVOPS_PAT is not set; Azure DevOps pull requests are not followed"), "{text}");
+        assert!(text.contains("[warn] ado proxy: HERDR_PROJECTS_ADO_PROXY is not set; Azure DevOps requests use the inherited proxy variables"), "{text}");
+        assert!(text.contains("[warn] ado sc-ado: not asked: AZURE_DEVOPS_PAT is not set"), "{text}");
+        assert!(curl.is_empty());
+
+        let vars = [("AZURE_DEVOPS_PAT", pat), ("HERDR_PROJECTS_ADO_PROXY", "http://me:pw@127.0.0.1:7890")];
+        let (text, curl) = run(ado, &vars, Some(ok("{\"authenticatedUser\":{\"id\":\"me-id\",\"providerDisplayName\":\"Han Fuqiang\"}}\n200")));
+        assert!(text.contains("[ok  ] ado PAT: AZURE_DEVOPS_PAT is set"), "{text}");
+        assert!(text.contains("[ok  ] ado proxy: HERDR_PROJECTS_ADO_PROXY is http://127.0.0.1:7890\n"), "{text}");
+        assert!(text.contains("[ok  ] ado sc-ado: signed in as Han Fuqiang (used for https://dev.azure.com/sc-ado/My%20Project/_git/app)"), "{text}");
+        assert!(!text.contains("pw@"), "{text}");
+        assert_eq!(curl.len(), 1);
+        assert!(curl[0].contains("--proxy http://me:pw@127.0.0.1:7890 ") && curl[0].ends_with("https://dev.azure.com/sc-ado/_apis/connectionData?api-version=7.1-preview"), "{}", curl[0]);
+
+        let (text, _) = run(ado, &vars, Some(ok("<html>sign in</html>\n302")));
+        assert!(text.contains("[warn] ado sc-ado: the PAT is refused (HTTP 302); renew AZURE_DEVOPS_PAT"), "{text}");
+        let (text, _) = run(ado, &vars, Some(fail(28, "curl: (28) Operation timed out")));
+        assert!(text.contains("[warn] ado sc-ado: not reached (curl: curl: (28) Operation timed out); check HERDR_PROJECTS_ADO_PROXY"), "{text}");
     }
 
     #[test]

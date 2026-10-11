@@ -26,6 +26,8 @@ pub const PR_INTERVAL_SECS: i64 = 120;
 pub const MERGE_GRACE_SECS: i64 = 600;
 pub const DONE_RETENTION_DAYS: u64 = 30;
 const DEFAULT_OUTAGE_SECS: i64 = 600;
+/// The subject of Azure DevOps `outage` items.
+pub const ADO_SUBJECT: &str = "azure-devops";
 
 /// `.state/ticker.json`: what the ticker compared against last time.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -62,8 +64,9 @@ pub fn save_state(project: &Project, state: &State) -> Result<()> {
     project::write_json(&project.state_dir().join("ticker.json"), state)
 }
 
-/// Continuous-failure tracking for `gh` or a machine: one item when it has
-/// failed for the threshold, one more when it recovers, nothing for blips.
+/// Continuous-failure tracking for `gh`, Azure DevOps or a machine: one item
+/// when it has failed for the threshold, one more when it recovers, nothing
+/// for blips.
 #[derive(Debug, Clone, Default)]
 pub struct Outage {
     failing_since: Option<jiff::Timestamp>,
@@ -110,6 +113,10 @@ pub struct MachineMemory {
 pub struct Memory {
     pub started: jiff::Timestamp,
     pub gh: Outage,
+    /// Azure DevOps network failures, apart from `gh`'s.
+    pub ado: Outage,
+    /// An Azure DevOps auth failure was reported and its recovery not yet.
+    pub ado_auth_failing: bool,
     /// Who the threads act as, per forge account (`pr::account`), asked once.
     pub own_ids: BTreeMap<String, String>,
     pub outage_secs: i64,
@@ -124,6 +131,8 @@ impl Memory {
         Memory {
             started: jiff::Timestamp::now(),
             gh: Outage::default(),
+            ado: Outage::default(),
+            ado_auth_failing: false,
             own_ids: BTreeMap::new(),
             // Overridable so an outage can be exercised without waiting ten minutes.
             outage_secs: ctx.env.var("HERDR_PROJECTS_OUTAGE_SECS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_OUTAGE_SECS),
@@ -303,7 +312,7 @@ pub fn nudge_text(items: &[inbox::Item]) -> String {
         let subject = inbox::safe_subject(&item.subject);
         let who = match item.kind.as_str() {
             "routine" | "routine-approval" => format!("routine {subject}"),
-            "outage" if subject != "gh" => format!("machine {subject}"),
+            "outage" if subject != "gh" && subject != ADO_SUBJECT => format!("machine {subject}"),
             "session" | "space" => String::new(),
             _ => subject,
         };
@@ -538,20 +547,54 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
     errors
 }
 
-/// A forge call that worked. Only `gh` keeps an outage record.
+/// A forge call that worked. `gh` and Azure DevOps keep separate records.
 fn forge_worked(project: &Project, memory: &mut Memory, t: &Thread, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
-    if !pr::Forge::is_azure_devops(&t.origin) {
+    if pr::Forge::is_azure_devops(&t.origin) {
+        ado_auth_worked(project, memory, errors);
+        ado_reached(project, memory, now, errors);
+    } else {
         gh_worked(project, memory, now, errors);
     }
 }
 
-/// A forge call that failed: `gh` failures count toward its outage, Azure
-/// DevOps ones are logged with the pass's errors and never touch `gh`'s.
+/// A forge call that failed. `gh` failures count toward its outage. An Azure
+/// DevOps auth failure is reported at once, since waiting does not heal it;
+/// its other failures count toward its own outage.
 fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &mut Memory, t: &Thread, error: &anyhow::Error, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
-    if pr::Forge::is_azure_devops(&t.origin) {
-        errors.push(anyhow::anyhow!("{}: Azure DevOps: {}", t.id, pr::sanitize(&format!("{error:#}"))));
-    } else {
+    if !pr::Forge::is_azure_devops(&t.origin) {
         gh_failed(project, notifier, memory, error, now, errors);
+        return;
+    }
+    let text = pr::sanitize(&format!("{error:#}"));
+    errors.push(anyhow::anyhow!("{}: Azure DevOps: {text}", t.id));
+    if !pr::ado::is_auth_failure(error) {
+        if memory.ado.record(false, &text, now, memory.outage_secs) == Some(OutageEvent::Down) {
+            let summary = format!("Azure DevOps has been failing for {} minutes; its pull requests are not being followed. Last error: {text}", memory.outage_secs / 60);
+            errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "failing", &summary, "").err());
+            notifier.send("Azure DevOps", "pull requests are not being followed: Azure DevOps keeps failing", crate::notify::Sound::None, true);
+        }
+        return;
+    }
+    if !memory.ado_auth_failing {
+        memory.ado_auth_failing = true;
+        let summary = format!(
+            "Azure DevOps does not accept the PAT ({text}); its pull requests are not being followed. Set or renew `{}`, then run `ticker start` from a shell that has it",
+            pr::ado::PAT_VAR
+        );
+        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "sign-in failing", &summary, "").err());
+        notifier.send("Azure DevOps", "pull requests are not being followed: the PAT is missing or refused", crate::notify::Sound::Request, true);
+    }
+}
+
+fn ado_auth_worked(project: &Project, memory: &mut Memory, errors: &mut Vec<anyhow::Error>) {
+    if std::mem::take(&mut memory.ado_auth_failing) {
+        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "signed in again", "Azure DevOps accepts the PAT again; pull request follow-up has resumed", "").err());
+    }
+}
+
+fn ado_reached(project: &Project, memory: &mut Memory, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
+    if memory.ado.record(true, "", now, memory.outage_secs) == Some(OutageEvent::Recovered) {
+        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "working again", "Azure DevOps is reachable again; pull request follow-up has resumed", "").err());
     }
 }
 
@@ -814,6 +857,7 @@ mod tests {
             "[hp inbox] t-0040 PR merged, new report; t-0043 blocked on a prompt; routine nightly--run--rm--rf due; gh failing; machine m1-laptop unreachable; 1 more"
         );
         assert!(!text.contains("IGNORE"));
+        assert_eq!(nudge_text(&[item("outage", ADO_SUBJECT, "sign-in failing")]), "[hp inbox] azure-devops sign-in failing");
         // Items written before events existed fall back to their kind.
         assert_eq!(nudge_text(&[item("config-error", "PROJECT.md", "")]), "[hp inbox] project-md config error");
     }
