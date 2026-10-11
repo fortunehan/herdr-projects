@@ -392,6 +392,21 @@ pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
     }
 }
 
+/// A thread's state line with its pull request named by its PR reference
+/// (`PR !N` on Azure DevOps): upstream's `sidebar::state_line` builds `PR #N`
+/// from the URL itself. A URL with no reference shows as `report`, like a
+/// thread with no pull request.
+pub fn state_line(group: Group, t: &thread::Thread, live: &thread::Live, now: jiff::Timestamp) -> String {
+    let line = crate::sidebar::state_line(group, t, live, now);
+    match line.split_once(" · ") {
+        Some((word, fact)) if fact.starts_with("PR ") => match crate::pr::reference(&t.pr) {
+            Some(reference) => format!("{word} · PR {reference}"),
+            None => format!("{word} · report"),
+        },
+        _ => line,
+    }
+}
+
 /// A coordinator's own percentage, the first cell of its sub-line row.
 pub const PROGRESS_TOKEN: &str = "hp_pct";
 /// A coordinator's `N working`, the cell after `$hp_sub`.
@@ -724,6 +739,21 @@ fn colour_rows(rows: &mut Value, token: &str, head: char, head_colour: Option<&s
 mod tests {
     use super::*;
     use crate::grouping::{PaneRow, Parts, coordinator_key, thread_key};
+
+    #[test]
+    fn a_state_line_names_the_pull_request_by_its_pr_reference() {
+        let now: jiff::Timestamp = "2026-09-23T12:00:00Z".parse().unwrap();
+        let live = thread::Live { pane_exists: true, agent_state: Some("idle".into()), ..thread::Live::default() };
+        let with_pr = |pr: &str| thread::Thread { status: thread::Status::Open, pr: pr.into(), ..thread::Thread::default() };
+        let github = with_pr("https://github.com/o/r/pull/42");
+        assert_eq!(state_line(Group::ReadyForReview, &github, &live, now), "review · PR #42");
+        assert_eq!(state_line(Group::Landing, &github, &live, now), "landing · PR #42");
+        assert_eq!(state_line(Group::ReadyForReview, &with_pr(""), &live, now), "review · report");
+        // No forge gives this URL a reference yet, so the number is not shown as `PR #N`.
+        let unknown = with_pr("https://dev.azure.com/org/project/_git/repo/pullrequest/12");
+        assert_eq!(state_line(Group::ReadyForReview, &unknown, &live, now), "review · report");
+        assert_eq!(state_line(Group::Idle, &github, &live, now), "idle");
+    }
 
     /// An agent as Herdr's agent view sort sees it.
     struct Row {

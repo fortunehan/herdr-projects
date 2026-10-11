@@ -687,7 +687,7 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             let note = if !live.pane_exists { "pane closed".to_string() } else if state.is_empty() { "no agent".to_string() } else { state.clone() };
             pass.transitions.push(Transition { id: t.id.clone(), to: group, note });
         }
-        let line = crate::sidebar::state_line(group, &after, &live, now);
+        let line = crate::views::state_line(group, &after, &live, now);
         let (activity, percent) = match &live.self_report {
             Some(record) => (record.activity.clone(), record.percent),
             None => (String::new(), None),
