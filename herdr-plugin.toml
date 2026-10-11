@@ -78,6 +78,12 @@ title = "Projects: check setup"
 contexts = ["workspace"]
 command = ["target/release/herdr-projects", "action", "doctor"]
 
+# Run only by the `thread` link handler below, so it is in no menu.
+[[actions]]
+id = "focus-thread"
+title = "Projects: focus a linked thread"
+command = ["target/release/herdr-projects", "action", "focus-thread"]
+
 [[panes]]
 id = "projects"
 title = "Projects"
@@ -103,3 +109,10 @@ id = "adopt"
 title = "Continue as a project"
 placement = "popup"
 command = ["target/release/herdr-projects", "pane", "adopt"]
+
+# A link-modifier click on https://hp.invalid/<slug>/<id> focuses that thread.
+[[link_handlers]]
+id = "thread"
+title = "Focus the linked thread"
+pattern = "^https?://hp\\.invalid/"
+action = "focus-thread"

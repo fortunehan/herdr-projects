@@ -38,6 +38,7 @@ mod steps;
 mod sweep;
 mod tasks;
 mod thread;
+mod thread_link;
 mod threads;
 mod ticker;
 mod trust_screen;

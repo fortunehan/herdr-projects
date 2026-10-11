@@ -73,7 +73,7 @@ fn read_handoff(ctx: &Ctx) -> Handoff {
 }
 
 /// The project of the workspace the action was invoked from, if any.
-fn current_slug(ctx: &Ctx) -> Option<String> {
+pub(crate) fn current_slug(ctx: &Ctx) -> Option<String> {
     let context = action_context(ctx);
     let workspace = ctx.env.var("HERDR_WORKSPACE_ID").map(str::to_string).unwrap_or(context.workspace_id);
     overview::project_for_workspace(ctx, &workspace, ctx.env.var("HERDR_SOCKET_PATH").unwrap_or(""))
@@ -98,6 +98,7 @@ pub fn run_action(ctx: &Ctx, id: &str) -> Result<()> {
             None => bail!("this workspace does not belong to a project; run `focus <slug>` from a terminal"),
         },
         "unfocus" => overview::unfocus(ctx, &SessionFlags::default()),
+        "focus-thread" => crate::thread_link::run_action(ctx),
         "adopt-workspace" => {
             // The originating pane is captured here, before any popup opens.
             let pane = ctx.env.var("HERDR_PANE_ID").map(str::to_string).unwrap_or(context.focused_pane_id);

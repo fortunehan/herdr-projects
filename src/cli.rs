@@ -381,6 +381,8 @@ enum ThreadCommand {
     },
     /// Send Escape to a thread's pane (the harness's own interrupt)
     Stop { slug: String, id: String },
+    /// Focus a thread's pane (what a click on its https://hp.invalid/<slug>/<id> link does)
+    Focus { slug: String, id: String },
     /// Deliver a thread's brief now, when its agent is ready but the ticker has not sent it yet
     Brief { slug: String, id: String },
     /// Print what a thread's pane shows now (a trust dialog, a question menu, a permission prompt)
@@ -739,6 +741,7 @@ pub fn run() -> Result<()> {
             }
             ThreadCommand::Next { slug, id, line, add } => threads::next(&ctx, &slug, &id, line, add.as_deref()),
             ThreadCommand::Stop { slug, id } => threads::stop(&ctx, &slug, &id),
+            ThreadCommand::Focus { slug, id } => crate::thread_link::focus(&ctx, &slug, &id).map(|line| println!("{line}")),
             ThreadCommand::Brief { slug, id } => threads::brief(&ctx, &slug, &id),
             ThreadCommand::Read { slug, id, lines } => threads::read(&ctx, &slug, &id, lines),
             ThreadCommand::Keys { slug, id, keys, text } => threads::keys(&ctx, &slug, &id, &keys, text.as_deref()),

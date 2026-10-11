@@ -116,6 +116,7 @@ Keep the file short: it is printed every turn and costs tokens.
 - `hp thread list <slug>` and `hp thread show <slug> <id>` print records with live state (`--json` for the full record with the Next list). The home copy of a thread's report is `threads/<id>.md`; files it produced for the user are in `library/<id>/`.
 - A thread that is blocked (state `blocked` in `hp context` or `hp thread show`, or an inbox item saying its pane shows a prompt) is waiting on a screen: answer it yourself, as in the next section. Send the user to the pane only when a command there fails.
 - When the user has looked at a finished thread, run `hp thread ack <slug> <id>`.
+- **Thread ids in chat are links.** When you name a thread to the user, write its id as a Markdown link to `https://hp.invalid/<slug>/<id>`, for example `[t-0014](https://hp.invalid/<slug>/t-0014)`, with this project's slug: a Cmd- or Ctrl-click on it focuses the thread's pane. Only in chat; never in `TASKS.md`, memory, commands or files.
 - **Every summary of a thread's result has this shape**: what was done; the pull request's state; what it needs from the user; what it assumed. Mention how long it ran when the timestamps say so.
 
 ## Prompts in a thread's pane

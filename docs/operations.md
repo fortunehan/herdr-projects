@@ -64,7 +64,7 @@ A requirement the user wants grilled before any work is planned gets a design th
 | `thread start <project> --title T [--repo PATH] [--kind worktree\|tab\|checkout\|design] [--profile P] [--machine M] [--base REF] --task-file F [--from-task TITLE]` | New thread; `-` reads the task from standard input. `--kind` is the placement: `worktree` (default with `--repo`) a worktree workspace on a new branch; `tab` (default without) its own Space in `threads/<id>/` with no worktree, for read-only work with or without a repo; `checkout` a tab of the project workspace on the repo's main checkout; `design` its own Space in `design/`. Tab and checkout threads run on this machine only. `--profile` is the agent, one the project allows. `--from-task` adds a TASKS.md task's notes and takes `--profile` and `--machine` from its owner. A design thread takes neither `--repo` nor `--machine`. |
 | `thread prompt`, `thread next [--line N \| --add TEXT]`, `thread stop`, `thread restart [--profile P]` | Steer a thread. Prompts are recorded in its task file. |
 | `thread read [--lines N]`, `thread keys [KEY]... [--text T]`, `thread brief` | Answer a thread's pane without going there: print what it shows (a trust dialog, a question menu, a permission prompt), then type text and press keys (`up`, `down`, `enter`, `esc`, `tab`, a digit). `thread keys` refuses a trust screen when `trust_screens` is `user`. `thread brief` sends a brief the ticker has not delivered yet (the ticker waits for a settled, empty input box, counts a brief sent only once the agent starts working, never types it twice, and after three unconfirmed tries leaves an inbox item). |
-| `thread list/show [--json]`, `thread ack`, `thread adopt` | Look at threads. |
+| `thread list/show [--json]`, `thread focus`, `thread ack`, `thread adopt` | Look at threads; `thread focus` focuses a thread's pane, as a click on its [link](#thread-links) does. |
 | `thread resolve [--keep-worktree] [--discard-uncopied] [--skip-copy] [--reopen]` | Final copy home, then clean up. |
 | `sweep <project> [--dry-run] [--yes]` | Remove what nothing uses any more. |
 | `set <project> <key> <value>`, `routine list/toggle/approve`, `safety show/yolo/set` | Settings, routines and safety (see below). |
@@ -102,6 +102,12 @@ Threads idle for `auto_resolve_days` are resolved (and cleaned) after a final co
 | routines | `↵` enable or disable · `i` the prompt |
 | settings | `↵` edit (also a safety row) · `Y` yolo mode on or off (asks before turning on) · `p` pause or resume · `A` archive · `X` delete (asks first). Unscoped, the rows are the all-projects safety defaults |
 | memory | `↵` read (change memory by asking the coordinator) |
+
+## Thread links
+
+The coordinator writes thread ids in chat as Markdown links to `https://hp.invalid/<project>/<id>`. A link-modifier click on one (Cmd-click in herdr-gpui, Ctrl-click in Herdr's terminal client) runs the plugin's `thread` link handler, which focuses the thread's pane like the popup's `↵`; a resolved thread or one without a pane gives a notification instead. `https://hp.invalid/<id>` takes the project of the clicked pane's workspace. A remote thread's pane is focused in that machine's Herdr.
+
+Herdr hands a click to a plugin only for a URL, and herdr-gpui only for an http(s) one, so a bare `t-0014` is not clickable. Claude Code shows such a link as the id alone only when it emits terminal hyperlinks, which it does not by default under Herdr (`TERM_PROGRAM=herdr`); set `FORCE_HYPERLINK=1`, for example in the `env` block of `~/.claude/settings.json`. Without it the URL follows the id in parentheses, and the URL is what you click. `.invalid` never resolves, so a browser that opens the URL instead reaches nothing.
 
 ## Safety settings
 
