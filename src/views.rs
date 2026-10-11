@@ -749,8 +749,10 @@ mod tests {
         assert_eq!(state_line(Group::ReadyForReview, &github, &live, now), "review · PR #42");
         assert_eq!(state_line(Group::Landing, &github, &live, now), "landing · PR #42");
         assert_eq!(state_line(Group::ReadyForReview, &with_pr(""), &live, now), "review · report");
-        // No forge gives this URL a reference yet, so the number is not shown as `PR #N`.
-        let unknown = with_pr("https://dev.azure.com/org/project/_git/repo/pullrequest/12");
+        let ado = with_pr("https://dev.azure.com/org/project/_git/repo/pullrequest/12");
+        assert_eq!(state_line(Group::ReadyForReview, &ado, &live, now), "review · PR !12");
+        // No followed forge gives this URL a reference, so no number is shown.
+        let unknown = with_pr("https://gitlab.com/o/r/-/merge_requests/12");
         assert_eq!(state_line(Group::ReadyForReview, &unknown, &live, now), "review · report");
         assert_eq!(state_line(Group::Idle, &github, &live, now), "idle");
     }

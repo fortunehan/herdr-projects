@@ -110,8 +110,8 @@ pub struct MachineMemory {
 pub struct Memory {
     pub started: jiff::Timestamp,
     pub gh: Outage,
-    /// Who the threads act as on their forge, asked once (`None` until known).
-    pub own_id: Option<String>,
+    /// Who the threads act as, per forge account (`pr::account`), asked once.
+    pub own_ids: BTreeMap<String, String>,
     pub outage_secs: i64,
     pub tick: u64,
     pub machines: BTreeMap<String, MachineMemory>,
@@ -124,7 +124,7 @@ impl Memory {
         Memory {
             started: jiff::Timestamp::now(),
             gh: Outage::default(),
-            own_id: None,
+            own_ids: BTreeMap::new(),
             // Overridable so an outage can be exercised without waiting ten minutes.
             outage_secs: ctx.env.var("HERDR_PROJECTS_OUTAGE_SECS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_OUTAGE_SECS),
             tick: 0,
@@ -440,6 +440,7 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
         if t.status != Status::Open {
             continue;
         }
+        let client = pr::Client::new(ctx.runner, ctx.env);
         // The `PR:` line of the home copy of the report.
         let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
         let url = match pr::pr_line(&report, &t.origin) {
@@ -458,13 +459,13 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
         } else if !t.pr.is_empty() {
             t.pr.clone()
         } else if t.kind == thread::Kind::Worktree {
-            match pr::find_by_branch(ctx.runner, &t.origin, &t.branch) {
+            match pr::find_by_branch(&client, &t.origin, &t.branch) {
                 Ok(found) => {
-                    gh_worked(project, memory, now, &mut errors);
+                    forge_worked(project, memory, &t, now, &mut errors);
                     found.unwrap_or_default()
                 }
                 Err(error) => {
-                    gh_failed(project, &notifier, memory, &error, now, &mut errors);
+                    forge_failed(project, &notifier, memory, &t, &error, now, &mut errors);
                     continue;
                 }
             }
@@ -479,22 +480,22 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
             continue;
         }
 
-        let checked = match pr::view(ctx.runner, &url, &t.origin, &t.branch) {
+        let checked = match pr::view(&client, &url, &t.origin, &t.branch) {
             Err(pr::ViewError::Unreachable(error)) => {
-                gh_failed(project, &notifier, memory, &error, now, &mut errors);
+                forge_failed(project, &notifier, memory, &t, &error, now, &mut errors);
                 continue;
             }
             Err(pr::ViewError::BadOutput(error)) => {
-                gh_worked(project, memory, now, &mut errors);
+                forge_worked(project, memory, &t, now, &mut errors);
                 Err(error)
             }
             Ok(checked) => {
-                gh_worked(project, memory, now, &mut errors);
+                forge_worked(project, memory, &t, now, &mut errors);
                 Ok(checked)
             }
         };
         match checked {
-            Err(error) => errors.push(error.context(format!("{}: gh output", t.id))),
+            Err(error) => errors.push(error.context(format!("{}: {} output", t.id, if pr::Forge::is_azure_devops(&t.origin) { "Azure DevOps" } else { "gh" }))),
             Ok(pr::Checked::Ignored(reason)) => {
                 if state.pr_ignored.get(&t.id) != Some(&url) {
                     state.pr_ignored.insert(t.id.clone(), url.clone());
@@ -513,10 +514,13 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
                 }).err());
                 let change = pr::describe_change(old.as_ref(), &summary);
                 let merged = summary.state == "MERGED";
-                if memory.own_id.is_none() {
-                    memory.own_id = pr::own_id(ctx.runner, &t.origin);
+                let account = pr::account(&t.origin);
+                if !memory.own_ids.contains_key(&account)
+                    && let Some(id) = pr::own_id(&client, &t.origin)
+                {
+                    memory.own_ids.insert(account.clone(), id);
                 }
-                let events = pr_events(old.as_ref(), &summary, memory.own_id.as_deref());
+                let events = pr_events(old.as_ref(), &summary, memory.own_ids.get(&account).map(String::as_str));
                 errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: {}: {change}", thread_label(&t), pr::named(&url)), "").err());
                 let reference = pr::reference(&url).unwrap_or_default();
                 if merged {
@@ -532,6 +536,23 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
         }
     }
     errors
+}
+
+/// A forge call that worked. Only `gh` keeps an outage record.
+fn forge_worked(project: &Project, memory: &mut Memory, t: &Thread, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
+    if !pr::Forge::is_azure_devops(&t.origin) {
+        gh_worked(project, memory, now, errors);
+    }
+}
+
+/// A forge call that failed: `gh` failures count toward its outage, Azure
+/// DevOps ones are logged with the pass's errors and never touch `gh`'s.
+fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &mut Memory, t: &Thread, error: &anyhow::Error, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
+    if pr::Forge::is_azure_devops(&t.origin) {
+        errors.push(anyhow::anyhow!("{}: Azure DevOps: {}", t.id, pr::sanitize(&format!("{error:#}"))));
+    } else {
+        gh_failed(project, notifier, memory, error, now, errors);
+    }
 }
 
 fn gh_worked(project: &Project, memory: &mut Memory, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
@@ -628,9 +649,10 @@ fn merged_thread_may_resolve(t: &Thread, seen: &str, now: jiff::Timestamp) -> bo
 /// counts as open: the next pass asks again.
 fn other_pr_open(ctx: &Ctx, project: &Project, t: &Thread) -> bool {
     let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
+    let client = pr::Client::new(ctx.runner, ctx.env);
     pr::named_in_report(&report, &t.origin, &t.pr)
         .iter()
-        .any(|(repo, named)| pr::own_open_numbers(ctx.runner, &t.origin, repo).map_or(true, |open| !open.is_disjoint(named)))
+        .any(|(repo, named)| pr::own_open_numbers(&client, &t.origin, repo).map_or(true, |open| !open.is_disjoint(named)))
 }
 
 /// Auto-resolve and resolve-on-merge: the final copy first; if it fails the

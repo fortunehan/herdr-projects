@@ -1374,6 +1374,224 @@ fn a_long_gh_outage_gives_one_item_and_one_recovery_item() {
     assert!(outages[1].summary.contains("working again"));
 }
 
+const ADO_ORIGIN: &str = "https://sc-ado@dev.azure.com/sc-ado/My%20Project/_git/app";
+const ADO_PR_URL: &str = "https://dev.azure.com/sc-ado/My%20Project/_git/app/pullrequest/7";
+const ADO_PAT: &str = "ado-pat-SECRET-4711";
+const ADO_PROXY: &str = "http://127.0.0.1:7890";
+const ADO_BRANCH_QUERY: &str = "searchCriteria.sourceRefName=refs%2Fheads%2Fhp%2Fdemo%2Ft-0001-task";
+
+/// What curl prints: the body, then the HTTP status on its own line.
+fn ado_answer(body: &str) -> Output {
+    ok(&format!("{body}\n200"))
+}
+
+fn ado_pr_json(status: &str) -> String {
+    format!(
+        r#"{{"pullRequestId":7,"status":"{status}","creationDate":"2026-01-01T00:00:00Z","sourceRefName":"refs/heads/hp/demo/t-0001-task",
+            "repository":{{"name":"app","project":{{"name":"My Project"}}}},"lastMergeSourceCommit":{{"commitId":"merged-head"}}}}"#
+    )
+}
+
+fn is_curl_for(cmd: &Cmd, needle: &str) -> bool {
+    cmd.program == "curl" && cmd.args.last().is_some_and(|url| url.contains(needle))
+}
+
+/// `pr_world` on Azure DevOps: the PAT and the proxy are set, the thread's
+/// origin is an ADO repository, its report is `report`, and curl answers pull
+/// request 7 with the JSON in the returned cell.
+fn ado_world(report: &str, agent_state: &str) -> (World, Project, Rc<RefCell<String>>) {
+    let (mut world, project, t) = finished_world(agent_state);
+    world.env = Env::for_test(world.home.path(), &[("AZURE_DEVOPS_PAT", ADO_PAT), ("HERDR_PROJECTS_ADO_PROXY", ADO_PROXY)]);
+    thread::update(&project, &t.id, |t| {
+        t.branch = "hp/demo/t-0001-task".into();
+        t.origin = ADO_ORIGIN.into();
+        t.report_hash = "h".into();
+        t.acked_report_hash = "h".into();
+        t.last_review_item_hash = "h".into();
+        t.last_group = "idle".into();
+        t.last_state = "idle".into();
+    })
+    .unwrap();
+    std::fs::write(thread::home_report_path(&project, "t-0001"), report).unwrap();
+    let pr = Rc::new(RefCell::new(ado_pr_json("active")));
+    let answer = pr.clone();
+    world.runner.on_fn(|cmd| is_curl_for(cmd, "/pullrequests/7?"), move |_| Ok(ado_answer(&answer.borrow())));
+    world.runner.on_fn(|cmd| is_curl_for(cmd, "/connectionData?"), |_| Ok(ado_answer(r#"{"authenticatedUser":{"id":"me-id"}}"#)));
+    world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
+    world.runner.on("branch -D", ok(""));
+    (world, project, pr)
+}
+
+fn next_pr_pass(project: &Project) {
+    let mut state = crate::steps::load_state(project);
+    state.last_pr_check = "2026-01-01T00:00:00Z".into();
+    crate::steps::save_state(project, &state).unwrap();
+}
+
+/// The PAT is in no command line, environment or inbox item, and only curl
+/// gets the ADO proxy.
+fn assert_no_secret_and_proxy_only_on_ado(world: &World, project: &Project) {
+    let calls = world.runner.calls.borrow();
+    assert!(calls.iter().any(|c| c.program == "curl"), "no Azure DevOps call was made");
+    for call in calls.iter() {
+        let display = call.display();
+        assert!(!display.contains(ADO_PAT) && !call.env.iter().any(|(_, v)| v.contains(ADO_PAT)), "{display}");
+        if call.program == "curl" {
+            assert!(display.contains(&format!("--proxy {ADO_PROXY}")) && call.stdin.as_deref().is_some_and(|s| s.contains(ADO_PAT)), "{display}");
+        } else {
+            assert!(!display.contains("--proxy") && !display.contains(ADO_PROXY), "{display}");
+        }
+    }
+    let inbox = std::fs::read_dir(project.dir().join("inbox")).unwrap().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect::<String>();
+    assert!(!inbox.contains(ADO_PAT));
+}
+
+#[test]
+fn an_azure_devops_pr_line_is_followed_in_its_canonical_form_and_its_merge_notified() {
+    let (world, project, pr) = ado_world("PR: https://sc-ado.visualstudio.com/My%20Project/_git/app/pullrequest/7\n## Report\nx\n", "working");
+    let ctx = world.ctx();
+    ticker::tick_project(&ctx, &project).unwrap();
+    let t = thread::load(&project, "t-0001").unwrap();
+    assert_eq!((t.pr.as_str(), t.pr_state.as_str()), (ADO_PR_URL, "OPEN"));
+    let items = items_of(&project, "pr");
+    assert_eq!(items.len(), 1);
+    assert!(items[0].summary.contains(&format!("PR !7 ({ADO_PR_URL})")), "{}", items[0].summary);
+
+    *pr.borrow_mut() = ado_pr_json("completed");
+    next_pr_pass(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    let t = thread::load(&project, "t-0001").unwrap();
+    assert_eq!((t.status, t.pr_state.as_str()), (Status::Open, "MERGED"), "its agent still works");
+    assert_eq!(crate::steps::load_state(&project).prs["t-0001"].head_oid, "merged-head");
+    let merged = world.runner.calls.borrow().iter().filter(|c| c.display().contains("notification show") && c.display().contains("PR !7 merged")).count();
+    assert_eq!(merged, 1);
+    assert!(items_of(&project, "pr").iter().any(|i| i.summary.contains("state MERGED")));
+    assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "gh").count(), 0);
+    assert_eq!(world.runner.count("/pullrequests/7?"), 2);
+    assert_no_secret_and_proxy_only_on_ado(&world, &project);
+}
+
+#[test]
+fn a_pr_line_of_another_azure_devops_repository_is_noted_and_never_asked_for() {
+    let (world, project, _) = ado_world("PR: https://dev.azure.com/sc-ado/My%20Project/_git/other/pullrequest/7\n## Report\nx\n", "idle");
+    thread::update(&project, "t-0001", |t| t.kind = Kind::Tab).unwrap();
+    ticker::tick_project(&world.ctx(), &project).unwrap();
+    let items = items_of(&project, "pr");
+    assert_eq!(items.len(), 1);
+    assert!(items[0].summary.contains("another repository"), "{}", items[0].summary);
+    assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 0);
+    assert!(thread::load(&project, "t-0001").unwrap().pr.is_empty());
+}
+
+/// Resolved after the grace period, by the ticker; the branch goes only when
+/// its tip is the merged head.
+#[test]
+fn a_merged_azure_devops_thread_is_resolved_and_its_branch_deleted_only_at_the_merged_head() {
+    for tip in ["merged-head", "later-local-commit"] {
+        let (world, project, pr) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\nmerged\n"), "idle");
+        *pr.borrow_mut() = ado_pr_json("completed");
+        world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task", ok(&format!("{tip}\n")));
+        let ctx = world.ctx();
+        ticker::tick_project(&ctx, &project).unwrap();
+        assert_eq!(thread::load(&project, "t-0001").unwrap().status, Status::Open);
+        merged_seen_ago(&project, crate::steps::MERGE_GRACE_SECS);
+        ticker::tick_project(&ctx, &project).unwrap();
+        let t = thread::load(&project, "t-0001").unwrap();
+        assert_eq!((t.status, t.resolved_reason.as_str()), (Status::Resolved, "merged"), "{tip}");
+        assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), usize::from(tip == "merged-head"), "{tip}");
+        let item = items_of(&project, "thread-state").into_iter().find(|i| i.summary.contains("resolved")).unwrap();
+        if tip == "merged-head" {
+            assert!(item.summary.contains("deleted (its pull request is merged)"), "{}", item.summary);
+        } else {
+            assert!(item.summary.contains("commits that are not in the merged pull request"), "{}", item.summary);
+        }
+        assert_no_secret_and_proxy_only_on_ado(&world, &project);
+    }
+}
+
+/// `!8` in the report is another of the thread's own active pull requests:
+/// the thread waits until it is no longer open.
+#[test]
+fn a_merged_azure_devops_thread_with_another_own_open_pr_is_not_resolved() {
+    let (world, project, pr) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\n!7 is merged; !8 waits for review.\n"), "done");
+    *pr.borrow_mut() = ado_pr_json("completed");
+    thread_progress(&world, &project, 100, "Done");
+    world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task", ok("merged-head\n"));
+    let open = Rc::new(RefCell::new(r#"{"value":[{"pullRequestId":8}]}"#.to_string()));
+    let answer = open.clone();
+    world.runner.on_fn(|cmd| is_curl_for(cmd, "searchCriteria.creatorId=me-id&searchCriteria.status=active"), move |_| Ok(ado_answer(&answer.borrow())));
+    let ctx = world.ctx();
+    ticker::tick_project(&ctx, &project).unwrap();
+    merged_seen_ago(&project, crate::steps::MERGE_GRACE_SECS * 10);
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(thread::load(&project, "t-0001").unwrap().status, Status::Open);
+
+    *open.borrow_mut() = r#"{"value":[]}"#.into();
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(thread::load(&project, "t-0001").unwrap().status, Status::Resolved);
+    assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1);
+}
+
+/// No `PR:` line: the ticker, or a manual resolve before it looked, finds the
+/// pull request by its branch and deletes the branch at the merged head.
+#[test]
+fn an_azure_devops_pr_found_by_branch_is_linked_and_a_manual_resolve_deletes_the_branch() {
+    for ticked in [true, false] {
+        let (world, project, pr) = ado_world("## Report\nmerged\n", "working");
+        *pr.borrow_mut() = ado_pr_json("completed");
+        let abandoned = ado_pr_json("abandoned").replace(r#""pullRequestId":7"#, r#""pullRequestId":5"#);
+        let list = format!(r#"{{"value":[{abandoned},{}],"count":2}}"#, pr.borrow());
+        world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), move |_| Ok(ado_answer(&list)));
+        world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task", ok("merged-head\n"));
+        let ctx = world.ctx();
+        if ticked {
+            ticker::tick_project(&ctx, &project).unwrap();
+            let t = thread::load(&project, "t-0001").unwrap();
+            assert_eq!((t.pr.as_str(), t.pr_state.as_str()), (ADO_PR_URL, "MERGED"));
+        }
+        threads::resolve(&ctx, "demo", "t-0001", &ResolveArgs::default()).unwrap();
+        let t = thread::load(&project, "t-0001").unwrap();
+        assert_eq!((t.status, t.pr.as_str(), t.pr_state.as_str()), (Status::Resolved, ADO_PR_URL, "MERGED"), "ticked={ticked}");
+        assert_eq!(world.runner.count(ADO_BRANCH_QUERY), 1, "ticked={ticked}");
+        assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1, "ticked={ticked}");
+        assert_no_secret_and_proxy_only_on_ado(&world, &project);
+    }
+}
+
+/// A failing Azure DevOps request ends that thread's lookups for the pass and
+/// is logged without the PAT; `gh`'s outage record is untouched.
+#[test]
+fn a_failing_azure_devops_request_is_logged_without_the_pat_and_leaves_gh_alone() {
+    let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+    world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), |_| Ok(ok("<html>sign in</html>\n302")));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    memory.outage_secs = 0;
+    let mut state = crate::steps::State::default();
+    let errors = crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, jiff::Timestamp::now());
+    let text: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
+    assert_eq!(text, ["t-0001: Azure DevOps: HTTP 302"]);
+    assert!(memory.gh.last_error.is_empty());
+    assert!(items_of(&project, "outage").is_empty());
+    assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 1);
+}
+
+/// Threads on remote machines are followed from the local ticker: curl runs
+/// here, not over ssh.
+#[test]
+fn a_remote_azure_devops_thread_is_followed_from_the_local_ticker() {
+    let (world, project, pr) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\nx\n"), "idle");
+    *pr.borrow_mut() = ado_pr_json("completed");
+    thread::update(&project, "t-0001", |t| t.machine = "box".into()).unwrap();
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let mut state = crate::steps::State::default();
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, jiff::Timestamp::now());
+    assert_eq!(state.prs["t-0001"].head_oid, "merged-head");
+    assert_eq!(thread::load(&project, "t-0001").unwrap().pr_state, "MERGED");
+    assert!(world.runner.calls.borrow().iter().all(|c| c.program != "ssh"));
+}
+
 fn write_routine(project: &Project, name: &str, text: &str) {
     std::fs::write(project.dir().join("routines").join(format!("{name}.md")), text).unwrap();
 }
