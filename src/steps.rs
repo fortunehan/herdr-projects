@@ -110,8 +110,8 @@ pub struct MachineMemory {
 pub struct Memory {
     pub started: jiff::Timestamp,
     pub gh: Outage,
-    /// The login `gh` acts as, asked once (`None` until known).
-    pub gh_login: Option<String>,
+    /// Who the threads act as on their forge, asked once (`None` until known).
+    pub own_id: Option<String>,
     pub outage_secs: i64,
     pub tick: u64,
     pub machines: BTreeMap<String, MachineMemory>,
@@ -124,7 +124,7 @@ impl Memory {
         Memory {
             started: jiff::Timestamp::now(),
             gh: Outage::default(),
-            gh_login: None,
+            own_id: None,
             // Overridable so an outage can be exercised without waiting ten minutes.
             outage_secs: ctx.env.var("HERDR_PROJECTS_OUTAGE_SECS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_OUTAGE_SECS),
             tick: 0,
@@ -442,7 +442,7 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
         }
         // The `PR:` line of the home copy of the report.
         let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
-        let url = match pr::pr_line(&report) {
+        let url = match pr::pr_line(&report, &t.origin) {
             Ok(url) => url.unwrap_or_default(),
             Err(note) => {
                 if state.pr_line_noted.get(&t.id) != Some(&t.report_hash) {
@@ -479,17 +479,21 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
             continue;
         }
 
-        let json = match pr::view(ctx.runner, &url, &t.origin) {
-            Ok(json) => {
-                gh_worked(project, memory, now, &mut errors);
-                json
-            }
-            Err(error) => {
+        let checked = match pr::view(ctx.runner, &url, &t.origin, &t.branch) {
+            Err(pr::ViewError::Unreachable(error)) => {
                 gh_failed(project, &notifier, memory, &error, now, &mut errors);
                 continue;
             }
+            Err(pr::ViewError::BadOutput(error)) => {
+                gh_worked(project, memory, now, &mut errors);
+                Err(error)
+            }
+            Ok(checked) => {
+                gh_worked(project, memory, now, &mut errors);
+                Ok(checked)
+            }
         };
-        match pr::reduce(&json, &t.branch, &t.origin) {
+        match checked {
             Err(error) => errors.push(error.context(format!("{}: gh output", t.id))),
             Ok(pr::Checked::Ignored(reason)) => {
                 if state.pr_ignored.get(&t.id) != Some(&url) {
@@ -509,18 +513,18 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
                 }).err());
                 let change = pr::describe_change(old.as_ref(), &summary);
                 let merged = summary.state == "MERGED";
-                if memory.gh_login.is_none() {
-                    memory.gh_login = pr::own_login(ctx.runner, &t.origin);
+                if memory.own_id.is_none() {
+                    memory.own_id = pr::own_id(ctx.runner, &t.origin);
                 }
-                let events = pr_events(old.as_ref(), &summary, memory.gh_login.as_deref());
+                let events = pr_events(old.as_ref(), &summary, memory.own_id.as_deref());
                 errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: pull request {change}", thread_label(&t)), "").err());
-                let number = url.rsplit('/').next().unwrap_or("");
+                let reference = pr::reference(&url).unwrap_or_default();
                 if merged {
-                    notifier.send(&t.id, &format!("PR #{number} merged"), crate::notify::Sound::Done, false);
+                    notifier.send(&t.id, &format!("PR {reference} merged"), crate::notify::Sound::Done, false);
                 } else if events.contains(&"checks-failed") {
-                    notifier.send(&t.id, &format!("PR #{number} · checks failed"), crate::notify::Sound::None, false);
+                    notifier.send(&t.id, &format!("PR {reference} · checks failed"), crate::notify::Sound::None, false);
                 } else if events.contains(&"review") {
-                    notifier.send(&t.id, &format!("PR #{number} · new review activity"), crate::notify::Sound::None, false);
+                    notifier.send(&t.id, &format!("PR {reference} · new review activity"), crate::notify::Sound::None, false);
                 }
                 errors.extend(fire_pr_routines(ctx, project, &t, &url, &events, &summary));
                 state.prs.insert(t.id.clone(), summary);
@@ -620,13 +624,13 @@ fn merged_thread_may_resolve(t: &Thread, seen: &str, now: jiff::Timestamp) -> bo
 }
 
 /// Whether a pull request the thread's report names, other than its tracked
-/// one, is open and was opened by the `gh` user. A `gh` failure counts as
-/// open: the next pass asks again.
+/// one, is open and was opened by the threads' own account. A failed lookup
+/// counts as open: the next pass asks again.
 fn other_pr_open(ctx: &Ctx, project: &Project, t: &Thread) -> bool {
     let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
-    pr::report_refs(&report, &t.origin, &t.pr)
+    pr::named_in_report(&report, &t.origin, &t.pr)
         .iter()
-        .any(|(repo, named)| pr::open_own_numbers(ctx.runner, repo, &pr::host_of(&t.origin)).map_or(true, |open| !open.is_disjoint(named)))
+        .any(|(repo, named)| pr::own_open_numbers(ctx.runner, &t.origin, repo).map_or(true, |open| !open.is_disjoint(named)))
 }
 
 /// Auto-resolve and resolve-on-merge: the final copy first; if it fails the
@@ -828,5 +832,27 @@ mod tests {
         assert_eq!(outage.record(false, "e", at("2026-09-17T11:30:00Z"), 600), None);
         assert_eq!(outage.record(true, "", at("2026-09-17T11:31:00Z"), 600), Some(OutageEvent::Recovered));
         assert_eq!(outage.record(true, "", at("2026-09-17T11:32:00Z"), 600), None);
+    }
+
+    #[test]
+    fn a_ticker_state_written_by_0_2_34_loads_and_saves_unchanged() {
+        let written = serde_json::json!({
+            "last_pr_check": "2026-10-11T10:00:00Z",
+            "prs": {"t-0001": {
+                "state": "MERGED", "review_decision": "APPROVED", "failing_checks": ["lint"], "comment_count": 2,
+                "commenters": ["alice"], "activity": {"alice": 2, "me": 1}, "head_oid": "abc123"}},
+            "pr_ignored": {"t-0002": "https://github.com/o/r/pull/9"},
+            "pr_line_noted": {"t-0003": "hash"},
+            "routines": {},
+            "config_errors": ["e"],
+            "nudged": "n",
+            "box_pane": "w1:p1",
+            "box_empty_since": "2026-10-11T10:00:00Z",
+            "session_item_written": true,
+            "merged_seen": {"t-0001": "2026-10-11T09:00:00Z"}
+        });
+        let state: State = serde_json::from_value(written.clone()).unwrap();
+        assert_eq!(state.prs["t-0001"].head_oid, "abc123");
+        assert_eq!(serde_json::to_value(&state).unwrap(), written);
     }
 }

@@ -27,7 +27,7 @@ fn github_hosts(root: &Path, runner: &dyn Runner) -> std::collections::BTreeMap<
         let Ok(out) = runner.run(&Cmd::new("git", TOOL_TIMEOUT).args(["-C", &dir, "remote", "get-url", "origin"])) else {
             continue;
         };
-        if let Some(remote) = out.success().then(|| crate::pr::parse_remote(&out.stdout)).flatten() {
+        if let Some(crate::pr::Forge::GitHub(remote)) = out.success().then(|| crate::pr::Forge::of(&out.stdout)).flatten() {
             hosts.entry(remote.host).or_insert(remote.repo);
         }
     }
@@ -166,7 +166,7 @@ fn report(
     }
     for (host, repo) in hosts.iter().filter(|(host, _)| host.as_str() != "github.com") {
         let label = format!("github {host}");
-        let result = runner.run(&crate::pr::gh(host).args(["api", "user", "--jq", ".login"]));
+        let result = runner.run(&crate::pr::github::gh(host).args(["api", "user", "--jq", ".login"]));
         match result {
             Ok(o) if o.success() => check(&mut out, Some(true), &label, format!("reachable as {} (GH_HOST={host}, used for {repo})", crate::pr::sanitize(o.stdout.trim()))),
             Ok(o) => check(

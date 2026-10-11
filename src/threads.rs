@@ -943,13 +943,12 @@ pub fn clean(ctx: &Ctx, project: &Project, t: &Thread, options: &Clean) -> Vec<S
 fn last_pr_lookup(ctx: &Ctx, project: &Project, t: &Thread) -> Option<crate::pr::Summary> {
     use crate::pr;
     let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
-    let url = match pr::pr_line(&report) {
+    let url = match pr::pr_line(&report, &t.origin) {
         Ok(Some(url)) => url,
         _ if !t.pr.is_empty() => t.pr.clone(),
         _ => pr::find_by_branch(ctx.runner, &t.origin, &t.branch).ok()??,
     };
-    let json = pr::view(ctx.runner, &url, &t.origin).ok()?;
-    let pr::Checked::Summary(summary) = pr::reduce(&json, &t.branch, &t.origin).ok()? else {
+    let pr::Checked::Summary(summary) = pr::view(ctx.runner, &url, &t.origin, &t.branch).ok()? else {
         return None;
     };
     if t.pr != url || t.pr_state != summary.state {

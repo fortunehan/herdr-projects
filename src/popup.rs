@@ -113,10 +113,10 @@ pub fn parse_tasks(slug: &str, text: &str) -> Vec<TaskRow> {
 
 /// `PR #4 · approved · checks ✓ · 2 comments`, from the ticker's last poll.
 pub fn pr_facts(thread: &Thread, summary: Option<&crate::pr::Summary>) -> String {
-    let Some(number) = thread.pr.rsplit('/').next().filter(|n| !n.is_empty() && !thread.pr.is_empty()) else {
+    let Some(reference) = crate::pr::reference(&thread.pr) else {
         return String::new();
     };
-    let mut parts = vec![format!("PR #{number}")];
+    let mut parts = vec![format!("PR {reference}")];
     if let Some(s) = summary {
         let state = s.state.to_lowercase();
         if state != "open" && !state.is_empty() {
