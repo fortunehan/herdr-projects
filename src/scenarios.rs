@@ -1604,7 +1604,10 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1") && own.contains("--clear-token hp_title"), "{own}");
     let other = last(0, "w5:p1");
     assert!(other.contains("--token hp_tier=0") && other.contains("--clear-token hp_needs"), "{other}");
-    assert!(world.runner.count(&format!("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub={}needs you · 1 blocked · ~50% ", crate::views::CLEAR_MARK)) >= 1);
+    assert!(world.runner.count(&format!("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub={}needs you · 1 blocked ", crate::views::CLEAR_MARK)) >= 1);
+    // Its percentage leads the row in a cell of its own, which only coordinators get.
+    assert!(own.contains("--token hp_pct=~50%") && own.contains("--clear-token hp_work") && own.contains("--clear-token hp_rest"), "{own}");
+    assert!(thread.contains("--clear-token hp_pct") && outside.contains("--clear-token hp_pct"), "{thread}");
     assert_eq!(world.runner.count("Waiting on thread"), 0);
 
     // A design thread is not demoted, leads when it needs the user, and its name starts with the design mark.

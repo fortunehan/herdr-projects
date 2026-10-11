@@ -138,6 +138,8 @@ pub struct Rank {
     pub design_space: Option<String>,
     /// A thread's title, the row under its name ([`TITLE_TOKEN`]).
     pub title: Option<String>,
+    /// A coordinator's sub-line cells besides `$hp_sub` (see [`SubCells`]).
+    pub cells: SubCells,
 }
 
 /// One session's project agents, by pane.
@@ -149,21 +151,25 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
     let mut out = Vec::new();
     let threads: Vec<thread::Thread> = thread::list(project).into_iter().filter(|t| !t.is_remote() && matches!(t.status, thread::Status::Open | thread::Status::Starting)).collect();
     let thread_needs = threads.iter().any(|t| Group::from_token(&t.last_group) == Some(Group::WaitingOnYou));
-    for c in coordinators {
-        let terminal = agents.iter().find(|a| a.pane_id == c.pane_id).map(|a| a.terminal_id.clone()).unwrap_or_default();
-        let report = crate::progress::self_report(&ctx.root, &record.socket, &c.pane_id, &terminal);
-        let needs = !paused && (thread_needs || crate::coordinator::row_state(c, report.as_ref()).0 == Group::WaitingOnYou);
-        out.push((c.pane_id.clone(), Rank { needs, ..Rank::default() }));
-    }
-    if !record.pane_id.is_empty() && !out.iter().any(|(pane, _)| pane == &record.pane_id) {
-        out.push((record.pane_id.clone(), Rank::default()));
+    let recorded = (!record.pane_id.is_empty()).then_some(record.pane_id.as_str());
+    for pane in coordinators.iter().map(|c| c.pane_id.as_str()).chain(recorded) {
+        if out.iter().any(|(p, _)| p == pane) {
+            continue;
+        }
+        let terminal = agents.iter().find(|a| a.pane_id == pane).map(|a| a.terminal_id.clone()).unwrap_or_default();
+        let report = crate::progress::self_report(&ctx.root, &record.socket, pane, &terminal);
+        let state = coordinators.iter().find(|c| c.pane_id == pane).map(|c| crate::coordinator::row_state(c, report.as_ref()));
+        let needs = !paused && state.is_some() && (thread_needs || state.as_ref().is_some_and(|(group, _)| *group == Group::WaitingOnYou));
+        let line = state.map(|(_, line)| line).unwrap_or_default();
+        let cells = if paused { SubCells::default() } else { coordinator_line(&threads, &line, report.as_ref()).cells };
+        out.push((pane.to_string(), Rank { needs, cells, ..Rank::default() }));
     }
     for t in threads.into_iter().filter(|t| !t.pane_id.is_empty()) {
         let needs = !paused && Group::from_token(&t.last_group) == Some(Group::WaitingOnYou);
         let design = t.kind == thread::Kind::Design;
         let design_space = (design && !t.workspace_id.is_empty() && t.workspace_id != record.workspace_id).then(|| t.workspace_id.clone());
         let title = Some(t.title.clone()).filter(|title| !title.trim().is_empty());
-        out.push((t.pane_id.clone(), Rank { needs, implementation: !design, design_space, title }));
+        out.push((t.pane_id.clone(), Rank { needs, implementation: !design, design_space, title, ..Rank::default() }));
     }
     out
 }
@@ -172,13 +178,17 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
 /// thread); `hp_needs` is cleared, not set to 0, when it does not apply. An
 /// implementation thread never gets it: its coordinator, which then needs
 /// the user too, is where the user resolves it. A thread's title goes in
-/// [`TITLE_TOKEN`], cleared on every other pane.
+/// [`TITLE_TOKEN`], a coordinator's [`SubCells`] in theirs; each is cleared
+/// on every other pane.
 pub fn tokens(rank: Option<&Rank>) -> Tokens {
     let rank = rank.cloned().unwrap_or_default();
     vec![
         ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
         ("hp_needs".to_string(), (rank.needs && !rank.implementation).then(|| "1".to_string())),
         (TITLE_TOKEN.to_string(), rank.title),
+        (PROGRESS_TOKEN.to_string(), rank.cells.progress),
+        (WORKING_TOKEN.to_string(), rank.cells.working),
+        (REST_TOKEN.to_string(), rank.cells.rest),
     ]
 }
 
@@ -325,29 +335,51 @@ pub fn thread_sub(thread: &thread::Thread, sub: String) -> String {
     }
 }
 
-/// A coordinator's sub-line: `needs you` when it or one of its threads needs
-/// the user (so the red rule applies), its open local threads by group, then
-/// its own last reported percentage. Unlike a thread's, the percentage is
-/// shown however old: a coordinator waiting on its threads reports once and
-/// then sits idle. Its activity is left out to keep the line short. Starts
-/// with [`CLEAR_MARK`].
-pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> String {
+/// A coordinator's own percentage, the first cell of its sub-line row.
+pub const PROGRESS_TOKEN: &str = "hp_pct";
+/// A coordinator's `N working`, the cell after `$hp_sub`.
+pub const WORKING_TOKEN: &str = "hp_work";
+/// A coordinator's other thread counts, the last cell.
+pub const REST_TOKEN: &str = "hp_rest";
+
+/// The cells of a coordinator's sub-line row other than `$hp_sub`. Herdr
+/// colours a whole token, so the yellow parts need tokens of their own; it
+/// joins a row's tokens with ` · ` and skips missing ones, so the row reads
+/// `~10% · needs you · 1 blocked · 2 working · 1 review` as one line.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubCells {
+    pub progress: Option<String>,
+    pub working: Option<String>,
+    pub rest: Option<String>,
+}
+
+/// A coordinator's sub-line, split into its row's cells.
+struct CoordinatorLine {
+    /// `$hp_sub`: `needs you` and the blocked count, red together.
+    lead: String,
+    cells: SubCells,
+}
+
+/// A coordinator's sub-line: its own last reported percentage first, then
+/// `needs you` when it or one of its threads needs the user, then its open
+/// local threads by group. Unlike a thread's, the percentage is shown however
+/// old: a coordinator waiting on its threads reports once and then sits idle.
+/// Its activity is left out to keep the line short.
+fn coordinator_line(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> CoordinatorLine {
     let groups: Vec<Group> = threads.iter().filter_map(|t| Group::from_token(&t.last_group)).collect();
-    let mut parts: Vec<String> = Vec::new();
-    if state_line.starts_with("needs you") || groups.contains(&Group::WaitingOnYou) {
-        parts.push("needs you".into());
-    }
-    let labels = [(Group::WaitingOnYou, "blocked"), (Group::Working, "working"), (Group::ReadyForReview, "review"), (Group::Landing, "landing"), (Group::Idle, "idle")];
-    for (group, label) in labels {
-        let n = groups.iter().filter(|g| **g == group).count();
-        if n > 0 {
-            parts.push(format!("{n} {label}"));
-        }
-    }
-    if let Some(p) = report.filter(|r| r.reported()).and_then(|r| r.percent).filter(|p| *p < 100) {
-        parts.push(format!("~{p}%"));
-    }
-    clear_sub(parts.join(" · "))
+    let count = |group: Group, label: &str| Some(groups.iter().filter(|g| **g == group).count()).filter(|n| *n > 0).map(|n| format!("{n} {label}"));
+    let needs = (state_line.starts_with("needs you") || groups.contains(&Group::WaitingOnYou)).then(|| "needs you".to_string());
+    let lead: Vec<String> = needs.into_iter().chain(count(Group::WaitingOnYou, "blocked")).collect();
+    let rest: Vec<String> = [(Group::ReadyForReview, "review"), (Group::Landing, "landing"), (Group::Idle, "idle")].into_iter().filter_map(|(g, l)| count(g, l)).collect();
+    let progress = report.filter(|r| r.reported()).and_then(|r| r.percent).filter(|p| *p < 100).map(|p| format!("~{p}%"));
+    CoordinatorLine { lead: lead.join(" · "), cells: SubCells { progress, working: count(Group::Working, "working"), rest: Some(rest.join(" · ")).filter(|r| !r.is_empty()) } }
+}
+
+/// A coordinator's `$hp_sub` (see [`coordinator_line`]): `needs you` and the
+/// blocked count, so the red rule applies, after [`CLEAR_MARK`]; empty, so no
+/// cell is drawn, when nothing needs the user.
+pub fn coordinator_sub(threads: &[thread::Thread], state_line: &str, report: Option<&crate::progress::Record>) -> String {
+    clear_sub(coordinator_line(threads, state_line, report).lead)
 }
 
 // ---------------------------------------------------------------- config.toml
@@ -416,6 +448,7 @@ const HEAD_COLOUR: &str = "#7aa2f7";
 pub fn config_edit(text: &str, builtin: &[(String, String)], remove: bool) -> Result<(String, Option<String>)> {
     let mut doc = text.parse::<DocumentMut>().context("config.toml does not parse")?;
     colour_heads(&mut doc, remove);
+    place_sub_cells(&mut doc, remove);
     place_title_rows(&mut doc, remove);
     let ours = |t: &Table| t.get("command").and_then(Item::as_str) == Some(ACTION);
     let existing = doc.get("keys").and_then(|k| k.get("command")).and_then(Item::as_array_of_tables).is_some_and(|c| c.iter().any(ours));
@@ -494,15 +527,12 @@ fn title_row(row: &Value) -> bool {
     row.as_array().is_some_and(|cells| cells.len() == 1) && row_names(row, &token)
 }
 
-/// Puts (or with `remove` drops) the [`TITLE_TOKEN`] row right above the
-/// `$hp_sub` row of upstream's card, in `rows` and every `rows_by_agent`
-/// override. Upstream's edit keeps a row it does not own where it is and
-/// moves its sub-line to the bottom, so the title stays second.
-fn place_title_rows(doc: &mut DocumentMut, remove: bool) {
-    let Some(agents) = doc.as_table_mut().get_mut("ui").and_then(Item::as_table_like_mut).and_then(|ui| ui.get_mut("sidebar")).and_then(Item::as_table_like_mut).and_then(|s| s.get_mut("agents")).and_then(Item::as_table_like_mut) else {
-        return;
-    };
+/// The agents' `rows` and every `rows_by_agent` override.
+fn agent_row_lists(doc: &mut DocumentMut) -> Vec<&mut Array> {
     let mut lists: Vec<&mut Array> = Vec::new();
+    let Some(agents) = doc.as_table_mut().get_mut("ui").and_then(Item::as_table_like_mut).and_then(|ui| ui.get_mut("sidebar")).and_then(Item::as_table_like_mut).and_then(|s| s.get_mut("agents")).and_then(Item::as_table_like_mut) else {
+        return lists;
+    };
     for (key, item) in agents.iter_mut() {
         match key.get() {
             "rows" => lists.extend(item.as_value_mut().and_then(Value::as_array_mut)),
@@ -514,8 +544,66 @@ fn place_title_rows(doc: &mut DocumentMut, remove: bool) {
             _ => {}
         }
     }
+    lists
+}
+
+/// The coordinator's percentage and working count: Tokyo Night's yellow, as
+/// on Herdr's working state icon, and apart from the threads' paler `review`.
+const PROGRESS_COLOUR: &str = "#e0af68";
+
+/// The [`SubCells`] cells as `(token, fg)`, before `$hp_sub` and after it.
+const BEFORE_SUB: [(&str, &str); 1] = [(PROGRESS_TOKEN, PROGRESS_COLOUR)];
+const AFTER_SUB: [(&str, &str); 2] = [(WORKING_TOKEN, PROGRESS_COLOUR), (REST_TOKEN, CLEAR_COLOUR)];
+
+fn cell_token(cell: &Value) -> Option<&str> {
+    cell.as_str().or_else(|| cell.as_inline_table().and_then(|t| t.get("token")).and_then(Value::as_str))
+}
+
+/// Puts (or with `remove` takes out) the [`SubCells`] cells around `$hp_sub`
+/// in upstream's sub-line row, in `rows` and every `rows_by_agent` override.
+/// Upstream's edit keeps a row whose tokens are not all its own and adds a
+/// fresh sub-line row at the bottom, so an earlier run's row loses our cells
+/// and only the last bare `$hp_sub` row is kept. Before upstream's removal,
+/// the row is left bare for upstream to recognise.
+fn place_sub_cells(doc: &mut DocumentMut, remove: bool) {
+    let ours: Vec<String> = BEFORE_SUB.iter().chain(&AFTER_SUB).map(|(t, _)| format!("${t}")).collect();
+    let bare = |row: &Value| row.as_array().is_some_and(|cells| cells.len() == 1 && cells.get(0).and_then(cell_token) == Some("$hp_sub"));
+    let cell = |(token, colour): &(&str, &str)| {
+        let mut t = InlineTable::new();
+        t.insert("token", format!("${token}").into());
+        t.insert("fg", (*colour).into());
+        Value::InlineTable(t)
+    };
+    for rows in agent_row_lists(doc) {
+        for row in rows.iter_mut().filter_map(Value::as_array_mut) {
+            row.retain(|c| !cell_token(c).is_some_and(|t| ours.iter().any(|o| o == t)));
+        }
+        rows.retain(|r| r.as_array().is_none_or(|cells| !cells.is_empty()));
+        let Some(last) = rows.iter().enumerate().filter(|(_, r)| bare(r)).map(|(i, _)| i).last().filter(|_| !remove) else {
+            continue;
+        };
+        let dupes: Vec<usize> = rows.iter().enumerate().filter(|(i, r)| *i != last && bare(r)).map(|(i, _)| i).collect();
+        for i in dupes.iter().rev() {
+            rows.remove(*i);
+        }
+        let row = rows.get_mut(last - dupes.len()).and_then(Value::as_array_mut).expect("a bare sub-line row");
+        for (i, c) in BEFORE_SUB.iter().enumerate() {
+            row.insert_formatted(i, cell(c));
+        }
+        for c in &AFTER_SUB {
+            row.push_formatted(cell(c));
+        }
+        row.fmt();
+    }
+}
+
+/// Puts (or with `remove` drops) the [`TITLE_TOKEN`] row right above the
+/// `$hp_sub` row of upstream's card, in `rows` and every `rows_by_agent`
+/// override. Upstream's edit keeps a row it does not own where it is and
+/// moves its sub-line to the bottom, so the title stays second.
+fn place_title_rows(doc: &mut DocumentMut, remove: bool) {
     let sub = "$hp_sub";
-    for rows in lists {
+    for rows in agent_row_lists(doc) {
         let titles = rows.iter().filter(|r| title_row(r)).count();
         let at = rows.iter().position(|r| row_names(r, sub));
         let in_place = titles == 1 && at.is_some_and(|i| i > 0 && rows.get(i - 1).is_some_and(title_row));
@@ -781,11 +869,16 @@ mod tests {
     #[test]
     fn every_pane_gets_a_tier_and_hp_needs_only_on_coordinators_and_design_threads() {
         let title = |t: Option<&str>| (TITLE_TOKEN.to_string(), t.map(str::to_string));
-        assert_eq!(tokens(None), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None), title(None)]);
+        let none = |token: &str| (token.to_string(), None);
+        let no_cells = [none(PROGRESS_TOKEN), none(WORKING_TOKEN), none(REST_TOKEN)];
+        let with = |head: Vec<(String, Option<String>)>| head.into_iter().chain(no_cells.clone()).collect::<Vec<_>>();
+        assert_eq!(tokens(None), with(vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None), title(None)]));
         let blocked = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
-        assert_eq!(tokens(Some(&blocked)), vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None), title(Some("Fix the build"))]);
-        let waiting = Rank { needs: true, ..Rank::default() };
-        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string())), title(None)]);
+        assert_eq!(tokens(Some(&blocked)), with(vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None), title(Some("Fix the build"))]));
+        let cells = SubCells { progress: Some("~10%".into()), working: Some("2 working".into()), rest: None };
+        let waiting = Rank { needs: true, cells, ..Rank::default() };
+        let some = |token: &str, value: &str| (token.to_string(), Some(value.to_string()));
+        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string())), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
     }
 
     #[test]
@@ -879,24 +972,56 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinators_sub_line_counts_its_threads_and_ends_with_its_own_percentage() {
+    fn a_coordinators_sub_line_leads_with_its_own_percentage_then_counts_its_threads() {
         let t = |group: Group, kind: thread::Kind| thread::Thread { last_group: group.token().into(), kind, ..thread::Thread::default() };
         let worker = thread::Kind::Worktree;
         let report = |percent: Option<u8>, activity: &str| crate::progress::Record { percent, activity: activity.into(), reported_at: 1, ..Default::default() };
         let waiting_on_thread = report(Some(50), "Waiting on thread");
         let clear = |text: &str| format!("{CLEAR_MARK}{text}");
-        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), clear("1 working · ~50%"), "no activity text");
-        let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design)];
-        assert_eq!(coordinator_sub(&two, "idle", None), clear("2 working · 1 review"));
+        // The cells as Herdr draws the row: present ones joined by ` · `.
+        let row = |threads: &[thread::Thread], line: &str, report: Option<&crate::progress::Record>| -> String {
+            let CoordinatorLine { lead, cells } = coordinator_line(threads, line, report);
+            [cells.progress, Some(lead).filter(|l| !l.is_empty()), cells.working, cells.rest].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+        };
+        assert_eq!(row(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "~50% · 1 working", "no activity text");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "", "nothing red, so no `$hp_sub` cell");
+        let cells = coordinator_line(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)).cells;
+        assert_eq!(cells, SubCells { progress: Some("~50%".into()), working: Some("1 working".into()), rest: None });
+        let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design), t(Group::Idle, worker)];
+        assert_eq!(row(&two, "idle", None), "2 working · 1 review · 1 idle");
+        assert_eq!(coordinator_line(&two, "idle", None).cells.rest.as_deref(), Some("1 review · 1 idle"));
         assert_eq!(coordinator_sub(&[t(Group::WaitingOnYou, worker), t(Group::Resolved, worker)], "idle", None), clear("needs you · 1 blocked"));
         let asks = report(Some(40), crate::progress::WAITING);
-        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "needs you · ~40%", Some(&asks)), clear("needs you · 1 working · ~40%"));
-        assert_eq!(coordinator_sub(&[], "idle", Some(&report(Some(100), "Done"))), "", "done: no percentage and no activity");
-        assert_eq!(coordinator_sub(&[], "idle", Some(&report(None, "Reading code"))), "");
-        assert_eq!(coordinator_sub(&[], "idle", Some(&crate::progress::Record::default())), "", "no report this session: no row");
-        // Red only when it leads with needs you; a leading count is never taken for a thread's review, and reads clearly.
+        let all = [t(Group::Working, worker), t(Group::WaitingOnYou, worker), t(Group::Landing, worker)];
+        assert_eq!(row(&all, "needs you · ~40%", Some(&asks)), "~40% · needs you · 1 blocked · 1 working · 1 landing");
+        assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "needs you · ~40%", Some(&asks)), clear("needs you"));
+        assert_eq!(row(&[], "idle", Some(&report(Some(100), "Done"))), "", "done: no percentage and no activity");
+        assert_eq!(row(&[], "idle", Some(&report(None, "Reading code"))), "");
+        assert_eq!(row(&[], "idle", Some(&crate::progress::Record::default())), "", "no report this session: no row");
+        // `$hp_sub` is red when it leads with needs you, and never taken for a thread's review.
         assert_eq!(first_match(&coordinator_sub(&[t(Group::WaitingOnYou, worker)], "idle", None)), Some(("#f38ba8", true)));
-        assert_eq!(first_match(&coordinator_sub(&[t(Group::ReadyForReview, worker)], "idle", None)), Some((CLEAR_COLOUR, false)));
+    }
+
+    #[test]
+    fn the_sub_line_row_gets_yellow_percentage_and_working_cells_once_and_unconfigure_leaves_upstreams_row() {
+        let spec = crate::sidebar::Spec { key: "prefix+a".into(), tab_command: "/bin/hp needs-you --line".into() };
+        let configure = |text: &str| config_edit(&crate::sidebar::config_edit(text, &spec, false).unwrap(), &[], false).unwrap().0;
+        let once = configure("");
+        assert_eq!(configure(&once), once, "idempotent");
+        let doc = once.parse::<DocumentMut>().unwrap();
+        let rows = doc["ui"]["sidebar"]["agents"]["rows"].as_array().unwrap();
+        let sub = rows.iter().filter_map(Value::as_array).filter(|r| row_names(&Value::Array((*r).clone()), "$hp_sub")).collect::<Vec<_>>();
+        assert_eq!(sub.len(), 1, "one sub-line row: {once}");
+        let cells: Vec<(&str, Option<&str>)> = sub[0].iter().map(|c| (cell_token(c).unwrap(), c.as_inline_table().unwrap().get("fg").and_then(Value::as_str))).collect();
+        assert_eq!(cells, [("$hp_pct", Some(PROGRESS_COLOUR)), ("$hp_sub", None), ("$hp_work", Some(PROGRESS_COLOUR)), ("$hp_rest", Some(CLEAR_COLOUR))]);
+        assert!(sub[0].iter().all(|c| c.as_inline_table().unwrap().iter().all(|(k, _)| ["token", "fg", "dim", "rules"].contains(&k))), "only keys Herdr 0.9.3 takes");
+        // A row from before this change (bare `$hp_sub`) is upgraded in place.
+        let (bare, _) = config_edit(&once, &[], true).unwrap();
+        assert!(!bare.contains("$hp_pct") && bare.contains("$hp_sub"), "{bare}");
+        assert_eq!(configure(&bare), once);
+        // Unconfigure: ours first, then upstream's, which takes the bare row out.
+        let removed = crate::sidebar::config_edit(&bare, &spec, true).unwrap();
+        assert!(!removed.contains("$hp_sub") && !removed.contains("$hp_work"), "{removed}");
     }
 
     #[test]
@@ -981,13 +1106,14 @@ mod tests {
         assert_eq!(configure(&once), once, "idempotent");
         let doc = once.parse::<DocumentMut>().unwrap();
         let tokens = |rows: &Item| -> Vec<String> { rows.as_array().unwrap().iter().map(|r| r.as_array().unwrap().iter().map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.as_inline_table().unwrap().get("token").unwrap().as_str().unwrap().to_string())).collect::<Vec<_>>().join(",")).collect() };
-        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", "$hp_sub"], "{once}");
-        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]), ["agent", "$hp_title", "$hp_sub"], "{once}");
+        let sub = "$hp_pct,$hp_sub,$hp_work,$hp_rest";
+        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", sub], "{once}");
+        assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]), ["agent", "$hp_title", sub], "{once}");
         // The title row has no style rule, so no key Herdr 0.9.3 would reject.
         assert!(once.contains("[{ token = \"$hp_title\" }]"), "{once}");
         // A title row the user moved is put back above the sub-line, once.
         let moved = once.replacen("[{ token = \"$hp_title\" }], ", "", 1).replacen("[\"state_icon\"", "[{ token = \"$hp_title\" }], [\"state_icon\"", 1);
-        assert_eq!(tokens(&configure(&moved).parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", "$hp_sub"]);
+        assert_eq!(tokens(&configure(&moved).parse::<DocumentMut>().unwrap()["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", sub]);
         // A full card gets no title row rather than a config Herdr rejects.
         let full = format!("[ui.sidebar.agents]\nrows = [{}]\n", vec!["[\"agent\"]"; 15].join(","));
         let capped = configure(&full);
