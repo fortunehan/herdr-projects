@@ -389,6 +389,83 @@ fn restart_defers_to_the_ticker_and_resets_launch_attempts() {
     assert!(brief.contains("The task."));
 }
 
+/// Git and herdr answers for placing a worktree thread of `/repo` at `wt`;
+/// `create` answers `worktree create`.
+fn placement_answers(world: &World, create: impl Fn(&Cmd) -> anyhow::Result<Output> + 'static) {
+    world.runner.on("rev-parse --show-toplevel", ok("/repo\n"));
+    world.runner.on("remote get-url origin", ok("git@github.com:Owner/App.git\n"));
+    world.runner.on("fetch origin", ok(""));
+    world.runner.on("symbolic-ref", ok("origin/main\n"));
+    world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
+    world.runner.on_fn(|cmd| cmd.display().contains("worktree create"), create);
+}
+
+/// The branch is in the record before `worktree create`, so a start cut off
+/// there leaves a record whose restart stops for a human look.
+#[test]
+fn a_start_cut_off_at_worktree_create_names_its_branch_and_restart_stops_for_a_look() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let repo = world.home.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    let at_create = Rc::new(RefCell::new(String::new()));
+    let (seen, root) = (at_create.clone(), world.root.clone());
+    placement_answers(&world, move |_| {
+        *seen.borrow_mut() = thread::load(&Project::load(&root, "demo").unwrap(), "t-0001").unwrap().branch;
+        Ok(crate::runner::fake::timeout())
+    });
+    let ctx = world.ctx();
+    let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), machine: None, profile: Some("claude".into()), kind: None, base: None, task: "Do it.".into() };
+    assert!(threads::start(&ctx, "demo", args).is_err());
+    assert_eq!(*at_create.borrow(), "hp/demo/t-0001-fix-it");
+    let t = thread::load(&project, "t-0001").unwrap();
+    assert_eq!((t.status, t.branch.as_str(), t.worktree_path.as_str()), (Status::Failed, "hp/demo/t-0001-fix-it", ""));
+
+    // herdr may have made the worktree before it timed out: the branch exists.
+    world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-fix-it", ok("abc123\n"));
+    let error = threads::restart(&ctx, "demo", "t-0001", None).unwrap_err();
+    assert!(format!("{error:#}").contains("half-made worktree"), "{error:#}");
+    assert_eq!(world.runner.count("worktree create"), 1);
+}
+
+/// Restart takes the branch from the record, whatever its name: it stops when
+/// that branch exists, and otherwise creates the worktree on it.
+#[test]
+fn restart_checks_and_reuses_the_recorded_branch_whatever_its_name() {
+    for exists in [true, false] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let wt = world.home.path().join("wt");
+        std::fs::create_dir(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        world.thread(&project, world.home.path(), |t| {
+            t.status = Status::Failed;
+            t.branch = "feature/fix-it".into();
+            t.worktree_path.clear();
+            t.workspace_id.clear();
+            t.tab_id.clear();
+            t.pane_id.clear();
+        });
+        std::fs::write(thread::task_path(&project, "t-0001"), "The task.").unwrap();
+        *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+        let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
+        placement_answers(&world, move |_| Ok(ok(&created)));
+        let tip = if exists { ok("abc123\n") } else { fail(1, "") };
+        world.runner.on("rev-parse --verify --quiet refs/heads/feature/fix-it", tip);
+
+        let restarted = threads::restart(&world.ctx(), "demo", "t-0001", None);
+        if exists {
+            assert!(format!("{:#}", restarted.unwrap_err()).contains("half-made worktree"));
+            assert_eq!(world.runner.count("worktree create"), 0);
+        } else {
+            let t = restarted.unwrap();
+            assert_eq!((t.branch.as_str(), t.worktree_path.as_str()), ("feature/fix-it", wt.as_str()));
+            assert_eq!(world.runner.count("worktree create --cwd /repo --branch feature/fix-it"), 1);
+        }
+    }
+}
+
 #[test]
 fn a_partial_copy_keeps_the_worktree_unless_the_loss_is_accepted() {
     let world = World::new();
@@ -1219,7 +1296,7 @@ fn a_merged_thread_with_another_open_pull_request_is_not_resolved() {
     assert_eq!(thread::load(&project, "t-0001").unwrap().status, Status::Resolved);
 }
 
-const MERGED_LIST: &str = r#"[{"url":"https://github.com/owner/app/pull/7","state":"MERGED","createdAt":"2026-01-01T00:00:00Z"}]"#;
+const MERGED_LIST: &str = r#"[{"url":"https://github.com/owner/app/pull/7","state":"MERGED","createdAt":"2026-01-01T00:00:00Z","headRefName":"hp/demo/t-0001-task","isCrossRepository":false}]"#;
 
 /// A thread opened and merged its pull request between two ticker passes and
 /// has no `PR:` line yet: the ticker finds it by its branch.
@@ -1230,7 +1307,7 @@ fn a_pull_request_opened_and_merged_between_two_passes_is_linked_and_its_branch_
     let opened = Rc::new(RefCell::new(false));
     let flag = opened.clone();
     world.runner.on_fn(
-        |cmd| cmd.display().contains("gh pr list --repo owner/app --head=hp/demo/t-0001-task --state all"),
+        |cmd| cmd.display().contains("gh pr list --repo owner/app --state all --limit 100"),
         move |_| Ok(ok(if *flag.borrow() { MERGED_LIST } else { "[]" })),
     );
     let ctx = world.ctx();
@@ -1295,7 +1372,7 @@ fn off_github_com_every_gh_call_goes_to_the_origin_host() {
         let report = if pr_line { format!("PR: {PR_URL}\n## Report\nmerged\n") } else { "## Report\nmerged\n".to_string() };
         std::fs::write(thread::home_report_path(&project, "t-0001"), report).unwrap();
         world.runner.on_fn(
-            |cmd| cmd.display().contains("gh pr list --repo owner/app --head=hp/demo/t-0001-task") && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into())),
+            |cmd| cmd.display().contains("gh pr list --repo owner/app --state all") && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into())),
             |_| Ok(ok(MERGED_LIST)),
         );
         let ctx = world.ctx();
@@ -1378,7 +1455,8 @@ const ADO_ORIGIN: &str = "https://sc-ado@dev.azure.com/sc-ado/My%20Project/_git/
 const ADO_PR_URL: &str = "https://dev.azure.com/sc-ado/My%20Project/_git/app/pullrequest/7";
 const ADO_PAT: &str = "ado-pat-SECRET-4711";
 const ADO_PROXY: &str = "http://127.0.0.1:7890";
-const ADO_BRANCH_QUERY: &str = "searchCriteria.sourceRefName=refs%2Fheads%2Fhp%2Fdemo%2Ft-0001-task";
+/// The pull request list a lookup by branch matches in.
+const ADO_BRANCH_QUERY: &str = "pullrequests?searchCriteria.status=all&%24top=100";
 
 /// What curl prints: the body, then the HTTP status on its own line.
 fn ado_answer(body: &str) -> Output {
@@ -1598,6 +1676,83 @@ fn an_azure_devops_pr_found_by_branch_is_linked_and_a_manual_resolve_deletes_the
         assert_eq!(world.runner.count(ADO_BRANCH_QUERY), 1, "ticked={ticked}");
         assert_eq!(world.runner.count("branch -D hp/demo/t-0001-task"), 1, "ticked={ticked}");
         assert_no_secret_and_proxy_only_on_ado(&world, &project);
+    }
+}
+
+/// The thread branch `feature/blog-widgets`, tipped at `tip`, whose pull
+/// request ado-track pushed as `feature/blog-widgets-16349910`.
+fn on_widened_branch(world: &World, project: &Project, tip: &str) {
+    thread::update(project, "t-0001", |t| t.branch = "feature/blog-widgets".into()).unwrap();
+    std::fs::write(thread::home_report_path(project, "t-0001"), "## Report\nmerged\n").unwrap();
+    world.runner.on("rev-parse --verify --quiet refs/heads/feature/blog-widgets", ok(&format!("{tip}\n")));
+}
+
+/// Resolved by the ticker after the merge's grace period, or by hand before
+/// the ticker looked.
+fn resolve_merged(world: &World, project: &Project, ticked: bool) {
+    let ctx = world.ctx();
+    if ticked {
+        ticker::tick_project(&ctx, project).unwrap();
+        merged_seen_ago(project, crate::steps::MERGE_GRACE_SECS);
+        ticker::tick_project(&ctx, project).unwrap();
+    } else {
+        threads::resolve(&ctx, &project.slug, "t-0001", &ResolveArgs::default()).unwrap();
+    }
+}
+
+const WIDENED_MERGED_JSON: &str = r#"{"state":"MERGED","reviewDecision":"APPROVED","headRefName":"feature/blog-widgets-16349910","headRefOid":"merged-head","headRepository":{"name":"app"},"headRepositoryOwner":{"login":"owner"}}"#;
+
+/// A GitHub pull request whose head branch contains the thread branch's name
+/// is found, passes the head-branch check, gets the thread resolved on its
+/// merge, and the local branch goes only at the merged head. Pull requests
+/// from other branches and from forks are passed over.
+#[test]
+fn a_github_pr_whose_head_contains_the_thread_branch_is_followed_and_resolved() {
+    const LIST: &str = r#"[
+        {"url":"https://github.com/owner/app/pull/9","state":"OPEN","createdAt":"2026-01-03T00:00:00Z","headRefName":"feature/other","isCrossRepository":false},
+        {"url":"https://github.com/owner/app/pull/8","state":"OPEN","createdAt":"2026-01-02T00:00:00Z","headRefName":"feature/blog-widgets","isCrossRepository":true},
+        {"url":"https://github.com/owner/app/pull/7","state":"MERGED","createdAt":"2026-01-01T00:00:00Z","headRefName":"feature/blog-widgets-16349910","isCrossRepository":false}]"#;
+    for ticked in [true, false] {
+        for tip in ["merged-head", "later-local-commit"] {
+            let (world, project) = pr_world(WIDENED_MERGED_JSON);
+            set_agents(&world, &project, "idle");
+            world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
+            world.runner.on("branch -D", ok(""));
+            on_widened_branch(&world, &project, tip);
+            world.runner.on("gh pr list --repo owner/app --state all --limit 100", ok(LIST));
+            resolve_merged(&world, &project, ticked);
+            let t = thread::load(&project, "t-0001").unwrap();
+            let reason = if ticked { "merged" } else { "manual" };
+            assert_eq!((t.status, t.resolved_reason.as_str(), t.pr.as_str(), t.pr_state.as_str()), (Status::Resolved, reason, PR_URL, "MERGED"), "ticked={ticked} tip={tip}");
+            assert!(items_of(&project, "pr").iter().all(|i| !i.summary.contains("ignored")));
+            assert_eq!(world.runner.count("gh pr list"), 1, "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count("branch -D feature/blog-widgets"), usize::from(tip == "merged-head"), "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count("branch -D"), usize::from(tip == "merged-head"));
+        }
+    }
+}
+
+/// The same on Azure DevOps, where the list cannot be filtered by a part of
+/// the source branch name.
+#[test]
+fn an_azure_devops_pr_whose_source_contains_the_thread_branch_is_followed_and_resolved() {
+    for ticked in [true, false] {
+        for tip in ["merged-head", "later-local-commit"] {
+            let (world, project, pr) = ado_world("## Report\nmerged\n", "idle");
+            *pr.borrow_mut() = ado_pr_json("completed").replace("refs/heads/hp/demo/t-0001-task", "refs/heads/feature/blog-widgets-16349910");
+            let other = ado_pr_json("active").replace(r#""pullRequestId":7"#, r#""pullRequestId":9"#).replace("refs/heads/hp/demo/t-0001-task", "refs/heads/feature/other");
+            let list = format!(r#"{{"value":[{other},{}],"count":2}}"#, pr.borrow());
+            world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), move |_| Ok(ado_answer(&list)));
+            on_widened_branch(&world, &project, tip);
+            resolve_merged(&world, &project, ticked);
+            let t = thread::load(&project, "t-0001").unwrap();
+            let reason = if ticked { "merged" } else { "manual" };
+            assert_eq!((t.status, t.resolved_reason.as_str(), t.pr.as_str(), t.pr_state.as_str()), (Status::Resolved, reason, ADO_PR_URL, "MERGED"), "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count(ADO_BRANCH_QUERY), 1, "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count("branch -D feature/blog-widgets"), usize::from(tip == "merged-head"), "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count("branch -D"), usize::from(tip == "merged-head"));
+            assert_no_secret_and_proxy_only_on_ado(&world, &project);
+        }
     }
 }
 
@@ -2860,24 +3015,71 @@ fn auto_resolve_closes_a_tab_threads_own_space_and_only_the_tab_of_an_older_one(
     }
 }
 
+/// Sweep goes by the thread records, not by branch names: a resolved thread's
+/// leftover worktree and merged branch are found whatever they are called,
+/// kept worktrees and open threads are left, and nothing a record does not
+/// name is reported, `hp/...` or not.
 #[test]
-fn sweep_leaves_kept_worktrees_and_copies_a_resolved_threads_files_first() {
+fn sweep_finds_what_resolved_threads_left_by_their_records_and_nothing_else() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
-    let kept = world.thread(&project, world.home.path(), |t| {
-        t.status = Status::Resolved;
-        t.branch = "hp/demo/t-0001-kept".into();
-        t.worktree_path = "/wt/kept".into();
+    let resolved = |branch: &str, path: &str| {
+        let (branch, path) = (branch.to_string(), path.to_string());
+        move |t: &mut Thread| {
+            t.status = Status::Resolved;
+            t.branch = branch;
+            t.worktree_path = path;
+        }
+    };
+    world.thread(&project, world.home.path(), |t| {
+        resolved("hp/demo/t-0001-kept", "/wt/kept")(t);
         t.kept_worktree = true;
     });
-    let _ = kept;
+    let left = world.thread(&project, world.home.path(), resolved("feature/left", "/wt/left"));
+    for branch in ["feature/merged", "bugfix/later"] {
+        world.thread(&project, world.home.path(), |t| {
+            resolved(branch, "")(t);
+            t.pr_state = "MERGED".into();
+        });
+    }
+    world.thread(&project, world.home.path(), |t| {
+        t.branch = "feature/open".into();
+        t.worktree_path = "/wt/open".into();
+    });
+    let mut state = crate::steps::load_state(&project);
+    for id in ["t-0003", "t-0004"] {
+        state.prs.insert(id.into(), crate::pr::Summary { state: "MERGED".into(), head_oid: "merged-head".into(), ..Default::default() });
+    }
+    crate::steps::save_state(&project, &state).unwrap();
     let text = std::fs::read_to_string(project.project_md()).unwrap();
     std::fs::write(project.project_md(), text.replacen("repos = []", "[[repos]]\npath = \"/repo\"", 1)).unwrap();
-    world.runner.on("worktree list --porcelain", ok("worktree /repo\nbranch refs/heads/main\n\nworktree /wt/kept\nbranch refs/heads/hp/demo/t-0001-kept\n\nworktree /wt/stray\nbranch refs/heads/hp/demo/t-0042-stray\n"));
-    world.runner.on("for-each-ref", ok(""));
+    world.runner.on(
+        "worktree list --porcelain",
+        ok("worktree /repo\nbranch refs/heads/main\n\nworktree /wt/kept\nbranch refs/heads/hp/demo/t-0001-kept\n\nworktree /wt/left\nbranch refs/heads/feature/left\n\n\
+            worktree /wt/open\nbranch refs/heads/feature/open\n\nworktree /wt/stray\nbranch refs/heads/hp/demo/t-0042-stray\n\nworktree /wt/mine\nbranch refs/heads/feature/mine\n"),
+    );
+    world.runner.on("rev-parse --verify --quiet refs/heads/feature/merged", ok("merged-head\n"));
+    world.runner.on("rev-parse --verify --quiet refs/heads/bugfix/later", ok("later-local-commit\n"));
+    world.runner.on("du -sk", ok("4\t/x\n"));
+    world.runner.on("rsync", ok(""));
+    world.runner.on("worktree remove", ok(""));
+    world.runner.on("worktree prune", ok(""));
+    world.runner.on("branch -D", ok(""));
+
     let orphans = crate::sweep::find(&world.ctx(), &project);
-    assert_eq!(orphans.len(), 1, "{orphans:?}");
-    assert!(matches!(&orphans[0], crate::sweep::Orphan::Worktree { path, thread: None, .. } if path == "/wt/stray"));
+    use crate::sweep::Orphan;
+    assert_eq!(
+        orphans,
+        [
+            Orphan::Worktree { repo: "/repo".into(), path: "/wt/left".into(), workspace: None, branch: "feature/left".into(), thread: left.id.clone() },
+            Orphan::Branch { repo: "/repo".into(), branch: "feature/merged".into() },
+        ]
+    );
+    crate::sweep::run(&world.ctx(), "demo", false, true).unwrap();
+    assert_eq!(world.runner.count("worktree remove /wt/left"), 1);
+    assert_eq!(world.runner.count("worktree remove"), 1);
+    assert_eq!(world.runner.count("branch -D feature/merged"), 1);
+    assert_eq!(world.runner.count("branch -D"), 1);
 }
 
 // ------------------------------------------------------- open in this pane
@@ -3592,8 +3794,10 @@ fn rename_moves_the_folder_and_every_reference_to_it() {
     let left = out.left.join("\n");
     assert!(left.contains("on box branch hp/scratch/t-0003-y, worktree /remote/wt"), "{left}");
     assert!(left.contains("hp/scratch/t-0002-x") && left.contains("cannot resume"), "{left}");
-    // `sweep` looks for both prefixes.
-    assert_eq!(home.branch_prefixes(), ["hp/home/", "hp/scratch/"]);
+    // `sweep` still finds the worktree thread's leftover on its old-slug branch.
+    world.runner.on("worktree list --porcelain", ok("worktree /repo\nbranch refs/heads/main\n\nworktree /wt/x\nbranch refs/heads/hp/scratch/t-0002-x\n"));
+    let swept = crate::sweep::find(&ctx, &home);
+    assert!(swept.iter().any(|o| matches!(o, crate::sweep::Orphan::Worktree { path, thread, .. } if path == "/wt/x" && *thread == wt.id)), "{swept:?}");
     // A status change keeps the former slug.
     home.set_status(project::Status::Paused).unwrap();
     assert_eq!(home.former_slugs(), ["scratch"]);

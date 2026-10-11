@@ -99,8 +99,9 @@ pub enum ViewError {
 }
 
 /// The pull request at `url` as a thread on `branch` of `origin` sees it: a
-/// summary, or ignored when it is not the thread's. On Azure DevOps only its
-/// repository is checked, not its source branch (see `ado::reduce`).
+/// summary, or ignored when it is not the thread's. On GitHub its head branch
+/// must pass `source_match`; on Azure DevOps only its repository is checked,
+/// not its source branch (see `ado::reduce`).
 pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Checked, ViewError> {
     match Forge::of(origin) {
         Some(Forge::GitHub(_)) | None => {
@@ -116,9 +117,33 @@ pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Ch
     }
 }
 
-/// The URL of the pull request whose head is `branch` of `origin`, for a
-/// thread whose report names none: open first, then merged, then closed,
-/// newest first. `None` without asking when no followed forge hosts `origin`.
+/// How well a pull request's source branch `source` names the thread branch
+/// `branch`: 0 the same name, 1 a name containing it (ado-track pushes a
+/// thread branch under its name with `-<WID>` appended), `None` not the
+/// thread's.
+pub fn source_match(source: &str, branch: &str) -> Option<u8> {
+    match source {
+        _ if branch.is_empty() => None,
+        _ if source == branch => Some(0),
+        _ if source.contains(branch) => Some(1),
+        _ => None,
+    }
+}
+
+/// Orders pull requests found by branch: the exact name before a containing
+/// one, then open, merged, closed, then newest first.
+pub fn by_branch_rank(matched: u8, state: &str, created: &str) -> (u8, u8, std::cmp::Reverse<String>) {
+    let state = match state {
+        "OPEN" => 0,
+        "MERGED" => 1,
+        _ => 2,
+    };
+    (matched, state, std::cmp::Reverse(created.to_string()))
+}
+
+/// The URL of the pull request from `branch` of `origin` (see `source_match`),
+/// for a thread whose report names none, ranked by `by_branch_rank`. `None`
+/// without asking when no followed forge hosts `origin`.
 pub fn find_by_branch(client: &Client, origin: &str, branch: &str) -> Result<Option<String>> {
     match Forge::of(origin) {
         Some(Forge::GitHub(_)) => github::find_by_branch(client.runner, origin, branch),
@@ -217,6 +242,23 @@ pub fn describe_change(old: Option<&Summary>, new: &Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_source_branch_matches_when_it_is_or_contains_the_thread_branch() {
+        assert_eq!(source_match("feature/blog-widgets", "feature/blog-widgets"), Some(0));
+        assert_eq!(source_match("feature/blog-widgets-16349910", "feature/blog-widgets"), Some(1));
+        assert_eq!(source_match("feature/blog", "feature/blog-widgets"), None);
+        assert_eq!(source_match("feature/blog-widgets", ""), None);
+        // The exact name first, whatever its state; then open, merged, closed; newest first.
+        let mut ranks = [
+            by_branch_rank(1, "OPEN", "2026-01-03"),
+            by_branch_rank(0, "CLOSED", "2026-01-01"),
+            by_branch_rank(1, "MERGED", "2026-01-04"),
+            by_branch_rank(1, "OPEN", "2026-01-02"),
+        ];
+        ranks.sort();
+        assert_eq!(ranks.map(|(m, s, c)| (m, s, c.0)), [(0, 2, "2026-01-01".into()), (1, 0, "2026-01-03".into()), (1, 0, "2026-01-02".into()), (1, 1, "2026-01-04".into())]);
+    }
 
     #[test]
     fn names_are_cut_to_80_characters() {

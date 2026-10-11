@@ -233,8 +233,13 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
 /// Steps 2 to 5 of starting a thread, also used by `thread restart` case (a).
 fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, restart: bool) -> Result<Thread> {
     let slug = &project.slug;
-    let record = thread::load(project, id)?;
+    let mut record = thread::load(project, id)?;
     let runner = ctx.runner;
+    // Recorded before `worktree create`: a start cut off right after it still
+    // names the branch, for `thread restart`'s half-made-worktree guard.
+    if record.kind == Kind::Worktree && record.branch.is_empty() {
+        record = thread::update(project, id, |t| t.branch = thread::branch_name(slug, id, &t.title))?;
+    }
 
     let placed = match record.kind {
         Kind::Worktree if record.is_remote() => {
@@ -242,12 +247,10 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             // through `--machine`.
             let target = remote::ssh_target(runner, &ctx.env.herdr_bin(), &ctx.config_dir, &record.machine)?;
             let (origin, base) = remote::repo_info(runner, &target, &record.repo, &record.base)?;
-            let branch = thread::branch_name(slug, id, &record.title);
-            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &branch, &base, &record.title)?;
+            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &base, &record.title)?;
             thread::update(project, id, |t| {
                 t.origin = origin;
                 t.base = base;
-                t.branch = branch;
                 t.worktree_path = path;
                 t.cwd = cwd;
                 t.workspace_id = created.workspace_id;
@@ -274,8 +277,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             } else {
                 record.base.clone()
             };
-            let branch = thread::branch_name(slug, id, &record.title);
-            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &branch, &base, &record.title)?;
+            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &base, &record.title)?;
             let repo_workspace = repo_space(&view.herdr, &record.repo);
             // Recorded immediately, so a command killed midway still leaves a
             // record `thread restart` can act on.
@@ -283,7 +285,6 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
                 t.repo_workspace = repo_workspace;
                 t.origin = origin;
                 t.base = base;
-                t.branch = branch;
                 t.worktree_path = path;
                 t.cwd = cwd;
                 t.workspace_id = created.workspace_id;
@@ -507,11 +508,11 @@ pub fn restart(ctx: &Ctx, slug: &str, id: &str, profile: Option<&str>) -> Result
     let (agents, panes) = lists_for(&view, &record)?;
     let now = jiff::Timestamp::now();
     let live = thread::live_state(&record, &agents, &panes, now);
-    let branch_exists = record.kind == Kind::Worktree && record.worktree_path.is_empty() && {
-        let branch = thread::branch_name(slug, id, &record.title);
+    let branch_exists = record.kind == Kind::Worktree && record.worktree_path.is_empty() && !record.branch.is_empty() && {
+        let branch = &record.branch;
         if record.is_remote() {
             let target = remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &record.machine)?;
-            remote::branch_exists(ctx.runner, &target, &record.repo, &branch)?
+            remote::branch_exists(ctx.runner, &target, &record.repo, branch)?
         } else {
             git(ctx.runner, &record.repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], GIT_TIMEOUT).is_ok()
         }

@@ -223,8 +223,8 @@ impl std::fmt::Display for Status {
 #[serde(default)]
 struct ProjectState {
     status: Status,
-    /// Slugs the project had before `rename`, oldest first: its threads'
-    /// branches (`hp/<slug>/...`) keep the name they were made with.
+    /// Slugs the project had before `rename`, oldest first: an interrupted
+    /// rename resumes through them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     former_slugs: Vec<String>,
 }
@@ -420,12 +420,6 @@ impl Project {
             state.former_slugs.push(slug.to_string());
         }
         write_json(&path, &state)
-    }
-
-    /// The branch prefixes of this project's threads: `hp/<slug>/` for the
-    /// slug and for each former one.
-    pub fn branch_prefixes(&self) -> Vec<String> {
-        std::iter::once(self.slug.clone()).chain(self.former_slugs()).map(|s| format!("hp/{s}/")).collect()
     }
 
     pub fn coordinator(&self) -> Option<Coordinator> {
