@@ -8,9 +8,9 @@
 //! and kept in `<root>/.sidebar-view`, to be set again at startup and on
 //! `unfocus`. `focus <slug>` replaces either view until `unfocus`.
 //!
-//! `priority` sorts on `hp_needs` and `hp_tier`, which the ticker writes here
-//! on every agent pane of a session it lays out, outside agents included,
-//! next to `grouping`'s tokens. A local fork addition: upstream files only
+//! `priority` sorts on `hp_needs`, `hp_tier` and `hp_recent`, which the
+//! ticker writes here on every agent pane of a session it lays out, outside
+//! agents included, next to `grouping`'s tokens. A local fork addition: upstream files only
 //! call into this module.
 
 use std::collections::HashMap;
@@ -72,8 +72,10 @@ impl View {
 
 /// The attention order (ADR 0003): coordinators and design threads that need
 /// the user first (`hp_needs`), then every other agent before implementation
-/// threads (`hp_tier` 1), each tier by Herdr's attention, then the latest
-/// state change. Herdr sorts a missing token last in both directions.
+/// threads (`hp_tier` 1). Implementation threads sort by [`RECENT_TOKEN`],
+/// which no other agent carries, so the rest tie on it and sort by Herdr's
+/// attention, then the latest state change. Herdr sorts a missing token last
+/// in both directions.
 pub fn priority_view() -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
@@ -81,10 +83,24 @@ pub fn priority_view() -> serde_json::Value {
         "sort": [
             { "field": { "token": "hp_needs" }, "order": "desc" },
             { "field": { "token": "hp_tier" }, "order": "asc" },
+            { "field": { "token": RECENT_TOKEN }, "order": "desc" },
             { "field": "attention", "order": "desc" },
             { "field": "state_change_seq", "order": "desc" },
         ],
     })
+}
+
+/// An implementation thread's place among its tier: `1` while working or
+/// blocked, else `0`, then its `state_change_seq`, zero-padded as tokens
+/// compare as strings. It sorts ahead of Herdr's attention, which drops a
+/// done thread below the idle ones once it is viewed. Herdr 0.9.3's `done` is
+/// idle and unseen, so viewing it moves no sequence number; `completion_seq`
+/// is `state_change_seq` or absent, so it adds nothing here.
+pub const RECENT_TOKEN: &str = "hp_recent";
+
+fn recent(agent: &Agent) -> String {
+    let live = matches!(agent.agent_status.as_str(), "working" | "blocked");
+    format!("{}{:020}", u8::from(live), agent.state_change_seq)
 }
 
 fn choice_path(root: &Path) -> PathBuf {
@@ -177,14 +193,15 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
 /// A pane's tokens: every agent gets a tier (`0` unless an implementation
 /// thread); `hp_needs` is cleared, not set to 0, when it does not apply. An
 /// implementation thread never gets it: its coordinator, which then needs
-/// the user too, is where the user resolves it. A thread's title goes in
-/// [`TITLE_TOKEN`], a coordinator's [`SubCells`] in theirs; each is cleared
-/// on every other pane.
-pub fn tokens(rank: Option<&Rank>) -> Tokens {
+/// the user too, is where the user resolves it, and only it gets
+/// [`RECENT_TOKEN`]. A thread's title goes in [`TITLE_TOKEN`], a
+/// coordinator's [`SubCells`] in theirs; each is cleared on every other pane.
+pub fn tokens(rank: Option<&Rank>, agent: &Agent) -> Tokens {
     let rank = rank.cloned().unwrap_or_default();
     vec![
         ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
         ("hp_needs".to_string(), (rank.needs && !rank.implementation).then(|| "1".to_string())),
+        (RECENT_TOKEN.to_string(), rank.implementation.then(|| recent(agent))),
         (TITLE_TOKEN.to_string(), rank.title),
         (PROGRESS_TOKEN.to_string(), rank.cells.progress),
         (WORKING_TOKEN.to_string(), rank.cells.working),
@@ -217,7 +234,7 @@ fn due(socket: &str, pane: &str, tokens: &Tokens) -> bool {
 /// [`DESIGN_MARK`] back on a design Space label that lost it.
 pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent]) {
     for agent in agents {
-        let tokens = tokens(ranks.and_then(|r| r.get(&agent.pane_id)));
+        let tokens = tokens(ranks.and_then(|r| r.get(&agent.pane_id)), agent);
         if due(socket, &agent.pane_id, &tokens) {
             crate::grouping::report(herdr, "pane", &agent.pane_id, &tokens);
         }
@@ -733,6 +750,18 @@ mod tests {
         Seen { name, slug, kind, group, attention, seq }
     }
 
+    impl Seen {
+        /// Herdr's `agent_status` for the attention level.
+        fn status(&self) -> &'static str {
+            match self.attention {
+                BLOCKED => "blocked",
+                DONE => "done",
+                WORKING => "working",
+                _ => "idle",
+            }
+        }
+    }
+
     fn outside(name: &'static str, attention: u64, seq: u64) -> Seen {
         seen(name, "", 'o', Group::Idle, attention, seq)
     }
@@ -752,13 +781,14 @@ mod tests {
             parts.entry(a.slug.to_string()).or_default().panes.push(PaneRow { pane: a.name.into(), key, sub: String::new() });
             ranks.insert(a.name.into(), Rank { needs: a.group == Group::WaitingOnYou && !paused.contains(&a.slug), implementation: a.kind == 't', ..Rank::default() });
         }
-        let list: Vec<Agent> = agents.iter().map(|a| Agent { pane_id: a.name.into(), ..Default::default() }).collect();
+        let list: Vec<Agent> = agents.iter().map(|a| Agent { pane_id: a.name.into(), agent_status: a.status().into(), state_change_seq: a.seq, ..Default::default() }).collect();
         let layout = crate::grouping::plan(&parts, &list, &[]);
         agents
             .iter()
-            .map(|a| {
+            .zip(&list)
+            .map(|(a, agent)| {
                 let grouping = &layout.agents.iter().find(|(p, _)| p == a.name).unwrap().1;
-                let mut tokens: std::collections::BTreeMap<String, String> = grouping.iter().chain(tokens(ranks.get(a.name)).iter()).filter_map(|(n, v)| Some((n.clone(), v.clone()?))).collect();
+                let mut tokens: std::collections::BTreeMap<String, String> = grouping.iter().chain(tokens(ranks.get(a.name), agent).iter()).filter_map(|(n, v)| Some((n.clone(), v.clone()?))).collect();
                 if !a.slug.is_empty() {
                     tokens.insert("hp_project".into(), a.slug.into());
                     tokens.insert("hp_rank".into(), a.group.rank().to_string());
@@ -779,6 +809,7 @@ mod tests {
             serde_json::json!([
                 {"field":{"token":"hp_needs"},"order":"desc"},
                 {"field":{"token":"hp_tier"},"order":"asc"},
+                {"field":{"token":"hp_recent"},"order":"desc"},
                 {"field":"attention","order":"desc"},
                 {"field":"state_change_seq","order":"desc"},
             ])
@@ -789,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn implementation_threads_follow_every_other_agent_and_sort_by_attention_among_themselves() {
+    fn implementation_threads_follow_every_other_agent_working_and_blocked_first() {
         let agents = [
             outside("outside-idle", IDLE, 90),
             seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
@@ -797,7 +828,23 @@ mod tests {
             seen("thread-blocked", "demo", 't', Group::Working, BLOCKED, 5),
             seen("thread-done", "demo", 't', Group::ReadyForReview, DONE, 4),
         ];
-        assert_eq!(priority(&agents), ["outside-working", "outside-idle", "thread-blocked", "thread-done", "thread-working"]);
+        assert_eq!(priority(&agents), ["outside-working", "outside-idle", "thread-working", "thread-blocked", "thread-done"]);
+    }
+
+    #[test]
+    fn stopped_implementation_threads_sort_by_when_they_stopped_whether_viewed_or_not() {
+        let agents = [
+            // Done at 90 and viewed: idle now, attention 1, still the latest to stop.
+            seen("viewed", "demo", 't', Group::ReadyForReview, IDLE, 90),
+            seen("done", "demo", 't', Group::ReadyForReview, DONE, 60),
+            seen("idle", "demo", 't', Group::Idle, IDLE, 50),
+            seen("working", "demo", 't', Group::Working, WORKING, 10),
+            seen("blocked", "demo", 't', Group::Working, BLOCKED, 30),
+            outside("outside-idle", IDLE, 1),
+            seen("coordinator", "demo", 'c', Group::Working, WORKING, 2),
+            outside("outside-done", DONE, 3),
+        ];
+        assert_eq!(priority(&agents), ["outside-done", "coordinator", "outside-idle", "blocked", "working", "viewed", "done", "idle"]);
     }
 
     #[test]
@@ -870,15 +917,18 @@ mod tests {
     fn every_pane_gets_a_tier_and_hp_needs_only_on_coordinators_and_design_threads() {
         let title = |t: Option<&str>| (TITLE_TOKEN.to_string(), t.map(str::to_string));
         let none = |token: &str| (token.to_string(), None);
+        let some = |token: &str, value: &str| (token.to_string(), Some(value.to_string()));
         let no_cells = [none(PROGRESS_TOKEN), none(WORKING_TOKEN), none(REST_TOKEN)];
         let with = |head: Vec<(String, Option<String>)>| head.into_iter().chain(no_cells.clone()).collect::<Vec<_>>();
-        assert_eq!(tokens(None), with(vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), None), title(None)]));
+        let idle = Agent { agent_status: "idle".into(), state_change_seq: 593, ..Agent::default() };
+        assert_eq!(tokens(None, &idle), with(vec![some("hp_tier", "0"), none("hp_needs"), none(RECENT_TOKEN), title(None)]));
         let blocked = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
-        assert_eq!(tokens(Some(&blocked)), with(vec![("hp_tier".to_string(), Some("1".to_string())), ("hp_needs".to_string(), None), title(Some("Fix the build"))]));
+        assert_eq!(tokens(Some(&blocked), &idle), with(vec![some("hp_tier", "1"), none("hp_needs"), some(RECENT_TOKEN, "000000000000000000593"), title(Some("Fix the build"))]));
+        let working = Agent { agent_status: "blocked".into(), ..idle.clone() };
+        assert_eq!(tokens(Some(&blocked), &working)[2], some(RECENT_TOKEN, "100000000000000000593"));
         let cells = SubCells { progress: Some("~10%".into()), working: Some("2 working".into()), rest: None };
         let waiting = Rank { needs: true, cells, ..Rank::default() };
-        let some = |token: &str, value: &str| (token.to_string(), Some(value.to_string()));
-        assert_eq!(tokens(Some(&waiting)), vec![("hp_tier".to_string(), Some("0".to_string())), ("hp_needs".to_string(), Some("1".to_string())), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
+        assert_eq!(tokens(Some(&waiting), &idle), vec![some("hp_tier", "0"), some("hp_needs", "1"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
     }
 
     #[test]

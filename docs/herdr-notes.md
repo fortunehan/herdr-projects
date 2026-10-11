@@ -139,7 +139,7 @@ Also learned:
 
 ## The 0.2.0 redesign (2026-09-23, herdr 0.9.1)
 
-- **`pane current --current`** returns `pane_id`, `terminal_id`, `agent` and `agent_session` (`{agent, kind, source, value}`) for the calling pane; `agent get` and `agent list` also carry `state_change_seq`. The pane id works as the progress binding; the terminal id tells a reused pane id after a restart from the old pane.
+- **`pane current --current`** returns `pane_id`, `terminal_id`, `agent` and `agent_session` (`{agent, kind, source, value}`) for the calling pane; `agent get` and `agent list` also carry `state_change_seq`, and `completion_seq`, which is that same number when the last state change ended a turn and absent otherwise. Status `done` is state idle and unseen: viewing it turns it `idle` and drops its attention from 3 to 1 but moves neither number (0.9.3). The pane id works as the progress binding; the terminal id tells a reused pane id after a restart from the old pane.
 - **`pane report-metadata` answers success with an empty body.** The CLI wrapper treats an empty successful reply as success.
 - **An agent started as a child process is detected** (0.2.2, `open` in a shell pane): Herdr names the kind, state and session as for `agent start`. `agent list` then reports the shell's directory as `cwd` and the directory of the pane's foreground process-group leader (here `herdr-projects` itself, not the agent) as `foreground_cwd`, so `open` enters the project home before it starts the agent, and coordinators match on either field.
 - **A pane from `workspace create` is not an available shell for a moment**: `agent start` returns `agent_pane_busy`. `open` retries for up to ten seconds.

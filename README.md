@@ -36,7 +36,7 @@ Keep your attention on decisions. Herdr Projects starts and tracks the threads, 
 
 ### 📈 See every thread at a glance
 
-Each thread's sidebar row shows its id and title, and a line under it with what Herdr's own state word does not say (`review · PR #4`, `~40%`) and the agent's own activity. Agents and spaces are grouped by project: the project's home space and its coordinator head the group with the project's name in bold, then its threads with what needs you first and its other spaces as Herdr's own rows; everything else comes last. `prefix+shift+v` switches the agents list to a priority order instead: what needs you first, then Herdr's own priority, with threads after other agents at the same level. The tab bar says `projects: 2 need you`. `prefix+a` opens one popup with threads, tasks, inbox, routines and settings, where every thread's own list of next steps is a number key away.
+Each thread's sidebar row shows its id and title, and a line under it with what Herdr's own state word does not say (`review · PR #4`, `~40%`) and the agent's own activity. Agents and spaces are grouped by project: the project's home space and its coordinator head the group with the project's name in bold, then its threads with what needs you first and its other spaces as Herdr's own rows; everything else comes last. `prefix+shift+v` switches the agents list to a priority order instead: what needs you first, then Herdr's own priority, then threads, working ones first and the rest by when they stopped. The tab bar says `projects: 2 need you`. `prefix+a` opens one popup with threads, tasks, inbox, routines and settings, where every thread's own list of next steps is a number key away.
 
 ### ⚡ Stop briefing every agent yourself
 
