@@ -330,7 +330,7 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
         if let Some(Some((agents, _))) = sessions.lists.get(&socket).cloned() {
             let herdr = Herdr::new(ctx.env.herdr_bin(), &socket, ctx.runner);
             crate::grouping::apply(&herdr, &socket, &parts, &agents, &mut memory.grouping);
-            crate::views::apply(&herdr, &socket, sessions.ranks.get(&socket), &agents);
+            crate::views::apply(&herdr, &socket, sessions.ranks.get(&socket), &agents, &ctx.env.home);
         }
     }
     for (project, seen) in &reachable {

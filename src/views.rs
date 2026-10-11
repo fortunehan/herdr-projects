@@ -10,7 +10,8 @@
 //!
 //! `priority` sorts on `hp_needs`, `hp_tier` and `hp_recent`, which the
 //! ticker writes here on every agent pane of a session it lays out, outside
-//! agents included, next to `grouping`'s tokens. A local fork addition: upstream files only
+//! agents included, next to `grouping`'s tokens; outside agents also get
+//! their folder as display name. A local fork addition: upstream files only
 //! call into this module.
 
 use std::collections::HashMap;
@@ -209,34 +210,73 @@ pub fn tokens(rank: Option<&Rank>, agent: &Agent) -> Tokens {
     ]
 }
 
-/// Tokens sent per `(socket, pane)`, so an unchanged pane is re-sent only to
-/// keep its TTL alive.
-type Sent = HashMap<(String, String), (Tokens, Instant)>;
+/// An outside agent's row name: the last part of its working directory (its
+/// own, else its shell's), `~` for the home directory, cut to Herdr's limit.
+/// None when Herdr knows no directory, so Herdr's own name stays.
+pub fn outside_display(agent: &Agent, home: &Path) -> Option<String> {
+    let dir = [&agent.foreground_cwd, &agent.cwd].into_iter().find(|d| !d.trim().is_empty())?;
+    let path = Path::new(dir.trim());
+    let name = if path == home {
+        "~".to_string()
+    } else {
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned())
+    };
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    let name = name.trim();
+    let name = if name.chars().count() > DISPLAY_CHARS { format!("{}…", name.chars().take(DISPLAY_CHARS - 1).collect::<String>().trim_end()) } else { name.to_string() };
+    Some(name).filter(|n| !n.is_empty())
+}
+
+/// What was sent per `(socket, pane)`, so an unchanged pane is re-sent only
+/// to keep its TTL alive.
+type Sent = HashMap<(String, String), (Tokens, Option<String>, Instant)>;
 
 static SENT: Mutex<Option<Sent>> = Mutex::new(None);
 
 const RESEND: Duration = Duration::from_millis(crate::sidebar::TOKEN_TTL_MS / 3);
 
-fn due(socket: &str, pane: &str, tokens: &Tokens) -> bool {
+fn due(socket: &str, pane: &str, tokens: &Tokens, display: Option<&str>) -> bool {
     let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
     let sent = sent.get_or_insert_with(HashMap::new);
     let key = (socket.to_string(), pane.to_string());
     match sent.get(&key) {
-        Some((last, at)) if last == tokens && at.elapsed() < RESEND => false,
+        Some((last, shown, at)) if last == tokens && shown.as_deref() == display && at.elapsed() < RESEND => false,
         _ => {
-            sent.insert(key, (tokens.clone(), Instant::now()));
+            sent.insert(key, (tokens.clone(), display.map(str::to_string), Instant::now()));
             true
         }
     }
 }
 
-/// Writes the priority tokens on every agent pane of one session, and puts
-/// [`DESIGN_MARK`] back on a design Space label that lost it.
-pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent]) {
+/// `grouping::report` with the display name in the same call and TTL, so an
+/// outside agent's name falls back to Herdr's own when the ticker stops.
+fn report(herdr: &Herdr, pane: &str, tokens: &Tokens, display: Option<&str>) {
+    let Some(display) = display else {
+        return crate::grouping::report(herdr, "pane", pane, tokens);
+    };
+    let ttl = crate::sidebar::TOKEN_TTL_MS.to_string();
+    let mut args: Vec<String> = ["pane", "report-metadata", pane, "--source", crate::herdr::SOURCE, "--display-agent", display, "--ttl-ms", &ttl].iter().map(|s| s.to_string()).collect();
+    for (name, value) in tokens {
+        match value {
+            Some(value) => args.extend(["--token".to_string(), format!("{name}={value}")]),
+            None => args.extend(["--clear-token".to_string(), name.clone()]),
+        }
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = herdr.call(&args, crate::herdr::CALL_TIMEOUT);
+}
+
+/// Writes the priority tokens on every agent pane of one session, names each
+/// outside agent (no rank) after its directory ([`outside_display`]), and
+/// puts [`DESIGN_MARK`] back on a design Space label that lost it. Threads
+/// and coordinators keep the names `sidebar::report_pane` gives them.
+pub fn apply(herdr: &Herdr, socket: &str, ranks: Option<&Ranks>, agents: &[Agent], home: &Path) {
     for agent in agents {
-        let tokens = tokens(ranks.and_then(|r| r.get(&agent.pane_id)), agent);
-        if due(socket, &agent.pane_id, &tokens) {
-            crate::grouping::report(herdr, "pane", &agent.pane_id, &tokens);
+        let rank = ranks.and_then(|r| r.get(&agent.pane_id));
+        let tokens = tokens(rank, agent);
+        let display = rank.is_none().then(|| outside_display(agent, home)).flatten();
+        if due(socket, &agent.pane_id, &tokens, display.as_deref()) {
+            report(herdr, &agent.pane_id, &tokens, display.as_deref());
         }
     }
     mark_design_spaces(herdr, socket, ranks, agents);
@@ -929,6 +969,22 @@ mod tests {
         let cells = SubCells { progress: Some("~10%".into()), working: Some("2 working".into()), rest: None };
         let waiting = Rank { needs: true, cells, ..Rank::default() };
         assert_eq!(tokens(Some(&waiting), &idle), vec![some("hp_tier", "0"), some("hp_needs", "1"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
+    }
+
+    #[test]
+    fn an_outside_agent_is_named_after_its_folder_home_as_tilde() {
+        let home = Path::new("/Users/me");
+        let at = |cwd: &str, foreground: &str| outside_display(&Agent { cwd: cwd.into(), foreground_cwd: foreground.into(), ..Agent::default() }, home);
+        assert_eq!(at("/Users/me/Codes/herdr", ""), Some("herdr".into()));
+        assert_eq!(at("/Users/me", "/Users/me/Codes/app/"), Some("app".into()), "the agent's own directory wins over its shell's");
+        assert_eq!(at("/Users/me/", ""), Some("~".into()));
+        assert_eq!(at("/", ""), Some("/".into()));
+        assert_eq!(at("", "  "), None, "no directory: Herdr's own name stays");
+        assert_eq!(at("/tmp/a\u{7}b", ""), Some("ab".into()));
+        let long = at(&format!("/tmp/{}", "x".repeat(90)), "").unwrap();
+        assert_eq!(long.chars().count(), DISPLAY_CHARS);
+        assert_eq!(herdr_display(&long), long, "Herdr's cut leaves it whole");
+        assert!(long.ends_with('…'));
     }
 
     #[test]

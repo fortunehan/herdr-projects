@@ -1599,6 +1599,9 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
     assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs") && outside.contains("--clear-token hp_title"), "an outside agent: {outside}");
+    // It is named after its folder, with the tokens' TTL; project agents keep their own names.
+    assert!(outside.starts_with("herdr pane report-metadata w9:p1 --source herdr-projects --display-agent elsewhere --ttl-ms 300000 "), "{outside}");
+    assert!(!last(0, "w2:p1").contains("--display-agent") && !last(0, "w5:p1").contains("--display-agent"), "{thread}");
     // Its coordinator carries the need; another project's does not.
     let own = last(0, "w1:p1");
     assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1") && own.contains("--clear-token hp_title"), "{own}");
