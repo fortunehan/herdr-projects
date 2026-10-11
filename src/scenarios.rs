@@ -1392,6 +1392,12 @@ fn ado_pr_json(status: &str) -> String {
     )
 }
 
+/// A pull request pushed from an `ado-track` branch, not the thread's
+/// `hp/...` branch, as threads in ADO repositories do.
+fn ado_track_pr_json(status: &str) -> String {
+    ado_pr_json(status).replace("refs/heads/hp/demo/t-0001-task", "refs/heads/feature/ADO-16885059-task")
+}
+
 fn is_curl_for(cmd: &Cmd, needle: &str) -> bool {
     cmd.program == "curl" && cmd.args.last().is_some_and(|url| url.contains(needle))
 }
@@ -1449,6 +1455,7 @@ fn assert_no_secret_and_proxy_only_on_ado(world: &World, project: &Project) {
 #[test]
 fn an_azure_devops_pr_line_is_followed_in_its_canonical_form_and_its_merge_notified() {
     let (world, project, pr) = ado_world("PR: https://sc-ado.visualstudio.com/My%20Project/_git/app/pullrequest/7\n## Report\nx\n", "working");
+    *pr.borrow_mut() = ado_track_pr_json("active");
     let ctx = world.ctx();
     ticker::tick_project(&ctx, &project).unwrap();
     let t = thread::load(&project, "t-0001").unwrap();
@@ -1457,7 +1464,7 @@ fn an_azure_devops_pr_line_is_followed_in_its_canonical_form_and_its_merge_notif
     assert_eq!(items.len(), 1);
     assert!(items[0].summary.contains(&format!("PR !7 ({ADO_PR_URL})")), "{}", items[0].summary);
 
-    *pr.borrow_mut() = ado_pr_json("completed");
+    *pr.borrow_mut() = ado_track_pr_json("completed");
     next_pr_pass(&project);
     ticker::tick_project(&ctx, &project).unwrap();
     let t = thread::load(&project, "t-0001").unwrap();
@@ -1483,13 +1490,15 @@ fn a_pr_line_of_another_azure_devops_repository_is_noted_and_never_asked_for() {
     assert!(thread::load(&project, "t-0001").unwrap().pr.is_empty());
 }
 
-/// Resolved after the grace period, by the ticker; the branch goes only when
-/// its tip is the merged head.
+/// Resolved after the grace period, by the ticker, though the pull request
+/// came from an `ado-track` branch; the thread's branch goes only when its tip
+/// is the merged head (pushed under another name), not when the thread moved
+/// on to another local branch.
 #[test]
 fn a_merged_azure_devops_thread_is_resolved_and_its_branch_deleted_only_at_the_merged_head() {
     for tip in ["merged-head", "later-local-commit"] {
         let (world, project, pr) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\nmerged\n"), "idle");
-        *pr.borrow_mut() = ado_pr_json("completed");
+        *pr.borrow_mut() = ado_track_pr_json("completed");
         world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-task", ok(&format!("{tip}\n")));
         let ctx = world.ctx();
         ticker::tick_project(&ctx, &project).unwrap();

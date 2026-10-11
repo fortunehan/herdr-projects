@@ -270,15 +270,9 @@ struct AdoPr {
 }
 
 impl AdoPr {
-    /// Whether this pull request comes from `branch` of `origin` itself, not
-    /// from a fork or another repository.
-    fn from(&self, origin: &Remote, branch: &str) -> Result<(), &'static str> {
-        if branch.is_empty() {
-            return Err("the thread has no branch");
-        }
-        if self.source_ref_name != format!("refs/heads/{branch}") {
-            return Err("its source branch is not the thread's branch");
-        }
+    /// Whether this pull request comes from `origin` itself, not from a fork
+    /// or another repository.
+    fn in_repository(&self, origin: &Remote) -> Result<(), &'static str> {
         let repo = self.repository.as_ref();
         let same = repo.is_some_and(|r| r.name.to_lowercase() == origin.repo.to_lowercase() && r.project.as_ref().is_some_and(|p| p.name.to_lowercase() == origin.project.to_lowercase()));
         if self.fork_source.is_some() || !same {
@@ -323,12 +317,15 @@ pub fn state_of(status: &str) -> Option<&'static str> {
     }
 }
 
-/// Reduces a pull request's JSON, refusing one whose source branch or
-/// repository is not the thread's. The head is the last merge source commit:
-/// the branch tip that was merged, also after a squash merge.
-pub fn reduce(json: &str, branch: &str, origin: &Remote) -> Result<Checked> {
+/// Reduces a pull request's JSON, refusing one from a fork or another
+/// repository. Its source branch is not checked: threads in ADO repositories
+/// push to `ado-track` branches, not to their `hp/...` branch, so the thread's
+/// own `PR:` line (or the pull request found by its branch) is trusted. The
+/// head is the last merge source commit: the branch tip that was merged, also
+/// after a squash merge.
+pub fn reduce(json: &str, origin: &Remote) -> Result<Checked> {
     let pr: AdoPr = serde_json::from_str(json)?;
-    if let Err(reason) = pr.from(origin, branch) {
+    if let Err(reason) = pr.in_repository(origin) {
         return Ok(Checked::Ignored(reason.into()));
     }
     let Some(state) = state_of(&pr.status) else {
@@ -348,7 +345,7 @@ pub fn find_by_branch(client: &Client, origin: &Remote, branch: &str) -> Result<
         return Ok(None);
     }
     let mut listed = client.list(origin, &[("sourceRefName", &format!("refs/heads/{branch}")), ("status", "all")])?;
-    listed.retain(|p| p.pull_request_id > 0 && p.from(origin, branch).is_ok() && state_of(&p.status).is_some());
+    listed.retain(|p| p.pull_request_id > 0 && p.source_ref_name == format!("refs/heads/{branch}") && p.in_repository(origin).is_ok() && state_of(&p.status).is_some());
     let rank = |p: &AdoPr| match state_of(&p.status) {
         Some("OPEN") => 0,
         Some("MERGED") => 1,
@@ -495,23 +492,23 @@ mod tests {
     fn a_pull_request_reduces_to_its_state_and_merged_head() {
         let origin = parse_remote(ORIGIN).unwrap();
         for (status, state) in [("active", "OPEN"), ("completed", "MERGED"), ("abandoned", "CLOSED")] {
-            let Checked::Summary(summary) = reduce(&pr_json(status, ""), "hp/demo/t-0001-x", &origin).unwrap() else { panic!("ignored") };
+            let Checked::Summary(summary) = reduce(&pr_json(status, ""), &origin).unwrap() else { panic!("ignored") };
             assert_eq!(summary, Summary { state: state.into(), head_oid: "abc123".into(), ..Summary::default() });
             assert!(!serde_json::to_string(&summary).unwrap().contains("IGNORE"));
         }
-        assert!(reduce(&pr_json("notSet", ""), "hp/demo/t-0001-x", &origin).is_err());
-        assert!(reduce("not json", "hp/demo/t-0001-x", &origin).is_err());
+        assert!(reduce(&pr_json("notSet", ""), &origin).is_err());
+        assert!(reduce("not json", &origin).is_err());
     }
 
     #[test]
-    fn a_pull_request_from_another_branch_or_repository_is_ignored() {
+    fn a_pull_request_from_a_fork_or_another_repository_is_ignored_whatever_its_branch() {
         let origin = parse_remote(ORIGIN).unwrap();
-        let ignored = |json: &str, branch: &str| matches!(reduce(json, branch, &origin).unwrap(), Checked::Ignored(_));
-        assert!(ignored(&pr_json("active", ""), "hp/demo/t-0002-y"));
-        assert!(ignored(&pr_json("active", ""), ""));
-        assert!(ignored(&pr_json("active", r#","forkSource":{"repository":{"name":"App"}}"#), "hp/demo/t-0001-x"));
-        assert!(ignored(&pr_json("active", "").replace(r#""name":"App""#, r#""name":"Other""#), "hp/demo/t-0001-x"));
-        assert!(ignored(&pr_json("active", "").replace(r#""name":"proj""#, r#""name":"Elsewhere""#), "hp/demo/t-0001-x"));
+        let ignored = |json: &str| matches!(reduce(json, &origin).unwrap(), Checked::Ignored(_));
+        let ado_track = pr_json("active", "").replace("refs/heads/hp/demo/t-0001-x", "refs/heads/feature/ADO-123-x");
+        assert!(!ignored(&ado_track), "the source branch is not checked");
+        assert!(ignored(&pr_json("active", r#","forkSource":{"repository":{"name":"App"}}"#)));
+        assert!(ignored(&pr_json("active", "").replace(r#""name":"App""#, r#""name":"Other""#)));
+        assert!(ignored(&pr_json("active", "").replace(r#""name":"proj""#, r#""name":"Elsewhere""#)));
     }
 
     #[test]

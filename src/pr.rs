@@ -99,7 +99,8 @@ pub enum ViewError {
 }
 
 /// The pull request at `url` as a thread on `branch` of `origin` sees it: a
-/// summary, or ignored when it is not the thread's.
+/// summary, or ignored when it is not the thread's. On Azure DevOps only its
+/// repository is checked, not its source branch (see `ado::reduce`).
 pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Checked, ViewError> {
     match Forge::of(origin) {
         Some(Forge::GitHub(_)) | None => {
@@ -111,7 +112,7 @@ pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Ch
                 return Ok(Checked::Ignored("it is not a pull request of the thread's `origin`".into()));
             };
             let json = client.ado.pull_request(&named, id).map_err(ViewError::Unreachable)?;
-            ado::reduce(&json, branch, &remote).map_err(ViewError::BadOutput)
+            ado::reduce(&json, &remote).map_err(ViewError::BadOutput)
         }
     }
 }
