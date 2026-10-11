@@ -571,7 +571,7 @@ pub fn prompt(ctx: &Ctx, slug: &str, id: &str, text: &str) -> Result<String> {
     // Herdr may read a trust screen as idle; Enter there would accept it.
     if let Some(phrase) = crate::trust_screen::detect(kind, &screen) {
         let by_user = project.safety(&ctx.config_dir).map(|s| s.trust_screens == crate::trust_screen::USER).unwrap_or(true);
-        bail!("{}", crate::trust_screen::refusal(id, &record.pane_id, phrase, by_user));
+        bail!("{}", crate::trust_screen::refusal(&record, phrase, by_user));
     }
     if crate::prompt_box::check(kind, &screen) == crate::prompt_box::Draft::Typed {
         bail!("draft_in_box: {id}'s input box holds text someone typed ({}); not sending, so it is not merged into their prompt. Try again once it is empty; `thread read` shows it", record.pane_id);
@@ -706,7 +706,7 @@ pub fn keys(ctx: &Ctx, slug: &str, id: &str, keys: &[String], text: Option<&str>
     if Project::load(&ctx.root, slug)?.safety(&ctx.config_dir)?.trust_screens == crate::trust_screen::USER
         && let Some(phrase) = crate::trust_screen::showing(&pane.herdr, &pane.record.pane_id, &pane.record.agent).map_err(fail)?
     {
-        bail!("{}", crate::trust_screen::refusal(id, &pane.record.pane_id, phrase, true));
+        bail!("{}", crate::trust_screen::refusal(&pane.record, phrase, true));
     }
     if let Some(text) = text {
         pane.herdr.pane_send_text(&pane.record.pane_id, text).map_err(fail)?;
@@ -747,7 +747,7 @@ pub fn brief(ctx: &Ctx, slug: &str, id: &str) -> Result<()> {
         crate::brief::Outcome::Stuck => bail!("{id}'s brief did not get through; `thread read` shows the pane"),
         crate::brief::Outcome::TrustScreen(phrase) => {
             let by_user = project.safety(&ctx.config_dir).map(|s| s.trust_screens == crate::trust_screen::USER).unwrap_or(true);
-            bail!("{}; the brief follows once it is answered", crate::trust_screen::refusal(id, &pane.record.pane_id, phrase, by_user));
+            bail!("{}; the brief follows once it is answered", crate::trust_screen::refusal(&pane.record, phrase, by_user));
         }
     }
     Ok(())

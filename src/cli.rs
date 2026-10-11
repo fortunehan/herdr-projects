@@ -115,6 +115,13 @@ enum Command {
     },
     /// Show only one project's panes in the sidebar, sorted by attention
     Focus { slug: Option<String> },
+    /// Focus a pane of the session, with its tab and workspace (what a click on its https://hp.invalid/pane/<pane-id> link does)
+    FocusPane {
+        #[arg(value_name = "PANE_ID")]
+        pane: String,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
     /// Clear the sidebar view (herdr holds one, so this clears any tool's view)
     Unfocus {
         #[command(flatten)]
@@ -704,6 +711,10 @@ pub fn run() -> Result<()> {
         Command::Assignable { slug, refresh, check } => crate::assign::run(&ctx, &slug, refresh, check.as_deref()),
         Command::Overview { slug, wait } => overview::run(&ctx, slug.as_deref(), wait),
         Command::Focus { slug } => overview::focus(&ctx, slug.as_deref()),
+        Command::FocusPane { pane, session } => {
+            let socket = crate::paths::resolve_session(&session.into(), ctx.env, ctx.runner)?.socket;
+            crate::thread_link::focus_pane(&crate::herdr::Herdr::new(ctx.env.herdr_bin(), socket, ctx.runner), &pane).map(|line| println!("{line}"))
+        }
         Command::Unfocus { session } => overview::unfocus(&ctx, &session.into()),
         Command::View { which, session } => crate::views::cli(&ctx, &session.into(), &which),
         Command::Inbox { command } => match command {

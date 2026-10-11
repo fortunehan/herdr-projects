@@ -521,6 +521,11 @@ impl<'a> Herdr<'a> {
         self.call(&["agent", "focus", target], CALL_TIMEOUT).map(|_| ())
     }
 
+    /// Switches to the tab and its workspace.
+    pub fn tab_focus(&self, tab: &str) -> Result<(), HerdrError> {
+        self.call(&["tab", "focus", tab], CALL_TIMEOUT).map(|_| ())
+    }
+
     /// Names an already detected agent (after Herdr's native resume leaves a
     /// restored pane unnamed).
     pub fn agent_rename(&self, pane: &str, name: &str) -> Result<(), HerdrError> {

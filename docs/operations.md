@@ -103,11 +103,13 @@ Threads idle for `auto_resolve_days` are resolved (and cleaned) after a final co
 | settings | `↵` edit (also a safety row) · `Y` yolo mode on or off (asks before turning on) · `p` pause or resume · `A` archive · `X` delete (asks first). Unscoped, the rows are the all-projects safety defaults |
 | memory | `↵` read (change memory by asking the coordinator) |
 
-## Thread links
+## Thread and pane links
 
 The coordinator writes thread ids in chat as Markdown links to `https://hp.invalid/<project>/<id>`. A link-modifier click on one (Cmd-click in herdr-gpui, Ctrl-click in Herdr's terminal client) runs the plugin's `thread` link handler, which focuses the thread's pane like the popup's `↵`; a resolved thread or one without a pane gives a notification instead. `https://hp.invalid/<id>` takes the project of the clicked pane's workspace. A remote thread's pane is focused in that machine's Herdr.
 
-Herdr hands a click to a plugin only for a URL, and herdr-gpui only for an http(s) one, so a bare `t-0014` is not clickable. Claude Code shows such a link as the id alone only when it emits terminal hyperlinks, which it does not by default under Herdr (`TERM_PROGRAM=herdr`); set `FORCE_HYPERLINK=1`, for example in the `env` block of `~/.claude/settings.json`. Without it the URL follows the id in parentheses, and the URL is what you click. `.invalid` never resolves, so a browser that opens the URL instead reaches nothing.
+Pane ids the coordinator names to you, such as a pane that shows a trust screen only you may answer, are links to `https://hp.invalid/pane/<pane-id>` (`https://hp.invalid/pane/w8C:p1`). A click focuses that pane, its tab and its workspace in the session you clicked in; a pane without an agent gets only its tab focused, and a closed pane gives a notification. A remote thread's pane is in another machine's session, so the coordinator links the thread instead. `herdr-projects focus-pane <pane-id>` does the same from a terminal.
+
+Herdr hands a click to a plugin only for a URL, and herdr-gpui only for an http(s) one, so a bare `t-0014` or `w8C:p1` is not clickable. Claude Code shows such a link as the id alone only when it emits terminal hyperlinks, which it does not by default under Herdr (`TERM_PROGRAM=herdr`); set `FORCE_HYPERLINK=1`, for example in the `env` block of `~/.claude/settings.json`. Without it the URL follows the id in parentheses, and the URL is what you click. `.invalid` never resolves, so a browser that opens the URL instead reaches nothing.
 
 ## Safety settings
 

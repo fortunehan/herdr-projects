@@ -83,12 +83,17 @@ pub fn showing(herdr: &crate::herdr::Herdr, pane: &str, kind: &str) -> Result<Op
 pub const COORDINATOR: &str = "coordinator";
 pub const USER: &str = "user";
 
-/// The refusal for text or keys aimed at a trust screen.
-pub fn refusal(id: &str, pane: &str, phrase: &str, by_user: bool) -> String {
-    let who = if by_user {
-        "trust_screens = user: only the user answers it, in the pane; tell them in chat".to_string()
-    } else {
+/// The refusal for text or keys aimed at a trust screen in `thread`'s pane.
+/// For the user it carries the pane link the coordinator puts in chat; a
+/// remote pane is not in the clicked session, so it gets none.
+pub fn refusal(thread: &crate::thread::Thread, phrase: &str, by_user: bool) -> String {
+    let (id, pane) = (&thread.id, &thread.pane_id);
+    let who = if !by_user {
         "answer it first (`thread read` shows it, `thread keys` answers it)".to_string()
+    } else if thread.is_remote() {
+        format!("trust_screens = user: only the user answers it, in the pane on machine `{}`; tell them in chat", thread.machine)
+    } else {
+        format!("trust_screens = user: only the user answers it, in the pane; tell them in chat, naming the pane as [{pane}]({})", crate::thread_link::pane_url(pane))
     };
     format!("trust_screen: {id}'s pane {pane} shows a trust screen (\"{phrase}\"); nothing is typed into it; {who}")
 }
@@ -96,6 +101,17 @@ pub fn refusal(id: &str, pane: &str, phrase: &str, by_user: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_for_the_user_links_a_local_pane_only() {
+        let local = crate::thread::Thread { id: "t-0001".into(), pane_id: "w8C:p1".into(), ..Default::default() };
+        let to_user = refusal(&local, "Trust this folder?", true);
+        assert!(to_user.contains("naming the pane as [w8C:p1](https://hp.invalid/pane/w8C:p1)"), "{to_user}");
+        assert!(!refusal(&local, "Trust this folder?", false).contains("hp.invalid"));
+        let remote = crate::thread::Thread { machine: "box".into(), ..local };
+        let to_user = refusal(&remote, "Trust this folder?", true);
+        assert!(!to_user.contains("hp.invalid") && to_user.contains("on machine `box`"), "{to_user}");
+    }
 
     #[test]
     fn each_harness_trust_screen_is_recognized() {
