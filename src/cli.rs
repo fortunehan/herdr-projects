@@ -347,11 +347,17 @@ enum ThreadCommand {
         /// The agent's profile (harness, model, effort, flags), one the project allows (default: thread_profile in PROJECT.md); `context` lists them
         #[arg(long, alias = "agent", value_name = "NAME")]
         profile: Option<String>,
-        /// Placement, not the agent: worktree (default with --repo), tab (default without: its own Space in threads/<id>/, no worktree), checkout (a tab of the project workspace on the repo's main checkout), or design (its own Space in the project's design folder, interviewing the user; no --repo)
-        #[arg(long, value_name = "worktree|tab|checkout|design")]
+        /// Placement, not the agent: worktree (default with --repo), tab (default without: its own Space in threads/<id>/, no worktree), checkout (a tab of the project workspace on the repo's main checkout), or design (its own Space in the project's design folder, interviewing the user; no --repo). feature (the default for a worktree) or bugfix is a worktree whose branch starts with that
+        #[arg(long, value_name = "worktree|feature|bugfix|tab|checkout|design")]
         kind: Option<String>,
         #[arg(long, value_name = "REF")]
         base: Option<String>,
+        /// The Azure DevOps work item: a worktree branch in an Azure DevOps repository ends with it (ignored for other origins)
+        #[arg(long, value_name = "WID")]
+        wid: Option<String>,
+        /// The whole branch name of a worktree thread, used as given
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
         /// The task; `-` reads standard input
         #[arg(long, value_name = "FILE")]
         task_file: String,
@@ -726,7 +732,7 @@ pub fn run() -> Result<()> {
             }
         },
         Command::Thread { command } => match command {
-            ThreadCommand::Start { slug, title, repo, mut machine, mut profile, kind, base, task_file, from_task } => {
+            ThreadCommand::Start { slug, title, repo, mut machine, mut profile, kind, base, wid, branch, task_file, from_task } => {
                 let mut task = read_text(&task_file)?;
                 if let Some(from) = from_task {
                     // The task's owner picks the profile and machine.
@@ -740,8 +746,12 @@ pub fn run() -> Result<()> {
                     (profile, machine) = crate::tasks::launch_for(&found, profile, machine)?;
                     task = crate::tasks::delegated(&tasks_md, &from, &task)?;
                 }
-                let kind = kind.as_deref().map(crate::thread::Kind::parse).transpose()?;
-                let thread = threads::start(&ctx, &slug, StartArgs { title, repo, machine, profile, kind, base, task })?;
+                let (kind, branch_kind) = match kind.as_deref().map(|text| (text, crate::thread::BranchKind::parse(text))) {
+                    None => (None, None),
+                    Some((_, Some(branch_kind))) => (Some(crate::thread::Kind::Worktree), Some(branch_kind)),
+                    Some((text, None)) => (Some(crate::thread::Kind::parse(text)?), None),
+                };
+                let thread = threads::start(&ctx, &slug, StartArgs { title, repo, machine, profile, kind, base, task, branch_kind, wid, branch })?;
                 println!("{}", serde_json::json!({ "id": thread.id, "kind": thread.kind, "profile": thread.profile, "agent": thread.agent, "branch": thread.branch, "pane_id": thread.pane_id }));
                 Ok(())
             }

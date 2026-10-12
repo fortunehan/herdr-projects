@@ -10,7 +10,7 @@ use crate::herdr::{Agent, Herdr, Pane};
 use crate::paths::Ctx;
 use crate::project::{self, Project};
 use crate::runner::{Cmd, Runner};
-use crate::thread::{self, CopyOutcome, Group, Kind, Live, Status, Thread};
+use crate::thread::{self, BranchKind, CopyOutcome, Group, Kind, Live, Status, Thread};
 use crate::{coordinator, remote, ticker};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -68,6 +68,7 @@ fn clear_thread_tokens(herdr: &Herdr, thread: &Thread) {
     crate::sidebar::clear_pane(&herdr.on_machine(&thread.machine), &thread.pane_id);
 }
 
+#[derive(Default)]
 pub struct StartArgs {
     pub title: String,
     pub repo: Option<String>,
@@ -80,6 +81,11 @@ pub struct StartArgs {
     pub kind: Option<Kind>,
     pub base: Option<String>,
     pub task: String,
+    /// A worktree thread's branch: `--kind feature|bugfix` (default
+    /// feature), `--wid`, or the whole name with `--branch`.
+    pub branch_kind: Option<BranchKind>,
+    pub wid: Option<String>,
+    pub branch: Option<String>,
 }
 
 /// The profile a thread starts with.
@@ -192,6 +198,17 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
     }
 
     let kind = placement(args.kind, !repo.is_empty(), !machine.is_empty())?;
+    if kind != Kind::Worktree && (args.branch_kind.is_some() || args.wid.is_some() || args.branch.is_some()) {
+        bail!("--wid, --branch and --kind feature|bugfix name a worktree thread's branch; this thread gets no worktree");
+    }
+    if let Some(wid) = &args.wid {
+        thread::validate_wid(wid)?;
+    }
+    if let Some(branch) = &args.branch
+        && (branch.trim().is_empty() || branch.starts_with('-') || branch.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        bail!("`{branch}` is not a usable branch name");
+    }
     // Design threads wait on the user's answers, not on a slot.
     let open_count = thread::list(&project).iter().filter(|t| (t.status == Status::Open || t.status == Status::Starting) && t.kind != Kind::Design).count();
     if kind != Kind::Design && open_count as u32 >= settings.max_parallel_threads {
@@ -209,6 +226,9 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
         t.machine = machine.clone();
         profile.apply(t);
         t.base = args.base.clone().unwrap_or_default();
+        t.branch_kind = args.branch_kind.unwrap_or_default();
+        t.wid = args.wid.clone().unwrap_or_default();
+        t.branch = args.branch.clone().unwrap_or_default();
     })?;
     let id = record.id.clone();
     {
@@ -232,14 +252,8 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
 
 /// Steps 2 to 5 of starting a thread, also used by `thread restart` case (a).
 fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, restart: bool) -> Result<Thread> {
-    let slug = &project.slug;
-    let mut record = thread::load(project, id)?;
+    let record = thread::load(project, id)?;
     let runner = ctx.runner;
-    // Recorded before `worktree create`: a start cut off right after it still
-    // names the branch, for `thread restart`'s half-made-worktree guard.
-    if record.kind == Kind::Worktree && record.branch.is_empty() {
-        record = thread::update(project, id, |t| t.branch = thread::branch_name(slug, id, &t.title))?;
-    }
 
     let placed = match record.kind {
         Kind::Worktree if record.is_remote() => {
@@ -247,6 +261,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             // through `--machine`.
             let target = remote::ssh_target(runner, &ctx.env.herdr_bin(), &ctx.config_dir, &record.machine)?;
             let (origin, base) = remote::repo_info(runner, &target, &record.repo, &record.base)?;
+            let record = name_branch(project, &record, &origin, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
             let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &base, &record.title)?;
             thread::update(project, id, |t| {
                 t.origin = origin;
@@ -277,6 +292,11 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             } else {
                 record.base.clone()
             };
+            let record = name_branch(project, &record, &origin, |name| {
+                let refs = [format!("refs/heads/{name}"), format!("refs/remotes/origin/{name}")];
+                let found = git(runner, &record.repo, &["for-each-ref", "--format=%(refname)", &refs[0], &refs[1]], GIT_TIMEOUT)?;
+                Ok(!found.is_empty())
+            })?;
             let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &base, &record.title)?;
             let repo_workspace = repo_space(&view.herdr, &record.repo);
             // Recorded immediately, so a command killed midway still leaves a
@@ -297,6 +317,23 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
     };
     write_brief(ctx, project, &placed, restart)?;
     finish_placement(project, view, id)
+}
+
+/// Names a new worktree thread's branch once origin is known and fetched,
+/// and records it before `worktree create`: a start cut off right after it
+/// still names the branch, for `thread restart`'s half-made-worktree guard.
+/// A recorded branch (given, or from an earlier attempt) is kept. `taken`
+/// says whether a name exists as a local branch or as `origin/<name>`.
+fn name_branch(project: &Project, record: &Thread, origin: &str, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
+    if !record.branch.is_empty() {
+        return Ok(record.clone());
+    }
+    let names = thread::branch_names(&record.title, &record.id, origin, &record.wid, record.branch_kind, "");
+    let branch = match names.taken {
+        Some(other) if taken(&names.first)? => other,
+        _ => names.first,
+    };
+    thread::update(project, &record.id, |t| t.branch = branch)
 }
 
 /// The repository's primary Space herdr grouped a new worktree Space under,

@@ -88,7 +88,13 @@ pub struct Thread {
     pub kind: Kind,
     pub repo: String,
     pub origin: String,
+    /// The thread branch. Set at start, before `worktree create`, from
+    /// `--branch` or `branch_names`; never re-derived.
     pub branch: String,
+    /// The work item a worktree thread is tracked under (`--wid`); part of
+    /// the branch name in an Azure DevOps repository.
+    pub wid: String,
+    pub branch_kind: BranchKind,
     pub base: String,
     pub machine: String,
     pub worktree_path: String,
@@ -240,13 +246,62 @@ pub fn allocate(project: &Project, fill: impl FnOnce(&mut Thread)) -> Result<Thr
     Ok(thread)
 }
 
-pub fn branch_name(slug: &str, id: &str, title: &str) -> String {
+/// The first segment of a new thread branch (`thread start --kind feature|bugfix`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BranchKind {
+    #[default]
+    Feature,
+    Bugfix,
+}
+
+impl BranchKind {
+    pub fn parse(text: &str) -> Option<BranchKind> {
+        match text {
+            "feature" => Some(BranchKind::Feature),
+            "bugfix" => Some(BranchKind::Bugfix),
+            _ => None,
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            BranchKind::Feature => "feature",
+            BranchKind::Bugfix => "bugfix",
+        }
+    }
+}
+
+/// A new worktree thread's branch: `first`, or `taken` when `first` already
+/// exists locally or on origin. `taken` is `None` when the name is given
+/// whole or already carries the thread id.
+#[derive(Debug, PartialEq)]
+pub struct BranchNames {
+    pub first: String,
+    pub taken: Option<String>,
+}
+
+/// `<kind>/<title-slug>[-<WID>]`, the WID only for an Azure DevOps origin;
+/// on collision the thread id goes before the WID. A given name wins (ADR 0006).
+pub fn branch_names(title: &str, id: &str, origin: &str, wid: &str, kind: BranchKind, given: &str) -> BranchNames {
+    if !given.is_empty() {
+        return BranchNames { first: given.to_string(), taken: None };
+    }
+    let prefix = kind.prefix();
+    let wid = if origin.contains("dev.azure.com") && !wid.is_empty() { format!("-{wid}") } else { String::new() };
     let title = slugify(title);
     if title.is_empty() {
-        format!("hp/{slug}/{id}")
-    } else {
-        format!("hp/{slug}/{id}-{title}")
+        return BranchNames { first: format!("{prefix}/{id}{wid}"), taken: None };
     }
+    BranchNames { first: format!("{prefix}/{title}{wid}"), taken: Some(format!("{prefix}/{title}-{id}{wid}")) }
+}
+
+/// A WID is the id of an Azure DevOps work item: five or more digits.
+pub fn validate_wid(wid: &str) -> Result<()> {
+    if wid.len() < 5 || !wid.chars().all(|c| c.is_ascii_digit()) {
+        bail!("`{wid}` is not a WID (an Azure DevOps work item id of five or more digits)");
+    }
+    Ok(())
 }
 
 pub fn agent_name(slug: &str, id: &str) -> String {
@@ -334,6 +389,8 @@ pub struct BriefInput<'a> {
     /// The project's `uploads/` folder on the home machine.
     pub uploads_path: &'a str,
     pub remote: bool,
+    /// A worktree thread's branch; empty for other kinds.
+    pub branch: &'a str,
     pub instructions: &'a str,
     pub memory_index: &'a str,
     /// (file name, contents), in the order they should be inlined.
@@ -368,6 +425,9 @@ fn brief_header(input: &BriefInput) -> String {
                 None => out.push_str(&format!("  - {} (local)\n", repo.path)),
             }
         }
+    }
+    if !input.branch.is_empty() {
+        out.push_str(&format!("- Branch: `{}`. Stay on it: do not switch branches or create new ones.\n", input.branch));
     }
     let uploads_note = if input.remote { " (on the home machine; not copied to yours)" } else { "" };
     out.push_str(&format!("- Uploads, files from the user: `{}`{uploads_note}\n", input.uploads_path));
@@ -468,6 +528,7 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
         repos: &settings.repos,
         uploads_path: &uploads,
         remote: thread.is_remote(),
+        branch: if thread.kind == Kind::Worktree { &thread.branch } else { "" },
         instructions: &instructions,
         memory_index: &memory_index,
         memory_files: &memory_files,
@@ -1141,10 +1202,41 @@ mod tests {
         for bad in ["", "t-1", "t-00a1", "../t-0001", "x-0001"] {
             assert!(validate_id(bad).is_err(), "{bad}");
         }
-        assert_eq!(branch_name("demo", "t-0001", "Fix the $(login) bug!"), "hp/demo/t-0001-fix-the-login-bug");
-        assert_eq!(branch_name("demo", "t-0002", "???"), "hp/demo/t-0002");
         assert_eq!(thread_dir("/wt/", "demo", "t-0001"), "/wt/.herdr-project/demo-t-0001");
         assert_eq!(launch_prompt("demo", "t-0001"), "Read .herdr-project/demo-t-0001/brief.md and do what it says.");
+    }
+
+    #[test]
+    fn branch_names_follow_the_team_convention() {
+        const GITHUB: &str = "git@github.com:owner/app.git";
+        const ADO: &str = "https://sc-ado@dev.azure.com/sc-ado/PDBQPR/_git/app";
+        let names = |title: &str, origin: &str, wid: &str, kind: BranchKind, given: &str| {
+            let n = branch_names(title, "t-0042", origin, wid, kind, given);
+            (n.first, n.taken.unwrap_or_default())
+        };
+        let pair = |first: &str, taken: &str| (first.to_string(), taken.to_string());
+        let (feature, bugfix) = (BranchKind::Feature, BranchKind::Bugfix);
+
+        assert_eq!(names("Fix the $(login) bug!", GITHUB, "", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
+        assert_eq!(names("Fix the login bug", GITHUB, "", bugfix, ""), pair("bugfix/fix-the-login-bug", "bugfix/fix-the-login-bug-t-0042"));
+        // A WID belongs only in an Azure DevOps name.
+        assert_eq!(names("Fix the login bug", GITHUB, "16349910", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
+        assert_eq!(
+            names("Fix the login bug", ADO, "16349910", feature, ""),
+            pair("feature/fix-the-login-bug-16349910", "feature/fix-the-login-bug-t-0042-16349910")
+        );
+        assert_eq!(names("Fix the login bug", ADO, "", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
+        assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, ""), pair("bugfix/fix-the-login-bug-16349910", "bugfix/fix-the-login-bug-t-0042-16349910"));
+        // A given name is used as given; a title with no slug falls back to the id.
+        assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, "my/name"), pair("my/name", ""));
+        assert_eq!(names("???", GITHUB, "", feature, ""), pair("feature/t-0042", ""));
+        assert_eq!(names("???", ADO, "16349910", feature, ""), pair("feature/t-0042-16349910", ""));
+        assert_eq!(names("Fix it", "", "16349910", feature, ""), pair("feature/fix-it", "feature/fix-it-t-0042"));
+
+        assert!(validate_wid("16349910").is_ok());
+        for bad in ["", "1234", "ADO-16349910", "1634991O"] {
+            assert!(validate_wid(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -1196,6 +1288,7 @@ mod tests {
             repos: &repos,
             uploads_path: "/root/demo/uploads",
             remote: false,
+            branch: "feature/fix-it",
             instructions: "Always run the tests.",
             memory_index: "# Memory\n- a\n- b\n- c",
             memory_files: &files,
@@ -1212,6 +1305,7 @@ mod tests {
         // The header comes first: name, goal, repos with machines, uploads, library, report.
         assert!(brief.starts_with("# Project\n\n- Project: Demo (`demo`)\n- Goal: Ship it\n"));
         assert!(pos("/srv/app on machine `box`") < pos("/home/me/lib (local)"));
+        assert!(pos("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones.") < pos("Uploads, files from the user"));
         assert!(pos("Uploads, files from the user: `/root/demo/uploads`") < pos("# Thread brief"));
         assert!(pos("# Thread brief") < pos("previous attempt"));
         assert!(pos("previous attempt") < pos("Always run the tests."));
@@ -1228,8 +1322,9 @@ mod tests {
             assert!(!brief.contains(word), "{word}");
         }
 
-        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", ..input });
+        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", branch: "", ..input });
         assert!(!fresh.contains("previous attempt"));
+        assert!(!fresh.contains("- Branch:"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));
         assert!(!fresh.contains("Design folder"));

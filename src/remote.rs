@@ -195,6 +195,22 @@ pub fn branch_exists(runner: &dyn Runner, target: &str, repo: &str, branch: &str
     Ok(ssh(runner, target, &script, None, SSH_TIMEOUT)?.success())
 }
 
+/// Whether a new branch name is taken on the machine: a local branch or
+/// `origin/<name>` exists.
+pub fn branch_taken(runner: &dyn Runner, target: &str, repo: &str, branch: &str) -> Result<bool> {
+    let script = format!(
+        "cd {} && git for-each-ref --format='%(refname)' {} {}",
+        quote(repo),
+        quote(&format!("refs/heads/{branch}")),
+        quote(&format!("refs/remotes/origin/{branch}"))
+    );
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("could not list the branches of {repo} on {target}: {}", out.error_text());
+    }
+    Ok(!out.stdout.trim().is_empty())
+}
+
 /// Report hashes for every given thread on one machine, in one ssh call. Only
 /// a regular file inside a real (not symlinked) directory is hashed; anything
 /// else yields no hash. `sha256sum`, falling back to `shasum -a 256`.

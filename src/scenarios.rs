@@ -165,6 +165,7 @@ fn thread_start_returns_without_an_agent_and_the_ticker_launches_then_prompts() 
     world.runner.on("remote get-url origin", ok("git@github.com:Owner/App.git\n"));
     world.runner.on("fetch origin", fail(1, "offline"));
     world.runner.on("symbolic-ref", ok("origin/main\n"));
+    world.runner.on("for-each-ref", ok(""));
     world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
     world.runner.on(
         "worktree create",
@@ -189,6 +190,7 @@ fn thread_start_returns_without_an_agent_and_the_ticker_launches_then_prompts() 
             kind: None,
             base: None,
             task: "Do the thing.".into(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -197,13 +199,14 @@ fn thread_start_returns_without_an_agent_and_the_ticker_launches_then_prompts() 
     assert_eq!(world.runner.count("agent start"), 0);
     assert_eq!(started.status, Status::Open);
     assert!(started.prompt_pending);
-    assert_eq!(started.branch, "hp/demo/t-0001-fix-it");
+    assert_eq!(started.branch, "feature/fix-it");
     assert_eq!(started.base, "origin/main");
     assert_eq!(started.origin, "git@github.com:Owner/App.git");
     assert_eq!(started.agent_name, "hp-demo-t-0001");
     let brief = std::fs::read_to_string(worktree.join(".herdr-project/demo-t-0001/brief.md")).unwrap();
     assert!(brief.contains("Do the thing."));
     assert!(brief.contains("# Project instructions"));
+    assert!(brief.contains("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones."));
     // The hostile title reaches herdr as one argument, unchanged.
     let calls = world.runner.calls.borrow();
     let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
@@ -397,7 +400,133 @@ fn placement_answers(world: &World, create: impl Fn(&Cmd) -> anyhow::Result<Outp
     world.runner.on("fetch origin", ok(""));
     world.runner.on("symbolic-ref", ok("origin/main\n"));
     world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
+    world.runner.on("for-each-ref", ok(""));
     world.runner.on_fn(|cmd| cmd.display().contains("worktree create"), create);
+}
+
+/// Answers `for-each-ref` with the refs among `existing` it was asked about.
+fn existing_refs(world: &World, existing: &'static [&'static str]) {
+    world.runner.on_fn(
+        |cmd| cmd.display().contains("for-each-ref"),
+        move |cmd| {
+            let line = cmd.display();
+            let asked: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == '\'').collect();
+            Ok(ok(&existing.iter().filter(|r| asked.contains(r)).map(|r| format!("{r}\n")).collect::<String>()))
+        },
+    );
+}
+
+/// A new worktree thread is named `<kind>/<title>[-<WID>]` (ADR 0006): the
+/// WID only for an Azure DevOps origin, `--branch` as given, and the thread id
+/// before the WID when the name exists as a local branch or on origin.
+#[test]
+fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
+    use crate::thread::BranchKind::Bugfix;
+    const GITHUB: &str = "git@github.com:Owner/App.git";
+    #[rustfmt::skip]
+    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 9] = [
+        (GITHUB, None, None, None, &[], "feature/fix-the-login-bug"),
+        (GITHUB, None, Some(Bugfix), None, &[], "bugfix/fix-the-login-bug"),
+        (GITHUB, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/fix-the-login-bug-16349910"),
+        (ADO_ORIGIN, None, None, None, &[], "feature/fix-the-login-bug"),
+        (ADO_ORIGIN, Some("16349910"), Some(Bugfix), Some("my/name"), &["refs/heads/my/name"], "my/name"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
+        (GITHUB, None, None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
+    ];
+    for (origin, wid, branch_kind, branch, existing, expected) in cases {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let repo = world.home.path().join("repo");
+        let wt = world.home.path().join("wt");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+        world.runner.on("remote get-url origin", ok(&format!("{origin}\n")));
+        existing_refs(&world, existing);
+        let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
+        placement_answers(&world, move |_| Ok(ok(&created)));
+
+        let args = StartArgs {
+            title: "Fix the login bug".into(),
+            repo: Some(repo.to_string_lossy().into_owned()),
+            profile: Some("claude".into()),
+            task: "Fix it.".into(),
+            wid: wid.map(str::to_string),
+            branch_kind,
+            branch: branch.map(str::to_string),
+            ..Default::default()
+        };
+        let case = format!("{origin} {wid:?} {branch_kind:?} {branch:?} {existing:?}");
+        let t = threads::start(&world.ctx(), "demo", args).unwrap();
+        assert_eq!(t.branch, expected, "{case}");
+        assert_eq!((t.wid.as_str(), t.branch_kind), (wid.unwrap_or(""), branch_kind.unwrap_or_default()), "{case}");
+        assert_eq!(world.runner.count(&format!("--branch {expected} --base origin/main")), 1, "{case}");
+        // A given name is not checked; a generated one is, after the fetch.
+        assert_eq!(world.runner.count("for-each-ref"), usize::from(branch.is_none()), "{case}");
+        let calls = world.runner.calls.borrow();
+        let fetch = calls.iter().position(|c| c.display().contains("fetch origin"));
+        let check = calls.iter().position(|c| c.display().contains("for-each-ref"));
+        assert!(branch.is_some() || fetch < check, "{case}");
+        drop(calls);
+        let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+        assert!(brief.contains(&format!("- Branch: `{expected}`. Stay on it: do not switch branches or create new ones.")), "{case}");
+    }
+}
+
+/// `--wid` must be a work item id, and the branch flags need a worktree.
+#[test]
+fn thread_start_refuses_a_bad_wid_and_branch_flags_without_a_worktree() {
+    let world = World::new();
+    world.project("demo", "a.sock");
+    let repo = world.home.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let repo = Some(repo.to_string_lossy().into_owned());
+    let start = |args: StartArgs| threads::start(&world.ctx(), "demo", StartArgs { title: "x".into(), task: "t".into(), ..args }).unwrap_err().to_string();
+    assert!(start(StartArgs { repo: repo.clone(), wid: Some("t-0042".into()), ..Default::default() }).contains("is not a WID"));
+    assert!(start(StartArgs { repo: repo.clone(), branch: Some("-x".into()), ..Default::default() }).contains("not a usable branch name"));
+    for kind in [Kind::Tab, Kind::Checkout] {
+        let error = start(StartArgs { repo: repo.clone(), kind: Some(kind), wid: Some("16349910".into()), ..Default::default() });
+        assert!(error.contains("this thread gets no worktree"), "{error}");
+    }
+    assert!(thread::list(&Project::load(&world.root, "demo").unwrap()).is_empty());
+}
+
+/// A remote worktree thread is named by the same rules, its refs checked over
+/// ssh after the fetch there.
+#[test]
+fn a_remote_thread_branch_is_named_by_the_same_rules() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":[]}"#));
+    world.runner.on("symbolic-ref", ok(&format!("{ADO_ORIGIN}\norigin/main\n")));
+    existing_refs(&world, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"]);
+    world.runner.on(
+        "worktree create",
+        ok(r#"{"result":{"root_pane":{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"/remote/wt"},"worktree":{"path":"/remote/wt"}}}"#),
+    );
+    world.runner.on("ssh", ok(""));
+    let args = StartArgs {
+        title: "Fix the login bug".into(),
+        repo: Some("/remote/repo".into()),
+        machine: Some("box".into()),
+        task: "Fix it.".into(),
+        wid: Some("16349910".into()),
+        ..Default::default()
+    };
+    let t = threads::start(&world.ctx(), "demo", args).unwrap();
+    assert_eq!((t.origin.as_str(), t.branch.as_str()), (ADO_ORIGIN, "feature/fix-the-login-bug-t-0001-16349910"));
+    let calls = world.runner.calls.borrow();
+    let check = calls.iter().find(|c| c.display().contains("for-each-ref")).unwrap();
+    assert_eq!(check.program, "ssh");
+    let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
+    assert!(is_machine_call(create) && create.args.contains(&"feature/fix-the-login-bug-t-0001-16349910".to_string()), "{}", create.display());
+    let brief = calls.iter().find(|c| c.display().contains("brief.md")).unwrap();
+    assert!(brief.stdin.as_deref().unwrap_or("").contains("- Branch: `feature/fix-the-login-bug-t-0001-16349910`."));
 }
 
 /// The branch is in the record before `worktree create`, so a start cut off
@@ -416,14 +545,14 @@ fn a_start_cut_off_at_worktree_create_names_its_branch_and_restart_stops_for_a_l
         Ok(crate::runner::fake::timeout())
     });
     let ctx = world.ctx();
-    let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), machine: None, profile: Some("claude".into()), kind: None, base: None, task: "Do it.".into() };
+    let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), machine: None, profile: Some("claude".into()), kind: None, base: None, task: "Do it.".into(), ..Default::default() };
     assert!(threads::start(&ctx, "demo", args).is_err());
-    assert_eq!(*at_create.borrow(), "hp/demo/t-0001-fix-it");
+    assert_eq!(*at_create.borrow(), "feature/fix-it");
     let t = thread::load(&project, "t-0001").unwrap();
-    assert_eq!((t.status, t.branch.as_str(), t.worktree_path.as_str()), (Status::Failed, "hp/demo/t-0001-fix-it", ""));
+    assert_eq!((t.status, t.branch.as_str(), t.worktree_path.as_str()), (Status::Failed, "feature/fix-it", ""));
 
     // herdr may have made the worktree before it timed out: the branch exists.
-    world.runner.on("rev-parse --verify --quiet refs/heads/hp/demo/t-0001-fix-it", ok("abc123\n"));
+    world.runner.on("rev-parse --verify --quiet refs/heads/feature/fix-it", ok("abc123\n"));
     let error = threads::restart(&ctx, "demo", "t-0001", None).unwrap_err();
     assert!(format!("{error:#}").contains("half-made worktree"), "{error:#}");
     assert_eq!(world.runner.count("worktree create"), 1);
@@ -659,7 +788,7 @@ fn thread_start_is_refused_when_paused() {
     let world = World::new();
     let project = world.project("demo", "a.sock");
     project.set_status(project::Status::Paused).unwrap();
-    let args = StartArgs { title: "x".into(), repo: None, machine: None, profile: None, kind: None, base: None, task: "t".into() };
+    let args = StartArgs { title: "x".into(), repo: None, machine: None, profile: None, kind: None, base: None, task: "t".into(), ..Default::default() };
     let error = threads::start(&world.ctx(), "demo", args).unwrap_err().to_string();
     assert!(error.contains("paused"), "{error}");
     assert!(thread::list(&project).is_empty());
@@ -683,7 +812,7 @@ fn thread_start_and_open_refuse_profiles_off_the_allow_list() {
     let project = world.project("demo", "a.sock");
     write_profiles(&world, PROFILES);
     for bad in ["deep", "codex", "nope"] {
-        let args = StartArgs { title: "x".into(), repo: None, machine: None, profile: Some(bad.into()), kind: Some(Kind::Tab), base: None, task: "t".into() };
+        let args = StartArgs { title: "x".into(), repo: None, machine: None, profile: Some(bad.into()), kind: Some(Kind::Tab), base: None, task: "t".into(), ..Default::default() };
         let error = threads::start(&world.ctx(), "demo", args).unwrap_err().to_string();
         assert!(error.contains("not allowed for threads") || error.contains("no profile `nope`"), "{error}");
         let options = coordinator::OpenOptions { session: Default::default(), rebind: false, profile: Some(bad.into()), new: true, here: false };
@@ -2536,7 +2665,7 @@ fn a_remote_thread_blocked_at_a_poll_is_waiting_on_you_at_once() {
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
     world.project("demo", "a.sock");
-    let args = StartArgs { title: "x".into(), repo: None, machine: Some("box".into()), profile: None, kind: None, base: None, task: "t".into() };
+    let args = StartArgs { title: "x".into(), repo: None, machine: Some("box".into()), profile: None, kind: None, base: None, task: "t".into(), ..Default::default() };
     assert!(threads::start(&world.ctx(), "demo", args).unwrap_err().to_string().contains("needs --repo"));
 }
 
@@ -2761,7 +2890,7 @@ fn a_tab_thread_with_a_repo_gets_its_brief_seconds_after_its_agent_is_ready() {
     world.runner.on("agent prompt", ok(r#"{"result":{}}"#));
     *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
     let ctx = world.ctx();
-    let args = StartArgs { title: "Clean up".into(), repo: Some(repo.to_string_lossy().into_owned()), machine: None, profile: None, kind: Some(Kind::Tab), base: None, task: "Tidy.".into() };
+    let args = StartArgs { title: "Clean up".into(), repo: Some(repo.to_string_lossy().into_owned()), machine: None, profile: None, kind: Some(Kind::Tab), base: None, task: "Tidy.".into(), ..Default::default() };
     let t = threads::start(&ctx, "demo", args).unwrap();
     assert_eq!((t.kind, t.cwd.as_str(), t.prompt_pending), (Kind::Tab, cwd.as_str(), true));
     // Its own Space labelled with its title, no worktree or branch, and never a tab of the home Space.
@@ -2821,7 +2950,7 @@ fn a_tab_thread_gets_a_brief_with_the_project_header_and_prompts_are_recorded() 
     // Delegated from TASKS.md: the task's notes reach the brief.
     std::fs::write(project.dir().join("TASKS.md"), "# Tasks\n\n## Backlog\n- [ ] Research (agent)\n  Start with the 2025 papers.\n").unwrap();
     let task = crate::tasks::delegated(&crate::tasks::read(&project.dir()), "Research", "Look into it.").unwrap();
-    let t = threads::start(&ctx, "demo", StartArgs { title: "Research".into(), repo: None, machine: None, profile: None, kind: Some(Kind::Tab), base: None, task }).unwrap();
+    let t = threads::start(&ctx, "demo", StartArgs { title: "Research".into(), repo: None, machine: None, profile: None, kind: Some(Kind::Tab), base: None, task, ..Default::default() }).unwrap();
     assert_eq!(t.kind, Kind::Tab);
     let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
     assert!(brief.contains("Look into it.\n\n## Notes from the task list\n\nStart with the 2025 papers."), "{brief}");
@@ -2875,7 +3004,7 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     world.runner.on("pane get", ok(r#"{"result":{"pane":{"cwd":""}}}"#));
     world.runner.on("notification show", ok(r#"{"result":{}}"#));
     let ctx = world.ctx();
-    let args = |repo: Option<String>, profile: Option<&str>| StartArgs { title: "design: otp".into(), repo, machine: None, profile: profile.map(str::to_string), kind: Some(Kind::Design), base: None, task: "## Requirement\n\nMove OTP first.".into() };
+    let args = |repo: Option<String>, profile: Option<&str>| StartArgs { title: "design: otp".into(), repo, machine: None, profile: profile.map(str::to_string), kind: Some(Kind::Design), base: None, task: "## Requirement\n\nMove OTP first.".into(), ..Default::default() };
 
     assert!(threads::start(&ctx, "demo", args(Some(repo.to_string_lossy().into_owned()), None)).unwrap_err().to_string().contains("takes no --repo"));
     assert!(threads::start(&ctx, "demo", args(None, Some("codex"))).unwrap_err().to_string().contains("needs a Claude Code profile"));
@@ -3273,7 +3402,7 @@ fn tab_threads_of_a_coordinator_running_in_another_workspace_each_open_their_own
     h.runs.borrow_mut().push((0, format!("[{}]", h.child_agent("w5:p1", "", "sess-7"))));
     h.open(true, false).unwrap();
     h.world.runner.on("pane get", ok(r#"{"result":{"pane":{"cwd":""}}}"#));
-    let args = |title: &str, kind: Kind, repo: Option<String>| StartArgs { title: title.into(), repo, machine: None, profile: None, kind: Some(kind), base: None, task: "Look.".into() };
+    let args = |title: &str, kind: Kind, repo: Option<String>| StartArgs { title: title.into(), repo, machine: None, profile: None, kind: Some(kind), base: None, task: "Look.".into(), ..Default::default() };
     let t = threads::start(&h.world.ctx(), "demo", args("Research", Kind::Tab, None)).unwrap();
     let folder = std::fs::canonicalize(h.project.dir().join("threads/t-0001")).unwrap();
     assert_eq!(h.world.runner.count(&format!("workspace create --cwd {} --label Research", folder.display())), 1);
@@ -3940,7 +4069,7 @@ fn a_coordinator_renames_its_own_project_and_reopens_in_the_new_folder() {
     assert!(old.is_dir());
     let pending = crate::rename::pending(&world.root, "scratch").unwrap();
     assert!(pending.reopen && pending.to == "home");
-    let start = threads::start(&ctx, "scratch", StartArgs { title: "x".into(), repo: None, machine: None, profile: None, kind: None, base: None, task: "y".into() });
+    let start = threads::start(&ctx, "scratch", StartArgs { title: "x".into(), repo: None, machine: None, profile: None, kind: None, base: None, task: "y".into(), ..Default::default() });
     assert!(start.unwrap_err().to_string().contains("being renamed"));
 
     // While it works (finishing its reply), nothing happens.
