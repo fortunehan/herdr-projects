@@ -11,10 +11,9 @@ use crate::paths::Ctx;
 use crate::project::{self, Project};
 use crate::runner::{Cmd, Runner};
 use crate::thread::{self, BranchKind, CopyOutcome, Group, Kind, Live, Status, Thread};
-use crate::{coordinator, remote, ticker};
+use crate::{coordinator, mainline, remote, ticker};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
-const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The project's session as the binary sees it right now.
 pub struct SessionView<'a> {
@@ -260,12 +259,14 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             // The same steps on the thread's own machine: git over ssh, herdr
             // through `--machine`.
             let target = remote::ssh_target(runner, &ctx.env.herdr_bin(), &ctx.config_dir, &record.machine)?;
-            let (origin, base) = remote::repo_info(runner, &target, &record.repo, &record.base)?;
+            let at = mainline::Location { path: &record.repo, machine: &record.machine, target: Some(&target) };
+            let found = start_point(project, runner, &record, &at)?;
+            let origin = found.facts.origin.clone();
             let record = name_branch(project, &record, &origin, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
-            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &base, &record.title)?;
+            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &found.mainline.reference, &record.title)?;
             thread::update(project, id, |t| {
                 t.origin = origin;
-                t.base = base;
+                record_start(t, &found);
                 t.worktree_path = path;
                 t.cwd = cwd;
                 t.workspace_id = created.workspace_id;
@@ -276,35 +277,22 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
         Kind::Worktree => {
             git(runner, &record.repo, &["rev-parse", "--show-toplevel"], GIT_TIMEOUT)
                 .with_context(|| format!("{} is not a git repository", record.repo))?;
-            let origin = git(runner, &record.repo, &["remote", "get-url", "origin"], GIT_TIMEOUT).unwrap_or_default();
-            if !origin.is_empty()
-                && let Err(error) = git(runner, &record.repo, &["fetch", "origin"], FETCH_TIMEOUT)
-            {
-                eprintln!("warning: {error:#}");
-            }
-            let base = if record.base.is_empty() {
-                git(runner, &record.repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], GIT_TIMEOUT)
-                    .or_else(|_| git(runner, &record.repo, &["rev-parse", "--abbrev-ref", "HEAD"], GIT_TIMEOUT))
-                    .and_then(|base| match base.as_str() {
-                        "HEAD" => git(runner, &record.repo, &["rev-parse", "HEAD"], GIT_TIMEOUT),
-                        _ => Ok(base),
-                    })?
-            } else {
-                record.base.clone()
-            };
+            let at = mainline::Location { path: &record.repo, machine: "", target: None };
+            let found = start_point(project, runner, &record, &at)?;
+            let origin = found.facts.origin.clone();
             let record = name_branch(project, &record, &origin, |name| {
                 let refs = [format!("refs/heads/{name}"), format!("refs/remotes/origin/{name}")];
                 let found = git(runner, &record.repo, &["for-each-ref", "--format=%(refname)", &refs[0], &refs[1]], GIT_TIMEOUT)?;
                 Ok(!found.is_empty())
             })?;
-            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &base, &record.title)?;
+            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &found.mainline.reference, &record.title)?;
             let repo_workspace = repo_space(&view.herdr, &record.repo);
             // Recorded immediately, so a command killed midway still leaves a
             // record `thread restart` can act on.
             thread::update(project, id, |t| {
                 t.repo_workspace = repo_workspace;
                 t.origin = origin;
-                t.base = base;
+                record_start(t, &found);
                 t.worktree_path = path;
                 t.cwd = cwd;
                 t.workspace_id = created.workspace_id;
@@ -317,6 +305,21 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
     };
     write_brief(ctx, project, &placed, restart)?;
     finish_placement(project, view, id)
+}
+
+/// Where a new worktree starts: `--base`, else the mainline, after a fetch
+/// of origin whose failure does not stop the thread (ADR 0007).
+fn start_point(project: &Project, runner: &dyn Runner, record: &Thread, at: &mainline::Location) -> Result<mainline::Found> {
+    let base = (!record.base.is_empty()).then_some(record.base.as_str());
+    mainline::find(project, runner, at, &mainline::Options { fetch: true, base, ..Default::default() })
+}
+
+fn record_start(t: &mut Thread, found: &mainline::Found) {
+    t.base = found.mainline.reference.clone();
+    t.base_commit = found.mainline.commit.clone();
+    t.base_given = found.mainline.given;
+    t.base_fetched = found.fetched();
+    t.base_notes = found.notes();
 }
 
 /// Names a new worktree thread's branch once origin is known and fetched,
@@ -351,7 +354,7 @@ fn write_brief(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> 
     let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
     let with_dir = Thread { thread_dir: dir.clone(), ..placed.clone() };
     let task = std::fs::read_to_string(thread::task_path(project, &placed.id)).unwrap_or_default();
-    let brief = thread::brief_for(project, &with_dir, &task, restart)?;
+    let brief = thread::brief_for(project, &with_dir, &task, restart, &mainline::worktree_lines(placed))?;
     let target = remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &placed.machine)?;
     remote::write_brief(ctx.runner, &target, &placed.cwd, &dir, &brief)?;
     thread::update(project, &placed.id, |t| t.thread_dir = dir)?;
@@ -403,12 +406,26 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
     })
 }
 
+/// The brief's mainline lines: a worktree thread's start point from its
+/// record; for tab, checkout and design threads each local repository's
+/// mainline next to its main checkout, read as it is now.
+fn mainline_lines(ctx: &Ctx, project: &Project, placed: &Thread) -> String {
+    match placed.kind {
+        Kind::Worktree => mainline::worktree_lines(placed),
+        Kind::Tab | Kind::Checkout | Kind::Design => {
+            let repos = project.read_project_md().map(|(settings, _)| settings.repos).unwrap_or_default();
+            mainline::checkout_lines(project, ctx.runner, &repos, &placed.repo)
+        }
+        Kind::Adopted => String::new(),
+    }
+}
+
 /// Creates the thread directory, keeps it out of git, writes `brief.md`.
 fn write_brief_local(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> Result<()> {
     let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
     let with_dir = Thread { thread_dir: dir.clone(), ..placed.clone() };
     let task = std::fs::read_to_string(thread::task_path(project, &placed.id)).unwrap_or_default();
-    let brief = thread::brief_for(project, &with_dir, &task, restart)?;
+    let brief = thread::brief_for(project, &with_dir, &task, restart, &mainline_lines(ctx, project, placed))?;
 
     std::fs::create_dir_all(Path::new(&dir).join("library")).with_context(|| format!("could not create {dir}"))?;
     if !matches!(placed.kind, Kind::Tab | Kind::Design) {

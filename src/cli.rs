@@ -89,6 +89,13 @@ enum Command {
         #[command(subcommand)]
         command: CoordinatorCommand,
     },
+    /// Each repository's mainline: the line new threads start from and analysis reads
+    Mainline {
+        slug: String,
+        /// Detect again whether a repository works on main or develop, instead of using the cached answer
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Print the digest the coordinator reads at the start of every turn
     Context {
         slug: String,
@@ -714,6 +721,7 @@ pub fn run() -> Result<()> {
             }
         },
         Command::Context { slug, peek } => coordinator::context(&ctx, &slug, peek),
+        Command::Mainline { slug, refresh } => crate::mainline::cli(&ctx, &slug, refresh),
         Command::Assignable { slug, refresh, check } => crate::assign::run(&ctx, &slug, refresh, check.as_deref()),
         Command::Overview { slug, wait } => overview::run(&ctx, slug.as_deref(), wait),
         Command::Focus { slug } => overview::focus(&ctx, slug.as_deref()),

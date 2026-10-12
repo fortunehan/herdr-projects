@@ -91,7 +91,7 @@ pub fn adopt(ctx: &Ctx, slug: &str, pane: &str, title: &str, task: Option<String
         // Two adopted panes in one directory still get separate thread directories.
         let dir = thread::thread_dir(&agent.cwd, slug, &id);
         let with_dir = Thread { thread_dir: dir.clone(), ..created.clone() };
-        let brief = thread::brief_for(&project, &with_dir, &task, false)?;
+        let brief = thread::brief_for(&project, &with_dir, &task, false, "")?;
         std::fs::create_dir_all(Path::new(&dir).join("library")).with_context(|| format!("could not create {dir}"))?;
         threads::exclude_from_git(ctx.runner, &agent.cwd)?;
         project::write_atomic(&Path::new(&dir).join("brief.md"), brief.as_bytes())?;

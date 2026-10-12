@@ -582,9 +582,10 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
                 let _ = writeln!(out, "Repos: (none)");
             }
             for repo in &settings.repos {
+                let mainline = crate::mainline::summary(project, repo);
                 match &repo.machine {
-                    Some(machine) => { let _ = writeln!(out, "Repo: {} (machine {machine}, name {})", repo.path, repo.short_name()); }
-                    None => { let _ = writeln!(out, "Repo: {} (name {})", repo.path, repo.short_name()); }
+                    Some(machine) => { let _ = writeln!(out, "Repo: {} (machine {machine}, name {}) · mainline {mainline}", repo.path, repo.short_name()); }
+                    None => { let _ = writeln!(out, "Repo: {} (name {}) · mainline {mainline}", repo.path, repo.short_name()); }
                 }
             }
             if project.design_dir().is_dir() {

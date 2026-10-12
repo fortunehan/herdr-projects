@@ -139,33 +139,6 @@ pub fn resolve_profile(runner: &dyn Runner, target: &str, machine: &str, name: O
     Ok(profile)
 }
 
-/// Origin URL and base ref of a repository on the machine, after a fetch whose
-/// failure is not an error. One ssh call.
-pub fn repo_info(runner: &dyn Runner, target: &str, repo: &str, base: &str) -> Result<(String, String)> {
-    let script = format!(
-        "cd {repo} && git rev-parse --show-toplevel >/dev/null || exit 3\n\
-         o=$(git remote get-url origin 2>/dev/null || true)\n\
-         if [ -n \"$o\" ]; then git fetch origin >/dev/null 2>&1 || true; fi\n\
-         b={base}\n\
-         if [ -z \"$b\" ]; then b=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD); fi\n\
-         if [ \"$b\" = HEAD ]; then b=$(git rev-parse HEAD); fi\n\
-         printf '%s\\n%s\\n' \"$o\" \"$b\"",
-        repo = quote(repo),
-        base = quote(base),
-    );
-    let out = ssh(runner, target, &script, None, SSH_START_TIMEOUT)?;
-    if !out.success() {
-        bail!("{repo} on {target} is not a usable git repository: {}", out.error_text());
-    }
-    let mut lines = out.stdout.lines();
-    let origin = lines.next().unwrap_or("").trim().to_string();
-    let base = lines.next().unwrap_or("").trim().to_string();
-    if base.is_empty() {
-        bail!("could not find a base ref in {repo} on {target}");
-    }
-    Ok((origin, base))
-}
-
 /// Creates the thread directory, keeps it out of git, and writes the brief
 /// from standard input. One ssh call, so handshakes do not eat the start budget.
 pub fn write_brief(runner: &dyn Runner, target: &str, cwd: &str, thread_dir: &str, brief: &str) -> Result<()> {

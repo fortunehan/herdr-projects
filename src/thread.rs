@@ -95,7 +95,16 @@ pub struct Thread {
     /// the branch name in an Azure DevOps repository.
     pub wid: String,
     pub branch_kind: BranchKind,
+    /// The ref a worktree thread started from: the mainline, or `--base`.
     pub base: String,
+    /// `base`'s commit when the worktree was made.
+    pub base_commit: String,
+    /// `base` came from `--base`, not from the mainline rule.
+    pub base_given: bool,
+    /// `fetched <time>` of origin at start, empty without an origin.
+    pub base_fetched: String,
+    /// A failed fetch and the mainline rule's warnings, for the brief.
+    pub base_notes: Vec<String>,
     pub machine: String,
     pub worktree_path: String,
     pub thread_dir: String,
@@ -391,6 +400,8 @@ pub struct BriefInput<'a> {
     pub remote: bool,
     /// A worktree thread's branch; empty for other kinds.
     pub branch: &'a str,
+    /// Header lines naming the mainline (see `mainline`), or "".
+    pub mainline: &'a str,
     pub instructions: &'a str,
     pub memory_index: &'a str,
     /// (file name, contents), in the order they should be inlined.
@@ -429,6 +440,7 @@ fn brief_header(input: &BriefInput) -> String {
     if !input.branch.is_empty() {
         out.push_str(&format!("- Branch: `{}`. Stay on it: do not switch branches or create new ones.\n", input.branch));
     }
+    out.push_str(input.mainline);
     let uploads_note = if input.remote { " (on the home machine; not copied to yours)" } else { "" };
     out.push_str(&format!("- Uploads, files from the user: `{}`{uploads_note}\n", input.uploads_path));
     if !input.design_folder.is_empty() {
@@ -494,7 +506,8 @@ pub fn compose_brief(input: &BriefInput) -> String {
 }
 
 /// Reads the project's instructions and memory and composes the brief.
-pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) -> Result<String> {
+/// `mainline` is the header's mainline lines (see `mainline`).
+pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool, mainline: &str) -> Result<String> {
     let (settings, instructions) = project.read_project_md()?;
     let project_name = project::display_name(&settings.name, &project.slug);
     let uploads = project.dir().join("uploads").to_string_lossy().into_owned();
@@ -529,6 +542,7 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool) 
         uploads_path: &uploads,
         remote: thread.is_remote(),
         branch: if thread.kind == Kind::Worktree { &thread.branch } else { "" },
+        mainline,
         instructions: &instructions,
         memory_index: &memory_index,
         memory_files: &memory_files,
@@ -1289,6 +1303,7 @@ mod tests {
             uploads_path: "/root/demo/uploads",
             remote: false,
             branch: "feature/fix-it",
+            mainline: "- Mainline: `origin/main` @ a1b2c3d (fetched 2026-10-12 09:00). Your branch starts here; cite this commit in your report.\n",
             instructions: "Always run the tests.",
             memory_index: "# Memory\n- a\n- b\n- c",
             memory_files: &files,
@@ -1305,7 +1320,8 @@ mod tests {
         // The header comes first: name, goal, repos with machines, uploads, library, report.
         assert!(brief.starts_with("# Project\n\n- Project: Demo (`demo`)\n- Goal: Ship it\n"));
         assert!(pos("/srv/app on machine `box`") < pos("/home/me/lib (local)"));
-        assert!(pos("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones.") < pos("Uploads, files from the user"));
+        assert!(pos("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones.") < pos("- Mainline: `origin/main` @ a1b2c3d"));
+        assert!(pos("- Mainline: `origin/main` @ a1b2c3d") < pos("Uploads, files from the user"));
         assert!(pos("Uploads, files from the user: `/root/demo/uploads`") < pos("# Thread brief"));
         assert!(pos("# Thread brief") < pos("previous attempt"));
         assert!(pos("previous attempt") < pos("Always run the tests."));
@@ -1322,9 +1338,10 @@ mod tests {
             assert!(!brief.contains(word), "{word}");
         }
 
-        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", branch: "", ..input });
+        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", branch: "", mainline: "", ..input });
         assert!(!fresh.contains("previous attempt"));
         assert!(!fresh.contains("- Branch:"));
+        assert!(!fresh.contains("- Mainline:"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));
         assert!(!fresh.contains("Design folder"));

@@ -164,7 +164,7 @@ fn thread_start_returns_without_an_agent_and_the_ticker_launches_then_prompts() 
     world.runner.on("rev-parse --show-toplevel", ok("/repo\n"));
     world.runner.on("remote get-url origin", ok("git@github.com:Owner/App.git\n"));
     world.runner.on("fetch origin", fail(1, "offline"));
-    world.runner.on("symbolic-ref", ok("origin/main\n"));
+    mainline_answers(&world, "git@github.com:Owner/App.git");
     world.runner.on("for-each-ref", ok(""));
     world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
     world.runner.on(
@@ -207,6 +207,10 @@ fn thread_start_returns_without_an_agent_and_the_ticker_launches_then_prompts() 
     assert!(brief.contains("Do the thing."));
     assert!(brief.contains("# Project instructions"));
     assert!(brief.contains("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones."));
+    // A failed fetch still starts the thread, from the mainline as last fetched.
+    assert_eq!((started.base_commit.as_str(), started.base_given), (MAIN_COMMIT, false));
+    assert!(brief.contains(&format!("- Mainline: `origin/main` @ {}", &MAIN_COMMIT[..7])), "{brief}");
+    assert!(brief.contains("The fetch from origin failed: the mainline is as of the last fetch."), "{brief}");
     // The hostile title reaches herdr as one argument, unchanged.
     let calls = world.runner.calls.borrow();
     let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
@@ -398,10 +402,22 @@ fn placement_answers(world: &World, create: impl Fn(&Cmd) -> anyhow::Result<Outp
     world.runner.on("rev-parse --show-toplevel", ok("/repo\n"));
     world.runner.on("remote get-url origin", ok("git@github.com:Owner/App.git\n"));
     world.runner.on("fetch origin", ok(""));
-    world.runner.on("symbolic-ref", ok("origin/main\n"));
+    mainline_answers(world, "git@github.com:Owner/App.git");
     world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
     world.runner.on("for-each-ref", ok(""));
     world.runner.on_fn(|cmd| cmd.display().contains("worktree create"), create);
+}
+
+const MAIN_COMMIT: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+
+/// Answers the mainline facts script, here or over ssh: `origin` with
+/// `main` at `MAIN_COMMIT`, checked out, and a README that says trunk-based.
+fn mainline_answers(world: &World, origin: &str) {
+    let c = MAIN_COMMIT;
+    world.runner.on(
+        crate::mainline::FACTS_MARK,
+        ok(&format!("origin\t{origin}\nfetch\tok\nfetched\t1760000000\nhead\t{c}\tmain\norigin-head\torigin/main\nref\trefs/heads/main\t{c}\t0\t0\nref\trefs/remotes/origin/main\t{c}\t0\t0\npair\tmain\t0\t0\nreadme\ttrunk\n")),
+    );
 }
 
 /// Answers `for-each-ref` with the refs among `existing` it was asked about.
@@ -445,6 +461,7 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         let wt = wt.to_string_lossy().into_owned();
         *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
         world.runner.on("remote get-url origin", ok(&format!("{origin}\n")));
+        mainline_answers(&world, origin);
         existing_refs(&world, existing);
         let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
         placement_answers(&world, move |_| Ok(ok(&created)));
@@ -503,7 +520,7 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
     world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
     world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":[]}"#));
-    world.runner.on("symbolic-ref", ok(&format!("{ADO_ORIGIN}\norigin/main\n")));
+    mainline_answers(&world, ADO_ORIGIN);
     existing_refs(&world, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"]);
     world.runner.on(
         "worktree create",
@@ -525,8 +542,16 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     assert_eq!(check.program, "ssh");
     let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
     assert!(is_machine_call(create) && create.args.contains(&"feature/fix-the-login-bug-t-0001-16349910".to_string()), "{}", create.display());
+    assert!(create.args.windows(2).any(|w| w == ["--base", "origin/main"]), "{}", create.display());
+    // The facts and the fetch are one ssh call on the thread's machine.
+    let facts: Vec<_> = calls.iter().filter(|c| c.display().contains(crate::mainline::FACTS_MARK)).collect();
+    assert_eq!(facts.len(), 1);
+    assert!(facts[0].program == "ssh" && facts[0].stdin.as_deref().unwrap_or("").contains("if [ 1 = 1 ] && [ -n \"$o\" ]; then"));
     let brief = calls.iter().find(|c| c.display().contains("brief.md")).unwrap();
-    assert!(brief.stdin.as_deref().unwrap_or("").contains("- Branch: `feature/fix-the-login-bug-t-0001-16349910`."));
+    let brief = brief.stdin.as_deref().unwrap_or("");
+    assert!(brief.contains("- Branch: `feature/fix-the-login-bug-t-0001-16349910`."));
+    assert!(brief.contains(&format!("- Mainline: `origin/main` @ {}", &MAIN_COMMIT[..7])), "{brief}");
+    assert!(!brief.contains("fetch from origin failed"), "{brief}");
 }
 
 /// The branch is in the record before `worktree create`, so a start cut off
@@ -3034,7 +3059,7 @@ fn a_design_thread_works_in_the_design_folder_and_its_interview_stays_out_of_the
     assert!(items[0].summary.contains("only the user answers it"), "{}", items[0].summary);
 
     // A worker's brief points at the design folder, read-only.
-    let worker = thread::brief_for(&project, &Thread { kind: Kind::Tab, ..Thread::default() }, "t", false).unwrap();
+    let worker = thread::brief_for(&project, &Thread { kind: Kind::Tab, ..Thread::default() }, "t", false, "").unwrap();
     assert!(worker.contains(&format!("(read-only): `{}`", design.display())));
 }
 
@@ -4159,4 +4184,131 @@ fn a_pending_rename_closes_a_busy_agent_after_the_wait_and_reports_a_failure() {
     assert!(log.contains("stopped") && log.contains(&t.id), "{log}");
     assert!(!path.exists() && project.dir().is_dir());
     assert!(crate::inbox::unhandled(&project).iter().any(|i| i.event == "rename failed"));
+}
+
+/// Git (and the mainline script) run for real; herdr stays scripted.
+fn real_git(world: &World) {
+    world.runner.on_fn(|cmd| cmd.program == "git" || cmd.program == "sh", |cmd| crate::runner::Runner::run(&crate::runner::RealRunner, cmd));
+}
+
+/// Without `--base` a worktree thread starts from the mainline: a local
+/// `main` that contains `origin/main` and is ahead (Lab's fork line), and a
+/// repository with no remote at all, both from local `main` (ADR 0007).
+#[test]
+fn a_worktree_thread_without_a_base_starts_from_the_mainline_of_a_real_repository() {
+    use crate::mainline::tests::{Repos, commit, git};
+    let lab = Repos::new(None, None, false);
+    let fork = commit(&lab.clone, "fork.rs", "custom");
+    let plain = tempfile::tempdir().unwrap();
+    git(plain.path(), &["init", "-q"]);
+    let first = commit(plain.path(), "a.txt", "a");
+    git(plain.path(), &["checkout", "-q", "-b", "elsewhere"]);
+    commit(plain.path(), "b.txt", "b");
+    for (repo, expected, fetched) in [(lab.clone.clone(), fork, true), (plain.path().to_path_buf(), first, false)] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let wt = world.home.path().join("wt");
+        std::fs::create_dir(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+        real_git(&world);
+        world.runner.on(
+            "worktree create",
+            ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#)),
+        );
+        let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), profile: Some("claude".into()), task: "Do it.".into(), ..Default::default() };
+        let t = threads::start(&world.ctx(), "demo", args).unwrap();
+        let case = repo.display().to_string();
+        assert_eq!((t.base.as_str(), t.base_commit.as_str(), t.base_given), ("main", expected.as_str(), false), "{case}");
+        assert!(t.base_notes.is_empty(), "{case}: {:?}", t.base_notes);
+        assert_eq!(world.runner.count("--branch feature/fix-it --base main"), 1, "{case}");
+        assert_eq!(world.runner.count("fetch origin"), usize::from(fetched), "{case}");
+        let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+        let line = format!("- Mainline: `main` @ {}", &expected[..7]);
+        assert!(brief.contains(&line), "{case}: {brief}");
+        assert_eq!(brief.contains(&format!("{line} (fetched ")), fetched, "{case}: {brief}");
+        // `--base` wins and is named as such.
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+        real_git(&world);
+        world.runner.on(
+            "worktree create",
+            ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#)),
+        );
+        let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), profile: Some("claude".into()), base: Some("HEAD~1".into()), task: "Do it.".into(), ..Default::default() };
+        let t = threads::start(&world.ctx(), "demo", args).unwrap();
+        assert_eq!((t.base.as_str(), t.base_given), ("HEAD~1", true), "{case}");
+        let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+        assert!(brief.contains(&format!("- Base (from --base): `HEAD~1` @ {}", &t.base_commit[..7])), "{case}: {brief}");
+    }
+}
+
+/// A tab thread reads the main checkout where it is; its brief says how far
+/// that is from the mainline, and nothing in the checkout moves.
+#[test]
+fn a_tab_thread_brief_shows_the_gap_between_the_main_checkout_and_the_mainline() {
+    use crate::mainline::tests::{Repos, commit, git};
+    let repos = Repos::new(None, None, false);
+    commit(&repos.seed, "new.rs", "new");
+    git(&repos.seed, &["push", "-q", "origin", "main"]);
+    repos.fetch();
+    git(&repos.clone, &["checkout", "-q", "-b", "feature/y"]);
+    let head = commit(&repos.clone, "mine.rs", "mine");
+    std::fs::write(repos.clone.join("scratch.txt"), "wip").unwrap();
+    let status = git(&repos.clone, &["status", "--porcelain"]);
+    let mainline = git(&repos.clone, &["rev-parse", "origin/main"]);
+
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let cwd = project.canonical_dir().join("threads/t-0001").to_string_lossy().into_owned();
+    let created = cwd.clone();
+    world.runner.on_fn(
+        |cmd| cmd.display().contains("workspace create"),
+        move |_| Ok(ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w3","tab_id":"w3:t1","pane_id":"w3:p1","cwd":"{created}"}}}}}}"#))),
+    );
+    world.runner.on("pane get", ok(r#"{"result":{"pane":{"cwd":""}}}"#));
+    real_git(&world);
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    let args = StartArgs { title: "Read it".into(), repo: Some(repos.path()), kind: Some(Kind::Tab), task: "Explain.".into(), ..Default::default() };
+    let t = threads::start(&world.ctx(), "demo", args).unwrap();
+    let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+    assert!(
+        brief.contains(&format!("mainline `origin/main` @ {}", &mainline[..7]))
+            && brief.contains(&format!("main checkout on `feature/y` @ {}: 1 behind, 1 ahead, with uncommitted changes.", &head[..7])),
+        "{brief}"
+    );
+    assert!(brief.contains("read the mainline with `git show <commit>:<file>` and `git diff <commit>`"), "{brief}");
+    // It fetches origin first: remote-tracking refs move, the checkout does not.
+    assert_eq!(world.runner.count("fetch origin"), 1);
+    assert!(brief.contains(&format!("@ {} (fetched ", &mainline[..7])), "{brief}");
+    assert_eq!(git(&repos.clone, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&repos.clone, &["branch", "--show-current"]), "feature/y");
+    assert_eq!(git(&repos.clone, &["status", "--porcelain"]), status);
+}
+
+/// `context` names each repository's mainline from the cache only: it runs
+/// no git, fetch or ssh; thread starts and `mainline` fill the cache.
+#[test]
+fn context_shows_each_repository_mainline_from_the_cache() {
+    use crate::mainline::tests::{Repos, commit};
+    let repos = Repos::new(None, None, false);
+    let fork = commit(&repos.clone, "fork.rs", "custom");
+    let world = World::new();
+    let list = vec![
+        project::Repo { path: repos.path(), machine: None, name: None },
+        project::Repo { path: "/remote/app".into(), machine: Some("box".into()), name: None },
+    ];
+    let project = project::create(&world.root, "demo", "", list).unwrap();
+    real_git(&world);
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(digest.contains("(name clone) · mainline not found yet (`mainline demo` finds it)\n"), "{digest}");
+    assert!(digest.contains("(machine box, name app) · mainline not found yet"), "{digest}");
+    assert!(world.runner.calls.borrow().iter().all(|c| c.program != "git" && c.program != "sh" && c.program != "ssh"), "context ran git or ssh");
+
+    crate::mainline::cli(&world.ctx(), "demo", false).unwrap();
+    let before = world.runner.calls.borrow().len();
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(digest.contains(&format!("(name clone) · mainline `main` @ {} (not fetched yet), as of ", &fork[..7])), "{digest}");
+    assert!(world.runner.calls.borrow()[before..].iter().all(|c| c.program != "git" && c.program != "sh" && c.program != "ssh"), "context ran git or ssh");
 }
