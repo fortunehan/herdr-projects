@@ -1528,7 +1528,7 @@ fn a_pull_request_opened_and_merged_between_two_passes_is_linked_and_its_branch_
     let opened = Rc::new(RefCell::new(false));
     let flag = opened.clone();
     world.runner.on_fn(
-        |cmd| cmd.display().contains("gh pr list --repo owner/app --state all --limit 100"),
+        |cmd| cmd.display().contains("gh pr list --repo owner/app --head hp/demo/t-0001-task --state all --limit 100"),
         move |_| Ok(ok(if *flag.borrow() { MERGED_LIST } else { "[]" })),
     );
     let ctx = world.ctx();
@@ -1593,7 +1593,7 @@ fn off_github_com_every_gh_call_goes_to_the_origin_host() {
         let report = if pr_line { format!("PR: {PR_URL}\n## Report\nmerged\n") } else { "## Report\nmerged\n".to_string() };
         std::fs::write(thread::home_report_path(&project, "t-0001"), report).unwrap();
         world.runner.on_fn(
-            |cmd| cmd.display().contains("gh pr list --repo owner/app --state all") && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into())),
+            |cmd| cmd.display().contains("gh pr list --repo owner/app --head hp/demo/t-0001-task --state all") && cmd.env.contains(&("GH_HOST".into(), "github.localhost".into())),
             |_| Ok(ok(MERGED_LIST)),
         );
         let ctx = world.ctx();
@@ -1901,9 +1901,8 @@ fn an_azure_devops_pr_found_by_branch_is_linked_and_a_manual_resolve_deletes_the
     }
 }
 
-/// The thread branch `feature/login`, tipped at `tip`, whose pull request
-/// ado-track pushed as `feature/login-16350001`.
-fn on_wid_branch(world: &World, project: &Project, tip: &str) {
+/// The thread branch `feature/login`, tipped at `tip`.
+fn on_login_branch(world: &World, project: &Project, tip: &str) {
     thread::update(project, "t-0001", |t| t.branch = "feature/login".into()).unwrap();
     std::fs::write(thread::home_report_path(project, "t-0001"), "## Report\nmerged\n").unwrap();
     world.runner.on("rev-parse --verify --quiet refs/heads/feature/login", ok(&format!("{tip}\n")));
@@ -1922,29 +1921,29 @@ fn resolve_merged(world: &World, project: &Project, ticked: bool) {
     }
 }
 
-const WID_MERGED_JSON: &str = r#"{"state":"MERGED","reviewDecision":"APPROVED","headRefName":"feature/login-16350001","headRefOid":"merged-head","headRepository":{"name":"app"},"headRepositoryOwner":{"login":"owner"}}"#;
+const LOGIN_MERGED_JSON: &str = r#"{"state":"MERGED","reviewDecision":"APPROVED","headRefName":"feature/login","headRefOid":"merged-head","headRepository":{"name":"app"},"headRepositoryOwner":{"login":"owner"}}"#;
 
-/// A GitHub pull request from the thread branch with `-<WID>`, opened by the
-/// user after the thread started, is found, passes the head-branch check,
-/// gets the thread resolved on its merge, and the local branch goes only at
-/// the merged head. Passed over, though each would rank first: a colleague's
-/// pull request from the same branch, an older merged one from the exact
-/// name, and one from `feature/login-page-16350001`.
+/// A GitHub pull request from exactly the thread branch, opened by the user
+/// after the thread started, is found, passes the head-branch check, gets the
+/// thread resolved on its merge, and the local branch goes only at the merged
+/// head. Passed over, though each would rank first: a colleague's pull
+/// request from the same branch, an older merged one, and the user's own from
+/// the branch with `-<WID>`.
 #[test]
-fn a_github_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved() {
+fn a_github_pr_from_the_thread_branch_is_followed_and_resolved() {
     const LIST: &str = r#"[
-        {"url":"https://github.com/owner/app/pull/9","state":"OPEN","createdAt":"2026-01-03T00:00:00Z","headRefName":"feature/login-16350001","author":{"login":"colleague"}},
+        {"url":"https://github.com/owner/app/pull/9","state":"OPEN","createdAt":"2026-01-03T00:00:00Z","headRefName":"feature/login","author":{"login":"colleague"}},
         {"url":"https://github.com/owner/app/pull/8","state":"MERGED","createdAt":"2025-11-01T00:00:00Z","headRefName":"feature/login","author":{"login":"owner"}},
-        {"url":"https://github.com/owner/app/pull/6","state":"OPEN","createdAt":"2026-01-04T00:00:00Z","headRefName":"feature/login-page-16350001","author":{"login":"owner"}},
-        {"url":"https://github.com/owner/app/pull/7","state":"MERGED","createdAt":"2026-01-01T00:00:00Z","headRefName":"feature/login-16350001","author":{"login":"owner"}}]"#;
+        {"url":"https://github.com/owner/app/pull/6","state":"OPEN","createdAt":"2026-01-04T00:00:00Z","headRefName":"feature/login-16350001","author":{"login":"owner"}},
+        {"url":"https://github.com/owner/app/pull/7","state":"MERGED","createdAt":"2026-01-01T00:00:00Z","headRefName":"feature/login","author":{"login":"owner"}}]"#;
     for ticked in [true, false] {
         for tip in ["merged-head", "later-local-commit"] {
-            let (world, project) = pr_world(WID_MERGED_JSON);
+            let (world, project) = pr_world(LOGIN_MERGED_JSON);
             set_agents(&world, &project, "idle");
             world.runner.on("worktree remove", ok(r#"{"result":{}}"#));
             world.runner.on("branch -D", ok(""));
-            on_wid_branch(&world, &project, tip);
-            world.runner.on("gh pr list --repo owner/app --state all --limit 100", ok(LIST));
+            on_login_branch(&world, &project, tip);
+            world.runner.on("gh pr list --repo owner/app --head feature/login --state all --limit 100", ok(LIST));
             resolve_merged(&world, &project, ticked);
             let t = thread::load(&project, "t-0001").unwrap();
             let reason = if ticked { "merged" } else { "manual" };
@@ -1961,18 +1960,18 @@ fn a_github_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved() {
 /// asked for and what comes back still goes through the matching rule; the
 /// user is the `connectionData` id.
 #[test]
-fn an_azure_devops_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved() {
+fn an_azure_devops_pr_from_the_thread_branch_is_followed_and_resolved() {
     for ticked in [true, false] {
         for tip in ["merged-head", "later-local-commit"] {
             let (world, project, pr) = ado_world("## Report\nmerged\n", "idle");
             let from = |status: &str, id: u32, source: &str| ado_pr_json(status).replace(r#""pullRequestId":7"#, &format!(r#""pullRequestId":{id}"#)).replace("refs/heads/hp/demo/t-0001-task", &format!("refs/heads/{source}"));
-            *pr.borrow_mut() = from("completed", 7, "feature/login-16350001");
-            let colleague = from("active", 9, "feature/login-16350001").replace("me-id", "colleague-id").replace("2026-01-01", "2026-01-03");
+            *pr.borrow_mut() = from("completed", 7, "feature/login");
+            let colleague = from("active", 9, "feature/login").replace("me-id", "colleague-id").replace("2026-01-01", "2026-01-03");
             let older = from("completed", 8, "feature/login").replace("2026-01-01", "2025-11-01");
-            let page = from("active", 6, "feature/login-page-16350001").replace("2026-01-01", "2026-01-04");
-            let list = format!(r#"{{"value":[{colleague},{older},{page},{}]}}"#, pr.borrow());
+            let wid = from("active", 6, "feature/login-16350001").replace("2026-01-01", "2026-01-04");
+            let list = format!(r#"{{"value":[{colleague},{older},{wid},{}]}}"#, pr.borrow());
             world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), move |_| Ok(ado_answer(&list)));
-            on_wid_branch(&world, &project, tip);
+            on_login_branch(&world, &project, tip);
             resolve_merged(&world, &project, ticked);
             let t = thread::load(&project, "t-0001").unwrap();
             let reason = if ticked { "merged" } else { "manual" };
@@ -1983,6 +1982,43 @@ fn an_azure_devops_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved
             assert_eq!(world.runner.count("branch -D"), usize::from(tip == "merged-head"));
             assert_no_secret_and_proxy_only_on_ado(&world, &project);
         }
+    }
+}
+
+/// A pull request from the thread branch with `-<WID>` is not the thread's
+/// when found by branch, on either forge, nor through a GitHub `PR:` line. An
+/// Azure DevOps `PR:` line is trusted without a source-branch check, so such a
+/// pull request is still followed there.
+#[test]
+fn a_pr_from_the_thread_branch_with_a_wid_is_followed_only_through_an_azure_devops_pr_line() {
+    const LIST: &str = r#"[{"url":"https://github.com/owner/app/pull/7","state":"OPEN","createdAt":"2026-01-01T00:00:00Z","headRefName":"feature/login-16350001","author":{"login":"owner"}}]"#;
+    let widened = LOGIN_MERGED_JSON.replace("feature/login", "feature/login-16350001");
+    let widened: &'static str = Box::leak(widened.into_boxed_str());
+    for pr_line in [false, true] {
+        let (world, project) = pr_world(widened);
+        on_login_branch(&world, &project, "merged-head");
+        if pr_line {
+            std::fs::write(thread::home_report_path(&project, "t-0001"), format!("PR: {PR_URL}\n## Report\nx\n")).unwrap();
+        }
+        world.runner.on("gh pr list --repo owner/app --head feature/login --state all", ok(LIST));
+        ticker::tick_project(&world.ctx(), &project).unwrap();
+        assert_eq!(thread::load(&project, "t-0001").unwrap().pr_state, "", "github pr_line={pr_line}");
+        let ignored = items_of(&project, "pr").iter().any(|i| i.summary.contains("is ignored: its head branch is not the thread's branch"));
+        assert_eq!(ignored, pr_line);
+        assert_eq!(world.runner.count("gh pr list --repo owner/app --head feature/login --state all"), usize::from(!pr_line));
+    }
+
+    for pr_line in [false, true] {
+        let report = if pr_line { format!("PR: {ADO_PR_URL}\n## Report\nx\n") } else { "## Report\nx\n".to_string() };
+        let (world, project, pr) = ado_world(&report, "idle");
+        thread::update(&project, "t-0001", |t| t.branch = "feature/login".into()).unwrap();
+        *pr.borrow_mut() = ado_pr_json("active").replace("refs/heads/hp/demo/t-0001-task", "refs/heads/feature/login-16350001");
+        let list = format!(r#"{{"value":[{}]}}"#, pr.borrow());
+        world.runner.on_fn(|cmd| is_curl_for(cmd, ADO_BRANCH_QUERY), move |_| Ok(ado_answer(&list)));
+        ticker::tick_project(&world.ctx(), &project).unwrap();
+        let expected = if pr_line { ADO_PR_URL } else { "" };
+        assert_eq!(thread::load(&project, "t-0001").unwrap().pr, expected, "azure devops pr_line={pr_line}");
+        assert_eq!(world.runner.count(&format!("{ADO_BRANCH_QUERY}feature%2Flogin&searchCriteria.status=all")), usize::from(!pr_line));
     }
 }
 

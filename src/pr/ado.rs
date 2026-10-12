@@ -1275,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_lookup_prefers_the_exact_name_then_open_merged_closed_and_the_newest() {
+    fn a_branch_lookup_asks_for_the_exact_name_and_prefers_open_merged_closed_and_the_newest() {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
         let origin = parse_remote(ORIGIN).unwrap();
@@ -1287,12 +1287,12 @@ mod tests {
         // Each of these would win were it the thread's.
         let not_ours = [
             item(4, "active", "2026-01-04T00:00:00Z", "b", "me-id", r#","forkSource":{}"#),
-            item(5, "active", "2026-01-05T00:00:00Z", "b-page-16350001", "me-id", ""),
-            item(6, "active", "2026-01-06T00:00:00Z", "b-16350001", "colleague-id", ""),
-            item(7, "active", "2025-12-31T00:00:00Z", "b-16350001", "me-id", ""),
+            item(5, "active", "2026-01-05T00:00:00Z", "b-16350001", "me-id", ""),
+            item(6, "active", "2026-01-06T00:00:00Z", "b", "colleague-id", ""),
+            item(7, "active", "2025-12-31T00:00:00Z", "b", "me-id", ""),
         ];
-        let ours = [item(2, "completed", "2026-01-01T00:00:00.1234567Z", "b-16350001", "ME-ID", ""), item(3, "completed", "2026-01-02T00:00:00Z", "b-16350001", "me-id", "")];
-        let exact = item(1, "abandoned", "2026-01-03T00:00:00Z", "b", "me-id", "");
+        let ours = [item(2, "completed", "2026-01-01T00:00:00.1234567Z", "b", "ME-ID", ""), item(3, "completed", "2026-01-02T00:00:00Z", "b", "me-id", "")];
+        let closed = item(1, "abandoned", "2026-01-03T00:00:00Z", "b", "me-id", "");
         let wanted = super::super::Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me-id" };
         let found = |listed: Vec<&String>| {
             let runner = FakeRunner::new();
@@ -1303,10 +1303,9 @@ mod tests {
             assert!(display.ends_with("repositories/app/pullrequests?searchCriteria.sourceRefName=refs%2Fheads%2Fb&searchCriteria.status=all&%24top=100&api-version=7.1"), "{display}");
             found
         };
-        // The exact name first, whatever its state.
-        assert_eq!(found(not_ours.iter().chain(&ours).chain([&exact]).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/1"));
-        // Then the name with a WID: open, merged, closed, newest first.
-        assert_eq!(found(not_ours.iter().chain(&ours).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/3"));
+        // Open, merged, closed, newest first.
+        assert_eq!(found(not_ours.iter().chain(&ours).chain([&closed]).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/3"));
+        assert_eq!(found(not_ours.iter().chain([&closed]).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/1"));
         assert_eq!(found(not_ours.iter().collect()), None);
         assert_eq!(find_by_branch(&Client::new(&FakeRunner::new(), &env), &origin, &super::super::Wanted { branch: "", ..wanted }).unwrap(), None);
     }

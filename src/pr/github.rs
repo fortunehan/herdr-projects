@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use super::{Checked, Summary, Wanted, sanitize, source_match};
+use super::{Checked, Summary, Wanted, sanitize};
 use crate::runner::{Cmd, Runner};
 
 pub const GH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -155,8 +155,8 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
     if branch.is_empty() {
         return Ok(Checked::Ignored("the thread has no branch".into()));
     }
-    if source_match(&view.head_ref_name, branch).is_none() {
-        return Ok(Checked::Ignored("its head branch is neither the thread's branch nor that branch with `-<WID>`".into()));
+    if view.head_ref_name != branch {
+        return Ok(Checked::Ignored("its head branch is not the thread's branch".into()));
     }
     let head = format!(
         "{}/{}",
@@ -257,11 +257,10 @@ struct GhListed {
 }
 
 /// The thread's pull request in the `origin` repository as `wanted` describes
-/// it, for a thread whose report names none, the best by `super::Rank`. `--head` matches only the exact name, so the 100
-/// newest pull requests are listed and matched here; the ticker links a
-/// thread's pull request within minutes, while it is still among them. A
-/// thread may open and merge its pull request between two ticker passes, so
-/// merged and closed ones count. One `gh` call; `None` without asking when
+/// it, for a thread whose report names none, the best by `super::Rank`. Only
+/// pull requests from the thread branch's exact name are asked for
+/// (`--head`). A thread may open and merge its pull request between two
+/// ticker passes, so merged and closed ones count. One `gh` call; `None` without asking when
 /// `origin` is not on GitHub. A fork's pull request lives upstream and is
 /// found only through the report's `PR:` line.
 pub fn find_by_branch(runner: &dyn Runner, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
@@ -276,6 +275,8 @@ pub fn find_by_branch(runner: &dyn Runner, origin: &str, wanted: &Wanted) -> Res
         "list",
         "--repo",
         &repo,
+        "--head",
+        wanted.branch,
         "--state",
         "all",
         "--limit",
@@ -478,15 +479,17 @@ mod tests {
     }
 
     #[test]
-    fn a_head_branch_that_is_the_thread_branch_with_a_wid_is_the_threads() {
+    fn a_head_branch_must_be_exactly_the_thread_branch() {
+        let exact = VIEW.replace("hp/demo/t-0001-x", "feature/login");
+        assert!(matches!(reduce(&exact, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Summary(_)));
         let widened = VIEW.replace("hp/demo/t-0001-x", "feature/login-16350001");
-        assert!(matches!(reduce(&widened, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Summary(_)));
+        assert!(matches!(reduce(&widened, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
         let page = VIEW.replace("hp/demo/t-0001-x", "feature/login-page-16350001");
         assert!(matches!(reduce(&page, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
     }
 
     #[test]
-    fn a_branch_lookup_prefers_the_exact_name_then_open_merged_closed_and_the_newest() {
+    fn a_branch_lookup_asks_for_the_exact_name_and_prefers_open_merged_closed_and_the_newest() {
         use crate::runner::fake::{FakeRunner, ok};
         let item = |n: u32, state: &str, created: &str, head: &str, author: &str, extra: &str| {
             format!(r#"{{"url":"https://github.com/o/r/pull/{n}","state":"{state}","createdAt":"{created}","headRefName":"{head}","author":{{"login":"{author}"}}{extra}}}"#)
@@ -494,26 +497,25 @@ mod tests {
         // Each of these would win were it the thread's.
         let not_ours = [
             item(4, "OPEN", "2026-01-05T00:00:00Z", "b", "me", r#","isCrossRepository":true"#),
-            item(5, "OPEN", "2026-01-06T00:00:00Z", "b-page-16350001", "me", ""),
-            item(6, "OPEN", "2026-01-07T00:00:00Z", "b-16350001", "colleague", ""),
-            item(7, "OPEN", "2025-12-31T00:00:00Z", "b-16350001", "me", ""),
+            item(5, "OPEN", "2026-01-06T00:00:00Z", "b-16350001", "me", ""),
+            item(6, "OPEN", "2026-01-07T00:00:00Z", "b", "colleague", ""),
+            item(7, "OPEN", "2025-12-31T00:00:00Z", "b", "me", ""),
             r#"{"url":"--web","state":"OPEN","createdAt":"2026-01-04T00:00:00Z","headRefName":"b","author":{"login":"me"}}"#.to_string(),
         ];
-        let ours = [item(2, "MERGED", "2026-01-01T00:00:00Z", "b-16350001", "Me", ""), item(3, "MERGED", "2026-01-02T00:00:00Z", "b-16350001", "me", "")];
-        let exact = item(1, "CLOSED", "2026-01-03T00:00:00Z", "b", "me", "");
+        let ours = [item(2, "MERGED", "2026-01-01T00:00:00Z", "b", "Me", ""), item(3, "MERGED", "2026-01-02T00:00:00Z", "b", "me", "")];
+        let closed = item(1, "CLOSED", "2026-01-03T00:00:00Z", "b", "me", "");
         let wanted = Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" };
         let found = |listed: Vec<&String>| {
             let runner = FakeRunner::new();
             runner.on("gh pr list", ok(&format!("[{}]", listed.into_iter().cloned().collect::<Vec<_>>().join(","))));
             let found = find_by_branch(&runner, "git@github.com:O/R.git", &wanted).unwrap();
             let display = runner.calls.borrow()[0].display();
-            assert!(display.contains("--repo o/r --state all --limit 100 --json url,state,createdAt,headRefName,isCrossRepository,author"), "{display}");
+            assert!(display.contains("--repo o/r --head b --state all --limit 100 --json url,state,createdAt,headRefName,isCrossRepository,author"), "{display}");
             found
         };
-        // The exact name first, whatever its state.
-        assert_eq!(found(not_ours.iter().chain(&ours).chain([&exact]).collect()).as_deref(), Some("https://github.com/o/r/pull/1"));
-        // Then the name with a WID: open, merged, closed, newest first.
-        assert_eq!(found(not_ours.iter().chain(&ours).collect()).as_deref(), Some("https://github.com/o/r/pull/3"));
+        // Open, merged, closed, newest first.
+        assert_eq!(found(not_ours.iter().chain(&ours).chain([&closed]).collect()).as_deref(), Some("https://github.com/o/r/pull/3"));
+        assert_eq!(found(not_ours.iter().chain([&closed]).collect()).as_deref(), Some("https://github.com/o/r/pull/1"));
         assert_eq!(found(not_ours.iter().collect()), None);
         assert_eq!(find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", &wanted).unwrap(), None);
         assert_eq!(find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", &Wanted { branch: "", ..wanted }).unwrap(), None);

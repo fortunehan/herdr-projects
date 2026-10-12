@@ -111,7 +111,7 @@ pub enum ViewError {
 
 /// The pull request at `url` as a thread on `branch` of `origin` sees it: a
 /// summary, or ignored when it is not the thread's. On GitHub its head branch
-/// must pass `source_match`; on Azure DevOps only its repository is checked,
+/// must be the thread branch; on Azure DevOps only its repository is checked,
 /// not its source branch (see `ado::reduce`).
 pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Checked, ViewError> {
     match Forge::of(origin) {
@@ -128,28 +128,15 @@ pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Ch
     }
 }
 
-/// How a pull request's source branch `source` names the thread branch
-/// `branch`: 0 the same name, 1 the name followed by `-` and a WID of five or
-/// more digits (ado-track pushes a thread branch so), `None` not the thread's.
-pub fn source_match(source: &str, branch: &str) -> Option<u8> {
-    if branch.is_empty() {
-        return None;
-    }
-    if source == branch {
-        return Some(0);
-    }
-    let wid = source.strip_prefix(branch)?.strip_prefix('-')?;
-    (wid.len() >= 5 && wid.bytes().all(|b| b.is_ascii_digit())).then_some(1)
-}
-
-/// The order of a thread's pull requests found by branch: the same name
-/// first, then open, merged, closed, then newest first.
-pub type Rank = (u8, u8, std::cmp::Reverse<jiff::Timestamp>);
+/// The order of a thread's pull requests found by branch: open, merged,
+/// closed, then newest first.
+pub type Rank = (u8, std::cmp::Reverse<jiff::Timestamp>);
 
 /// What a pull request found by branch must be to be the thread's. A `PR:`
 /// line is not held to this.
 pub struct Wanted<'a> {
-    /// The thread branch, its local name.
+    /// The thread branch, its local name; a pull request's source branch
+    /// must be exactly this (remote names equal local names, ADR 0006).
     pub branch: &'a str,
     /// When the thread was created: an older pull request is not its own.
     pub since: &'a str,
@@ -161,8 +148,7 @@ pub struct Wanted<'a> {
 impl Wanted<'_> {
     /// The rank of a listed pull request, `None` when it is not the thread's.
     pub fn rank(&self, source: &str, state: &str, created: &str, author: &str) -> Option<Rank> {
-        let matched = source_match(source, self.branch)?;
-        if self.own.is_empty() || !author.eq_ignore_ascii_case(self.own) {
+        if self.branch.is_empty() || source != self.branch || self.own.is_empty() || !author.eq_ignore_ascii_case(self.own) {
             return None;
         }
         let created: jiff::Timestamp = created.parse().ok()?;
@@ -174,7 +160,7 @@ impl Wanted<'_> {
             "MERGED" => 1,
             _ => 2,
         };
-        Some((matched, state, std::cmp::Reverse(created)))
+        Some((state, std::cmp::Reverse(created)))
     }
 }
 
@@ -281,14 +267,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_source_branch_is_the_thread_branch_or_it_with_a_wid() {
-        assert_eq!(source_match("feature/login", "feature/login"), Some(0));
-        assert_eq!(source_match("feature/login-16350001", "feature/login"), Some(1));
-        assert_eq!(source_match("feature/login-12345", "feature/login"), Some(1));
-        for other in ["feature/login-page-16350001", "feature/login-1234", "feature/login-16350001x", "feature/login16350001", "old/feature/login", "feature/log"] {
-            assert_eq!(source_match(other, "feature/login"), None, "{other}");
+    fn a_source_branch_is_exactly_the_thread_branch() {
+        let wanted = Wanted { branch: "feature/login", since: "2026-01-02T00:00:00Z", own: "me" };
+        assert!(wanted.rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", "me").is_some());
+        for other in ["feature/login-16350001", "feature/login-page-16350001", "feature/login16350001", "old/feature/login", "feature/log", ""] {
+            assert_eq!(wanted.rank(other, "OPEN", "2026-01-03T00:00:00Z", "me"), None, "{other}");
         }
-        assert_eq!(source_match("feature/login", ""), None);
+        assert_eq!(Wanted { branch: "", ..wanted }.rank("", "OPEN", "2026-01-03T00:00:00Z", "me"), None);
     }
 
     #[test]
@@ -301,19 +286,19 @@ mod tests {
         assert_eq!(rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", "colleague"), None, "a colleague's");
         assert_eq!(rank("feature/login", "OPEN", "not a date", "me"), None);
         assert_eq!(Wanted { own: "", ..wanted }.rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", ""), None);
-        // The exact name first, whatever its state; then open, merged, closed; newest first.
+        // Open, merged, closed; newest first.
         let mut ranks = [
-            rank("feature/login-16350001", "OPEN", "2026-01-03T00:00:00Z", "me"),
-            rank("feature/login", "CLOSED", "2026-01-02T00:00:00Z", "me"),
-            rank("feature/login-16350001", "MERGED", "2026-01-05T00:00:00Z", "me"),
-            rank("feature/login-16350001", "OPEN", "2026-01-04T00:00:00Z", "me"),
+            rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", "me"),
+            rank("feature/login", "CLOSED", "2026-01-06T00:00:00Z", "me"),
+            rank("feature/login", "MERGED", "2026-01-05T00:00:00Z", "me"),
+            rank("feature/login", "OPEN", "2026-01-04T00:00:00Z", "me"),
         ]
         .map(Option::unwrap);
         ranks.sort();
-        let order: Vec<(u8, u8, String)> = ranks.iter().map(|(m, s, c)| (*m, *s, c.0.to_string())).collect();
+        let order: Vec<(u8, String)> = ranks.iter().map(|(s, c)| (*s, c.0.to_string())).collect();
         assert_eq!(
             order,
-            [(0, 2, "2026-01-02T00:00:00Z".into()), (1, 0, "2026-01-04T00:00:00Z".into()), (1, 0, "2026-01-03T00:00:00Z".into()), (1, 1, "2026-01-05T00:00:00Z".into())]
+            [(0, "2026-01-04T00:00:00Z".into()), (0, "2026-01-03T00:00:00Z".into()), (1, "2026-01-05T00:00:00Z".into()), (2, "2026-01-06T00:00:00Z".into())]
         );
     }
 
