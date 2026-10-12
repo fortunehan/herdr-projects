@@ -25,9 +25,14 @@ pub fn validate_slug(slug: &str) -> Result<()> {
     Ok(())
 }
 
-/// Lower-cases and turns each run of other characters into one hyphen. Used for
-/// project names and for thread titles in branch names.
+/// Lower-cases and turns each run of other characters into one hyphen, at
+/// most `MAX_SLUG` characters. Used for project names.
 pub fn slugify(text: &str) -> String {
+    slugify_max(text, MAX_SLUG)
+}
+
+/// `slugify` cut to `max` characters, for thread titles in branch names.
+pub fn slugify_max(text: &str, max: usize) -> String {
     let mut slug = String::new();
     for c in text.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {
@@ -36,7 +41,7 @@ pub fn slugify(text: &str) -> String {
             slug.push('-');
         }
     }
-    let mut slug: String = slug.chars().take(MAX_SLUG).collect();
+    let mut slug: String = slug.chars().take(max).collect();
     while slug.ends_with('-') {
         slug.pop();
     }

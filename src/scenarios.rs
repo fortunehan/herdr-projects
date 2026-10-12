@@ -434,13 +434,14 @@ fn existing_refs(world: &World, existing: &'static [&'static str]) {
 
 /// A new worktree thread is named `<kind>/<title>[-<WID>]` (ADR 0006): the
 /// WID only for an Azure DevOps origin, `--branch` as given, and the thread id
-/// before the WID when the name exists as a local branch or on origin.
+/// before the WID when the name exists as a local branch or on origin, then
+/// `-2`, `-3`, ... after it when that exists too.
 #[test]
 fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
     use crate::thread::BranchKind::Bugfix;
     const GITHUB: &str = "git@github.com:Owner/App.git";
     #[rustfmt::skip]
-    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 9] = [
+    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 11] = [
         (GITHUB, None, None, None, &[], "feature/fix-the-login-bug"),
         (GITHUB, None, Some(Bugfix), None, &[], "bugfix/fix-the-login-bug"),
         (GITHUB, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
@@ -450,6 +451,8 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
         (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
         (GITHUB, None, None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
+        (GITHUB, None, None, None, &["refs/heads/feature/fix-the-login-bug", "refs/remotes/origin/feature/fix-the-login-bug-t-0001"], "feature/fix-the-login-bug-t-0001-2"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug-16349910", "refs/heads/feature/fix-the-login-bug-t-0001-16349910", "refs/heads/feature/fix-the-login-bug-t-0001-2-16349910"], "feature/fix-the-login-bug-t-0001-3-16349910"),
     ];
     for (origin, wid, branch_kind, branch, existing, expected) in cases {
         let world = World::new();
@@ -482,7 +485,8 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         assert_eq!((t.wid.as_str(), t.branch_kind), (wid.unwrap_or(""), branch_kind.unwrap_or_default()), "{case}");
         assert_eq!(world.runner.count(&format!("--branch {expected} --base origin/main")), 1, "{case}");
         // A given name is not checked; a generated one is, after the fetch.
-        assert_eq!(world.runner.count("for-each-ref"), usize::from(branch.is_none()), "{case}");
+        let tried = if branch.is_some() { 0 } else { existing.len() + 1 };
+        assert_eq!(world.runner.count("for-each-ref"), tried, "{case}");
         let calls = world.runner.calls.borrow();
         let fetch = calls.iter().position(|c| c.display().contains("fetch origin"));
         let check = calls.iter().position(|c| c.display().contains("for-each-ref"));

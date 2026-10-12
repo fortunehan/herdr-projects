@@ -326,17 +326,20 @@ fn record_start(t: &mut Thread, found: &mainline::Found) {
 /// and records it before `worktree create`: a start cut off right after it
 /// still names the branch, for `thread restart`'s half-made-worktree guard.
 /// A recorded branch (given, or from an earlier attempt) is kept. `taken`
-/// says whether a name exists as a local branch or as `origin/<name>`.
+/// says whether a name exists as a local branch or as `origin/<name>`; the
+/// first free one of `branch_names` is used.
 fn name_branch(project: &Project, record: &Thread, origin: &str, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
+    const TRIES: usize = 100;
     if !record.branch.is_empty() {
         return Ok(record.clone());
     }
     let names = thread::branch_names(&record.title, &record.id, origin, &record.wid, record.branch_kind, "");
-    let branch = match names.taken {
-        Some(other) if taken(&names.first)? => other,
-        _ => names.first,
-    };
-    thread::update(project, &record.id, |t| t.branch = branch)
+    for branch in names.iter().take(TRIES) {
+        if !taken(&branch)? {
+            return thread::update(project, &record.id, |t| t.branch = branch);
+        }
+    }
+    bail!("`{}` and the next {} names after it all exist as branches", names.first, TRIES - 1)
 }
 
 /// The repository's primary Space herdr grouped a new worktree Space under,

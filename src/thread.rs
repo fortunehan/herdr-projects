@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::herdr::{Agent, Pane, ready_state};
-use crate::project::{self, Project, slugify, write_atomic};
+use crate::project::{self, Project, slugify_max, write_atomic};
 use crate::runner::{Cmd, Runner};
 
 pub const STARTING_TIMEOUT_SECS: i64 = 300;
@@ -281,28 +281,41 @@ impl BranchKind {
     }
 }
 
-/// A new worktree thread's branch: `first`, or `taken` when `first` already
-/// exists locally or on origin. `taken` is `None` when the name is given
-/// whole or already carries the thread id.
+/// The longest title slug in a branch name; project slugs keep `MAX_SLUG`.
+pub const MAX_BRANCH_SLUG: usize = 60;
+
+/// The names a new worktree thread's branch may take, in order: `first`,
+/// then while a name exists locally or on origin, `<stem><wid>`, then
+/// `<stem>-2<wid>`, `<stem>-3<wid>`, ... `more` is `None` for a given name.
 #[derive(Debug, PartialEq)]
 pub struct BranchNames {
     pub first: String,
-    pub taken: Option<String>,
+    /// `<kind>/<title-slug>-<id>` (`<kind>/<id>` without a title slug) and
+    /// the WID suffix.
+    more: Option<(String, String)>,
 }
 
-/// `<kind>/<title-slug>[-<WID>]`, the WID only for an Azure DevOps origin;
-/// on collision the thread id goes before the WID. A given name wins (ADR 0006).
+impl BranchNames {
+    pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
+        let rest = self.more.iter().flat_map(|(stem, wid)| std::iter::once(format!("{stem}{wid}")).chain((2..).map(move |n| format!("{stem}-{n}{wid}"))));
+        std::iter::once(self.first.clone()).chain(rest.filter(|name| *name != self.first))
+    }
+}
+
+/// `<kind>/<title-slug>[-<WID>]`, the WID only for an Azure DevOps origin and
+/// the title slug at most `MAX_BRANCH_SLUG` characters; on collision the
+/// thread id, then a counter, go before the WID. A given name wins (ADR 0006).
 pub fn branch_names(title: &str, id: &str, origin: &str, wid: &str, kind: BranchKind, given: &str) -> BranchNames {
     if !given.is_empty() {
-        return BranchNames { first: given.to_string(), taken: None };
+        return BranchNames { first: given.to_string(), more: None };
     }
     let prefix = kind.prefix();
     let wid = if origin.contains("dev.azure.com") && !wid.is_empty() { format!("-{wid}") } else { String::new() };
-    let title = slugify(title);
+    let title = slugify_max(title, MAX_BRANCH_SLUG);
     if title.is_empty() {
-        return BranchNames { first: format!("{prefix}/{id}{wid}"), taken: None };
+        return BranchNames { first: format!("{prefix}/{id}{wid}"), more: Some((format!("{prefix}/{id}"), wid)) };
     }
-    BranchNames { first: format!("{prefix}/{title}{wid}"), taken: Some(format!("{prefix}/{title}-{id}{wid}")) }
+    BranchNames { first: format!("{prefix}/{title}{wid}"), more: Some((format!("{prefix}/{title}-{id}"), wid)) }
 }
 
 /// A WID is the id of an Azure DevOps work item: five or more digits.
@@ -1226,7 +1239,8 @@ mod tests {
         const ADO: &str = "https://sc-ado@dev.azure.com/sc-ado/PDBQPR/_git/app";
         let names = |title: &str, origin: &str, wid: &str, kind: BranchKind, given: &str| {
             let n = branch_names(title, "t-0042", origin, wid, kind, given);
-            (n.first, n.taken.unwrap_or_default())
+            let mut tried = n.iter();
+            (tried.next().unwrap(), tried.next().unwrap_or_default())
         };
         let pair = |first: &str, taken: &str| (first.to_string(), taken.to_string());
         let (feature, bugfix) = (BranchKind::Feature, BranchKind::Bugfix);
@@ -1243,9 +1257,21 @@ mod tests {
         assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, ""), pair("bugfix/fix-the-login-bug-16349910", "bugfix/fix-the-login-bug-t-0042-16349910"));
         // A given name is used as given; a title with no slug falls back to the id.
         assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, "my/name"), pair("my/name", ""));
-        assert_eq!(names("???", GITHUB, "", feature, ""), pair("feature/t-0042", ""));
-        assert_eq!(names("???", ADO, "16349910", feature, ""), pair("feature/t-0042-16349910", ""));
+        assert_eq!(names("???", GITHUB, "", feature, ""), pair("feature/t-0042", "feature/t-0042-2"));
+        assert_eq!(names("???", ADO, "16349910", feature, ""), pair("feature/t-0042-16349910", "feature/t-0042-2-16349910"));
         assert_eq!(names("Fix it", "", "16349910", feature, ""), pair("feature/fix-it", "feature/fix-it-t-0042"));
+
+        // Then a counter, before the WID.
+        let later = |title: &str, origin: &str, wid: &str| branch_names(title, "t-0042", origin, wid, feature, "").iter().skip(2).take(2).collect::<Vec<_>>();
+        assert_eq!(later("Fix it", GITHUB, ""), ["feature/fix-it-t-0042-2", "feature/fix-it-t-0042-3"]);
+        assert_eq!(later("Fix it", ADO, "16349910"), ["feature/fix-it-t-0042-2-16349910", "feature/fix-it-t-0042-3-16349910"]);
+        assert_eq!(branch_names("x", "t-0042", ADO, "", feature, "my/name").iter().collect::<Vec<_>>(), ["my/name"]);
+        // The title slug is cut at 60 characters, a project slug at 40.
+        let long = "Stop listing the hundred newest pull requests when a ticker pass looks for a branch";
+        let first = branch_names(long, "t-0042", GITHUB, "", feature, "").first;
+        assert_eq!(first, "feature/stop-listing-the-hundred-newest-pull-requests-when-a-ticker");
+        assert_eq!(first.len() - "feature/".len(), 59, "a trailing hyphen is dropped");
+        assert_eq!(project::slugify(long).len(), 40);
 
         assert!(validate_wid("16349910").is_ok());
         for bad in ["", "1234", "ADO-16349910", "1634991O"] {
