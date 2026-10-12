@@ -948,7 +948,11 @@ fn last_pr_lookup(ctx: &Ctx, project: &Project, t: &Thread) -> Option<crate::pr:
     let url = match pr::pr_line(&report, &t.origin) {
         Ok(Some(url)) => url,
         _ if !t.pr.is_empty() => t.pr.clone(),
-        _ => pr::find_by_branch(&client, &t.origin, &t.branch).ok()??,
+        _ if t.branch.is_empty() || pr::Forge::of(&t.origin).is_none() => return None,
+        _ => {
+            let own = pr::own_id(&client, &t.origin).ok()?;
+            pr::find_by_branch(&client, &t.origin, &pr::Wanted { branch: &t.branch, since: &t.created, own: &own }).ok()??
+        }
     };
     let pr::Checked::Summary(summary) = pr::view(&client, &url, &t.origin, &t.branch).ok()? else {
         return None;

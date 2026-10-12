@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use super::{Checked, Summary, by_branch_rank, sanitize, source_match};
+use super::{Checked, Summary, Wanted, sanitize, source_match};
 use crate::runner::{Cmd, Runner};
 
 pub const GH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -156,7 +156,7 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
         return Ok(Checked::Ignored("the thread has no branch".into()));
     }
     if source_match(&view.head_ref_name, branch).is_none() {
-        return Ok(Checked::Ignored("its head branch does not contain the thread's branch".into()));
+        return Ok(Checked::Ignored("its head branch is neither the thread's branch nor that branch with `-<WID>`".into()));
     }
     let head = format!(
         "{}/{}",
@@ -210,9 +210,16 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
 
 /// The login `gh` acts as on `origin`'s host: comments by it are the threads'
 /// own replies.
-pub fn own_login(runner: &dyn Runner, origin: &str) -> Option<String> {
-    let out = runner.run(&gh(&host_of(origin)).args(["api", "user", "--jq", ".login"])).ok()?;
-    out.success().then(|| sanitize(out.stdout.trim())).filter(|l| !l.is_empty())
+pub fn own_login(runner: &dyn Runner, origin: &str) -> Result<String> {
+    let out = runner.run(&gh(&host_of(origin)).args(["api", "user", "--jq", ".login"]))?;
+    if !out.success() {
+        bail!("gh api user: {}", out.error_text());
+    }
+    let login = sanitize(out.stdout.trim());
+    if login.is_empty() {
+        bail!("gh api user named no login");
+    }
+    Ok(login)
 }
 
 /// `gh pr view` of a pull request URL, asked through `origin`'s host. `gh`
@@ -246,22 +253,22 @@ struct GhListed {
     created_at: String,
     head_ref_name: String,
     is_cross_repository: bool,
+    author: Option<GhOwner>,
 }
 
-/// The pull request from `branch` (see `super::source_match`) in the `origin`
-/// repository, for a thread whose report names none, ranked by
-/// `super::by_branch_rank`. `--head` matches only the exact name, so the 100
+/// The thread's pull request in the `origin` repository as `wanted` describes
+/// it, for a thread whose report names none, the best by `super::Rank`. `--head` matches only the exact name, so the 100
 /// newest pull requests are listed and matched here; the ticker links a
 /// thread's pull request within minutes, while it is still among them. A
 /// thread may open and merge its pull request between two ticker passes, so
 /// merged and closed ones count. One `gh` call; `None` without asking when
 /// `origin` is not on GitHub. A fork's pull request lives upstream and is
 /// found only through the report's `PR:` line.
-pub fn find_by_branch(runner: &dyn Runner, origin: &str, branch: &str) -> Result<Option<String>> {
+pub fn find_by_branch(runner: &dyn Runner, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
     let Some(Remote { host, repo }) = parse_remote(origin) else {
         return Ok(None);
     };
-    if branch.is_empty() {
+    if wanted.branch.is_empty() {
         return Ok(None);
     }
     let out = runner.run(&gh(&host).args([
@@ -274,7 +281,7 @@ pub fn find_by_branch(runner: &dyn Runner, origin: &str, branch: &str) -> Result
         "--limit",
         "100",
         "--json",
-        "url,state,createdAt,headRefName,isCrossRepository",
+        "url,state,createdAt,headRefName,isCrossRepository,author",
     ]))?;
     if !out.success() {
         bail!("gh pr list: {}", out.error_text());
@@ -283,7 +290,10 @@ pub fn find_by_branch(runner: &dyn Runner, origin: &str, branch: &str) -> Result
     let best = listed
         .into_iter()
         .filter(|p| valid_pr_url(&p.url) && !p.is_cross_repository)
-        .filter_map(|p| source_match(&p.head_ref_name, branch).map(|m| (by_branch_rank(m, &p.state.to_ascii_uppercase(), &p.created_at), p.url)))
+        .filter_map(|p| {
+            let author = p.author.as_ref().map(|a| a.login.as_str()).unwrap_or_default();
+            Some((wanted.rank(&p.head_ref_name, &p.state.to_ascii_uppercase(), &p.created_at, author)?, p.url))
+        })
         .min();
     Ok(best.map(|(_, url)| url))
 }
@@ -421,9 +431,9 @@ mod tests {
         runner.on("gh", ok("[]"));
         let origin = "http://github.localhost/o/r.git";
         view(&runner, "https://github.com/up/r/pull/7", origin).unwrap();
-        find_by_branch(&runner, origin, "b").unwrap();
+        find_by_branch(&runner, origin, &Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" }).unwrap();
         open_own_numbers(&runner, "o/r", &host_of(origin)).unwrap();
-        own_login(&runner, origin);
+        let _ = own_login(&runner, origin);
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 4);
         for call in calls.iter() {
@@ -468,37 +478,45 @@ mod tests {
     }
 
     #[test]
-    fn a_head_branch_containing_the_thread_branch_is_the_threads() {
-        let widened = VIEW.replace("hp/demo/t-0001-x", "feature/blog-widgets-16349910");
-        assert!(matches!(reduce(&widened, "feature/blog-widgets", "git@github.com:forker/app.git").unwrap(), Checked::Summary(_)));
-        assert!(matches!(reduce(&widened, "feature/blog-widgets-2", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
+    fn a_head_branch_that_is_the_thread_branch_with_a_wid_is_the_threads() {
+        let widened = VIEW.replace("hp/demo/t-0001-x", "feature/login-16350001");
+        assert!(matches!(reduce(&widened, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Summary(_)));
+        let page = VIEW.replace("hp/demo/t-0001-x", "feature/login-page-16350001");
+        assert!(matches!(reduce(&page, "feature/login", "git@github.com:forker/app.git").unwrap(), Checked::Ignored(_)));
     }
 
     #[test]
     fn a_branch_lookup_prefers_the_exact_name_then_open_merged_closed_and_the_newest() {
         use crate::runner::fake::{FakeRunner, ok};
-        let runner = FakeRunner::new();
-        runner.on(
-            "gh pr list",
-            ok(r#"[
-                {"url":"https://github.com/o/r/pull/1","state":"CLOSED","createdAt":"2026-01-03T00:00:00Z","headRefName":"hp/demo/t-0001-x"},
-                {"url":"https://github.com/o/r/pull/2","state":"MERGED","createdAt":"2026-01-01T00:00:00Z","headRefName":"hp/demo/t-0001-x-123"},
-                {"url":"https://github.com/o/r/pull/3","state":"MERGED","createdAt":"2026-01-02T00:00:00Z","headRefName":"hp/demo/t-0001-x-123"},
-                {"url":"https://github.com/o/r/pull/4","state":"OPEN","createdAt":"2026-01-05T00:00:00Z","headRefName":"hp/demo/t-0001-x","isCrossRepository":true},
-                {"url":"https://github.com/o/r/pull/5","state":"OPEN","createdAt":"2026-01-06T00:00:00Z","headRefName":"other"},
-                {"url":"--web","state":"OPEN","createdAt":"2026-01-04T00:00:00Z","headRefName":"hp/demo/t-0001-x"}]"#),
-        );
-        // A fork's and another branch's are passed over; then the exact name first.
-        let found = find_by_branch(&runner, "git@github.com:O/R.git", "hp/demo/t-0001-x").unwrap();
-        assert_eq!(found.as_deref(), Some("https://github.com/o/r/pull/1"));
-        // No exact name: a containing one, open, merged, closed, newest first.
-        let found = find_by_branch(&runner, "git@github.com:O/R.git", "hp/demo/t-0001").unwrap();
-        assert_eq!(found.as_deref(), Some("https://github.com/o/r/pull/3"));
-        let calls = runner.calls.borrow();
-        assert!(calls[0].display().contains("--repo o/r --state all --limit 100 --json url,state,createdAt,headRefName,isCrossRepository"), "{}", calls[0].display());
-        drop(calls);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", "b").unwrap(), None);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", "").unwrap(), None);
+        let item = |n: u32, state: &str, created: &str, head: &str, author: &str, extra: &str| {
+            format!(r#"{{"url":"https://github.com/o/r/pull/{n}","state":"{state}","createdAt":"{created}","headRefName":"{head}","author":{{"login":"{author}"}}{extra}}}"#)
+        };
+        // Each of these would win were it the thread's.
+        let not_ours = [
+            item(4, "OPEN", "2026-01-05T00:00:00Z", "b", "me", r#","isCrossRepository":true"#),
+            item(5, "OPEN", "2026-01-06T00:00:00Z", "b-page-16350001", "me", ""),
+            item(6, "OPEN", "2026-01-07T00:00:00Z", "b-16350001", "colleague", ""),
+            item(7, "OPEN", "2025-12-31T00:00:00Z", "b-16350001", "me", ""),
+            r#"{"url":"--web","state":"OPEN","createdAt":"2026-01-04T00:00:00Z","headRefName":"b","author":{"login":"me"}}"#.to_string(),
+        ];
+        let ours = [item(2, "MERGED", "2026-01-01T00:00:00Z", "b-16350001", "Me", ""), item(3, "MERGED", "2026-01-02T00:00:00Z", "b-16350001", "me", "")];
+        let exact = item(1, "CLOSED", "2026-01-03T00:00:00Z", "b", "me", "");
+        let wanted = Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" };
+        let found = |listed: Vec<&String>| {
+            let runner = FakeRunner::new();
+            runner.on("gh pr list", ok(&format!("[{}]", listed.into_iter().cloned().collect::<Vec<_>>().join(","))));
+            let found = find_by_branch(&runner, "git@github.com:O/R.git", &wanted).unwrap();
+            let display = runner.calls.borrow()[0].display();
+            assert!(display.contains("--repo o/r --state all --limit 100 --json url,state,createdAt,headRefName,isCrossRepository,author"), "{display}");
+            found
+        };
+        // The exact name first, whatever its state.
+        assert_eq!(found(not_ours.iter().chain(&ours).chain([&exact]).collect()).as_deref(), Some("https://github.com/o/r/pull/1"));
+        // Then the name with a WID: open, merged, closed, newest first.
+        assert_eq!(found(not_ours.iter().chain(&ours).collect()).as_deref(), Some("https://github.com/o/r/pull/3"));
+        assert_eq!(found(not_ours.iter().collect()), None);
+        assert_eq!(find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", &wanted).unwrap(), None);
+        assert_eq!(find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", &Wanted { branch: "", ..wanted }).unwrap(), None);
     }
 
     #[test]

@@ -471,8 +471,9 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
             url
         } else if !t.pr.is_empty() {
             t.pr.clone()
-        } else if t.kind == thread::Kind::Worktree {
-            match pr::find_by_branch(&client, &t.origin, &t.branch) {
+        } else if t.kind == thread::Kind::Worktree && !t.branch.is_empty() && pr::Forge::of(&t.origin).is_some() {
+            let found = own_id(&client, memory, &t.origin).and_then(|own| pr::find_by_branch(&client, &t.origin, &pr::Wanted { branch: &t.branch, since: &t.created, own: &own }));
+            match found {
                 Ok(found) => {
                     forge_worked(project, memory, &t, now, &mut errors);
                     found.unwrap_or_default()
@@ -527,13 +528,8 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
                 }).err());
                 let change = pr::describe_change(old.as_ref(), &summary);
                 let merged = summary.state == "MERGED";
-                let account = pr::account(&t.origin);
-                if !memory.own_ids.contains_key(&account)
-                    && let Some(id) = pr::own_id(&client, &t.origin)
-                {
-                    memory.own_ids.insert(account.clone(), id);
-                }
-                let events = pr_events(old.as_ref(), &summary, memory.own_ids.get(&account).map(String::as_str));
+                let own = own_id(&client, memory, &t.origin).ok();
+                let events = pr_events(old.as_ref(), &summary, own.as_deref());
                 errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: {}: {change}", thread_label(&t), pr::named(&url)), "").err());
                 let reference = pr::reference(&url).unwrap_or_default();
                 if merged {
@@ -549,6 +545,18 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
         }
     }
     errors
+}
+
+/// The account the threads act as on `origin`'s forge, asked once per
+/// account and remembered.
+fn own_id(client: &pr::Client, memory: &mut Memory, origin: &str) -> Result<String> {
+    let account = pr::account(origin);
+    if let Some(id) = memory.own_ids.get(&account) {
+        return Ok(id.clone());
+    }
+    let id = pr::own_id(client, origin)?;
+    memory.own_ids.insert(account, id.clone());
+    Ok(id)
 }
 
 /// A forge call that worked. `gh` and Azure DevOps keep separate records.

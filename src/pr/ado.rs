@@ -327,6 +327,7 @@ struct AdoPr {
     fork_source: Option<serde::de::IgnoredAny>,
     last_merge_source_commit: Option<AdoCommit>,
     reviewers: Vec<Reviewer>,
+    created_by: Option<Identity>,
 }
 
 #[derive(Deserialize, Default)]
@@ -610,13 +611,13 @@ pub fn view(client: &Client, origin: &Remote, id: u32) -> Result<Checked, ViewEr
     Ok(Checked::Summary(summary))
 }
 
-/// The pull request from `branch` of `origin` (see `super::source_match`), in
-/// any status, ranked by `super::by_branch_rank`. `sourceRefName` matches only
+/// The thread's pull request in `origin` as `wanted` describes it, in any
+/// status, the best by `super::Rank`. `sourceRefName` matches only
 /// the exact name, so the 100 newest pull requests are listed and matched
 /// here; the ticker links a thread's pull request within minutes, while it is
 /// still among them.
-pub fn find_by_branch(client: &Client, origin: &Remote, branch: &str) -> Result<Option<String>> {
-    if branch.is_empty() {
+pub fn find_by_branch(client: &Client, origin: &Remote, wanted: &super::Wanted) -> Result<Option<String>> {
+    if wanted.branch.is_empty() {
         return Ok(None);
     }
     let listed = client.list(origin, &[("status", "all")])?;
@@ -625,8 +626,8 @@ pub fn find_by_branch(client: &Client, origin: &Remote, branch: &str) -> Result<
         .filter(|p| p.pull_request_id > 0 && p.in_repository(origin).is_ok())
         .filter_map(|p| {
             let state = state_of(&p.status)?;
-            let matched = super::source_match(p.source_ref_name.strip_prefix("refs/heads/")?, branch)?;
-            Some((super::by_branch_rank(matched, state, &p.creation_date), p.pull_request_id))
+            let author = p.created_by.as_ref().map(|u| u.id.as_str()).unwrap_or_default();
+            Some((wanted.rank(p.source_ref_name.strip_prefix("refs/heads/")?, state, &p.creation_date, author)?, p.pull_request_id))
         })
         .min();
     Ok(best.map(|(_, id)| origin.pr_url(id)))
@@ -943,7 +944,7 @@ mod tests {
         let error = format!("{:#}", client.pull_request(&origin, 7).unwrap_err());
         assert_eq!(error, "HTTP 302");
         assert!(client.own_user("org").is_err());
-        assert!(find_by_branch(&client, &origin, "b").is_err());
+        assert!(find_by_branch(&client, &origin, &super::super::Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me-id" }).is_err());
         assert_eq!(runner.calls.borrow().len(), 1);
 
         let runner = FakeRunner::new();
@@ -997,27 +998,35 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
         let origin = parse_remote(ORIGIN).unwrap();
-        let item = |id: u32, status: &str, created: &str, source: &str, extra: &str| {
-            format!(r#"{{"pullRequestId":{id},"status":"{status}","creationDate":"{created}","sourceRefName":"refs/heads/{source}","repository":{{"name":"app","project":{{"name":"Proj"}}}}{extra}}}"#)
+        let item = |id: u32, status: &str, created: &str, source: &str, author: &str, extra: &str| {
+            format!(
+                r#"{{"pullRequestId":{id},"status":"{status}","creationDate":"{created}","sourceRefName":"refs/heads/{source}","createdBy":{{"id":"{author}"}},"repository":{{"name":"app","project":{{"name":"Proj"}}}}{extra}}}"#
+            )
         };
-        let list = format!(
-            r#"{{"value":[{},{},{},{},{}],"count":5}}"#,
-            item(1, "abandoned", "2026-01-03T00:00:00Z", "b", ""),
-            item(2, "completed", "2026-01-01T00:00:00Z", "b-123", ""),
-            item(3, "completed", "2026-01-02T00:00:00Z", "b-123", ""),
-            item(4, "active", "2026-01-04T00:00:00Z", "b", r#","forkSource":{}"#),
-            item(5, "active", "2026-01-05T00:00:00Z", "other", ""),
-        );
-        let runner = FakeRunner::new();
-        runner.on("curl", ok(&format!("{list}\n200")));
-        // A fork's and another branch's are passed over; then the exact name first.
-        let found = find_by_branch(&Client::new(&runner, &env), &origin, "b").unwrap();
-        assert_eq!(found.as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/1"));
-        // No exact name: a containing one, open, merged, closed, newest first.
-        let found = find_by_branch(&Client::new(&runner, &env), &origin, "b-1").unwrap();
-        assert_eq!(found.as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/3"));
-        let display = runner.calls.borrow()[0].display();
-        assert!(display.contains("repositories/app/pullrequests?searchCriteria.status=all&%24top=100&api-version=7.1"), "{display}");
-        assert_eq!(find_by_branch(&Client::new(&FakeRunner::new(), &env), &origin, "").unwrap(), None);
+        // Each of these would win were it the thread's.
+        let not_ours = [
+            item(4, "active", "2026-01-04T00:00:00Z", "b", "me-id", r#","forkSource":{}"#),
+            item(5, "active", "2026-01-05T00:00:00Z", "b-page-16350001", "me-id", ""),
+            item(6, "active", "2026-01-06T00:00:00Z", "b-16350001", "colleague-id", ""),
+            item(7, "active", "2025-12-31T00:00:00Z", "b-16350001", "me-id", ""),
+        ];
+        let ours = [item(2, "completed", "2026-01-01T00:00:00.1234567Z", "b-16350001", "ME-ID", ""), item(3, "completed", "2026-01-02T00:00:00Z", "b-16350001", "me-id", "")];
+        let exact = item(1, "abandoned", "2026-01-03T00:00:00Z", "b", "me-id", "");
+        let wanted = super::super::Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me-id" };
+        let found = |listed: Vec<&String>| {
+            let runner = FakeRunner::new();
+            let value = listed.into_iter().cloned().collect::<Vec<_>>().join(",");
+            runner.on("curl", ok(&format!("{{\"value\":[{value}]}}\n200")));
+            let found = find_by_branch(&Client::new(&runner, &env), &origin, &wanted).unwrap();
+            let display = runner.calls.borrow()[0].display();
+            assert!(display.contains("repositories/app/pullrequests?searchCriteria.status=all&%24top=100&api-version=7.1"), "{display}");
+            found
+        };
+        // The exact name first, whatever its state.
+        assert_eq!(found(not_ours.iter().chain(&ours).chain([&exact]).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/1"));
+        // Then the name with a WID: open, merged, closed, newest first.
+        assert_eq!(found(not_ours.iter().chain(&ours).collect()).as_deref(), Some("https://dev.azure.com/org/Proj/_git/app/pullrequest/3"));
+        assert_eq!(found(not_ours.iter().collect()), None);
+        assert_eq!(find_by_branch(&Client::new(&FakeRunner::new(), &env), &origin, &super::super::Wanted { branch: "", ..wanted }).unwrap(), None);
     }
 }

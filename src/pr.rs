@@ -117,37 +117,63 @@ pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Ch
     }
 }
 
-/// How well a pull request's source branch `source` names the thread branch
-/// `branch`: 0 the same name, 1 a name containing it (ado-track pushes a
-/// thread branch under its name with `-<WID>` appended), `None` not the
-/// thread's.
+/// How a pull request's source branch `source` names the thread branch
+/// `branch`: 0 the same name, 1 the name followed by `-` and a WID of five or
+/// more digits (ado-track pushes a thread branch so), `None` not the thread's.
 pub fn source_match(source: &str, branch: &str) -> Option<u8> {
-    match source {
-        _ if branch.is_empty() => None,
-        _ if source == branch => Some(0),
-        _ if source.contains(branch) => Some(1),
-        _ => None,
+    if branch.is_empty() {
+        return None;
+    }
+    if source == branch {
+        return Some(0);
+    }
+    let wid = source.strip_prefix(branch)?.strip_prefix('-')?;
+    (wid.len() >= 5 && wid.bytes().all(|b| b.is_ascii_digit())).then_some(1)
+}
+
+/// The order of a thread's pull requests found by branch: the same name
+/// first, then open, merged, closed, then newest first.
+pub type Rank = (u8, u8, std::cmp::Reverse<jiff::Timestamp>);
+
+/// What a pull request found by branch must be to be the thread's. A `PR:`
+/// line is not held to this.
+pub struct Wanted<'a> {
+    /// The thread branch, its local name.
+    pub branch: &'a str,
+    /// When the thread was created: an older pull request is not its own.
+    pub since: &'a str,
+    /// The account the threads act as on the forge (`own_id`): a colleague's
+    /// pull request from a branch of the same name is not the thread's.
+    pub own: &'a str,
+}
+
+impl Wanted<'_> {
+    /// The rank of a listed pull request, `None` when it is not the thread's.
+    pub fn rank(&self, source: &str, state: &str, created: &str, author: &str) -> Option<Rank> {
+        let matched = source_match(source, self.branch)?;
+        if self.own.is_empty() || !author.eq_ignore_ascii_case(self.own) {
+            return None;
+        }
+        let created: jiff::Timestamp = created.parse().ok()?;
+        if created < self.since.parse::<jiff::Timestamp>().ok()? {
+            return None;
+        }
+        let state = match state {
+            "OPEN" => 0,
+            "MERGED" => 1,
+            _ => 2,
+        };
+        Some((matched, state, std::cmp::Reverse(created)))
     }
 }
 
-/// Orders pull requests found by branch: the exact name before a containing
-/// one, then open, merged, closed, then newest first.
-pub fn by_branch_rank(matched: u8, state: &str, created: &str) -> (u8, u8, std::cmp::Reverse<String>) {
-    let state = match state {
-        "OPEN" => 0,
-        "MERGED" => 1,
-        _ => 2,
-    };
-    (matched, state, std::cmp::Reverse(created.to_string()))
-}
-
-/// The URL of the pull request from `branch` of `origin` (see `source_match`),
-/// for a thread whose report names none, ranked by `by_branch_rank`. `None`
-/// without asking when no followed forge hosts `origin`.
-pub fn find_by_branch(client: &Client, origin: &str, branch: &str) -> Result<Option<String>> {
+/// The URL of the thread's pull request in `origin` as `wanted` describes it,
+/// for a thread whose report names none, the best by `Rank`. `None` without
+/// asking when no followed forge hosts `origin`.
+pub fn find_by_branch(client: &Client, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
     match Forge::of(origin) {
-        Some(Forge::GitHub(_)) => github::find_by_branch(client.runner, origin, branch),
-        Some(Forge::AzureDevOps(remote)) => ado::find_by_branch(&client.ado, &remote, branch),
+        Some(Forge::GitHub(_)) => github::find_by_branch(client.runner, origin, wanted),
+        Some(Forge::AzureDevOps(remote)) => ado::find_by_branch(&client.ado, &remote, wanted),
         None => Ok(None),
     }
 }
@@ -163,10 +189,10 @@ pub fn account(origin: &str) -> String {
 
 /// Who the threads act as on `origin`'s forge: comments by it are the
 /// threads' own replies.
-pub fn own_id(client: &Client, origin: &str) -> Option<String> {
+pub fn own_id(client: &Client, origin: &str) -> Result<String> {
     match Forge::of(origin) {
         Some(Forge::GitHub(_)) | None => github::own_login(client.runner, origin),
-        Some(Forge::AzureDevOps(remote)) => client.ado.own_user(&remote.org).ok(),
+        Some(Forge::AzureDevOps(remote)) => client.ado.own_user(&remote.org),
     }
 }
 
@@ -244,20 +270,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_source_branch_matches_when_it_is_or_contains_the_thread_branch() {
-        assert_eq!(source_match("feature/blog-widgets", "feature/blog-widgets"), Some(0));
-        assert_eq!(source_match("feature/blog-widgets-16349910", "feature/blog-widgets"), Some(1));
-        assert_eq!(source_match("feature/blog", "feature/blog-widgets"), None);
-        assert_eq!(source_match("feature/blog-widgets", ""), None);
+    fn a_source_branch_is_the_thread_branch_or_it_with_a_wid() {
+        assert_eq!(source_match("feature/login", "feature/login"), Some(0));
+        assert_eq!(source_match("feature/login-16350001", "feature/login"), Some(1));
+        assert_eq!(source_match("feature/login-12345", "feature/login"), Some(1));
+        for other in ["feature/login-page-16350001", "feature/login-1234", "feature/login-16350001x", "feature/login16350001", "old/feature/login", "feature/log"] {
+            assert_eq!(source_match(other, "feature/login"), None, "{other}");
+        }
+        assert_eq!(source_match("feature/login", ""), None);
+    }
+
+    #[test]
+    fn a_pull_request_found_by_branch_is_the_users_own_and_no_older_than_the_thread() {
+        let wanted = Wanted { branch: "feature/login", since: "2026-01-02T00:00:00Z", own: "Me" };
+        let rank = |source: &str, state: &str, created: &str, author: &str| wanted.rank(source, state, created, author);
+        assert!(rank("feature/login", "OPEN", "2026-01-02T00:00:00Z", "me").is_some());
+        assert!(rank("feature/login", "OPEN", "2026-01-02T00:00:00.1234567Z", "me").is_some());
+        assert_eq!(rank("feature/login", "MERGED", "2026-01-01T23:59:59Z", "me"), None, "older than the thread");
+        assert_eq!(rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", "colleague"), None, "a colleague's");
+        assert_eq!(rank("feature/login", "OPEN", "not a date", "me"), None);
+        assert_eq!(Wanted { own: "", ..wanted }.rank("feature/login", "OPEN", "2026-01-03T00:00:00Z", ""), None);
         // The exact name first, whatever its state; then open, merged, closed; newest first.
         let mut ranks = [
-            by_branch_rank(1, "OPEN", "2026-01-03"),
-            by_branch_rank(0, "CLOSED", "2026-01-01"),
-            by_branch_rank(1, "MERGED", "2026-01-04"),
-            by_branch_rank(1, "OPEN", "2026-01-02"),
-        ];
+            rank("feature/login-16350001", "OPEN", "2026-01-03T00:00:00Z", "me"),
+            rank("feature/login", "CLOSED", "2026-01-02T00:00:00Z", "me"),
+            rank("feature/login-16350001", "MERGED", "2026-01-05T00:00:00Z", "me"),
+            rank("feature/login-16350001", "OPEN", "2026-01-04T00:00:00Z", "me"),
+        ]
+        .map(Option::unwrap);
         ranks.sort();
-        assert_eq!(ranks.map(|(m, s, c)| (m, s, c.0)), [(0, 2, "2026-01-01".into()), (1, 0, "2026-01-03".into()), (1, 0, "2026-01-02".into()), (1, 1, "2026-01-04".into())]);
+        let order: Vec<(u8, u8, String)> = ranks.iter().map(|(m, s, c)| (*m, *s, c.0.to_string())).collect();
+        assert_eq!(
+            order,
+            [(0, 2, "2026-01-02T00:00:00Z".into()), (1, 0, "2026-01-04T00:00:00Z".into()), (1, 0, "2026-01-03T00:00:00Z".into()), (1, 1, "2026-01-05T00:00:00Z".into())]
+        );
     }
 
     #[test]
@@ -304,7 +350,8 @@ mod tests {
         let runner = FakeRunner::new();
         let home = tempfile::tempdir().unwrap();
         let client = Client::new(&runner, &Env::for_test(home.path(), &[]));
-        assert_eq!(find_by_branch(&client, "https://gitlab.com/o/r", "b").unwrap(), None);
+        let wanted = Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" };
+        assert_eq!(find_by_branch(&client, "https://gitlab.com/o/r", &wanted).unwrap(), None);
         assert!(runner.calls.borrow().is_empty());
     }
 
