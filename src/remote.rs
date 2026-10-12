@@ -162,6 +162,16 @@ pub fn write_brief(runner: &dyn Runner, target: &str, cwd: &str, thread_dir: &st
     Ok(())
 }
 
+/// Sets a git config key in a worktree on the machine unless it has a value.
+pub fn bind_work_item(runner: &dyn Runner, target: &str, worktree: &str, key: &str, wid: &str) -> Result<()> {
+    let script = format!("cd {dir} && {{ git config --get {key} >/dev/null || git config {key} {wid}; }}", dir = quote(worktree), key = quote(key), wid = quote(wid));
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("{}", out.error_text());
+    }
+    Ok(())
+}
+
 /// Whether a branch exists in a repository on the machine.
 pub fn branch_exists(runner: &dyn Runner, target: &str, repo: &str, branch: &str) -> Result<bool> {
     let script = format!("cd {} && git rev-parse --verify --quiet {} >/dev/null", quote(repo), quote(&format!("refs/heads/{branch}")));

@@ -81,7 +81,7 @@ pub struct StartArgs {
     pub base: Option<String>,
     pub task: String,
     /// A worktree thread's branch: `--kind feature|bugfix` (default
-    /// feature), `--wid`, or the whole name with `--branch`.
+    /// feature) or the whole name with `--branch`; `--wid` binds it.
     pub branch_kind: Option<BranchKind>,
     pub wid: Option<String>,
     pub branch: Option<String>,
@@ -262,7 +262,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             let at = mainline::Location { path: &record.repo, machine: &record.machine, target: Some(&target) };
             let found = start_point(project, runner, &record, &at)?;
             let origin = found.facts.origin.clone();
-            let record = name_branch(project, &record, &origin, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
+            let record = name_branch(project, &record, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
             let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &found.mainline.reference, &record.title)?;
             thread::update(project, id, |t| {
                 t.origin = origin;
@@ -280,7 +280,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             let at = mainline::Location { path: &record.repo, machine: "", target: None };
             let found = start_point(project, runner, &record, &at)?;
             let origin = found.facts.origin.clone();
-            let record = name_branch(project, &record, &origin, |name| {
+            let record = name_branch(project, &record, |name| {
                 let refs = [format!("refs/heads/{name}"), format!("refs/remotes/origin/{name}")];
                 let found = git(runner, &record.repo, &["for-each-ref", "--format=%(refname)", &refs[0], &refs[1]], GIT_TIMEOUT)?;
                 Ok(!found.is_empty())
@@ -303,6 +303,7 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
         Kind::Tab | Kind::Checkout | Kind::Design => place_tab(project, view, &record)?,
         Kind::Adopted => bail!("an adopted thread is not placed by the binary"),
     };
+    bind_work_item(ctx, &placed);
     write_brief(ctx, project, &placed, restart)?;
     finish_placement(project, view, id)
 }
@@ -328,18 +329,41 @@ fn record_start(t: &mut Thread, found: &mainline::Found) {
 /// A recorded branch (given, or from an earlier attempt) is kept. `taken`
 /// says whether a name exists as a local branch or as `origin/<name>`; the
 /// first free one of `branch_names` is used.
-fn name_branch(project: &Project, record: &Thread, origin: &str, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
+fn name_branch(project: &Project, record: &Thread, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
     const TRIES: usize = 100;
     if !record.branch.is_empty() {
         return Ok(record.clone());
     }
-    let names = thread::branch_names(&record.title, &record.id, origin, &record.wid, record.branch_kind, "");
+    let names = thread::branch_names(&record.title, &record.id, record.branch_kind, "");
     for branch in names.iter().take(TRIES) {
         if !taken(&branch)? {
             return thread::update(project, &record.id, |t| t.branch = branch);
         }
     }
     bail!("`{}` and the next {} names after it all exist as branches", names.first, TRIES - 1)
+}
+
+/// Binds a worktree thread's branch to its WID as the branch work item
+/// (`branch.<branch>.ado-workitem`), in the worktree on the thread's own
+/// machine, unless a value is already there (ado-track may have chosen
+/// another). A failure is a warning: the brief still names the WID.
+fn bind_work_item(ctx: &Ctx, placed: &Thread) {
+    if placed.kind != Kind::Worktree || placed.wid.is_empty() || placed.worktree_path.is_empty() {
+        return;
+    }
+    let key = format!("branch.{}.ado-workitem", placed.branch);
+    let bound = if placed.is_remote() {
+        remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &placed.machine)
+            .and_then(|target| remote::bind_work_item(ctx.runner, &target, &placed.worktree_path, &key, &placed.wid))
+    } else {
+        match git(ctx.runner, &placed.worktree_path, &["config", "--get", &key], GIT_TIMEOUT) {
+            Ok(current) if !current.is_empty() => Ok(()),
+            _ => git(ctx.runner, &placed.worktree_path, &["config", &key, &placed.wid], GIT_TIMEOUT).map(drop),
+        }
+    };
+    if let Err(error) = bound {
+        eprintln!("warning: could not set {key} to {} in {}: {error:#}; `thread restart` tries again", placed.wid, placed.worktree_path);
+    }
 }
 
 /// The repository's primary Space herdr grouped a new worktree Space under,
@@ -599,6 +623,7 @@ pub fn restart(ctx: &Ctx, slug: &str, id: &str, profile: Option<&str>) -> Result
         },
     }
     let placed = thread::load(&project, id)?;
+    bind_work_item(ctx, &placed);
     write_brief(ctx, &project, &placed, true)?;
     finish_placement(&project, &view, id)
 }

@@ -432,12 +432,13 @@ fn existing_refs(world: &World, existing: &'static [&'static str]) {
     );
 }
 
-/// A new worktree thread is named `<kind>/<title>[-<WID>]` (ADR 0006): the
-/// WID only for an Azure DevOps origin, `--branch` as given, and the thread id
-/// before the WID when the name exists as a local branch or on origin, then
-/// `-2`, `-3`, ... after it when that exists too.
+/// A new worktree thread is named `<kind>/<title>` in every repository (ADR
+/// 0006), `--branch` as given, with the thread id when the name exists as a
+/// local branch or on origin, then `-2`, `-3`, ... when that exists too. A
+/// `--wid` stays out of the name: it is written as the branch work item in
+/// the worktree and named in the brief.
 #[test]
-fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
+fn thread_start_names_the_branch_by_kind_and_existing_refs_and_binds_the_wid() {
     use crate::thread::BranchKind::Bugfix;
     const GITHUB: &str = "git@github.com:Owner/App.git";
     #[rustfmt::skip]
@@ -445,14 +446,14 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         (GITHUB, None, None, None, &[], "feature/fix-the-login-bug"),
         (GITHUB, None, Some(Bugfix), None, &[], "bugfix/fix-the-login-bug"),
         (GITHUB, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/fix-the-login-bug-16349910"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
         (ADO_ORIGIN, None, None, None, &[], "feature/fix-the-login-bug"),
         (ADO_ORIGIN, Some("16349910"), Some(Bugfix), Some("my/name"), &["refs/heads/my/name"], "my/name"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"], "feature/fix-the-login-bug-t-0001-16349910"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
         (GITHUB, None, None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
         (GITHUB, None, None, None, &["refs/heads/feature/fix-the-login-bug", "refs/remotes/origin/feature/fix-the-login-bug-t-0001"], "feature/fix-the-login-bug-t-0001-2"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug-16349910", "refs/heads/feature/fix-the-login-bug-t-0001-16349910", "refs/heads/feature/fix-the-login-bug-t-0001-2-16349910"], "feature/fix-the-login-bug-t-0001-3-16349910"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug", "refs/heads/feature/fix-the-login-bug-t-0001", "refs/heads/feature/fix-the-login-bug-t-0001-2"], "feature/fix-the-login-bug-t-0001-3"),
     ];
     for (origin, wid, branch_kind, branch, existing, expected) in cases {
         let world = World::new();
@@ -466,6 +467,8 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         world.runner.on("remote get-url origin", ok(&format!("{origin}\n")));
         mainline_answers(&world, origin);
         existing_refs(&world, existing);
+        world.runner.on("config --get", fail(1, ""));
+        world.runner.on("config branch.", ok(""));
         let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
         placement_answers(&world, move |_| Ok(ok(&created)));
 
@@ -494,7 +497,57 @@ fn thread_start_names_the_branch_by_origin_wid_kind_and_existing_refs() {
         drop(calls);
         let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
         assert!(brief.contains(&format!("- Branch: `{expected}`. Stay on it: do not switch branches or create new ones.")), "{case}");
+        let bound = world.runner.count(&format!("git -C {wt} config branch.{expected}.ado-workitem 16349910"));
+        assert_eq!(bound, usize::from(wid.is_some()), "{case}");
+        assert_eq!(world.runner.count("config"), 2 * usize::from(wid.is_some()), "{case}");
+        assert_eq!(brief.contains("- Work Item: 16349910; pass it to /commit"), wid.is_some(), "{case}");
     }
+}
+
+/// The branch work item is only ever added: one already set (by ado-track)
+/// is kept. A failing write leaves the thread started, and `thread restart`
+/// writes it then.
+#[test]
+fn a_failed_branch_work_item_write_is_retried_by_restart_and_a_set_one_is_kept() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let repo = world.home.path().join("repo");
+    let wt = world.home.path().join("wt");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&wt).unwrap();
+    let wt = wt.to_string_lossy().into_owned();
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
+    world.runner.on("worktree open", ok(&created));
+    placement_answers(&world, move |_| Ok(ok(&created)));
+    let (get, set) = (Rc::new(RefCell::new(fail(1, ""))), Rc::new(RefCell::new(fail(1, "could not lock config file"))));
+    let (got, sat) = (get.clone(), set.clone());
+    world.runner.on_fn(|cmd| cmd.display().contains("config --get"), move |_| Ok(got.borrow().clone()));
+    world.runner.on_fn(|cmd| cmd.display().contains("config branch."), move |_| Ok(sat.borrow().clone()));
+
+    let args = StartArgs {
+        title: "Blog widgets".into(),
+        repo: Some(repo.to_string_lossy().into_owned()),
+        profile: Some("claude".into()),
+        task: "Build it.".into(),
+        wid: Some("16349910".into()),
+        ..Default::default()
+    };
+    let t = threads::start(&world.ctx(), "demo", args).unwrap();
+    assert_eq!((t.status, t.prompt_pending, t.branch.as_str()), (Status::Open, true, "feature/blog-widgets"));
+    let write = format!("git -C {wt} config branch.feature/blog-widgets.ado-workitem 16349910");
+    assert_eq!(world.runner.count(&write), 1);
+    let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+    assert!(brief.contains("- Work Item: 16349910; pass it to /commit"), "{brief}");
+
+    *set.borrow_mut() = ok("");
+    threads::restart(&world.ctx(), "demo", "t-0001", None).unwrap();
+    assert_eq!(world.runner.count(&write), 2);
+
+    *get.borrow_mut() = ok("16350001\n");
+    threads::restart(&world.ctx(), "demo", "t-0001", None).unwrap();
+    assert_eq!(world.runner.count(&write), 2, "a set branch work item is kept");
+    assert_eq!(world.runner.count("config --get"), 3);
 }
 
 /// `--wid` must be a work item id, and the branch flags need a worktree.
@@ -525,7 +578,7 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
     world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":[]}"#));
     mainline_answers(&world, ADO_ORIGIN);
-    existing_refs(&world, &["refs/remotes/origin/feature/fix-the-login-bug-16349910"]);
+    existing_refs(&world, &["refs/remotes/origin/feature/fix-the-login-bug"]);
     world.runner.on(
         "worktree create",
         ok(r#"{"result":{"root_pane":{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"/remote/wt"},"worktree":{"path":"/remote/wt"}}}"#),
@@ -540,12 +593,16 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
         ..Default::default()
     };
     let t = threads::start(&world.ctx(), "demo", args).unwrap();
-    assert_eq!((t.origin.as_str(), t.branch.as_str()), (ADO_ORIGIN, "feature/fix-the-login-bug-t-0001-16349910"));
+    assert_eq!((t.origin.as_str(), t.branch.as_str()), (ADO_ORIGIN, "feature/fix-the-login-bug-t-0001"));
     let calls = world.runner.calls.borrow();
     let check = calls.iter().find(|c| c.display().contains("for-each-ref")).unwrap();
     assert_eq!(check.program, "ssh");
     let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
-    assert!(is_machine_call(create) && create.args.contains(&"feature/fix-the-login-bug-t-0001-16349910".to_string()), "{}", create.display());
+    assert!(is_machine_call(create) && create.args.contains(&"feature/fix-the-login-bug-t-0001".to_string()), "{}", create.display());
+    // The branch work item is written on the thread's machine, in its worktree.
+    let bind = calls.iter().find(|c| c.display().contains("ado-workitem")).unwrap();
+    assert_eq!(bind.program, "ssh");
+    assert!(bind.display().contains("cd /remote/wt && { git config --get branch.feature/fix-the-login-bug-t-0001.ado-workitem >/dev/null || git config branch.feature/fix-the-login-bug-t-0001.ado-workitem 16349910; }"), "{}", bind.display());
     assert!(create.args.windows(2).any(|w| w == ["--base", "origin/main"]), "{}", create.display());
     // The facts and the fetch are one ssh call on the thread's machine.
     let facts: Vec<_> = calls.iter().filter(|c| c.display().contains(crate::mainline::FACTS_MARK)).collect();
@@ -553,7 +610,8 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     assert!(facts[0].program == "ssh" && facts[0].stdin.as_deref().unwrap_or("").contains("if [ 1 = 1 ] && [ -n \"$o\" ]; then"));
     let brief = calls.iter().find(|c| c.display().contains("brief.md")).unwrap();
     let brief = brief.stdin.as_deref().unwrap_or("");
-    assert!(brief.contains("- Branch: `feature/fix-the-login-bug-t-0001-16349910`."));
+    assert!(brief.contains("- Branch: `feature/fix-the-login-bug-t-0001`."));
+    assert!(brief.contains("- Work Item: 16349910; pass it to /commit"), "{brief}");
     assert!(brief.contains(&format!("- Mainline: `origin/main` @ {}", &MAIN_COMMIT[..7])), "{brief}");
     assert!(!brief.contains("fetch from origin failed"), "{brief}");
 }

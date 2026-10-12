@@ -91,8 +91,8 @@ pub struct Thread {
     /// The thread branch. Set at start, before `worktree create`, from
     /// `--branch` or `branch_names`; never re-derived.
     pub branch: String,
-    /// The work item a worktree thread is tracked under (`--wid`); part of
-    /// the branch name in an Azure DevOps repository.
+    /// The work item a worktree thread is tracked under (`--wid`): written to
+    /// `branch.<branch>.ado-workitem` in the worktree and named in the brief.
     pub wid: String,
     pub branch_kind: BranchKind,
     /// The ref a worktree thread started from: the mainline, or `--base`.
@@ -285,37 +285,36 @@ impl BranchKind {
 pub const MAX_BRANCH_SLUG: usize = 60;
 
 /// The names a new worktree thread's branch may take, in order: `first`,
-/// then while a name exists locally or on origin, `<stem><wid>`, then
-/// `<stem>-2<wid>`, `<stem>-3<wid>`, ... `more` is `None` for a given name.
+/// then while a name exists locally or on origin, `<stem>`, then
+/// `<stem>-2`, `<stem>-3`, ... `stem` is `None` for a given name.
 #[derive(Debug, PartialEq)]
 pub struct BranchNames {
     pub first: String,
-    /// `<kind>/<title-slug>-<id>` (`<kind>/<id>` without a title slug) and
-    /// the WID suffix.
-    more: Option<(String, String)>,
+    /// `<kind>/<title-slug>-<id>`, or `<kind>/<id>` without a title slug.
+    stem: Option<String>,
 }
 
 impl BranchNames {
     pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
-        let rest = self.more.iter().flat_map(|(stem, wid)| std::iter::once(format!("{stem}{wid}")).chain((2..).map(move |n| format!("{stem}-{n}{wid}"))));
+        let rest = self.stem.iter().flat_map(|stem| std::iter::once(stem.clone()).chain((2..).map(move |n| format!("{stem}-{n}"))));
         std::iter::once(self.first.clone()).chain(rest.filter(|name| *name != self.first))
     }
 }
 
-/// `<kind>/<title-slug>[-<WID>]`, the WID only for an Azure DevOps origin and
-/// the title slug at most `MAX_BRANCH_SLUG` characters; on collision the
-/// thread id, then a counter, go before the WID. A given name wins (ADR 0006).
-pub fn branch_names(title: &str, id: &str, origin: &str, wid: &str, kind: BranchKind, given: &str) -> BranchNames {
+/// `<kind>/<title-slug>` in every repository, the title slug at most
+/// `MAX_BRANCH_SLUG` characters; on collision the thread id, then a counter.
+/// The WID is never part of the name: it binds the branch through
+/// `branch.<name>.ado-workitem`. A given name wins (ADR 0006).
+pub fn branch_names(title: &str, id: &str, kind: BranchKind, given: &str) -> BranchNames {
     if !given.is_empty() {
-        return BranchNames { first: given.to_string(), more: None };
+        return BranchNames { first: given.to_string(), stem: None };
     }
     let prefix = kind.prefix();
-    let wid = if origin.contains("dev.azure.com") && !wid.is_empty() { format!("-{wid}") } else { String::new() };
     let title = slugify_max(title, MAX_BRANCH_SLUG);
     if title.is_empty() {
-        return BranchNames { first: format!("{prefix}/{id}{wid}"), more: Some((format!("{prefix}/{id}"), wid)) };
+        return BranchNames { first: format!("{prefix}/{id}"), stem: Some(format!("{prefix}/{id}")) };
     }
-    BranchNames { first: format!("{prefix}/{title}{wid}"), more: Some((format!("{prefix}/{title}-{id}"), wid)) }
+    BranchNames { first: format!("{prefix}/{title}"), stem: Some(format!("{prefix}/{title}-{id}")) }
 }
 
 /// A WID is the id of an Azure DevOps work item: five or more digits.
@@ -413,6 +412,8 @@ pub struct BriefInput<'a> {
     pub remote: bool,
     /// A worktree thread's branch; empty for other kinds.
     pub branch: &'a str,
+    /// The branch work item (`--wid`); empty without one.
+    pub wid: &'a str,
     /// Header lines naming the mainline (see `mainline`), or "".
     pub mainline: &'a str,
     pub instructions: &'a str,
@@ -452,6 +453,9 @@ fn brief_header(input: &BriefInput) -> String {
     }
     if !input.branch.is_empty() {
         out.push_str(&format!("- Branch: `{}`. Stay on it: do not switch branches or create new ones.\n", input.branch));
+        if !input.wid.is_empty() {
+            out.push_str(&format!("- Work Item: {}; pass it to /commit\n", input.wid));
+        }
     }
     out.push_str(input.mainline);
     let uploads_note = if input.remote { " (on the home machine; not copied to yours)" } else { "" };
@@ -555,6 +559,7 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool, 
         uploads_path: &uploads,
         remote: thread.is_remote(),
         branch: if thread.kind == Kind::Worktree { &thread.branch } else { "" },
+        wid: if thread.kind == Kind::Worktree { &thread.wid } else { "" },
         mainline,
         instructions: &instructions,
         memory_index: &memory_index,
@@ -1235,40 +1240,27 @@ mod tests {
 
     #[test]
     fn branch_names_follow_the_team_convention() {
-        const GITHUB: &str = "git@github.com:owner/app.git";
-        const ADO: &str = "https://sc-ado@dev.azure.com/sc-ado/PDBQPR/_git/app";
-        let names = |title: &str, origin: &str, wid: &str, kind: BranchKind, given: &str| {
-            let n = branch_names(title, "t-0042", origin, wid, kind, given);
+        let names = |title: &str, kind: BranchKind, given: &str| {
+            let n = branch_names(title, "t-0042", kind, given);
             let mut tried = n.iter();
             (tried.next().unwrap(), tried.next().unwrap_or_default())
         };
         let pair = |first: &str, taken: &str| (first.to_string(), taken.to_string());
         let (feature, bugfix) = (BranchKind::Feature, BranchKind::Bugfix);
 
-        assert_eq!(names("Fix the $(login) bug!", GITHUB, "", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
-        assert_eq!(names("Fix the login bug", GITHUB, "", bugfix, ""), pair("bugfix/fix-the-login-bug", "bugfix/fix-the-login-bug-t-0042"));
-        // A WID belongs only in an Azure DevOps name.
-        assert_eq!(names("Fix the login bug", GITHUB, "16349910", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
-        assert_eq!(
-            names("Fix the login bug", ADO, "16349910", feature, ""),
-            pair("feature/fix-the-login-bug-16349910", "feature/fix-the-login-bug-t-0042-16349910")
-        );
-        assert_eq!(names("Fix the login bug", ADO, "", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
-        assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, ""), pair("bugfix/fix-the-login-bug-16349910", "bugfix/fix-the-login-bug-t-0042-16349910"));
+        assert_eq!(names("Fix the $(login) bug!", feature, ""), pair("feature/fix-the-login-bug", "feature/fix-the-login-bug-t-0042"));
+        assert_eq!(names("Fix the login bug", bugfix, ""), pair("bugfix/fix-the-login-bug", "bugfix/fix-the-login-bug-t-0042"));
         // A given name is used as given; a title with no slug falls back to the id.
-        assert_eq!(names("Fix the login bug", ADO, "16349910", bugfix, "my/name"), pair("my/name", ""));
-        assert_eq!(names("???", GITHUB, "", feature, ""), pair("feature/t-0042", "feature/t-0042-2"));
-        assert_eq!(names("???", ADO, "16349910", feature, ""), pair("feature/t-0042-16349910", "feature/t-0042-2-16349910"));
-        assert_eq!(names("Fix it", "", "16349910", feature, ""), pair("feature/fix-it", "feature/fix-it-t-0042"));
+        assert_eq!(names("Fix the login bug", bugfix, "my/name"), pair("my/name", ""));
+        assert_eq!(names("???", feature, ""), pair("feature/t-0042", "feature/t-0042-2"));
 
-        // Then a counter, before the WID.
-        let later = |title: &str, origin: &str, wid: &str| branch_names(title, "t-0042", origin, wid, feature, "").iter().skip(2).take(2).collect::<Vec<_>>();
-        assert_eq!(later("Fix it", GITHUB, ""), ["feature/fix-it-t-0042-2", "feature/fix-it-t-0042-3"]);
-        assert_eq!(later("Fix it", ADO, "16349910"), ["feature/fix-it-t-0042-2-16349910", "feature/fix-it-t-0042-3-16349910"]);
-        assert_eq!(branch_names("x", "t-0042", ADO, "", feature, "my/name").iter().collect::<Vec<_>>(), ["my/name"]);
+        // Then a counter.
+        let later = |title: &str| branch_names(title, "t-0042", feature, "").iter().skip(2).take(2).collect::<Vec<_>>();
+        assert_eq!(later("Fix it"), ["feature/fix-it-t-0042-2", "feature/fix-it-t-0042-3"]);
+        assert_eq!(branch_names("x", "t-0042", feature, "my/name").iter().collect::<Vec<_>>(), ["my/name"]);
         // The title slug is cut at 60 characters, a project slug at 40.
         let long = "Stop listing the hundred newest pull requests when a ticker pass looks for a branch";
-        let first = branch_names(long, "t-0042", GITHUB, "", feature, "").first;
+        let first = branch_names(long, "t-0042", feature, "").first;
         assert_eq!(first, "feature/stop-listing-the-hundred-newest-pull-requests-when-a-ticker");
         assert_eq!(first.len() - "feature/".len(), 59, "a trailing hyphen is dropped");
         assert_eq!(project::slugify(long).len(), 40);
@@ -1329,6 +1321,7 @@ mod tests {
             uploads_path: "/root/demo/uploads",
             remote: false,
             branch: "feature/fix-it",
+            wid: "16349910",
             mainline: "- Mainline: `origin/main` @ a1b2c3d (fetched 2026-10-12 09:00). Your branch starts here; cite this commit in your report.\n",
             instructions: "Always run the tests.",
             memory_index: "# Memory\n- a\n- b\n- c",
@@ -1346,7 +1339,8 @@ mod tests {
         // The header comes first: name, goal, repos with machines, uploads, library, report.
         assert!(brief.starts_with("# Project\n\n- Project: Demo (`demo`)\n- Goal: Ship it\n"));
         assert!(pos("/srv/app on machine `box`") < pos("/home/me/lib (local)"));
-        assert!(pos("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones.") < pos("- Mainline: `origin/main` @ a1b2c3d"));
+        assert!(pos("- Branch: `feature/fix-it`. Stay on it: do not switch branches or create new ones.") < pos("- Work Item: 16349910; pass it to /commit"));
+        assert!(pos("- Work Item: 16349910; pass it to /commit") < pos("- Mainline: `origin/main` @ a1b2c3d"));
         assert!(pos("- Mainline: `origin/main` @ a1b2c3d") < pos("Uploads, files from the user"));
         assert!(pos("Uploads, files from the user: `/root/demo/uploads`") < pos("# Thread brief"));
         assert!(pos("# Thread brief") < pos("previous attempt"));
@@ -1364,9 +1358,10 @@ mod tests {
             assert!(!brief.contains(word), "{word}");
         }
 
-        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", branch: "", mainline: "", ..input });
+        let fresh = compose_brief(&BriefInput { goal: "", repos: &[], remote: true, instructions: "", memory_index: "", memory_files: &[], task: "t", restart: false, report_path: "r", library_path: "l", report_prefix: "", branch: "", wid: "", mainline: "", ..input });
         assert!(!fresh.contains("previous attempt"));
         assert!(!fresh.contains("- Branch:"));
+        assert!(!fresh.contains("- Work Item:"));
         assert!(!fresh.contains("- Mainline:"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));
