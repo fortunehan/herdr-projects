@@ -18,7 +18,14 @@ use super::{Checked, Summary, ViewError, sanitize};
 use crate::paths::Env;
 use crate::runner::{Cmd, Runner};
 
-pub const CURL_TIMEOUT: Duration = Duration::from_secs(20);
+/// curl's own limits. Requests through the proxy answer in 1-3 s, now and
+/// then in about 7 s; an Azure DevOps that waits for a 2FA sign-in does not
+/// answer at all. Connecting (proxy tunnel and TLS) takes under a second.
+const CONNECT_SECS: u64 = 5;
+const MAX_SECS: u64 = 10;
+/// The process limit, a backstop a little above `MAX_SECS` so curl reports
+/// its own timeout first.
+pub const CURL_TIMEOUT: Duration = Duration::from_secs(MAX_SECS + 2);
 pub const PAT_VAR: &str = "AZURE_DEVOPS_PAT";
 pub const PROXY_VAR: &str = "HERDR_PROJECTS_ADO_PROXY";
 const API_VERSION: &str = "7.1";
@@ -391,6 +398,7 @@ fn request(runner: &dyn Runner, pat: Option<&str>, proxy: Option<&str>, url: &st
     }
     let mut cmd = Cmd::new("curl", CURL_TIMEOUT)
         .args(["--silent", "--show-error", "--config", "-", "--header", "Accept: application/json", "--write-out", "\\n%{http_code}"])
+        .args(["--connect-timeout", &CONNECT_SECS.to_string(), "--max-time", &MAX_SECS.to_string()])
         .stdin(format!("user = \":{}\"\n", pat.replace('\\', "\\\\").replace('"', "\\\"")))
         .own_group();
     if let Some(proxy) = proxy {
@@ -1202,7 +1210,8 @@ mod tests {
         assert!(call.display().contains("--config - ") && call.display().contains("--proxy http://127.0.0.1:7890 "), "{}", call.display());
         assert!(call.display().ends_with("https://dev.azure.com/org/_apis/connectionData?api-version=7.1-preview"));
         assert!(call.own_group);
-        assert_eq!(call.timeout, Duration::from_secs(20));
+        assert_eq!(call.timeout, Duration::from_secs(12));
+        assert!(call.display().contains("--connect-timeout 5 --max-time 10 "), "{}", call.display());
         drop(calls);
 
         let runner = FakeRunner::new();
@@ -1258,7 +1267,7 @@ mod tests {
         for status in ["500", "503", "403", "404"] {
             assert!(!is_auth_failure(&answer(ok(&format!("{{}}\n{status}")))), "{status}");
         }
-        let error = answer(crate::runner::fake::fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+        let error = answer(crate::runner::fake::fail(28, "curl: (28) Operation timed out after 10000 milliseconds"));
         assert!(!is_auth_failure(&error));
     }
 

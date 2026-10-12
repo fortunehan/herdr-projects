@@ -2173,41 +2173,54 @@ fn without_an_open_azure_devops_thread_nothing_is_asked_or_reported() {
         }
         assert_eq!(world.runner.calls.borrow().iter().filter(|c| c.program == "curl").count(), 0, "pat={pat}");
         assert!(items_of(&project, "outage").is_empty(), "pat={pat}");
-        assert!(!memory.ado_auth_failing);
+        assert!(memory.ado_failing.is_none());
     }
 }
 
-/// Network failures, timeouts and 5xx are reported only once they last
-/// `outage_secs`, and their end once.
+/// A timeout, a network error or a 5xx (as while Azure DevOps waits for a 2FA
+/// sign-in) is reported at once with one item and one notification that say
+/// so; more failures add nothing, the first answer ends it with one item. A
+/// refused PAT meanwhile is a new kind and gets its own item.
 #[test]
-fn an_azure_devops_outage_is_reported_only_after_outage_secs_and_its_end_once() {
+fn an_azure_devops_that_does_not_answer_is_reported_at_once_and_its_end_once() {
     let (world, project, _) = ado_world("## Report\nworking\n", "idle");
-    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 10000 milliseconds"));
     let ctx = world.ctx();
     let mut memory = Memory::new(&ctx);
-    assert_eq!(memory.outage_secs, 600);
     let start = jiff::Timestamp::now();
     let at = |secs: i64| start + jiff::SignedDuration::from_secs(secs);
     pr_pass(&ctx, &project, &mut memory, at(0));
-    *answer.borrow_mut() = ok("<html>bad gateway</html>\n503");
-    pr_pass(&ctx, &project, &mut memory, at(300));
-    assert!(ado_items(&project).is_empty());
-    assert_eq!(notifications(&world, "Azure DevOps"), 0);
-    pr_pass(&ctx, &project, &mut memory, at(600));
-    pr_pass(&ctx, &project, &mut memory, at(900));
     let items = ado_items(&project);
     assert_eq!(items.len(), 1, "{items:?}");
-    assert_eq!(items[0].0, "failing");
-    assert!(items[0].1.contains("failing for 10 minutes") && items[0].1.contains("Last error: HTTP 503"), "{}", items[0].1);
-    assert_eq!(notifications(&world, "Azure DevOps keeps failing"), 1);
+    assert_eq!(items[0].0, "not answering");
+    assert!(items[0].1.contains("Operation timed out") && items[0].1.contains("2FA sign-in"), "{}", items[0].1);
+    assert_eq!(notifications(&world, "Azure DevOps is not answering (2FA sign-in?)"), 1);
+
+    *answer.borrow_mut() = ok("<html>bad gateway</html>\n503");
+    pr_pass(&ctx, &project, &mut memory, at(300));
+    *answer.borrow_mut() = fail(56, "curl: (56) Proxy CONNECT aborted");
+    pr_pass(&ctx, &project, &mut memory, at(600));
+    assert_eq!(ado_items(&project).len(), 1, "one item per failure");
+    assert_eq!(notifications(&world, "Azure DevOps"), 1);
 
     *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    pr_pass(&ctx, &project, &mut memory, at(900));
     pr_pass(&ctx, &project, &mut memory, at(1000));
-    pr_pass(&ctx, &project, &mut memory, at(1100));
     let items = ado_items(&project);
-    assert_eq!(items.len(), 2, "{items:?}");
-    assert_eq!(items[1].0, "working again");
-    assert!(memory.gh.last_error.is_empty() && !memory.ado_auth_failing);
+    assert_eq!(items.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), ["not answering", "answering again"]);
+    assert!(memory.gh.last_error.is_empty() && memory.ado_failing.is_none());
+
+    *answer.borrow_mut() = fail(28, "curl: (28) Operation timed out after 10000 milliseconds");
+    pr_pass(&ctx, &project, &mut memory, at(1100));
+    *answer.borrow_mut() = ok("<html>sign in</html>\n302");
+    pr_pass(&ctx, &project, &mut memory, at(1200));
+    pr_pass(&ctx, &project, &mut memory, at(1300));
+    *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    pr_pass(&ctx, &project, &mut memory, at(1400));
+    let events: Vec<String> = ado_items(&project).into_iter().map(|i| i.0).collect();
+    assert_eq!(events, ["not answering", "answering again", "not answering", "sign-in failing", "signed in again"]);
+    assert_eq!(notifications(&world, "Azure DevOps is not answering"), 2);
+    assert_eq!(notifications(&world, "PAT is missing or refused"), 1);
     assert_no_secret_and_proxy_only_on_ado(&world, &project);
 }
 
@@ -2232,13 +2245,13 @@ fn gh_and_azure_devops_outages_do_not_affect_each_other() {
 
     pr_pass(&ctx, &project, &mut memory, now);
     pr_pass(&ctx, &project, &mut memory, now);
-    assert_eq!(subjects(&project), ["azure-devops failing"]);
+    assert_eq!(subjects(&project), ["azure-devops not answering"]);
 
     *ado.borrow_mut() = ado_answer(r#"{"value":[]}"#);
     *gh_ok.borrow_mut() = false;
     pr_pass(&ctx, &project, &mut memory, now);
     pr_pass(&ctx, &project, &mut memory, now);
-    assert_eq!(subjects(&project), ["azure-devops failing", "azure-devops working again", "gh failing"]);
+    assert_eq!(subjects(&project), ["azure-devops not answering", "azure-devops answering again", "gh failing"]);
 }
 
 /// A pass that reaches its deadline leaves the round's other threads to the
@@ -2278,7 +2291,7 @@ fn pull_request_follow_up_yields_at_its_deadline_and_on_a_stop_request() {
 #[test]
 fn a_thread_whose_azure_devops_requests_keep_timing_out_backs_off() {
     let (world, project, _) = ado_world("## Report\nworking\n", "idle");
-    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 10000 milliseconds"));
     let ctx = world.ctx();
     let mut memory = Memory::new(&ctx);
     let start = jiff::Timestamp::now();

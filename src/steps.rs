@@ -73,7 +73,16 @@ pub fn save_state(project: &Project, state: &State) -> Result<()> {
     project::write_json(&project.state_dir().join("ticker.json"), state)
 }
 
-/// Continuous-failure tracking for `gh`, Azure DevOps or a machine: one item
+/// How Azure DevOps failed: it refused the PAT, or it did not answer (a
+/// timeout, a network or proxy error, a 5xx), as it does while it waits for
+/// a 2FA sign-in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AdoFailure {
+    SignIn,
+    NoAnswer,
+}
+
+/// Continuous-failure tracking for `gh` or a machine: one item
 /// when it has failed for the threshold, one more when it recovers, nothing
 /// for blips.
 #[derive(Debug, Clone, Default)]
@@ -122,10 +131,9 @@ pub struct MachineMemory {
 pub struct Memory {
     pub started: jiff::Timestamp,
     pub gh: Outage,
-    /// Azure DevOps network failures, apart from `gh`'s.
-    pub ado: Outage,
-    /// An Azure DevOps auth failure was reported and its recovery not yet.
-    pub ado_auth_failing: bool,
+    /// An Azure DevOps failure was reported and its end not yet, and what
+    /// kind it was.
+    pub ado_failing: Option<AdoFailure>,
     /// Who the threads act as, per forge account (`pr::account`), asked once.
     pub own_ids: BTreeMap<String, String>,
     pub outage_secs: i64,
@@ -155,8 +163,7 @@ impl Memory {
         Memory {
             started: jiff::Timestamp::now(),
             gh: Outage::default(),
-            ado: Outage::default(),
-            ado_auth_failing: false,
+            ado_failing: None,
             own_ids: BTreeMap::new(),
             // Overridable so an outage can be exercised without waiting ten minutes.
             outage_secs: ctx.env.var("HERDR_PROJECTS_OUTAGE_SECS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_OUTAGE_SECS),
@@ -711,16 +718,16 @@ fn own_id(client: &pr::Client, memory: &mut Memory, origin: &str) -> Result<Stri
 /// A forge call that worked. `gh` and Azure DevOps keep separate records.
 fn forge_worked(project: &Project, memory: &mut Memory, t: &Thread, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
     if pr::Forge::is_azure_devops(&t.origin) {
-        ado_auth_worked(project, memory, errors);
-        ado_reached(project, memory, now, errors);
+        ado_worked(project, memory, errors);
     } else {
         gh_worked(project, memory, now, errors);
     }
 }
 
 /// A forge call that failed. `gh` failures count toward its outage. An Azure
-/// DevOps auth failure is reported at once, since waiting does not heal it;
-/// its other failures count toward its own outage.
+/// DevOps failure is reported at once: a refused PAT does not heal by waiting,
+/// and one that does not answer is mostly waiting for a 2FA sign-in. One item
+/// and one notification per failure and kind; `ado_worked` writes its end.
 fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &mut Memory, t: &Thread, error: &anyhow::Error, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
     if !pr::Forge::is_azure_devops(&t.origin) {
         gh_failed(project, notifier, memory, error, now, errors);
@@ -728,16 +735,18 @@ fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &
     }
     let text = pr::sanitize(&format!("{error:#}"));
     errors.push(anyhow::anyhow!("{}: Azure DevOps: {text}", t.id));
-    if !pr::ado::is_auth_failure(error) {
-        if memory.ado.record(false, &text, now, memory.outage_secs) == Some(OutageEvent::Down) {
-            let summary = format!("Azure DevOps has been failing for {} minutes; its pull requests are not being followed. Last error: {text}", memory.outage_secs / 60);
-            errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "failing", &summary, "").err());
-            notifier.send("Azure DevOps", "pull requests are not being followed: Azure DevOps keeps failing", crate::notify::Sound::None, true);
-        }
+    let kind = if pr::ado::is_auth_failure(error) { AdoFailure::SignIn } else { AdoFailure::NoAnswer };
+    if memory.ado_failing == Some(kind) {
         return;
     }
-    if !memory.ado_auth_failing {
-        memory.ado_auth_failing = true;
+    memory.ado_failing = Some(kind);
+    if kind == AdoFailure::NoAnswer {
+        let summary = format!(
+            "Azure DevOps is not answering ({text}); its pull requests are not being followed. It may be waiting for a 2FA sign-in: sign in to Azure DevOps, and follow-up resumes on its own at the next answer"
+        );
+        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "not answering", &summary, "").err());
+        notifier.send("Azure DevOps", "pull requests are not being followed: Azure DevOps is not answering (2FA sign-in?)", crate::notify::Sound::Request, true);
+    } else {
         let summary = format!(
             "Azure DevOps does not accept the PAT ({text}); its pull requests are not being followed. Set or renew `{}`, then run `ticker start` from a shell that has it",
             pr::ado::PAT_VAR
@@ -747,16 +756,13 @@ fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &
     }
 }
 
-fn ado_auth_worked(project: &Project, memory: &mut Memory, errors: &mut Vec<anyhow::Error>) {
-    if std::mem::take(&mut memory.ado_auth_failing) {
-        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "signed in again", "Azure DevOps accepts the PAT again; pull request follow-up has resumed", "").err());
-    }
-}
-
-fn ado_reached(project: &Project, memory: &mut Memory, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
-    if memory.ado.record(true, "", now, memory.outage_secs) == Some(OutageEvent::Recovered) {
-        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "working again", "Azure DevOps is reachable again; pull request follow-up has resumed", "").err());
-    }
+fn ado_worked(project: &Project, memory: &mut Memory, errors: &mut Vec<anyhow::Error>) {
+    let ended = match memory.ado_failing.take() {
+        Some(AdoFailure::SignIn) => inbox::write(project, "outage", ADO_SUBJECT, "signed in again", "Azure DevOps accepts the PAT again; pull request follow-up has resumed", ""),
+        Some(AdoFailure::NoAnswer) => inbox::write(project, "outage", ADO_SUBJECT, "answering again", "Azure DevOps answers again; pull request follow-up has resumed", ""),
+        None => return,
+    };
+    errors.extend(ended.err());
 }
 
 fn gh_worked(project: &Project, memory: &mut Memory, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
