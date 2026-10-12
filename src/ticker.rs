@@ -25,7 +25,15 @@ const BRIEF_POLL: Duration = Duration::from_secs(2);
 /// How long after its start a thread on another machine is looked at between
 /// that machine's polls.
 const REMOTE_BRIEF_WINDOW_SECS: i64 = 300;
+/// A pass looks for the stop file between projects and between batches of
+/// pull requests, so this covers the requests in flight when it appears
+/// (`CURL_TIMEOUT` each) with room to spare.
 const STOP_WAIT: Duration = Duration::from_secs(60);
+/// How long one pass may spend on pull requests; what is left waits for the
+/// next pass.
+pub const PR_BUDGET: Duration = Duration::from_secs(30);
+/// A pass that takes longer is logged with its parts.
+const SLOW_PASS: Duration = Duration::from_secs(2);
 const IDLE_EXIT: Duration = Duration::from_secs(300);
 const LOG_CAP: u64 = 1_000_000;
 
@@ -262,6 +270,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     log.line(&format!("ticker {} started (pid {})", info.version, info.pid));
     let mut last_reachable = Instant::now();
     let mut memory = Memory::new(ctx);
+    memory.stop_file = Some(stop_path(root));
     loop {
         if stop_path(root).exists() {
             log.line("stop file found; exiting");
@@ -292,11 +301,32 @@ pub fn run(ctx: &Ctx) -> Result<()> {
 }
 
 /// One pass over every active project. Cheap work (state, prompts, tokens)
-/// comes first for every project, then slow work (copies, launches), so one
-/// slow project does not delay the others' sidebar. Returns whether any
+/// comes first for every project, then slow work (copies, launches), then
+/// pull requests within `PR_BUDGET`, so one slow project does not delay the
+/// others' sidebar and no forge delays a launch. Returns whether any
 /// project's session was reachable. A failure in one project never stops the
-/// others.
+/// others; a stop request ends the pass between projects.
 pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
+    let started = Instant::now();
+    let mut parts: Vec<String> = Vec::new();
+    let any_reachable = pass(ctx, log, memory, &mut parts);
+    for note in std::mem::take(&mut memory.notes) {
+        log.line(&note);
+    }
+    let took = started.elapsed();
+    if took >= SLOW_PASS {
+        log.line(&format!("pass {:.1}s: {}", took.as_secs_f64(), parts.join(", ")));
+    }
+    any_reachable
+}
+
+/// The steps of `tick`; `parts` gets how long each took.
+fn pass(ctx: &Ctx, log: &Log, memory: &mut Memory, parts: &mut Vec<String>) -> bool {
+    let mut timer = Instant::now();
+    let mut lap = |parts: &mut Vec<String>, what: String| {
+        parts.push(format!("{what} {:.1}s", timer.elapsed().as_secs_f64()));
+        timer = Instant::now();
+    };
     memory.tick += 1;
     // Renames first: a project that moves is ticked under its new slug.
     for line in crate::rename::pending_pass(ctx) {
@@ -306,6 +336,9 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
     let mut unreachable = Vec::new();
     let mut sessions = Sessions::new(ctx);
     for slug in project::list_slugs(&ctx.root) {
+        if memory.stopping() {
+            return true;
+        }
         let Ok(project) = Project::load(&ctx.root, &slug) else {
             continue;
         };
@@ -333,10 +366,15 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
             crate::views::apply(&herdr, &socket, sessions.ranks.get(&socket), &agents, &ctx.env.home);
         }
     }
+    lap(parts, "cheap".into());
     for (project, seen) in &reachable {
+        if memory.stopping() {
+            return true;
+        }
         for error in tick_slow(ctx, project, seen, memory) {
             log.line(&format!("{}: {error:#}", project.slug));
         }
+        lap(parts, format!("slow {}", project.slug));
     }
     // No coordinator: due routines are recorded as skipped, nothing fires.
     for project in &unreachable {
@@ -344,7 +382,37 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
             log.line(&format!("{}: {error:#}", project.slug));
         }
     }
+    // Pull requests last, from a project further on each pass, so a budget
+    // spent on one project does not starve the next.
+    memory.pr_deadline = Some(Instant::now() + PR_BUDGET);
+    let start = if reachable.is_empty() { 0 } else { (memory.tick as usize) % reachable.len() };
+    for (project, _) in reachable[start..].iter().chain(&reachable[..start]) {
+        if memory.stopping() {
+            break;
+        }
+        for error in pr_pass(ctx, project, memory) {
+            log.line(&format!("{}: {error:#}", project.slug));
+        }
+        let left = memory.pr_queue.get(&project.slug).map_or(0, |q| q.len());
+        lap(parts, if left > 0 { format!("prs {} ({left} left)", project.slug) } else { format!("prs {}", project.slug) });
+    }
+    memory.pr_deadline = None;
     any_reachable
+}
+
+/// Pull requests and resolve-on-merge for one reachable project.
+fn pr_pass(ctx: &Ctx, project: &Project, memory: &mut Memory) -> Vec<anyhow::Error> {
+    let mut state = steps::load_state(project);
+    let before = state.clone();
+    let now = jiff::Timestamp::now();
+    let mut errors = steps::pull_requests(ctx, project, &mut state, memory, now);
+    if !memory.stopping() {
+        errors.extend(steps::resolve_merged(ctx, project, &mut state, now));
+    }
+    if state != before {
+        errors.extend(steps::save_state(project, &state).err());
+    }
+    errors
 }
 
 /// Between ticks: sends each thread whose agent the ticker started its brief
@@ -594,7 +662,7 @@ pub fn tick_project(ctx: &Ctx, project: &Project) -> Result<bool> {
 #[cfg(test)]
 pub fn tick_project_with(ctx: &Ctx, project: &Project, memory: &mut Memory) -> Result<bool> {
     match tick_cheap(ctx, project, &mut Sessions::new(ctx))? {
-        Some(seen) => match tick_slow(ctx, project, &seen, memory).into_iter().next() {
+        Some(seen) => match tick_slow(ctx, project, &seen, memory).into_iter().chain(pr_pass(ctx, project, memory)).next() {
             Some(error) => Err(error),
             None => Ok(true),
         },
@@ -945,8 +1013,8 @@ fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threa
     Ok(pass.transitions)
 }
 
-/// Copies and launches, remote machines, then inbox items, pull requests,
-/// routines, auto-resolve and housekeeping.
+/// Copies and launches, remote machines, then inbox items, routines,
+/// auto-resolve and housekeeping. Pull requests follow in `pr_pass`.
 fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> Vec<anyhow::Error> {
     let mut errors = Vec::new();
     let mut copy_notes: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -987,7 +1055,7 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     machines.sort();
     machines.dedup();
     for machine in machines {
-        if !memory.machine_is_due(&machine) {
+        if memory.stopping() || !memory.machine_is_due(&machine) {
             continue;
         }
         let threads: Vec<thread::Thread> = remote_threads.iter().filter(|t| t.machine == machine).cloned().collect();
@@ -1002,8 +1070,6 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
 
     let notifier = crate::notify::Notifier::new(ctx, project);
     errors.extend(steps::write_thread_items(project, &mut state, &transitions, seen.session_lost, &copy_notes, &notifier).err());
-    errors.extend(steps::pull_requests(ctx, project, &mut state, memory, now));
-    errors.extend(steps::resolve_merged(ctx, project, &mut state, now));
     errors.extend(routine_pass(ctx, project, &mut state, seen.coordinator));
     if let Ok((settings, _)) = project.read_project_md() {
         errors.extend(steps::auto_resolve(ctx, project, &settings, memory, now));
@@ -1196,6 +1262,26 @@ mod tests {
         assert!(!tick_project(&ctx, &f.project).unwrap());
         assert!(runner.calls.borrow().iter().all(|c| !c.env.iter().any(|(_, v)| *v == gone)));
         assert_eq!(runner.count("agent list"), 0);
+    }
+
+    #[test]
+    fn a_stop_request_ends_a_pass_between_projects() {
+        let f = fixture();
+        let runner = FakeRunner::new();
+        runner.on("agent list", ok(&with_cwd(AGENT_READY, &f)));
+        runner.on("pane list", ok(&with_cwd(PANE, &f)));
+        runner.on("report-metadata", ok("{}"));
+        let ctx = Ctx { env: &f.env, root: f.root.clone(), config_dir: f.root.join("cfg"), runner: &runner, detached_ticker: false };
+        let mut memory = Memory::new(&ctx);
+        memory.stop_file = Some(stop_path(&f.root));
+        std::fs::write(stop_path(&f.root), b"").unwrap();
+        tick_for_test(&ctx, &mut memory);
+        assert_eq!(runner.count("agent list"), 0);
+        std::fs::remove_file(stop_path(&f.root)).unwrap();
+        tick_for_test(&ctx, &mut memory);
+        assert_eq!(runner.count("agent list"), 1);
+        assert!(memory.pr_deadline.is_none(), "the budget ends with the pass");
+        assert!(STOP_WAIT > crate::pr::ado::CURL_TIMEOUT * 2);
     }
 
     #[test]

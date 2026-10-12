@@ -4,8 +4,11 @@
 //! Everything an answer holds is attacker-chosen text: only a fixed set of
 //! fields is kept and names are sanitised.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -176,15 +179,93 @@ pub fn is_auth_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|e| e.is::<AuthFailure>())
 }
 
+/// A request that got no answer within `CURL_TIMEOUT`.
+#[derive(Debug)]
+pub struct Timeout(String);
+
+impl std::fmt::Display for Timeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Timeout {}
+
+/// Whether `error` is a request that timed out.
+pub fn is_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Timeout>())
+}
+
+/// A request that was not made: an earlier one failed, or the ticker is
+/// stopping.
+#[derive(Debug)]
+struct Skipped(&'static str);
+
+impl std::fmt::Display for Skipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Skipped {}
+
+/// The first answer that failed by itself rather than being skipped after
+/// another, removed from `answers`.
+fn failure<K: Ord + Copy>(answers: &mut BTreeMap<K, Result<String>>) -> Option<anyhow::Error> {
+    let key = *answers.iter().find(|(_, a)| a.as_ref().is_err_and(|e| !e.is::<Skipped>()))?.0;
+    answers.remove(&key)?.err()
+}
+
+/// How many requests of one thread run at once.
+const REQUESTS_AT_ONCE: usize = 4;
+/// An open pull request whose head has not moved and whose checks had all
+/// finished has its checks read again only after this long.
+pub const CHECKS_REFRESH: Duration = Duration::from_secs(600);
+
+/// What the ticker keeps of Azure DevOps answers between passes.
+#[derive(Default)]
+pub struct Cache {
+    /// Repository URL (lower-cased) -> the id of its project, which policy
+    /// evaluations are asked by.
+    project_ids: BTreeMap<String, String>,
+    /// Pull request URL -> its checks as last read, while it is open.
+    checks: BTreeMap<String, Checks>,
+}
+
+#[derive(Debug, Clone)]
+struct Checks {
+    head: String,
+    /// No Build policy was queued or running and no status pending.
+    settled: bool,
+    read: std::time::Instant,
+    failing: Vec<String>,
+}
+
+#[cfg(test)]
+impl Cache {
+    /// Makes every kept read of the checks look `age` old.
+    pub fn age_checks(&mut self, age: Duration) {
+        for checks in self.checks.values_mut() {
+            checks.read -= age;
+        }
+    }
+}
+
 /// Azure DevOps for one thread during one pass. After a request fails, its
 /// later requests are skipped, so a slow proxy cannot stall the ticker.
 pub struct Client<'a> {
     runner: &'a dyn Runner,
     pat: Option<String>,
     proxy: Option<String>,
-    failed: Cell<bool>,
+    failed: AtomicBool,
     /// organisation (lower-cased) -> the `connectionData` user id.
     users: RefCell<BTreeMap<String, String>>,
+    /// The ticker's, kept between passes; `None` elsewhere.
+    cache: Option<&'a Mutex<Cache>>,
+    /// The ticker's stop file: once it exists no request starts.
+    stop: Option<&'a Path>,
+    /// How long each request took, `<seconds>s <resource>`, for the log.
+    timings: RefCell<Vec<String>>,
 }
 
 impl<'a> Client<'a> {
@@ -196,54 +277,68 @@ impl<'a> Client<'a> {
             runner,
             pat: env.var(PAT_VAR).map(str::to_string),
             proxy: env.var(PROXY_VAR).map(str::to_string),
-            failed: Cell::new(false),
+            failed: AtomicBool::new(false),
             users: RefCell::default(),
+            cache: None,
+            stop: None,
+            timings: RefCell::default(),
         }
+    }
+
+    /// The ticker's client: answers kept in `cache`, no request once `stop`
+    /// exists.
+    pub fn for_ticker(self, cache: &'a Mutex<Cache>, stop: Option<&'a Path>) -> Self {
+        Client { cache: Some(cache), stop, ..self }
+    }
+
+    /// What each request took so far, oldest first.
+    pub fn timings(&self) -> Vec<String> {
+        self.timings.borrow().clone()
+    }
+
+    fn cache(&self) -> Option<std::sync::MutexGuard<'_, Cache>> {
+        self.cache.map(|c| c.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// The body of a GET answered 200 with JSON.
     fn get(&self, url: &str) -> Result<String> {
-        if self.failed.get() {
-            bail!("skipped after an earlier Azure DevOps request failed");
-        }
-        let answer = self.request(url);
-        self.failed.set(answer.is_err());
-        answer
+        self.get_all(vec![url.to_string()]).pop().unwrap_or_else(|| Err(anyhow!("no answer")))
     }
 
-    fn request(&self, url: &str) -> Result<String> {
-        let Some(pat) = &self.pat else {
-            return Err(AuthFailure(format!("{PAT_VAR} is not set")).into());
-        };
-        if pat.chars().any(char::is_control) {
-            return Err(AuthFailure(format!("{PAT_VAR} holds a control character")).into());
+    /// Several GETs side by side, answers in order. A failure skips the
+    /// requests that have not started yet, here and later.
+    fn get_all(&self, urls: Vec<String>) -> Vec<Result<String>> {
+        if self.stop.is_some_and(Path::exists) {
+            return urls.iter().map(|_| Err(Skipped("skipped: the ticker is stopping").into())).collect();
         }
-        let mut cmd = Cmd::new("curl", CURL_TIMEOUT)
-            .args(["--silent", "--show-error", "--config", "-", "--header", "Accept: application/json", "--write-out", "\\n%{http_code}"])
-            .stdin(format!("user = \":{}\"\n", pat.replace('\\', "\\\\").replace('"', "\\\"")))
-            .own_group();
-        if let Some(proxy) = &self.proxy {
-            cmd = cmd.args(["--proxy", proxy]);
-        }
-        let out = self.runner.run(&cmd.arg(url))?;
-        if !out.success() {
-            bail!("curl: {}", sanitize(&out.error_text()));
-        }
-        let (body, status) = out.stdout.rsplit_once('\n').unwrap_or(("", &out.stdout));
-        match status.trim() {
-            "200" => {}
-            "302" | "401" | "203" => return Err(AuthFailure(format!("HTTP {}", status.trim())).into()),
-            other => bail!("HTTP {}", sanitize(other)),
-        }
-        if serde_json::from_str::<serde::de::IgnoredAny>(body).is_err() {
-            return Err(AuthFailure("the answer is not JSON".into()).into());
-        }
-        Ok(body.to_string())
+        let (pat, proxy, failed) = (self.pat.as_deref(), self.proxy.as_deref(), &self.failed);
+        let answers = crate::runner::parallel(self.runner, urls, REQUESTS_AT_ONCE, |runner, url| {
+            if failed.load(Ordering::Relaxed) {
+                return (url, None, Err(Skipped("skipped after an earlier Azure DevOps request failed").into()));
+            }
+            let start = std::time::Instant::now();
+            let answer = request(runner, pat, proxy, &url);
+            if answer.is_err() {
+                failed.store(true, Ordering::Relaxed);
+            }
+            (url, Some(start.elapsed()), answer)
+        });
+        let mut timings = self.timings.borrow_mut();
+        answers
+            .into_iter()
+            .map(|(url, took, answer)| {
+                if let Some(took) = took.filter(|_| self.pat.is_some()) {
+                    timings.push(format!("{:.1}s {}", took.as_secs_f64(), resource(&url)));
+                }
+                answer
+            })
+            .collect()
     }
 
     /// The pull request `id` of `remote`, as JSON.
+    #[cfg(test)]
     pub fn pull_request(&self, remote: &Remote, id: u32) -> Result<String> {
-        self.get(&remote.api(&format!("pullrequests/{id}"), ""))
+        self.get(&pull_request_url(remote, id))
     }
 
     /// The id of the user the PAT belongs to in `org`, asked once per client.
@@ -280,34 +375,82 @@ impl<'a> Client<'a> {
         Ok(user)
     }
 
-    /// The policy evaluations of pull request `id`, whose project has the id
-    /// `project_id`, as JSON.
-    pub fn policy_evaluations(&self, remote: &Remote, project_id: &str, id: u32) -> Result<String> {
-        let artifact = format!("vstfs:///CodeReview/CodeReviewId/{project_id}/{id}");
-        // Like `connectionData`, policy evaluations refuse a version without `-preview`.
-        self.get(&format!(
-            "https://dev.azure.com/{}/{}/_apis/policy/evaluations?artifactId={}&api-version={API_VERSION}-preview",
-            encode(&remote.org),
-            encode(&remote.project),
-            encode(&artifact)
-        ))
-    }
-
-    /// The statuses posted on pull request `id`, as JSON.
-    pub fn statuses(&self, remote: &Remote, id: u32) -> Result<String> {
-        self.get(&remote.api(&format!("pullrequests/{id}/statuses"), ""))
-    }
-
-    /// The comment threads of pull request `id`, as JSON.
-    pub fn threads(&self, remote: &Remote, id: u32) -> Result<String> {
-        self.get(&remote.api(&format!("pullrequests/{id}/threads"), ""))
-    }
-
     fn list(&self, remote: &Remote, query: &[(&str, &str)]) -> Result<Vec<AdoPr>> {
-        let query: Vec<String> = query.iter().map(|(k, v)| format!("searchCriteria.{k}={}", encode(v))).chain(["%24top=100".to_string()]).collect();
-        let listed: Listed = serde_json::from_str(&self.get(&remote.api("pullrequests", &query.join("&")))?)?;
+        let listed: Listed = serde_json::from_str(&self.get(&list_url(remote, query))?)?;
         Ok(listed.value)
     }
+}
+
+/// One GET: curl with the PAT in a config on stdin.
+fn request(runner: &dyn Runner, pat: Option<&str>, proxy: Option<&str>, url: &str) -> Result<String> {
+    let Some(pat) = pat else {
+        return Err(AuthFailure(format!("{PAT_VAR} is not set")).into());
+    };
+    if pat.chars().any(char::is_control) {
+        return Err(AuthFailure(format!("{PAT_VAR} holds a control character")).into());
+    }
+    let mut cmd = Cmd::new("curl", CURL_TIMEOUT)
+        .args(["--silent", "--show-error", "--config", "-", "--header", "Accept: application/json", "--write-out", "\\n%{http_code}"])
+        .stdin(format!("user = \":{}\"\n", pat.replace('\\', "\\\\").replace('"', "\\\"")))
+        .own_group();
+    if let Some(proxy) = proxy {
+        cmd = cmd.args(["--proxy", proxy]);
+    }
+    let out = runner.run(&cmd.arg(url))?;
+    if out.timed_out {
+        return Err(Timeout(format!("curl: no answer within {} seconds", CURL_TIMEOUT.as_secs())).into());
+    }
+    // curl's own exit code 28 is its timeout.
+    if out.code == Some(28) {
+        return Err(Timeout(format!("curl: {}", sanitize(&out.error_text()))).into());
+    }
+    if !out.success() {
+        bail!("curl: {}", sanitize(&out.error_text()));
+    }
+    let (body, status) = out.stdout.rsplit_once('\n').unwrap_or(("", &out.stdout));
+    match status.trim() {
+        "200" => {}
+        "302" | "401" | "203" => return Err(AuthFailure(format!("HTTP {}", status.trim())).into()),
+        other => bail!("HTTP {}", sanitize(other)),
+    }
+    if serde_json::from_str::<serde::de::IgnoredAny>(body).is_err() {
+        return Err(AuthFailure("the answer is not JSON".into()).into());
+    }
+    Ok(body.to_string())
+}
+
+/// The part of a REST URL that names what was asked for, for the log:
+/// `pullrequests/7/threads`, `policy/evaluations`, `connectionData`.
+fn resource(url: &str) -> String {
+    let path = url.split('?').next().unwrap_or_default();
+    let path = path.split_once("/_apis/").map_or(path, |(_, p)| p);
+    let path = match path.strip_prefix("git/repositories/") {
+        Some(rest) => rest.split_once('/').map_or(rest, |(_, p)| p),
+        None => path,
+    };
+    sanitize(path)
+}
+
+fn pull_request_url(remote: &Remote, id: u32) -> String {
+    remote.api(&format!("pullrequests/{id}"), "")
+}
+
+/// The policy evaluations of pull request `id`, whose project has the id
+/// `project_id`.
+fn evaluations_url(remote: &Remote, project_id: &str, id: u32) -> String {
+    let artifact = format!("vstfs:///CodeReview/CodeReviewId/{project_id}/{id}");
+    // Like `connectionData`, policy evaluations refuse a version without `-preview`.
+    format!(
+        "https://dev.azure.com/{}/{}/_apis/policy/evaluations?artifactId={}&api-version={API_VERSION}-preview",
+        encode(&remote.org),
+        encode(&remote.project),
+        encode(&artifact)
+    )
+}
+
+fn list_url(remote: &Remote, query: &[(&str, &str)]) -> String {
+    let query: Vec<String> = query.iter().map(|(k, v)| format!("searchCriteria.{k}={}", encode(v))).chain(["%24top=100".to_string()]).collect();
+    remote.api("pullrequests", &query.join("&"))
 }
 
 #[derive(Deserialize, Default)]
@@ -492,25 +635,25 @@ struct StatusContext {
 /// `broken`, by the policy's display name (else its pipeline's name), and
 /// statuses whose latest post per context is `failed` or `error`, by
 /// `genre/name`. Reviewer, work item and comment policies are no checks.
-pub fn failing_checks(evaluations: &str, statuses: &str) -> Result<Vec<String>> {
+/// Also whether every check has finished: no Build policy `queued` or
+/// `running`, no latest status `pending` or `notSet`.
+pub fn failing_checks(evaluations: &str, statuses: &str) -> Result<(Vec<String>, bool)> {
     let evaluations: Evaluations = serde_json::from_str(evaluations)?;
     let statuses: Statuses = serde_json::from_str(statuses)?;
-    let mut failing: Vec<String> = evaluations
-        .value
+    let builds: Vec<Evaluation> = evaluations.value.into_iter().filter(|e| e.configuration.as_ref().and_then(|c| c.kind.as_ref()).is_some_and(|k| k.id.eq_ignore_ascii_case(BUILD_POLICY))).collect();
+    let mut settled = !builds.iter().any(|e| matches!(e.status.to_ascii_lowercase().as_str(), "queued" | "running"));
+    let mut failing: Vec<String> = builds
         .into_iter()
         .filter(|e| matches!(e.status.to_ascii_lowercase().as_str(), "rejected" | "broken"))
-        .filter_map(|e| {
+        .map(|e| {
             let configuration = e.configuration.unwrap_or_default();
             let kind = configuration.kind.unwrap_or_default();
-            if !kind.id.eq_ignore_ascii_case(BUILD_POLICY) {
-                return None;
-            }
             let name = [configuration.settings.and_then(|s| s.display_name), e.context.and_then(|c| c.build_definition_name)]
                 .into_iter()
                 .flatten()
                 .map(|n| sanitize(&n))
                 .find(|n| !n.is_empty());
-            Some(name.unwrap_or_else(|| sanitize(&kind.display_name)))
+            name.unwrap_or_else(|| sanitize(&kind.display_name))
         })
         .collect();
     // A context is posted again on each push; only its latest post counts.
@@ -525,11 +668,12 @@ pub fn failing_checks(evaluations: &str, statuses: &str) -> Result<Vec<String>> 
             latest.insert(name, (status.id, status.state.unwrap_or_default()));
         }
     }
+    settled &= !latest.values().any(|(_, state)| matches!(state.to_ascii_lowercase().as_str(), "pending" | "notset"));
     failing.extend(latest.into_iter().filter(|(_, (_, state))| matches!(state.to_ascii_lowercase().as_str(), "failed" | "error")).map(|(name, _)| sanitize(&name)));
     failing.retain(|n| !n.is_empty());
     failing.sort();
     failing.dedup();
-    Ok(failing)
+    Ok((failing, settled))
 }
 
 #[derive(Deserialize, Default)]
@@ -588,14 +732,30 @@ pub fn comments(threads: &str) -> Result<(usize, Vec<String>, BTreeMap<String, u
 }
 
 /// Pull request `id` of `origin` as its thread sees it. An open one also has
-/// its failing checks and comments read: three more requests.
+/// its comments and failing checks read, side by side: its comment threads
+/// every time; its policy evaluations and statuses unless its head is the one
+/// whose checks had all finished less than `CHECKS_REFRESH` ago. One seen
+/// open before is read in one round with these; a new one, or one whose head
+/// moved, needs a second round.
 pub fn view(client: &Client, origin: &Remote, id: u32) -> Result<Checked, ViewError> {
-    let json = client.pull_request(origin, id).map_err(ViewError::Unreachable)?;
+    let url = origin.pr_url(id);
+    let known = client.cache().and_then(|c| c.checks.get(&url).cloned());
+    let project_id = client.cache().and_then(|c| c.project_ids.get(&origin.url().to_lowercase()).cloned());
+    let fresh = known.clone().filter(|c| c.settled && c.read.elapsed() < CHECKS_REFRESH);
+    let mut first = vec![("pr", pull_request_url(origin, id))];
+    if known.is_some() {
+        first.extend(extra_reads(origin, id, project_id.as_deref(), fresh.is_none()));
+    }
+    let mut answers = read(client, first);
+    let json = answers.remove("pr").unwrap_or_else(|| Err(anyhow!("no answer"))).map_err(ViewError::Unreachable)?;
     let checked = reduce(&json, origin).map_err(ViewError::BadOutput)?;
     let Checked::Summary(mut summary) = checked else {
         return Ok(checked);
     };
     if summary.state != "OPEN" {
+        if let Some(mut cache) = client.cache() {
+            cache.checks.remove(&url);
+        }
         return Ok(Checked::Summary(summary));
     }
     let pr: AdoPr = serde_json::from_str(&json).map_err(|e| ViewError::BadOutput(e.into()))?;
@@ -603,24 +763,62 @@ pub fn view(client: &Client, origin: &Remote, id: u32) -> Result<Checked, ViewEr
     if project_id.is_empty() || !project_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err(ViewError::BadOutput(anyhow!("the pull request names no project id")));
     }
-    let evaluations = client.policy_evaluations(origin, &project_id, id).map_err(ViewError::Unreachable)?;
-    let statuses = client.statuses(origin, id).map_err(ViewError::Unreachable)?;
-    let threads = client.threads(origin, id).map_err(ViewError::Unreachable)?;
-    summary.failing_checks = failing_checks(&evaluations, &statuses).map_err(ViewError::BadOutput)?;
+    if let Some(mut cache) = client.cache() {
+        cache.project_ids.insert(origin.url().to_lowercase(), project_id.clone());
+    }
+    let unchanged = fresh.filter(|c| c.head == summary.head_oid);
+    let second: Vec<(&'static str, String)> = extra_reads(origin, id, Some(&project_id), unchanged.is_none()).into_iter().filter(|(key, _)| !answers.contains_key(key)).collect();
+    answers.extend(read(client, second));
+    if let Some(error) = failure(&mut answers) {
+        return Err(ViewError::Unreachable(error));
+    }
+    let mut take = |key: &str| answers.remove(key).unwrap_or_else(|| Err(anyhow!("no answer"))).map_err(ViewError::Unreachable);
+    let threads = take("threads")?;
     (summary.comment_count, summary.commenters, summary.activity) = comments(&threads).map_err(ViewError::BadOutput)?;
+    let checks = match unchanged {
+        Some(checks) => checks,
+        None => {
+            let (evaluations, statuses) = (take("evaluations")?, take("statuses")?);
+            let (failing, settled) = failing_checks(&evaluations, &statuses).map_err(ViewError::BadOutput)?;
+            Checks { head: summary.head_oid.clone(), settled, read: std::time::Instant::now(), failing }
+        }
+    };
+    summary.failing_checks = checks.failing.clone();
+    if let Some(mut cache) = client.cache() {
+        cache.checks.insert(url, checks);
+    }
     Ok(Checked::Summary(summary))
 }
 
+/// The reads of an open pull request besides itself: its policy
+/// evaluations (once its project id is known) and statuses when `checks`,
+/// and its comment threads.
+fn extra_reads(origin: &Remote, id: u32, project_id: Option<&str>, checks: bool) -> Vec<(&'static str, String)> {
+    let mut reads = Vec::new();
+    if checks {
+        if let Some(project_id) = project_id {
+            reads.push(("evaluations", evaluations_url(origin, project_id, id)));
+        }
+        reads.push(("statuses", origin.api(&format!("pullrequests/{id}/statuses"), "")));
+    }
+    reads.push(("threads", origin.api(&format!("pullrequests/{id}/threads"), "")));
+    reads
+}
+
+fn read(client: &Client, reads: Vec<(&'static str, String)>) -> BTreeMap<&'static str, Result<String>> {
+    let (keys, urls): (Vec<&'static str>, Vec<String>) = reads.into_iter().unzip();
+    keys.into_iter().zip(client.get_all(urls)).collect()
+}
+
 /// The thread's pull request in `origin` as `wanted` describes it, in any
-/// status, the best by `super::Rank`. `sourceRefName` matches only
-/// the exact name, so the 100 newest pull requests are listed and matched
-/// here; the ticker links a thread's pull request within minutes, while it is
-/// still among them.
+/// status, the best by `super::Rank`. Only pull requests from the thread
+/// branch's exact name are asked for (`sourceRefName`), not a list of the
+/// newest ones.
 pub fn find_by_branch(client: &Client, origin: &Remote, wanted: &super::Wanted) -> Result<Option<String>> {
     if wanted.branch.is_empty() {
         return Ok(None);
     }
-    let listed = client.list(origin, &[("status", "all")])?;
+    let listed = client.list(origin, &[("sourceRefName", &format!("refs/heads/{}", wanted.branch)), ("status", "all")])?;
     let best = listed
         .iter()
         .filter(|p| p.pull_request_id > 0 && p.in_repository(origin).is_ok())
@@ -829,10 +1027,23 @@ mod tests {
             {"id":4,"state":"error","context":{"name":"sonar"}},
             {"id":5,"state":"failed","context":{"name":"lint","genre":""}},
             {"id":6,"state":null,"context":{"name":"other"}}]}"#;
-        assert_eq!(failing_checks(&evaluations, statuses).unwrap(), ["PR build", "app_maven_pipeline", "lint", "sonar"]);
-        assert_eq!(failing_checks(r#"{"value":[]}"#, r#"{"value":[]}"#).unwrap(), Vec::<String>::new());
+        let failing = |evaluations: &str, statuses: &str| failing_checks(evaluations, statuses).unwrap().0;
+        let settled = |evaluations: &str, statuses: &str| failing_checks(evaluations, statuses).unwrap().1;
+        assert_eq!(failing(&evaluations, statuses), ["PR build", "app_maven_pipeline", "lint", "sonar"]);
+        assert!(!settled(&evaluations, statuses), "a Build policy is running");
+        assert_eq!(failing(r#"{"value":[]}"#, r#"{"value":[]}"#), Vec::<String>::new());
+        assert!(settled(r#"{"value":[]}"#, r#"{"value":[]}"#));
         let unnamed = format!(r#"{{"value":[{}]}}"#, evaluation(BUILD_POLICY, "Build", "rejected", "null", "null"));
-        assert_eq!(failing_checks(&unnamed, r#"{"value":[]}"#).unwrap(), ["Build"]);
+        assert_eq!(failing(&unnamed, r#"{"value":[]}"#), ["Build"]);
+        assert!(settled(&unnamed, r#"{"value":[]}"#));
+        let waiting = format!(r#"{{"value":[{},{}]}}"#, evaluation(BUILD_POLICY, "Build", "queued", "null", "null"), evaluation("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "Minimum number of reviewers", "running", "null", "null"));
+        assert!(!settled(&waiting, r#"{"value":[]}"#), "a queued build");
+        let reviewers = format!(r#"{{"value":[{}]}}"#, evaluation("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "Minimum number of reviewers", "running", "null", "null"));
+        assert!(settled(&reviewers, r#"{"value":[]}"#), "a reviewer policy is no check");
+        for (state, done) in [("pending", false), ("notSet", false), ("succeeded", true), ("failed", true)] {
+            let statuses = format!(r#"{{"value":[{{"id":1,"state":"pending","context":{{"name":"ci"}}}},{{"id":2,"state":"{state}","context":{{"name":"ci"}}}}]}}"#);
+            assert_eq!(settled(r#"{"value":[]}"#, &statuses), done, "{state}");
+        }
         assert!(failing_checks("<html>", r#"{"value":[]}"#).is_err());
     }
 
@@ -852,6 +1063,76 @@ mod tests {
         assert_eq!(commenters, ["Alice", "Me"]);
         assert_eq!(activity, [("alice-id".to_string(), 2), ("me-id".to_string(), 1)].into());
         assert!(comments("not json").is_err());
+    }
+
+    /// The ticker's cache: an open pull request seen before is read in one
+    /// round; its checks are read again only when its head moved, a check was
+    /// still running, or `CHECKS_REFRESH` passed. Comments are read every time.
+    #[test]
+    fn a_known_open_pull_request_skips_finished_checks_until_its_head_moves() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
+        let origin = parse_remote(ORIGIN).unwrap();
+        let pr = std::rc::Rc::new(RefCell::new(pr_json("active", "").replace(r#"{"name":"proj"}"#, r#"{"id":"0f38-40c4","name":"proj"}"#)));
+        let evaluations = std::rc::Rc::new(RefCell::new(format!(r#"{{"value":[{}]}}"#, evaluation(BUILD_POLICY, "Build", "running", r#""ci""#, "null"))));
+        let runner = FakeRunner::new();
+        let (answer, checks) = (pr.clone(), evaluations.clone());
+        runner.on_fn(|c| c.display().contains("/pullrequests/7?"), move |_| Ok(ok(&format!("{}\n200", answer.borrow()))));
+        runner.on_fn(|c| c.display().contains("/policy/evaluations?"), move |_| Ok(ok(&format!("{}\n200", checks.borrow()))));
+        runner.on("/pullrequests/7/statuses?", ok("{\"value\":[]}\n200"));
+        runner.on("/pullrequests/7/threads?", ok("{\"value\":[]}\n200"));
+        let cache = Mutex::new(Cache::default());
+        let look = || {
+            let before = runner.calls.borrow().len();
+            let client = Client::new(&runner, &env).for_ticker(&cache, None);
+            let Checked::Summary(summary) = view(&client, &origin, 7).unwrap() else { panic!("ignored") };
+            let asked: Vec<String> = runner.calls.borrow()[before..].iter().map(|c| resource(c.args.last().unwrap())).collect();
+            (summary.failing_checks, asked, client.timings().len())
+        };
+        let all = ["pullrequests/7", "policy/evaluations", "pullrequests/7/statuses", "pullrequests/7/threads"];
+        assert_eq!(look(), (vec![], all.map(String::from).to_vec(), 4), "first look: itself, then the rest");
+        assert_eq!(look().1, all, "a running build is read again, in one round now the project id is known");
+        *evaluations.borrow_mut() = format!(r#"{{"value":[{}]}}"#, evaluation(BUILD_POLICY, "Build", "rejected", r#""ci""#, "null"));
+        assert_eq!(look().0, ["ci"]);
+        assert_eq!(look(), (vec!["ci".to_string()], vec!["pullrequests/7".to_string(), "pullrequests/7/threads".to_string()], 2), "finished checks are kept");
+        let moved = pr.borrow().replace("abc123", "def456");
+        *pr.borrow_mut() = moved;
+        *evaluations.borrow_mut() = format!(r#"{{"value":[{}]}}"#, evaluation(BUILD_POLICY, "Build", "approved", r#""ci""#, "null"));
+        assert_eq!(look(), (vec![], vec!["pullrequests/7".to_string(), "pullrequests/7/threads".to_string(), "policy/evaluations".to_string(), "pullrequests/7/statuses".to_string()], 4), "a new head");
+        assert_eq!(look().1.len(), 2);
+        cache.lock().unwrap().age_checks(CHECKS_REFRESH);
+        assert_eq!(look().1, all, "refreshed after CHECKS_REFRESH");
+        let merged = pr.borrow().replace("active", "completed");
+        *pr.borrow_mut() = merged;
+        assert_eq!(look().1, ["pullrequests/7", "pullrequests/7/threads"], "seen open last time");
+        assert_eq!(look().1, ["pullrequests/7"], "merged: forgotten");
+    }
+
+    #[test]
+    fn requests_after_a_failure_are_skipped_and_the_failure_itself_is_returned() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[(PAT_VAR, "pat")]);
+        let runner = FakeRunner::new();
+        runner.on("/a?", ok("{}\n200"));
+        runner.on("/b?", crate::runner::fake::fail(28, "curl: (28) Operation timed out"));
+        let client = Client::new(&runner, &env);
+        let answers = client.get_all(["/a?", "/b?", "/c?"].map(String::from).to_vec());
+        assert!(answers[0].is_ok());
+        assert!(is_timeout(answers[1].as_ref().unwrap_err()));
+        assert!(answers[2].as_ref().unwrap_err().is::<Skipped>());
+        assert_eq!(runner.calls.borrow().len(), 2);
+        let mut keyed: BTreeMap<usize, Result<String>> = client.get_all(vec!["/d?".into()]).into_iter().chain(answers).enumerate().collect();
+        assert!(is_timeout(&failure(&mut keyed).unwrap()), "not the skipped one before it");
+
+        let dir = tempfile::tempdir().unwrap();
+        let stop = dir.path().join(".ticker.stop");
+        std::fs::write(&stop, "").unwrap();
+        let (runner, cache) = (FakeRunner::new(), Mutex::new(Cache::default()));
+        let client = Client::new(&runner, &env).for_ticker(&cache, Some(&stop));
+        assert!(format!("{:#}", client.get("/a?").unwrap_err()).contains("the ticker is stopping"));
+        assert!(runner.calls.borrow().is_empty());
+        assert_eq!(resource("https://dev.azure.com/o/p/_apis/git/repositories/app/pullrequests/7/threads?api-version=7.1"), "pullrequests/7/threads");
+        assert_eq!(resource("https://dev.azure.com/o/_apis/connectionData?api-version=7.1-preview"), "connectionData");
     }
 
     #[test]
@@ -1019,7 +1300,7 @@ mod tests {
             runner.on("curl", ok(&format!("{{\"value\":[{value}]}}\n200")));
             let found = find_by_branch(&Client::new(&runner, &env), &origin, &wanted).unwrap();
             let display = runner.calls.borrow()[0].display();
-            assert!(display.contains("repositories/app/pullrequests?searchCriteria.status=all&%24top=100&api-version=7.1"), "{display}");
+            assert!(display.ends_with("repositories/app/pullrequests?searchCriteria.sourceRefName=refs%2Fheads%2Fb&searchCriteria.status=all&%24top=100&api-version=7.1"), "{display}");
             found
         };
         // The exact name first, whatever its state.

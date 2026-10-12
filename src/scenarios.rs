@@ -1614,8 +1614,8 @@ const ADO_ORIGIN: &str = "https://sc-ado@dev.azure.com/sc-ado/My%20Project/_git/
 const ADO_PR_URL: &str = "https://dev.azure.com/sc-ado/My%20Project/_git/app/pullrequest/7";
 const ADO_PAT: &str = "ado-pat-SECRET-4711";
 const ADO_PROXY: &str = "http://127.0.0.1:7890";
-/// The pull request list a lookup by branch matches in.
-const ADO_BRANCH_QUERY: &str = "pullrequests?searchCriteria.status=all&%24top=100";
+/// A lookup by branch: the pull requests from one source branch.
+const ADO_BRANCH_QUERY: &str = "pullrequests?searchCriteria.sourceRefName=refs%2Fheads%2F";
 
 /// What curl prints: the body, then the HTTP status on its own line.
 fn ado_answer(body: &str) -> Output {
@@ -1895,8 +1895,9 @@ fn a_github_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved() {
     }
 }
 
-/// The same on Azure DevOps, where the list cannot be filtered by the branch
-/// name with a WID, and the user is the `connectionData` id.
+/// The same on Azure DevOps, where only the thread branch's exact name is
+/// asked for and what comes back still goes through the matching rule; the
+/// user is the `connectionData` id.
 #[test]
 fn an_azure_devops_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved() {
     for ticked in [true, false] {
@@ -1914,6 +1915,7 @@ fn an_azure_devops_pr_from_the_thread_branch_with_a_wid_is_followed_and_resolved
             let t = thread::load(&project, "t-0001").unwrap();
             let reason = if ticked { "merged" } else { "manual" };
             assert_eq!((t.status, t.resolved_reason.as_str(), t.pr.as_str(), t.pr_state.as_str()), (Status::Resolved, reason, ADO_PR_URL, "MERGED"), "ticked={ticked} tip={tip}");
+            assert_eq!(world.runner.count(&format!("{ADO_BRANCH_QUERY}feature%2Flogin&searchCriteria.status=all")), 1, "ticked={ticked} tip={tip}");
             assert_eq!(world.runner.count(ADO_BRANCH_QUERY), 1, "ticked={ticked} tip={tip}");
             assert_eq!(world.runner.count("branch -D feature/login"), usize::from(tip == "merged-head"), "ticked={ticked} tip={tip}");
             assert_eq!(world.runner.count("branch -D"), usize::from(tip == "merged-head"));
@@ -2104,6 +2106,70 @@ fn gh_and_azure_devops_outages_do_not_affect_each_other() {
     pr_pass(&ctx, &project, &mut memory, now);
     pr_pass(&ctx, &project, &mut memory, now);
     assert_eq!(subjects(&project), ["azure-devops failing", "azure-devops working again", "gh failing"]);
+}
+
+/// A pass that reaches its deadline leaves the round's other threads to the
+/// next pass, which goes on before a new round is due; a stop request ends
+/// the round before any request.
+#[test]
+fn pull_request_follow_up_yields_at_its_deadline_and_on_a_stop_request() {
+    let (world, project, _) = ado_world(&format!("PR: {ADO_PR_URL}\n## Report\nx\n"), "idle");
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let mut state = crate::steps::State::default();
+    let now = jiff::Timestamp::now();
+    memory.pr_deadline = Some(std::time::Instant::now());
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("/pullrequests/7?"), 0);
+    assert_eq!(memory.pr_queue["demo"], ["t-0001"]);
+    assert!(!state.last_pr_check.is_empty(), "the round has started");
+
+    memory.pr_deadline = None;
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("/pullrequests/7?"), 1, "the round goes on though no new one is due");
+    assert_eq!(state.prs["t-0001"].state, "OPEN");
+    assert!(memory.notes.iter().any(|n| n.starts_with("demo: t-0001: Azure DevOps ") && n.contains("s pullrequests/7")), "{:?}", memory.notes);
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("/pullrequests/7?"), 1, "round done, next not due");
+
+    let stop = world.home.path().join(".ticker.stop");
+    std::fs::write(&stop, "").unwrap();
+    memory.stop_file = Some(stop);
+    state.last_pr_check.clear();
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("/pullrequests/7?"), 1);
+}
+
+/// A thread whose Azure DevOps requests time out twice in a row waits two
+/// minutes, then longer each time; another failure, or an answer, ends that.
+#[test]
+fn a_thread_whose_azure_devops_requests_keep_timing_out_backs_off() {
+    let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+    let answer = ado_branch_answer(&world, fail(28, "curl: (28) Operation timed out after 20000 milliseconds"));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let start = jiff::Timestamp::now();
+    let at = |secs: i64| start + jiff::SignedDuration::from_secs(secs);
+    let asked = || world.runner.count(ADO_BRANCH_QUERY);
+    pr_pass(&ctx, &project, &mut memory, at(0));
+    pr_pass(&ctx, &project, &mut memory, at(0));
+    assert_eq!(asked(), 2);
+    assert!(memory.notes.iter().any(|n| n.contains("timed out 2 times in a row; its pull request waits 2 minutes")), "{:?}", memory.notes);
+    pr_pass(&ctx, &project, &mut memory, at(60));
+    assert_eq!(asked(), 2, "left out");
+    pr_pass(&ctx, &project, &mut memory, at(120));
+    assert_eq!(asked(), 3);
+    pr_pass(&ctx, &project, &mut memory, at(300));
+    assert_eq!(asked(), 3, "four minutes after the third");
+    pr_pass(&ctx, &project, &mut memory, at(360));
+    assert_eq!(asked(), 4);
+
+    *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    pr_pass(&ctx, &project, &mut memory, at(360 + 480));
+    assert_eq!(asked(), 5);
+    assert!(memory.pr_backoff.is_empty());
+    pr_pass(&ctx, &project, &mut memory, at(360 + 480));
+    assert_eq!(asked(), 6, "asked every round again");
 }
 
 /// Threads on remote machines are followed from the local ticker: curl runs

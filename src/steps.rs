@@ -2,7 +2,9 @@
 //! pull requests, routines, auto-resolve. Each is "compare with last time,
 //! write an inbox item when it changed".
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,11 @@ pub const NUDGE_QUIET_SECS: i64 = 10;
 /// At most this many subjects are named in one nudge line.
 const NUDGE_SUBJECTS: usize = 5;
 pub const PR_INTERVAL_SECS: i64 = 120;
+/// How many threads' pull requests are looked at side by side.
+pub const PR_THREADS_AT_ONCE: usize = 4;
+/// Azure DevOps timeouts in a row after which a thread's pull request is
+/// left out of the next rounds: 1, 2, 4, then 8 of them.
+const BACKOFF_AFTER: u32 = 2;
 /// A merged thread whose agent is not busy, reports no progress and wrote no
 /// report since the merge is resolved after this long.
 pub const MERGE_GRACE_SECS: i64 = 600;
@@ -124,6 +131,21 @@ pub struct Memory {
     pub machines: BTreeMap<String, MachineMemory>,
     /// The sidebar grouping tokens last sent.
     pub grouping: crate::grouping::Sent,
+    /// Lines for the ticker log, written after each pass.
+    pub notes: Vec<String>,
+    /// The ticker's stop file: long work looks for it between steps.
+    pub stop_file: Option<PathBuf>,
+    /// When this pass's pull request follow-up must yield; `None` sets no
+    /// limit. What is left waits for the next pass.
+    pub pr_deadline: Option<Instant>,
+    /// Per project slug, the threads whose pull request this round has not
+    /// looked at yet.
+    pub pr_queue: BTreeMap<String, VecDeque<String>>,
+    /// Per `<slug>/<thread id>`: Azure DevOps timeouts in a row, and until
+    /// when the thread is left out.
+    pub pr_backoff: BTreeMap<String, (u32, jiff::Timestamp)>,
+    /// Azure DevOps answers kept between passes.
+    pub ado_cache: std::sync::Mutex<pr::ado::Cache>,
 }
 
 impl Memory {
@@ -139,7 +161,22 @@ impl Memory {
             tick: 0,
             machines: BTreeMap::new(),
             grouping: Default::default(),
+            notes: Vec::new(),
+            stop_file: None,
+            pr_deadline: None,
+            pr_queue: BTreeMap::new(),
+            pr_backoff: BTreeMap::new(),
+            ado_cache: Default::default(),
         }
+    }
+
+    /// The ticker was asked to exit.
+    pub fn stopping(&self) -> bool {
+        self.stop_file.as_ref().is_some_and(|path| path.exists())
+    }
+
+    fn out_of_time(&self) -> bool {
+        self.stopping() || self.pr_deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     /// Remote machines are polled every fourth tick (about a minute), and not
@@ -441,110 +478,219 @@ pub fn pr_routine_prompt(name: &str, body: &str, url: &str, events: &[&str], sum
     format!("[hp routine {name}] Your pull request {url} changed: {}.\n\n{}", facts.join("; "), body.trim())
 }
 
+/// Step 2: every open thread's pull request, every two minutes. A round
+/// goes through its threads `PR_THREADS_AT_ONCE` at a time, side by side, and
+/// yields at `memory.pr_deadline` or a stop request; the next pass goes on
+/// where it stopped before a new round starts.
 pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory, now: jiff::Timestamp) -> Vec<anyhow::Error> {
     let mut errors = Vec::new();
     let notifier = crate::notify::Notifier::new(ctx, project);
-    if thread::seconds_since(&state.last_pr_check, now) < PR_INTERVAL_SECS && !state.last_pr_check.is_empty() {
-        return errors;
+    let slug = project.slug.clone();
+    if memory.pr_queue.get(&slug).is_none_or(VecDeque::is_empty) {
+        if thread::seconds_since(&state.last_pr_check, now) < PR_INTERVAL_SECS && !state.last_pr_check.is_empty() {
+            return errors;
+        }
+        state.last_pr_check = now.to_string();
+        let open = thread::list(project).into_iter().filter(|t| t.status == Status::Open).map(|t| t.id).collect();
+        memory.pr_queue.insert(slug.clone(), open);
     }
-    state.last_pr_check = now.to_string();
-
-    for t in thread::list(project) {
-        if t.status != Status::Open {
-            continue;
+    while !memory.out_of_time() {
+        let queue = memory.pr_queue.entry(slug.clone()).or_default();
+        let ids: Vec<String> = std::iter::from_fn(|| queue.pop_front()).take(PR_THREADS_AT_ONCE).collect();
+        if ids.is_empty() {
+            break;
         }
-        let client = pr::Client::new(ctx.runner, ctx.env);
-        // The `PR:` line of the home copy of the report.
-        let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
-        let url = match pr::pr_line(&report, &t.origin) {
-            Ok(url) => url.unwrap_or_default(),
-            Err(note) => {
-                if state.pr_line_noted.get(&t.id) != Some(&t.report_hash) {
-                    state.pr_line_noted.insert(t.id.clone(), t.report_hash.clone());
-                    errors.extend(inbox::write(project, "pr", &t.id, "bad PR: line", &format!("{}: {note}", thread_label(&t)), "").err());
-                }
-                String::new()
-            }
-        };
-        // No `PR:` line: the one found by its branch earlier, or a lookup now.
-        let url = if !url.is_empty() {
-            url
-        } else if !t.pr.is_empty() {
-            t.pr.clone()
-        } else if t.kind == thread::Kind::Worktree && !t.branch.is_empty() && pr::Forge::of(&t.origin).is_some() {
-            let found = own_id(&client, memory, &t.origin).and_then(|own| pr::find_by_branch(&client, &t.origin, &pr::Wanted { branch: &t.branch, since: &t.created, own: &own }));
-            match found {
-                Ok(found) => {
-                    forge_worked(project, memory, &t, now, &mut errors);
-                    found.unwrap_or_default()
-                }
-                Err(error) => {
-                    forge_failed(project, &notifier, memory, &t, &error, now, &mut errors);
-                    continue;
-                }
-            }
-        } else {
-            String::new()
-        };
-        if url != t.pr {
-            let new_url = url.clone();
-            errors.extend(thread::update(project, &t.id, |t| t.pr = new_url).err());
-        }
-        if url.is_empty() {
-            continue;
-        }
-
-        let checked = match pr::view(&client, &url, &t.origin, &t.branch) {
-            Err(pr::ViewError::Unreachable(error)) => {
-                forge_failed(project, &notifier, memory, &t, &error, now, &mut errors);
+        let mut jobs = Vec::new();
+        for id in ids {
+            let Ok(t) = thread::load(project, &id) else {
+                continue;
+            };
+            if t.status != Status::Open || memory.pr_backoff.get(&backoff_key(&slug, &t.id)).is_some_and(|(_, until)| now < *until) {
                 continue;
             }
-            Err(pr::ViewError::BadOutput(error)) => {
-                forge_worked(project, memory, &t, now, &mut errors);
-                Err(error)
-            }
-            Ok(checked) => {
-                forge_worked(project, memory, &t, now, &mut errors);
-                Ok(checked)
-            }
-        };
-        match checked {
-            Err(error) => errors.push(error.context(format!("{}: {} output", t.id, if pr::Forge::is_azure_devops(&t.origin) { "Azure DevOps" } else { "gh" }))),
-            Ok(pr::Checked::Ignored(reason)) => {
-                if state.pr_ignored.get(&t.id) != Some(&url) {
-                    state.pr_ignored.insert(t.id.clone(), url.clone());
-                    errors.extend(inbox::write(project, "pr", &t.id, "PR ignored", &format!("{}: {} in its report is ignored: {reason}", thread_label(&t), pr::named(&url)), "").err());
-                }
-            }
-            Ok(pr::Checked::Summary(summary)) => {
-                let old = state.prs.get(&t.id).cloned();
-                if old.as_ref() == Some(&summary) {
-                    continue;
-                }
-                let (pr_state, pr_review) = (summary.state.clone(), summary.review_decision.clone());
-                errors.extend(thread::update(project, &t.id, |t| {
-                    t.pr_state = pr_state;
-                    t.pr_review = pr_review;
-                }).err());
-                let change = pr::describe_change(old.as_ref(), &summary);
-                let merged = summary.state == "MERGED";
-                let own = own_id(&client, memory, &t.origin).ok();
-                let events = pr_events(old.as_ref(), &summary, own.as_deref());
-                errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: {}: {change}", thread_label(&t), pr::named(&url)), "").err());
-                let reference = pr::reference(&url).unwrap_or_default();
-                if merged {
-                    notifier.send(&t.id, &format!("PR {reference} merged"), crate::notify::Sound::Done, false);
-                } else if events.contains(&"checks-failed") {
-                    notifier.send(&t.id, &format!("PR {reference} · checks failed"), crate::notify::Sound::None, false);
-                } else if events.contains(&"review") {
-                    notifier.send(&t.id, &format!("PR {reference} · new review activity"), crate::notify::Sound::None, false);
-                }
-                errors.extend(fire_pr_routines(ctx, project, &t, &url, &events, &summary));
-                state.prs.insert(t.id.clone(), summary);
-            }
+            jobs.extend(prepare(ctx, project, state, memory, &notifier, t, now, &mut errors));
+        }
+        let (cache, stop) = (&memory.ado_cache, memory.stop_file.as_deref());
+        let fetched = crate::runner::parallel(ctx.runner, jobs, PR_THREADS_AT_ONCE, |runner, job| fetch(runner, ctx.env, cache, stop, job));
+        // What was read while a stop came is not acted on: the next ticker
+        // looks again.
+        if memory.stopping() {
+            break;
+        }
+        for f in fetched {
+            apply(ctx, project, state, memory, &notifier, f, now, &mut errors);
         }
     }
     errors
+}
+
+/// One thread's look at its pull request, prepared from its report and record.
+struct Job {
+    t: Thread,
+    /// From the `PR:` line, else the one found by branch earlier; empty when
+    /// it is to be found by branch.
+    url: String,
+    /// Who the threads act as, when the pull request is to be found by branch.
+    own: Option<String>,
+}
+
+struct Fetched {
+    job: Job,
+    url: String,
+    found: Option<Result<Option<String>>>,
+    checked: Option<Result<pr::Checked, pr::ViewError>>,
+    timings: Vec<String>,
+}
+
+/// The `PR:` line (a bad one noted once per report), else the pull request
+/// found by branch earlier, else what a lookup by branch needs. `None` when
+/// there is nothing to look at.
+fn prepare(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory, notifier: &crate::notify::Notifier, t: Thread, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) -> Option<Job> {
+    // The `PR:` line of the home copy of the report.
+    let report = std::fs::read_to_string(thread::home_report_path(project, &t.id)).unwrap_or_default();
+    let url = match pr::pr_line(&report, &t.origin) {
+        Ok(url) => url.unwrap_or_default(),
+        Err(note) => {
+            if state.pr_line_noted.get(&t.id) != Some(&t.report_hash) {
+                state.pr_line_noted.insert(t.id.clone(), t.report_hash.clone());
+                errors.extend(inbox::write(project, "pr", &t.id, "bad PR: line", &format!("{}: {note}", thread_label(&t)), "").err());
+            }
+            String::new()
+        }
+    };
+    if !url.is_empty() {
+        return Some(Job { t, url, own: None });
+    }
+    if !t.pr.is_empty() {
+        return Some(Job { url: t.pr.clone(), t, own: None });
+    }
+    if t.kind != thread::Kind::Worktree || t.branch.is_empty() || pr::Forge::of(&t.origin).is_none() {
+        return None;
+    }
+    let client = pr::Client::new(ctx.runner, ctx.env);
+    match own_id(&client, memory, &t.origin) {
+        Ok(own) => Some(Job { t, url: String::new(), own: Some(own) }),
+        Err(error) => {
+            forge_failed(project, notifier, memory, &t, &error, now, errors);
+            note_failure(memory, &project.slug, &t, &error, now);
+            None
+        }
+    }
+}
+
+/// The forge requests of one job; runs side by side with other jobs.
+fn fetch(runner: &dyn crate::runner::Runner, env: &crate::paths::Env, cache: &std::sync::Mutex<pr::ado::Cache>, stop: Option<&std::path::Path>, job: Job) -> Fetched {
+    let client = pr::Client::for_ticker(runner, env, cache, stop);
+    let t = &job.t;
+    let found = job.own.as_ref().map(|own| pr::find_by_branch(&client, &t.origin, &pr::Wanted { branch: &t.branch, since: &t.created, own }));
+    let url = match &found {
+        Some(Ok(found)) => found.clone().unwrap_or_default(),
+        Some(Err(_)) => String::new(),
+        None => job.url.clone(),
+    };
+    let checked = (!url.is_empty()).then(|| pr::view(&client, &url, &t.origin, &t.branch));
+    Fetched { timings: client.timings(), job, url, found, checked }
+}
+
+/// What a job's requests answered: outage records, the thread record, inbox
+/// items, notifications and `pr` routines.
+fn apply(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory, notifier: &crate::notify::Notifier, f: Fetched, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
+    let t = &f.job.t;
+    if !f.timings.is_empty() {
+        memory.notes.push(format!("{}: {}: Azure DevOps {}", project.slug, t.id, f.timings.join(", ")));
+    }
+    match f.found {
+        Some(Err(error)) => {
+            forge_failed(project, notifier, memory, t, &error, now, errors);
+            note_failure(memory, &project.slug, t, &error, now);
+            return;
+        }
+        Some(Ok(_)) => forge_worked(project, memory, t, now, errors),
+        None => {}
+    }
+    let url = f.url;
+    if url != t.pr {
+        let new_url = url.clone();
+        errors.extend(thread::update(project, &t.id, |t| t.pr = new_url).err());
+    }
+    let Some(checked) = f.checked else {
+        memory.pr_backoff.remove(&backoff_key(&project.slug, &t.id));
+        return;
+    };
+    let checked = match checked {
+        Err(pr::ViewError::Unreachable(error)) => {
+            forge_failed(project, notifier, memory, t, &error, now, errors);
+            note_failure(memory, &project.slug, t, &error, now);
+            return;
+        }
+        Err(pr::ViewError::BadOutput(error)) => {
+            forge_worked(project, memory, t, now, errors);
+            Err(error)
+        }
+        Ok(checked) => {
+            forge_worked(project, memory, t, now, errors);
+            Ok(checked)
+        }
+    };
+    memory.pr_backoff.remove(&backoff_key(&project.slug, &t.id));
+    match checked {
+        Err(error) => errors.push(error.context(format!("{}: {} output", t.id, if pr::Forge::is_azure_devops(&t.origin) { "Azure DevOps" } else { "gh" }))),
+        Ok(pr::Checked::Ignored(reason)) => {
+            if state.pr_ignored.get(&t.id) != Some(&url) {
+                state.pr_ignored.insert(t.id.clone(), url.clone());
+                errors.extend(inbox::write(project, "pr", &t.id, "PR ignored", &format!("{}: {} in its report is ignored: {reason}", thread_label(t), pr::named(&url)), "").err());
+            }
+        }
+        Ok(pr::Checked::Summary(summary)) => {
+            let old = state.prs.get(&t.id).cloned();
+            if old.as_ref() == Some(&summary) {
+                return;
+            }
+            let (pr_state, pr_review) = (summary.state.clone(), summary.review_decision.clone());
+            errors.extend(thread::update(project, &t.id, |t| {
+                t.pr_state = pr_state;
+                t.pr_review = pr_review;
+            }).err());
+            let change = pr::describe_change(old.as_ref(), &summary);
+            let merged = summary.state == "MERGED";
+            let own = own_id(&pr::Client::new(ctx.runner, ctx.env), memory, &t.origin).ok();
+            let events = pr_events(old.as_ref(), &summary, own.as_deref());
+            errors.extend(inbox::write(project, "pr", &t.id, pr_event(&events, &summary), &format!("{}: {}: {change}", thread_label(t), pr::named(&url)), "").err());
+            let reference = pr::reference(&url).unwrap_or_default();
+            if merged {
+                notifier.send(&t.id, &format!("PR {reference} merged"), crate::notify::Sound::Done, false);
+            } else if events.contains(&"checks-failed") {
+                notifier.send(&t.id, &format!("PR {reference} · checks failed"), crate::notify::Sound::None, false);
+            } else if events.contains(&"review") {
+                notifier.send(&t.id, &format!("PR {reference} · new review activity"), crate::notify::Sound::None, false);
+            }
+            errors.extend(fire_pr_routines(ctx, project, t, &url, &events, &summary));
+            state.prs.insert(t.id.clone(), summary);
+        }
+    }
+}
+
+fn backoff_key(slug: &str, id: &str) -> String {
+    format!("{slug}/{id}")
+}
+
+/// A thread whose Azure DevOps requests time out `BACKOFF_AFTER` times in a
+/// row is left out of the next rounds, longer each time; any other outcome
+/// ends the run.
+fn note_failure(memory: &mut Memory, slug: &str, t: &Thread, error: &anyhow::Error, now: jiff::Timestamp) {
+    let key = backoff_key(slug, &t.id);
+    if !pr::ado::is_timeout(error) {
+        memory.pr_backoff.remove(&key);
+        return;
+    }
+    let entry = memory.pr_backoff.entry(key).or_insert((0, now));
+    entry.0 += 1;
+    if entry.0 >= BACKOFF_AFTER {
+        let rounds = 1i64 << (entry.0 - BACKOFF_AFTER).min(3);
+        entry.1 = now + jiff::SignedDuration::from_secs(PR_INTERVAL_SECS * rounds);
+        let note = format!("{slug}: {}: Azure DevOps timed out {} times in a row; its pull request waits {} minutes", t.id, entry.0, PR_INTERVAL_SECS * rounds / 60);
+        memory.notes.push(note);
+    }
 }
 
 /// The account the threads act as on `origin`'s forge, asked once per

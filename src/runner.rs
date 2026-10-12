@@ -128,6 +128,40 @@ pub trait Runner {
     /// While it runs, `poll` is called about twice a second until it returns
     /// true. Returns the exit code, `None` when a signal ended it.
     fn run_foreground(&self, cmd: &Cmd, poll: &mut dyn FnMut() -> bool) -> Result<Option<i32>>;
+
+    /// This runner when it may be used from several threads at once, so
+    /// `parallel` can run work side by side; `None` runs it one by one.
+    fn shared(&self) -> Option<&(dyn Runner + Sync)> {
+        None
+    }
+}
+
+/// `work` on every item, at most `limit` at a time when the runner is
+/// `shared`, else one after another. Results come back in the items' order.
+pub fn parallel<T: Send, R: Send>(runner: &dyn Runner, items: Vec<T>, limit: usize, work: impl Fn(&dyn Runner, T) -> R + Sync) -> Vec<R> {
+    let shared = runner.shared().filter(|_| limit > 1 && items.len() > 1);
+    let Some(shared) = shared else {
+        return items.into_iter().map(|item| work(runner, item)).collect();
+    };
+    let count = items.len();
+    let queue = std::sync::Mutex::new(items.into_iter().enumerate());
+    let done = std::sync::Mutex::new(Vec::with_capacity(count));
+    std::thread::scope(|scope| {
+        for _ in 0..limit.min(count) {
+            scope.spawn(|| {
+                loop {
+                    let Some((index, item)) = queue.lock().unwrap_or_else(|e| e.into_inner()).next() else {
+                        break;
+                    };
+                    let result = work(shared, item);
+                    done.lock().unwrap_or_else(|e| e.into_inner()).push((index, result));
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
+    done.sort_by_key(|(index, _)| *index);
+    done.into_iter().map(|(_, result)| result).collect()
 }
 
 pub struct RealRunner;
@@ -244,6 +278,10 @@ impl Runner for RealRunner {
             std::thread::sleep(Duration::from_millis(500));
         };
         Ok(status.code())
+    }
+
+    fn shared(&self) -> Option<&(dyn Runner + Sync)> {
+        Some(self)
     }
 }
 
@@ -476,6 +514,29 @@ mod tests {
         assert!(!out.success());
         assert!(start.elapsed() < Duration::from_secs(5));
         assert!(out.stdout.len() > 65_536);
+    }
+
+    #[test]
+    fn parallel_work_runs_side_by_side_up_to_the_limit_and_keeps_the_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (running, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let words = vec!["a", "b", "c", "d", "e", "f"];
+        let outputs = parallel(&RealRunner, words.clone(), 3, |runner, word| {
+            most.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            let out = runner.run(&Cmd::new("sh", Duration::from_secs(5)).args(["-c", &format!("sleep 0.2; echo {word}")])).unwrap().stdout;
+            running.fetch_sub(1, Ordering::SeqCst);
+            out
+        });
+        assert_eq!(outputs, words.iter().map(|w| format!("{w}\n")).collect::<Vec<_>>());
+        assert!((2..=3).contains(&most.load(Ordering::SeqCst)), "{}", most.load(Ordering::SeqCst));
+
+        let order = parallel(&RealRunner, vec![3u64, 1, 2], 3, |_, n| {
+            std::thread::sleep(Duration::from_millis(n * 50));
+            n
+        });
+        assert_eq!(order, [3, 1, 2]);
+        let one_by_one = parallel(&fake::FakeRunner::new(), vec![1, 2, 3], 3, |_, n| n * 2);
+        assert_eq!(one_by_one, [2, 4, 6]);
     }
 
     #[test]

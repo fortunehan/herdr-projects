@@ -52,6 +52,17 @@ impl<'a> Client<'a> {
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
         Client { runner, ado: ado::Client::new(runner, env) }
     }
+
+    /// The ticker's client: Azure DevOps answers kept in `cache` between
+    /// passes, no Azure DevOps request once `stop` exists.
+    pub fn for_ticker(runner: &'a dyn Runner, env: &Env, cache: &'a std::sync::Mutex<ado::Cache>, stop: Option<&'a std::path::Path>) -> Self {
+        Client { runner, ado: ado::Client::new(runner, env).for_ticker(cache, stop) }
+    }
+
+    /// How long each Azure DevOps request took, for the ticker log.
+    pub fn timings(&self) -> Vec<String> {
+        self.ado.timings()
+    }
 }
 
 /// The trimmed `PR:` value of a report's first line.
