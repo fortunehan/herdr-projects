@@ -435,17 +435,16 @@ fn existing_refs(world: &World, existing: &'static [&'static str]) {
 /// A new worktree thread is named `<kind>/<title>` in every repository (ADR
 /// 0006), `--branch` as given, with the thread id when the name exists as a
 /// local branch or on origin, then `-2`, `-3`, ... when that exists too. A
-/// `--wid` stays out of the name: it is written as the branch work item in
-/// the worktree and named in the brief.
+/// `--wid` (Azure DevOps only) stays out of the name: it is written as the
+/// branch work item in the worktree and named in the brief.
 #[test]
 fn thread_start_names_the_branch_by_kind_and_existing_refs_and_binds_the_wid() {
     use crate::thread::BranchKind::Bugfix;
     const GITHUB: &str = "git@github.com:Owner/App.git";
     #[rustfmt::skip]
-    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 11] = [
+    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 10] = [
         (GITHUB, None, None, None, &[], "feature/fix-the-login-bug"),
         (GITHUB, None, Some(Bugfix), None, &[], "bugfix/fix-the-login-bug"),
-        (GITHUB, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
         (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
         (ADO_ORIGIN, None, None, None, &[], "feature/fix-the-login-bug"),
         (ADO_ORIGIN, Some("16349910"), Some(Bugfix), Some("my/name"), &["refs/heads/my/name"], "my/name"),
@@ -519,6 +518,8 @@ fn a_failed_branch_work_item_write_is_retried_by_restart_and_a_set_one_is_kept()
     *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
     let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
     world.runner.on("worktree open", ok(&created));
+    world.runner.on("remote get-url origin", ok(&format!("{ADO_ORIGIN}\n")));
+    mainline_answers(&world, ADO_ORIGIN);
     placement_answers(&world, move |_| Ok(ok(&created)));
     let (get, set) = (Rc::new(RefCell::new(fail(1, ""))), Rc::new(RefCell::new(fail(1, "could not lock config file"))));
     let (got, sat) = (get.clone(), set.clone());
@@ -548,6 +549,39 @@ fn a_failed_branch_work_item_write_is_retried_by_restart_and_a_set_one_is_kept()
     threads::restart(&world.ctx(), "demo", "t-0001", None).unwrap();
     assert_eq!(world.runner.count(&write), 2, "a set branch work item is kept");
     assert_eq!(world.runner.count("config --get"), 3);
+}
+
+/// `--wid` binds a work item only where the origin, here or on the thread's
+/// machine, is on dev.azure.com: anywhere else `thread start` refuses it
+/// before any thread exists.
+#[test]
+fn thread_start_refuses_a_wid_outside_azure_devops() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let repo = world.home.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let repo = repo.to_string_lossy().into_owned();
+    let origin = Rc::new(RefCell::new(ok("git@github.com:Owner/App.git\n")));
+    let answer = origin.clone();
+    world.runner.on_fn(|cmd| cmd.display().contains("remote get-url origin"), move |_| Ok(answer.borrow().clone()));
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    let start = |machine: Option<&str>, repo: &str| {
+        let args = StartArgs { title: "x".into(), task: "t".into(), repo: Some(repo.into()), machine: machine.map(str::to_string), wid: Some("16349910".into()), ..Default::default() };
+        threads::start(&world.ctx(), "demo", args).unwrap_err().to_string()
+    };
+    let error = start(None, &repo);
+    assert!(error.contains("--wid binds an Azure DevOps work item") && error.contains("`git@github.com:Owner/App.git`"), "{error}");
+    *origin.borrow_mut() = fail(2, "error: No such remote 'origin'");
+    assert!(start(None, &repo).contains("is not set (not dev.azure.com)"));
+    // A remote thread is judged by its own machine's repository.
+    *origin.borrow_mut() = ok("https://github.com/owner/app.git\n");
+    let error = start(Some("box"), "/remote/repo");
+    assert!(error.contains("`https://github.com/owner/app.git`"), "{error}");
+    let calls = world.runner.calls.borrow();
+    assert!(calls.iter().any(|c| c.program == "ssh" && c.display().contains("git remote get-url origin")));
+    assert!(!calls.iter().any(|c| c.display().contains("worktree create") || c.display().contains("config")));
+    drop(calls);
+    assert!(thread::list(&project).is_empty());
 }
 
 /// `--wid` must be a work item id, and the branch flags need a worktree.
@@ -583,6 +617,7 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
         "worktree create",
         ok(r#"{"result":{"root_pane":{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"/remote/wt"},"worktree":{"path":"/remote/wt"}}}"#),
     );
+    world.runner.on_fn(|cmd| cmd.program == "ssh" && cmd.display().contains("git remote get-url origin"), |_| Ok(ok(&format!("{ADO_ORIGIN}\n"))));
     world.runner.on("ssh", ok(""));
     let args = StartArgs {
         title: "Fix the login bug".into(),

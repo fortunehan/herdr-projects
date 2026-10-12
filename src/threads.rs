@@ -202,6 +202,11 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
     }
     if let Some(wid) = &args.wid {
         thread::validate_wid(wid)?;
+        let origin = repo_origin(ctx, &repo, &machine)?;
+        if !thread::takes_wid(&origin) {
+            let origin = if origin.is_empty() { "not set".to_string() } else { format!("`{origin}`") };
+            bail!("--wid binds an Azure DevOps work item, but the origin of {repo} is {origin} (not dev.azure.com); start the thread without --wid");
+        }
     }
     if let Some(branch) = &args.branch
         && (branch.trim().is_empty() || branch.starts_with('-') || branch.chars().any(|c| c.is_whitespace() || c.is_control()))
@@ -343,26 +348,36 @@ fn name_branch(project: &Project, record: &Thread, taken: impl Fn(&str) -> Resul
     bail!("`{}` and the next {} names after it all exist as branches", names.first, TRIES - 1)
 }
 
+/// The origin URL of a repository on the thread's machine, "" without one.
+fn repo_origin(ctx: &Ctx, repo: &str, machine: &str) -> Result<String> {
+    if machine.is_empty() {
+        return Ok(git(ctx.runner, repo, &["remote", "get-url", "origin"], GIT_TIMEOUT).unwrap_or_default());
+    }
+    let target = remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, machine)?;
+    remote::origin_url(ctx.runner, &target, repo)
+}
+
 /// Binds a worktree thread's branch to its WID as the branch work item
 /// (`branch.<branch>.ado-workitem`), in the worktree on the thread's own
 /// machine, unless a value is already there (ado-track may have chosen
 /// another). A failure is a warning: the brief still names the WID.
 fn bind_work_item(ctx: &Ctx, placed: &Thread) {
-    if placed.kind != Kind::Worktree || placed.wid.is_empty() || placed.worktree_path.is_empty() {
+    let wid = placed.work_item();
+    if wid.is_empty() || placed.worktree_path.is_empty() {
         return;
     }
     let key = format!("branch.{}.ado-workitem", placed.branch);
     let bound = if placed.is_remote() {
         remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &placed.machine)
-            .and_then(|target| remote::bind_work_item(ctx.runner, &target, &placed.worktree_path, &key, &placed.wid))
+            .and_then(|target| remote::bind_work_item(ctx.runner, &target, &placed.worktree_path, &key, wid))
     } else {
         match git(ctx.runner, &placed.worktree_path, &["config", "--get", &key], GIT_TIMEOUT) {
             Ok(current) if !current.is_empty() => Ok(()),
-            _ => git(ctx.runner, &placed.worktree_path, &["config", &key, &placed.wid], GIT_TIMEOUT).map(drop),
+            _ => git(ctx.runner, &placed.worktree_path, &["config", &key, wid], GIT_TIMEOUT).map(drop),
         }
     };
     if let Err(error) = bound {
-        eprintln!("warning: could not set {key} to {} in {}: {error:#}; `thread restart` tries again", placed.wid, placed.worktree_path);
+        eprintln!("warning: could not set {key} to {wid} in {}: {error:#}; `thread restart` tries again", placed.worktree_path);
     }
 }
 

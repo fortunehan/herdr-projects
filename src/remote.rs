@@ -172,6 +172,16 @@ pub fn bind_work_item(runner: &dyn Runner, target: &str, worktree: &str, key: &s
     Ok(())
 }
 
+/// The origin URL of a repository on the machine, "" without one.
+pub fn origin_url(runner: &dyn Runner, target: &str, repo: &str) -> Result<String> {
+    let script = format!("cd {} && {{ git remote get-url origin 2>/dev/null || true; }}", quote(repo));
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("could not read the origin of {repo} on {target}: {}", out.error_text());
+    }
+    Ok(out.stdout.trim().to_string())
+}
+
 /// Whether a branch exists in a repository on the machine.
 pub fn branch_exists(runner: &dyn Runner, target: &str, repo: &str, branch: &str) -> Result<bool> {
     let script = format!("cd {} && git rev-parse --verify --quiet {} >/dev/null", quote(repo), quote(&format!("refs/heads/{branch}")));

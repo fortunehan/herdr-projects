@@ -91,8 +91,8 @@ pub struct Thread {
     /// The thread branch. Set at start, before `worktree create`, from
     /// `--branch` or `branch_names`; never re-derived.
     pub branch: String,
-    /// The work item a worktree thread is tracked under (`--wid`): written to
-    /// `branch.<branch>.ado-workitem` in the worktree and named in the brief.
+    /// The work item a worktree thread in an Azure DevOps repository is
+    /// tracked under (`--wid`), see `work_item`.
     pub wid: String,
     pub branch_kind: BranchKind,
     /// The ref a worktree thread started from: the mainline, or `--base`.
@@ -159,6 +159,12 @@ pub struct Thread {
 impl Thread {
     pub fn is_remote(&self) -> bool {
         !self.machine.is_empty()
+    }
+
+    /// The branch work item: the WID of a worktree thread whose origin is
+    /// on Azure DevOps, else "".
+    pub fn work_item(&self) -> &str {
+        if self.kind == Kind::Worktree && takes_wid(&self.origin) { &self.wid } else { "" }
     }
 
     pub fn report_path(&self) -> String {
@@ -315,6 +321,12 @@ pub fn branch_names(title: &str, id: &str, kind: BranchKind, given: &str) -> Bra
         return BranchNames { first: format!("{prefix}/{id}"), stem: Some(format!("{prefix}/{id}")) };
     }
     BranchNames { first: format!("{prefix}/{title}"), stem: Some(format!("{prefix}/{title}-{id}")) }
+}
+
+/// Whether a repository with this origin URL takes a WID: only one on
+/// Azure DevOps.
+pub fn takes_wid(origin: &str) -> bool {
+    origin.contains("dev.azure.com")
 }
 
 /// A WID is the id of an Azure DevOps work item: five or more digits.
@@ -559,7 +571,7 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool, 
         uploads_path: &uploads,
         remote: thread.is_remote(),
         branch: if thread.kind == Kind::Worktree { &thread.branch } else { "" },
-        wid: if thread.kind == Kind::Worktree { &thread.wid } else { "" },
+        wid: thread.work_item(),
         mainline,
         instructions: &instructions,
         memory_index: &memory_index,
@@ -1264,6 +1276,15 @@ mod tests {
         assert_eq!(first, "feature/stop-listing-the-hundred-newest-pull-requests-when-a-ticker");
         assert_eq!(first.len() - "feature/".len(), 59, "a trailing hyphen is dropped");
         assert_eq!(project::slugify(long).len(), 40);
+
+        // Only a worktree thread in an Azure DevOps repository has a branch work item.
+        let ado = "https://sc-ado@dev.azure.com/sc-ado/PDBQPR/_git/app";
+        let with = |kind: Kind, origin: &str| Thread { kind, origin: origin.into(), wid: "16349910".into(), ..Thread::default() };
+        assert_eq!(with(Kind::Worktree, ado).work_item(), "16349910");
+        assert_eq!(with(Kind::Worktree, "git@ssh.dev.azure.com:v3/sc-ado/PDBQPR/app").work_item(), "16349910");
+        for (kind, origin) in [(Kind::Worktree, "git@github.com:owner/app.git"), (Kind::Worktree, ""), (Kind::Tab, ado)] {
+            assert_eq!(with(kind, origin).work_item(), "", "{kind:?} {origin}");
+        }
 
         assert!(validate_wid("16349910").is_ok());
         for bad in ["", "1234", "ADO-16349910", "1634991O"] {

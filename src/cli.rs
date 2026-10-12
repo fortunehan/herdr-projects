@@ -359,7 +359,7 @@ enum ThreadCommand {
         kind: Option<String>,
         #[arg(long, value_name = "REF")]
         base: Option<String>,
-        /// The Azure DevOps work item: written as the worktree branch's `branch.<name>.ado-workitem` and named in the brief, never part of the branch name
+        /// The Azure DevOps work item, only for a repository whose origin contains dev.azure.com: written as the worktree branch's `branch.<name>.ado-workitem` and named in the brief, never part of the branch name
         #[arg(long, value_name = "WID")]
         wid: Option<String>,
         /// The whole branch name of a worktree thread, used as given
