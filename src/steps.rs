@@ -25,6 +25,8 @@ const NUDGE_SUBJECTS: usize = 5;
 pub const PR_INTERVAL_SECS: i64 = 120;
 /// How many threads' pull requests are looked at side by side.
 pub const PR_THREADS_AT_ONCE: usize = 4;
+/// A thread's Azure DevOps request times are logged when one took this long.
+const SLOW_REQUEST: std::time::Duration = std::time::Duration::from_secs(3);
 /// Azure DevOps timeouts in a row after which a thread's pull request is
 /// left out of the next rounds: 1, 2, 4, then 8 of them.
 const BACKOFF_AFTER: u32 = 2;
@@ -539,7 +541,7 @@ struct Fetched {
     url: String,
     found: Option<Result<Option<String>>>,
     checked: Option<Result<pr::Checked, pr::ViewError>>,
-    timings: Vec<String>,
+    timings: Vec<(std::time::Duration, String)>,
 }
 
 /// The `PR:` line (a bad one noted once per report), else the pull request
@@ -596,8 +598,9 @@ fn fetch(runner: &dyn crate::runner::Runner, env: &crate::paths::Env, cache: &st
 /// items, notifications and `pr` routines.
 fn apply(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory, notifier: &crate::notify::Notifier, f: Fetched, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
     let t = &f.job.t;
-    if !f.timings.is_empty() {
-        memory.notes.push(format!("{}: {}: Azure DevOps {}", project.slug, t.id, f.timings.join(", ")));
+    if f.timings.iter().any(|(took, _)| *took >= SLOW_REQUEST) {
+        let times: Vec<String> = f.timings.iter().map(|(took, what)| format!("{:.1}s {what}", took.as_secs_f64())).collect();
+        memory.notes.push(format!("{}: {}: Azure DevOps {}", project.slug, t.id, times.join(", ")));
     }
     match f.found {
         Some(Err(error)) => {

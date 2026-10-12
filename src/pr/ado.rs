@@ -264,8 +264,8 @@ pub struct Client<'a> {
     cache: Option<&'a Mutex<Cache>>,
     /// The ticker's stop file: once it exists no request starts.
     stop: Option<&'a Path>,
-    /// How long each request took, `<seconds>s <resource>`, for the log.
-    timings: RefCell<Vec<String>>,
+    /// How long each request took, and what it asked for, for the log.
+    timings: RefCell<Vec<(Duration, String)>>,
 }
 
 impl<'a> Client<'a> {
@@ -292,7 +292,7 @@ impl<'a> Client<'a> {
     }
 
     /// What each request took so far, oldest first.
-    pub fn timings(&self) -> Vec<String> {
+    pub fn timings(&self) -> Vec<(Duration, String)> {
         self.timings.borrow().clone()
     }
 
@@ -328,7 +328,7 @@ impl<'a> Client<'a> {
             .into_iter()
             .map(|(url, took, answer)| {
                 if let Some(took) = took.filter(|_| self.pat.is_some()) {
-                    timings.push(format!("{:.1}s {}", took.as_secs_f64(), resource(&url)));
+                    timings.push((took, resource(&url)));
                 }
                 answer
             })

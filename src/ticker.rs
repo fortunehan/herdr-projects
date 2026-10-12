@@ -32,8 +32,8 @@ const STOP_WAIT: Duration = Duration::from_secs(60);
 /// How long one pass may spend on pull requests; what is left waits for the
 /// next pass.
 pub const PR_BUDGET: Duration = Duration::from_secs(30);
-/// A pass that takes longer is logged with its parts.
-const SLOW_PASS: Duration = Duration::from_secs(2);
+/// A pass that takes longer is logged with its parts that took a moment.
+const SLOW_PASS: Duration = Duration::from_secs(5);
 const IDLE_EXIT: Duration = Duration::from_secs(300);
 const LOG_CAP: u64 = 1_000_000;
 
@@ -324,7 +324,9 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
 fn pass(ctx: &Ctx, log: &Log, memory: &mut Memory, parts: &mut Vec<String>) -> bool {
     let mut timer = Instant::now();
     let mut lap = |parts: &mut Vec<String>, what: String| {
-        parts.push(format!("{what} {:.1}s", timer.elapsed().as_secs_f64()));
+        if timer.elapsed() >= Duration::from_millis(100) {
+            parts.push(format!("{what} {:.1}s", timer.elapsed().as_secs_f64()));
+        }
         timer = Instant::now();
     };
     memory.tick += 1;

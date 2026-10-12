@@ -60,7 +60,7 @@ impl<'a> Client<'a> {
     }
 
     /// How long each Azure DevOps request took, for the ticker log.
-    pub fn timings(&self) -> Vec<String> {
+    pub fn timings(&self) -> Vec<(std::time::Duration, String)> {
         self.ado.timings()
     }
 }

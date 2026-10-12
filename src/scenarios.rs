@@ -2132,7 +2132,7 @@ fn pull_request_follow_up_yields_at_its_deadline_and_on_a_stop_request() {
     crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
     assert_eq!(world.runner.count("/pullrequests/7?"), 1, "the round goes on though no new one is due");
     assert_eq!(state.prs["t-0001"].state, "OPEN");
-    assert!(memory.notes.iter().any(|n| n.starts_with("demo: t-0001: Azure DevOps ") && n.contains("s pullrequests/7")), "{:?}", memory.notes);
+    assert!(memory.notes.is_empty(), "quick requests are not logged: {:?}", memory.notes);
     crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
     assert_eq!(world.runner.count("/pullrequests/7?"), 1, "round done, next not due");
 
