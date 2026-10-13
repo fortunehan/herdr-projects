@@ -956,8 +956,16 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
         let before = state.clone();
         let now = jiff::Timestamp::now();
         let target = coordinator::nudge_target(&coordinators, now);
-        if let Err(error) = steps::nudge(project, &mut state, &settings, &herdr, target, now) {
-            first_error = first_error.or(Some(error.context("nudge")));
+        let nudged = match steps::nudge(project, &mut state, &settings, &herdr, target, now) {
+            Ok(typed) => typed.then(|| target.map(|t| t.pane_id.clone())).flatten(),
+            Err(error) => {
+                first_error = first_error.or(Some(error.context("nudge")));
+                None
+            }
+        };
+        // A coordinator on an older skill than this binary's is told to read it again.
+        if let Err(error) = coordinator::skill_pass(ctx, project, &settings, &herdr, &record.socket, &coordinators, &mut state, nudged.as_deref(), now) {
+            first_error = first_error.or(Some(error.context("skill check")));
         }
         if state != before {
             steps::save_state(project, &state)?;

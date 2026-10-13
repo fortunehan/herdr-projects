@@ -4578,3 +4578,179 @@ fn context_shows_each_repository_mainline_from_the_cache() {
     assert!(digest.contains(&format!("(name clone) · mainline `main` @ {} (not fetched yet), as of ", &fork[..7])), "{digest}");
     assert!(world.runner.calls.borrow()[before..].iter().all(|c| c.program != "git" && c.program != "sh" && c.program != "ssh"), "context ran git or ssh");
 }
+
+// ------------------------------------------------------------------ skill freshness
+
+/// The coordinator idle in `w1:p1`, its thread idle in `w2:p1`.
+fn skill_world() -> (World, Project) {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    world.thread(&project, world.home.path(), |t| {
+        t.last_group = "idle".into();
+        t.last_state = "idle".into();
+    });
+    set_agents(&world, &project, "idle");
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    world.runner.on("agent prompt", ok(r#"{"result":{}}"#));
+    (world, project)
+}
+
+/// `skill` run by the agent in `pane`, working in `cwd`.
+fn skill_in(world: &World, pane: &str, cwd: &str) -> String {
+    let socket = world.home.path().join("a.sock").to_string_lossy().into_owned();
+    let env = Env::for_test(world.home.path(), &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", pane), ("HERDR_SOCKET_PATH", &socket)]);
+    let runner = FakeRunner::new();
+    runner.on("pane current", ok(&format!(r#"{{"result":{{"pane":{{"pane_id":"{pane}","agent":"claude","cwd":"{cwd}"}}}}}}"#)));
+    let ctx = Ctx { env: &env, root: world.root.clone(), config_dir: world.home.path().join("cfg"), runner: &runner, detached_ticker: false };
+    coordinator::skill(&ctx).unwrap()
+}
+
+fn skill_messages(world: &World) -> Vec<(String, String)> {
+    world
+        .runner
+        .calls
+        .borrow()
+        .iter()
+        .filter(|c| c.display().contains("agent prompt"))
+        .filter(|c| c.args.last().is_some_and(|a| a.starts_with("[hp ticker] The coordinator skill changed")))
+        .map(|c| (c.args[c.args.len() - 2].clone(), c.args.last().cloned().unwrap_or_default()))
+        .collect()
+}
+
+/// Three ticks: the coordinator is discovered, seen idle for a minute, its
+/// input box seen empty and, a while later, still empty.
+fn skill_ticks(world: &World, project: &Project) {
+    let ctx = world.ctx();
+    ticker::tick_project(&ctx, project).unwrap();
+    idle_for_a_minute(project);
+    ticker::tick_project(&ctx, project).unwrap();
+    let mut state = crate::steps::load_state(project);
+    for since in state.skill_box.values_mut() {
+        *since = "2026-01-01T00:00:00Z".into();
+    }
+    crate::steps::save_state(project, &state).unwrap();
+    ticker::tick_project(&ctx, project).unwrap();
+}
+
+fn skill_line(world: &World, project: &Project) -> String {
+    let prefix = coordinator::current_prefix(&world.root).unwrap();
+    let digest = coordinator::digest(&world.ctx(), project, &prefix).unwrap().0;
+    digest.lines().find(|l| l.starts_with("Skill: ")).unwrap_or("").to_string()
+}
+
+#[test]
+fn skill_records_what_a_coordinator_read_and_nothing_for_anyone_else() {
+    let (world, project) = skill_world();
+    let dir = project.canonical_dir().to_string_lossy().into_owned();
+    let text = skill_in(&world, "w1:p1", &dir);
+    let reads = coordinator::skill_reads(&project);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads["w1:p1"].hash, thread::sha256_hex(text.as_bytes()));
+    assert!(!reads["w1:p1"].read_at.is_empty());
+    assert!(text.contains("(w1:p1)"), "the Progress text names the pane");
+
+    // The thread's pane, a design thread's folder, and an agent elsewhere.
+    skill_in(&world, "w2:p1", &world.home.path().to_string_lossy());
+    skill_in(&world, "w3:p1", &format!("{dir}/design"));
+    skill_in(&world, "w9:p1", "/elsewhere");
+    assert_eq!(coordinator::skill_reads(&project).keys().collect::<Vec<_>>(), ["w1:p1"]);
+
+    // A new conversation in the pane no longer holds what it read.
+    let socket = world.home.path().join("a.sock").to_string_lossy().into_owned();
+    let pane = crate::progress::Current { socket, pane_id: "w1:p1".into(), terminal_id: String::new(), agent: "claude".into(), cwd: dir, foreground_cwd: String::new() };
+    coordinator::forget_skill_read(&world.ctx(), &pane).unwrap();
+    assert!(coordinator::skill_reads(&project)["w1:p1"].hash.is_empty());
+}
+
+/// Covers a coordinator running today: it never ran a recording `skill`.
+#[test]
+fn a_live_coordinator_with_no_skill_record_gets_one_message_and_a_reread_clears_it() {
+    let (world, project) = skill_world();
+    skill_ticks(&world, &project);
+    let messages = skill_messages(&world);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "w1:p1");
+    let prefix = coordinator::current_prefix(&world.root).unwrap();
+    assert_eq!(messages[0].1, format!("[hp ticker] The coordinator skill changed; run `{prefix} skill` and `{prefix} context demo` and read both in full before your next answer."));
+    assert_eq!(skill_line(&world, &project), format!("Skill: not current in pane w1:p1; the coordinator there runs `{prefix} skill` and reads it in full"));
+
+    // Told once for this skill: nothing more, however long it stays idle.
+    skill_ticks(&world, &project);
+    assert_eq!(skill_messages(&world).len(), 1);
+
+    // It reads the skill: current, and still nothing more.
+    skill_in(&world, "w1:p1", &project.canonical_dir().to_string_lossy());
+    assert_eq!(skill_line(&world, &project), "Skill: current in every coordinator pane");
+    skill_ticks(&world, &project);
+    assert_eq!(skill_messages(&world).len(), 1);
+}
+
+#[test]
+fn a_changed_skill_sends_exactly_one_message_and_a_new_pane_is_judged_on_its_own() {
+    let (world, project) = skill_world();
+    let dir = project.canonical_dir().to_string_lossy().into_owned();
+    skill_in(&world, "w1:p1", &dir);
+    skill_ticks(&world, &project);
+    assert!(skill_messages(&world).is_empty(), "the coordinator read the current skill");
+
+    // An older binary's skill: the hash it read is not today's.
+    let path = project.state_dir().join("skill.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let hash = coordinator::skill_reads(&project)["w1:p1"].hash.clone();
+    std::fs::write(&path, text.replace(&hash, "an-older-skill")).unwrap();
+    skill_ticks(&world, &project);
+    skill_ticks(&world, &project);
+    assert_eq!(skill_messages(&world).len(), 1);
+
+    // A second coordinator pane has no record of its own: it is told too.
+    *world.agents.borrow_mut() = format!(
+        "[{},{}]",
+        agent_json("w1", "w1:t1", "w1:p1", &dir, "hp-demo-coordinator", "idle"),
+        agent_json("w1", "w1:t2", "w1:p2", &dir, "", "idle")
+    );
+    skill_ticks(&world, &project);
+    let panes: Vec<String> = skill_messages(&world).into_iter().map(|(pane, _)| pane).collect();
+    assert_eq!(panes, ["w1:p1", "w1:p2"]);
+}
+
+#[test]
+fn no_skill_message_while_paused_muted_nudge_off_busy_or_without_a_live_coordinator() {
+    let (world, project) = skill_world();
+    // Paused: the full pass skips it.
+    project.set_status(project::Status::Paused).unwrap();
+    let ctx = world.ctx();
+    let mut memory = crate::steps::Memory::new(&ctx);
+    for _ in 0..3 {
+        ticker::tick_for_test(&ctx, &mut memory);
+        idle_for_a_minute(&project);
+    }
+    assert!(skill_messages(&world).is_empty());
+    project.set_status(project::Status::Active).unwrap();
+
+    for (setting, back) in [("mute = true", "mute = false"), ("nudge = false", "nudge = true")] {
+        set_front_matter(&project, setting);
+        skill_ticks(&world, &project);
+        assert!(skill_messages(&world).is_empty(), "{setting}");
+        set_front_matter(&project, back);
+    }
+
+    // Mid-turn, a draft in the box, or no coordinator agent at all.
+    set_agents(&world, &project, "idle");
+    let working = world.agents.borrow().replacen(r#""agent_status":"idle""#, r#""agent_status":"working""#, 1);
+    *world.agents.borrow_mut() = working;
+    skill_ticks(&world, &project);
+    assert!(skill_messages(&world).is_empty(), "working");
+    set_agents(&world, &project, "idle");
+    *world.screen.borrow_mut() = claude_screen(Some("half a sentence"));
+    skill_ticks(&world, &project);
+    assert!(skill_messages(&world).is_empty(), "draft");
+    *world.screen.borrow_mut() = claude_screen(None);
+    *world.agents.borrow_mut() = "[]".into();
+    skill_ticks(&world, &project);
+    assert!(skill_messages(&world).is_empty(), "no coordinator");
+
+    // All clear: the message goes out.
+    set_agents(&world, &project, "idle");
+    skill_ticks(&world, &project);
+    assert_eq!(skill_messages(&world).len(), 1);
+}

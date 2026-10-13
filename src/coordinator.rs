@@ -107,6 +107,7 @@ pub struct LivePane {
     /// When the ticker first observed the current `(agent_status, state_change_seq)` pair.
     pub pair_since: String,
     pub agent_session: String,
+    pub terminal_id: String,
 }
 
 pub fn live(project: &Project) -> Vec<LivePane> {
@@ -131,6 +132,7 @@ pub fn discover(record: &Coordinator, previous: &[LivePane], agents: &[Agent], n
                 state_change_seq: a.state_change_seq,
                 pair_since: same.map(|p| p.pair_since.clone()).unwrap_or_else(|| now.to_string()),
                 agent_session: a.session_id().to_string(),
+                terminal_id: a.terminal_id.clone(),
             }
         })
         .collect()
@@ -535,6 +537,206 @@ pub fn skill_text(prefix: &str, pane_id: Option<&str>, hooked: bool) -> String {
     text
 }
 
+/// The hash of what `skill` prints in this coordinator pane.
+pub fn skill_hash(env: &crate::paths::Env, prefix: &str, pane_id: &str, agent: &str) -> String {
+    crate::thread::sha256_hex(skill_text(prefix, Some(pane_id), crate::setup::injects_progress(env, agent)).as_bytes())
+}
+
+/// What one coordinator pane last read with `skill`, and which skill the
+/// ticker last told it to read again (`.state/skill.json`, by pane id).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct SkillRead {
+    pub socket: String,
+    /// Tells a pane id that a restarted Herdr server reuses from the old pane.
+    pub terminal_id: String,
+    /// The hash of the exact text `skill` printed; empty once the pane's
+    /// conversation started over without reading it.
+    pub hash: String,
+    pub read_at: String,
+    /// The current-skill hash the re-read message was sent for.
+    pub told: String,
+    pub told_at: String,
+}
+
+pub type SkillReads = std::collections::BTreeMap<String, SkillRead>;
+
+/// A record left by a pane that is gone is dropped after this long; a younger
+/// one may belong to an agent Herdr has not listed yet.
+const SKILL_READ_KEEP_SECS: i64 = 600;
+
+fn skill_reads_path(project: &Project) -> std::path::PathBuf {
+    project.state_dir().join("skill.json")
+}
+
+pub fn skill_reads(project: &Project) -> SkillReads {
+    project::read_json(&skill_reads_path(project)).unwrap_or_default()
+}
+
+/// `skill` and the SessionStart hook write it, the ticker too: every change
+/// is a read-modify-write under the project lock.
+fn update_skill_reads(project: &Project, change: impl FnOnce(&mut SkillReads)) -> Result<()> {
+    let _lock = project.lock()?;
+    let mut reads = skill_reads(project);
+    let before = reads.clone();
+    change(&mut reads);
+    if reads != before {
+        project::write_json(&skill_reads_path(project), &reads)?;
+    }
+    Ok(())
+}
+
+fn same_socket(a: &str, b: &str) -> bool {
+    a == b || std::fs::canonicalize(a).ok().is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+}
+
+/// Whether a pane's record describes the agent in that pane now.
+fn describes(read: &SkillRead, socket: &str, terminal_id: &str) -> bool {
+    same_socket(&read.socket, socket) && (read.terminal_id.is_empty() || terminal_id.is_empty() || read.terminal_id == terminal_id)
+}
+
+fn read_of<'a>(reads: &'a SkillReads, socket: &str, pane_id: &str, terminal_id: &str) -> Option<&'a SkillRead> {
+    reads.get(pane_id).filter(|r| describes(r, socket, terminal_id))
+}
+
+/// The pane's record for the agent there now; another agent's is started over.
+fn entry_for<'a>(reads: &'a mut SkillReads, socket: &str, pane_id: &str, terminal_id: &str) -> &'a mut SkillRead {
+    let entry = reads.entry(pane_id.to_string()).or_default();
+    if !describes(entry, socket, terminal_id) {
+        *entry = SkillRead::default();
+    }
+    entry.socket = socket.to_string();
+    entry.terminal_id = terminal_id.to_string();
+    entry
+}
+
+/// The project this pane is the coordinator of: an agent in the project home
+/// (`progress::role`), in the session the project belongs to.
+fn coordinator_project(ctx: &Ctx, pane: &crate::progress::Current) -> Option<Project> {
+    let crate::progress::Role::Coordinator { slug } = crate::progress::role(&ctx.root, &pane.pane_id, &[&pane.cwd, &pane.foreground_cwd]) else {
+        return None;
+    };
+    let project = Project::load(&ctx.root, &slug).ok()?;
+    let other_session = project.coordinator().is_some_and(|r| !r.socket.is_empty() && !same_socket(&r.socket, &pane.socket));
+    (!other_session).then_some(project)
+}
+
+/// `skill`: the text, recorded as read when the calling pane is a project's
+/// coordinator. Threads, design threads and agents outside a project record
+/// nothing.
+pub fn skill(ctx: &Ctx) -> Result<String> {
+    let pane = crate::progress::current(ctx.env, ctx.runner);
+    let hooked = pane.as_ref().is_some_and(|p| crate::setup::injects_progress(ctx.env, &p.agent));
+    let prefix = current_prefix(&ctx.root)?;
+    let text = skill_text(&prefix, pane.as_ref().map(|p| p.pane_id.as_str()), hooked);
+    if let Some(pane) = &pane
+        && let Some(project) = coordinator_project(ctx, pane)
+    {
+        let hash = crate::thread::sha256_hex(text.as_bytes());
+        let recorded = update_skill_reads(&project, |reads| {
+            let entry = entry_for(reads, &pane.socket, &pane.pane_id, &pane.terminal_id);
+            entry.hash = hash;
+            entry.read_at = project::now();
+        });
+        if let Err(error) = recorded {
+            eprintln!("warning: could not record that this coordinator read the skill: {error:#}");
+        }
+    }
+    Ok(text)
+}
+
+/// The SessionStart hook: a coordinator pane whose conversation starts over
+/// (a new session, `/clear`, `/compact`) no longer holds the skill it read.
+pub fn forget_skill_read(ctx: &Ctx, pane: &crate::progress::Current) -> Result<()> {
+    let Some(project) = coordinator_project(ctx, pane) else {
+        return Ok(());
+    };
+    update_skill_reads(&project, |reads| {
+        if let Some(entry) = reads.get_mut(&pane.pane_id) {
+            entry.hash.clear();
+        }
+    })
+}
+
+/// The live coordinator panes whose last `skill` read is not the skill they
+/// would read now (or who never read one).
+pub fn stale_skill_panes<'a>(env: &crate::paths::Env, prefix: &str, socket: &str, panes: &'a [LivePane], reads: &SkillReads) -> Vec<(&'a LivePane, String)> {
+    panes
+        .iter()
+        .filter_map(|p| {
+            let expected = skill_hash(env, prefix, &p.pane_id, &p.agent);
+            let current = read_of(reads, socket, &p.pane_id, &p.terminal_id).is_some_and(|r| r.hash == expected);
+            (!current).then_some((p, expected))
+        })
+        .collect()
+}
+
+/// The message a coordinator gets when the skill it read is out of date.
+pub fn skill_changed_text(prefix: &str, slug: &str) -> String {
+    format!("[hp ticker] The coordinator skill changed; run `{prefix} skill` and `{prefix} context {slug}` and read both in full before your next answer.")
+}
+
+/// The ticker's step: each live coordinator pane on an old skill (or with no
+/// record) gets one message per skill hash, through the same guards as the
+/// inbox nudge: `nudge` on and not muted, idle for `NUDGE_IDLE_SECS`, an
+/// input box seen empty for a while. `skip` is a pane prompted earlier in
+/// this tick. Records of panes gone for a while are dropped.
+pub fn skill_pass(ctx: &Ctx, project: &Project, settings: &project::Settings, herdr: &Herdr, socket: &str, panes: &[LivePane], state: &mut crate::steps::State, skip: Option<&str>, now: jiff::Timestamp) -> Result<()> {
+    let prefix = current_prefix(&ctx.root)?;
+    let reads = skill_reads(project);
+    let stale = stale_skill_panes(ctx.env, &prefix, socket, panes, &reads);
+    state.skill_box.retain(|pane, _| stale.iter().any(|(p, _)| &p.pane_id == pane));
+    let gone = |pane: &str, r: &SkillRead| {
+        !panes.iter().any(|p| p.pane_id == pane) && [&r.read_at, &r.told_at].iter().all(|t| t.is_empty() || crate::thread::seconds_since(t, now) >= SKILL_READ_KEEP_SECS)
+    };
+    if reads.iter().any(|(pane, r)| gone(pane, r)) {
+        update_skill_reads(project, |reads| reads.retain(|pane, r| !gone(pane, r)))?;
+    }
+    if !settings.nudge || settings.mute {
+        return Ok(());
+    }
+    for (pane, expected) in stale {
+        let told = read_of(&reads, socket, &pane.pane_id, &pane.terminal_id).is_some_and(|r| r.told == expected);
+        let idle = crate::herdr::ready_state(&pane.agent_status) && crate::thread::seconds_since(&pane.pair_since, now) >= NUDGE_IDLE_SECS;
+        if told || !idle || skip == Some(pane.pane_id.as_str()) {
+            state.skill_box.remove(&pane.pane_id);
+            continue;
+        }
+        let mut since = state.skill_box.remove(&pane.pane_id).unwrap_or_default();
+        let quiet = crate::steps::box_quiet_since(&mut since, herdr, pane, now)?;
+        if !since.is_empty() {
+            state.skill_box.insert(pane.pane_id.clone(), since);
+        }
+        if !quiet {
+            continue;
+        }
+        herdr.agent_prompt(&pane.pane_id, &skill_changed_text(&prefix, &project.slug)).map_err(|e| anyhow::anyhow!("{}: {e}", pane.pane_id))?;
+        state.skill_box.remove(&pane.pane_id);
+        update_skill_reads(project, |reads| {
+            let entry = entry_for(reads, socket, &pane.pane_id, &pane.terminal_id);
+            entry.told = expected.clone();
+            entry.told_at = project::now();
+        })?;
+    }
+    Ok(())
+}
+
+/// The `context` line on whether every live coordinator pane read the skill
+/// it would read now; none while no coordinator is live.
+pub fn skill_line(ctx: &Ctx, project: &Project, prefix: &str) -> Option<String> {
+    let panes = live(project);
+    let socket = project.coordinator().map(|r| r.socket).unwrap_or_default();
+    if panes.is_empty() || socket.is_empty() {
+        return None;
+    }
+    let stale = stale_skill_panes(ctx.env, prefix, &socket, &panes, &skill_reads(project));
+    if stale.is_empty() {
+        return Some("Skill: current in every coordinator pane".into());
+    }
+    let ids: Vec<&str> = stale.iter().map(|(p, _)| p.pane_id.as_str()).collect();
+    Some(format!("Skill: not current in pane {}; the coordinator there runs `{prefix} skill` and reads it in full", ids.join(", ")))
+}
+
 /// The folder where the coordinator keeps one file per pending proposal, so a
 /// proposal survives a context reset without becoming a task (ADR 0004).
 pub const PROPOSALS_DIR: &str = "scratch/proposals";
@@ -575,6 +777,9 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
         out,
         "Chat: link thread ids as [<id>](https://hp.invalid/{slug}/<id>), pane ids as [<pane-id>](https://hp.invalid/pane/<pane-id>), PRs as [PR #N](<url>) or [PR !N](<url>) with the URL from their pr: line; never in files or commands"
     );
+    if let Some(line) = skill_line(ctx, project, prefix) {
+        let _ = writeln!(out, "{line}");
+    }
 
     match project.read_project_md() {
         Ok((settings, _)) => {
@@ -713,6 +918,23 @@ mod tests {
         let hooked = skill_text(&prefix, Some("w12AB:p12"), true);
         assert_eq!(hooked, include_str!("../skill/COORDINATOR.md"));
         assert!(!hooked.contains("## Progress"));
+    }
+
+    #[test]
+    fn a_skill_read_counts_only_for_the_agent_now_in_the_pane() {
+        let home = tempfile::tempdir().unwrap();
+        let env = crate::paths::Env::for_test(home.path(), &[]);
+        let pane = LivePane { pane_id: "w1:p1".into(), agent: "claude".into(), terminal_id: "term-2".into(), ..LivePane::default() };
+        let hash = skill_hash(&env, "hp", "w1:p1", "claude");
+        let read = |socket: &str, terminal: &str| SkillReads::from([("w1:p1".to_string(), SkillRead { socket: socket.into(), terminal_id: terminal.into(), hash: hash.clone(), ..SkillRead::default() })]);
+        let panes = std::slice::from_ref(&pane);
+        assert!(stale_skill_panes(&env, "hp", "/a.sock", panes, &read("/a.sock", "term-2")).is_empty());
+        assert!(stale_skill_panes(&env, "hp", "/a.sock", panes, &read("/a.sock", "")).is_empty());
+        // A restarted server reuses the pane id; another server has its own.
+        assert_eq!(stale_skill_panes(&env, "hp", "/a.sock", panes, &read("/a.sock", "term-1")).len(), 1);
+        assert_eq!(stale_skill_panes(&env, "hp", "/a.sock", panes, &read("/b.sock", "term-2")).len(), 1);
+        // Another prefix prints another text.
+        assert_eq!(stale_skill_panes(&env, "/other/hp", "/a.sock", panes, &read("/a.sock", "term-2")).len(), 1);
     }
 
     #[test]

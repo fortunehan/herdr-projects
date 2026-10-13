@@ -57,6 +57,10 @@ pub struct State {
     /// `box_empty_since`, while a nudge waits for it.
     pub box_pane: String,
     pub box_empty_since: String,
+    /// Coordinator pane -> when its input box was first seen empty, while a
+    /// skill-changed message waits for it (`coordinator::skill_pass`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_box: BTreeMap<String, String>,
     pub session_item_written: bool,
     /// thread id -> when the ticker first saw its pull request merged.
     pub merged_seen: BTreeMap<String, String>,
@@ -390,34 +394,37 @@ fn hash_ids(ids: &BTreeSet<String>) -> String {
 /// `coordinator_ready` is a coordinator idle long enough to be prompted (see
 /// `coordinator::nudge_target`). A prompt is typed only into an input box
 /// that has looked empty for `NUDGE_QUIET_SECS`, so it never merges with text
-/// someone is typing; until then the nudge waits for a later tick.
-pub fn nudge(project: &Project, state: &mut State, settings: &Settings, herdr: &Herdr, coordinator_ready: Option<&crate::coordinator::LivePane>, now: jiff::Timestamp) -> Result<()> {
+/// someone is typing; until then the nudge waits for a later tick. True when
+/// it typed into `coordinator_ready`.
+pub fn nudge(project: &Project, state: &mut State, settings: &Settings, herdr: &Herdr, coordinator_ready: Option<&crate::coordinator::LivePane>, now: jiff::Timestamp) -> Result<bool> {
     let seen = inbox::seen(project);
     let unseen: Vec<inbox::Item> = inbox::unhandled(project).into_iter().filter(|i| !seen.contains(&i.id)).collect();
     let hash = hash_ids(&unseen.iter().map(|i| i.id.clone()).collect());
     if unseen.is_empty() || hash == state.nudged {
         forget_box(state);
-        return Ok(());
+        return Ok(false);
     }
     // The user already got a specific notification per event; this step only
     // wakes a coordinator. Without one (or with `nudge = false`) the items
     // wait for its next turn.
     let no_coordinator = crate::coordinator::live(project).is_empty();
+    let mut typed = false;
     if settings.nudge && !no_coordinator {
         let Some(pane) = coordinator_ready else {
             forget_box(state);
-            return Ok(()); // not idle long enough: try again on a later tick
+            return Ok(false); // not idle long enough: try again on a later tick
         };
         if !box_quiet(state, herdr, pane, now)? {
-            return Ok(());
+            return Ok(false);
         }
         // `agent_blocked` and other errors are returned, logged by the caller,
         // and the nudge is retried on a later tick.
         herdr.agent_prompt(&pane.pane_id, &nudge_text(&unseen))?;
+        typed = true;
     }
     state.nudged = hash;
     forget_box(state);
-    Ok(())
+    Ok(typed)
 }
 
 fn forget_box(state: &mut State) {
@@ -430,17 +437,30 @@ fn forget_box(state: &mut State) {
 /// between. A box that holds text, or that the screen does not show, starts
 /// the wait over.
 fn box_quiet(state: &mut State, herdr: &Herdr, pane: &crate::coordinator::LivePane, now: jiff::Timestamp) -> Result<bool> {
+    if state.box_pane != pane.pane_id {
+        state.box_empty_since.clear();
+    }
+    state.box_pane = pane.pane_id.clone();
+    let quiet = box_quiet_since(&mut state.box_empty_since, herdr, pane, now);
+    if state.box_empty_since.is_empty() {
+        state.box_pane.clear();
+    }
+    quiet
+}
+
+/// `box_quiet` for one pane's own clock: `since` is when its box was first
+/// seen empty (empty: not yet), and is cleared when the box holds text.
+pub fn box_quiet_since(since: &mut String, herdr: &Herdr, pane: &crate::coordinator::LivePane, now: jiff::Timestamp) -> Result<bool> {
     let screen = herdr.agent_screen(&pane.pane_id).map_err(|error| anyhow::anyhow!("{error}"))?;
     if crate::prompt_box::check(&pane.agent, &screen) != crate::prompt_box::Draft::Empty {
-        forget_box(state);
+        since.clear();
         return Ok(false);
     }
-    if state.box_pane != pane.pane_id || state.box_empty_since.is_empty() {
-        state.box_pane = pane.pane_id.clone();
-        state.box_empty_since = now.to_string();
+    if since.is_empty() {
+        *since = now.to_string();
         return Ok(false);
     }
-    Ok(thread::seconds_since(&state.box_empty_since, now) >= NUDGE_QUIET_SECS)
+    Ok(thread::seconds_since(since, now) >= NUDGE_QUIET_SECS)
 }
 
 /// Step 2, every two minutes.

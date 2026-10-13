@@ -429,6 +429,10 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     } else {
         Role::Other
     };
+    // A resumed conversation keeps what it read; any other start does not.
+    if kind == "SessionStart" && !matches!(source, "resume" | "fork") {
+        let _ = crate::coordinator::forget_skill_read(ctx, &pane);
+    }
     let before = record.clone();
     let text = respond(&mut record, &kind, source, &who, &prefix, now());
     if kind == "SessionStart" {

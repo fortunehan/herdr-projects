@@ -875,10 +875,7 @@ pub fn run() -> Result<()> {
             SafetyCommand::Set { target, key, value } => crate::safety::set_cli(&ctx, &target, &key, &value),
         },
         Command::Skill => {
-            let pane = crate::progress::current(ctx.env, ctx.runner);
-            let hooked = pane.as_ref().is_some_and(|p| crate::setup::injects_progress(ctx.env, &p.agent));
-            let prefix = crate::coordinator::current_prefix(&ctx.root)?;
-            print!("{}", crate::coordinator::skill_text(&prefix, pane.as_ref().map(|p| p.pane_id.as_str()), hooked));
+            print!("{}", crate::coordinator::skill(&ctx)?);
             Ok(())
         }
         Command::Doctor { fix, session } => {
