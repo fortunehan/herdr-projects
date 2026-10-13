@@ -92,8 +92,10 @@ pub struct Thread {
     /// `--branch` or `branch_names`; never re-derived.
     pub branch: String,
     /// The work item a worktree thread in an Azure DevOps repository is
-    /// tracked under (`--wid`), see `work_item`.
+    /// tracked under (`--wid`, else the default WID), see `work_item`.
     pub wid: String,
+    /// `wid` is the default WID: no `--wid` was given (`thread wid` replaces it).
+    pub wid_default: bool,
     pub branch_kind: BranchKind,
     /// The ref a worktree thread started from: the mainline, or `--base`.
     pub base: String,
@@ -307,20 +309,72 @@ impl BranchNames {
     }
 }
 
-/// `<kind>/<title-slug>` in every repository, the title slug at most
-/// `MAX_BRANCH_SLUG` characters; on collision the thread id, then a counter.
-/// The WID is never part of the name: it binds the branch through
-/// `branch.<name>.ado-workitem`. A given name wins (ADR 0006).
-pub fn branch_names(title: &str, id: &str, kind: BranchKind, given: &str) -> BranchNames {
+/// The title part of a thread branch and of its worktree folder.
+pub fn title_slug(title: &str) -> String {
+    slugify_max(title, MAX_BRANCH_SLUG)
+}
+
+/// `<kind>/<title-slug>`, or `<kind>/ADO-<WID>-<title-slug>` with a WID (an
+/// Azure DevOps repository, where the user's git hooks read the WID from the
+/// name), the title slug at most `MAX_BRANCH_SLUG` characters; on collision
+/// the thread id, then a counter. A given name wins (ADR 0006, design ADR 0002).
+pub fn branch_names(title: &str, id: &str, kind: BranchKind, wid: &str, given: &str) -> BranchNames {
     if !given.is_empty() {
         return BranchNames { first: given.to_string(), stem: None };
     }
-    let prefix = kind.prefix();
-    let title = slugify_max(title, MAX_BRANCH_SLUG);
+    let prefix = if wid.is_empty() { kind.prefix().to_string() } else { format!("{}/ADO-{wid}", kind.prefix()) };
+    let sep = if wid.is_empty() { '/' } else { '-' };
+    let title = title_slug(title);
     if title.is_empty() {
-        return BranchNames { first: format!("{prefix}/{id}"), stem: Some(format!("{prefix}/{id}")) };
+        return BranchNames { first: format!("{prefix}{sep}{id}"), stem: Some(format!("{prefix}{sep}{id}")) };
     }
-    BranchNames { first: format!("{prefix}/{title}"), stem: Some(format!("{prefix}/{title}-{id}")) }
+    BranchNames { first: format!("{prefix}{sep}{title}"), stem: Some(format!("{prefix}{sep}{title}-{id}")) }
+}
+
+/// A worktree thread's folder: `<base>/<repo name>/<project slug>-<id>-<title
+/// slug>`, where `base` and the repo name are what Herdr would use itself
+/// (herdr-projects ADR 0008). The branch name plays no part.
+pub fn worktree_folder(base: &str, repo_name: &str, slug: &str, id: &str, title: &str) -> String {
+    let title = title_slug(title);
+    let name = if title.is_empty() { format!("{slug}-{id}") } else { format!("{slug}-{id}-{title}") };
+    format!("{}/{repo_name}/{name}", base.trim_end_matches('/'))
+}
+
+/// Herdr's `worktrees.directory` from the text of its config file, `~`
+/// expanded against `home`; Herdr's own default without one.
+pub fn worktrees_base(config: &str, home: &str) -> String {
+    let directory = toml::from_str::<toml::Table>(config)
+        .ok()
+        .and_then(|t| t.get("worktrees")?.get("directory")?.as_str().map(str::to_string))
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| "~/.herdr/worktrees".to_string());
+    match directory.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{}{rest}", home.trim_end_matches('/')),
+        _ => directory,
+    }
+}
+
+/// The WID an Azure DevOps thread takes without `--wid`.
+pub const DEFAULT_WID: &str = "16951176";
+
+/// The default WID: `default_wid` in `<config_dir>/config.toml`, else
+/// `DEFAULT_WID`. One setting for every project.
+pub fn default_wid(config_dir: &Path) -> Result<String> {
+    let file = config_dir.join("config.toml");
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return Ok(DEFAULT_WID.to_string());
+    };
+    let table: toml::Table = toml::from_str(&text).with_context(|| format!("{} does not parse", file.display()))?;
+    let Some(value) = table.get("default_wid") else {
+        return Ok(DEFAULT_WID.to_string());
+    };
+    let wid = match value {
+        toml::Value::String(text) => text.clone(),
+        toml::Value::Integer(number) => number.to_string(),
+        other => bail!("{}: default_wid is {other}, not a WID", file.display()),
+    };
+    validate_wid(&wid).with_context(|| format!("{}: default_wid", file.display()))?;
+    Ok(wid)
 }
 
 /// Whether a repository with this origin URL takes a WID: only one on
@@ -426,6 +480,9 @@ pub struct BriefInput<'a> {
     pub branch: &'a str,
     /// The branch work item (`--wid`); empty without one.
     pub wid: &'a str,
+    /// `wid` is the default WID; the brief says how it is replaced.
+    pub wid_default: bool,
+    pub id: &'a str,
     /// Header lines naming the mainline (see `mainline`), or "".
     pub mainline: &'a str,
     pub instructions: &'a str,
@@ -465,7 +522,12 @@ fn brief_header(input: &BriefInput) -> String {
     }
     if !input.branch.is_empty() {
         out.push_str(&format!("- Branch: `{}`. Stay on it: do not switch branches or create new ones.\n", input.branch));
-        if !input.wid.is_empty() {
+        if input.wid_default {
+            out.push_str(&format!(
+                "- Work Item: {}, the default WID (none was given); pass it to /commit. Before the branch is pushed, the coordinator replaces it with the real one: `thread wid {} {} <WID>` renames this branch.\n",
+                input.wid, input.slug, input.id
+            ));
+        } else if !input.wid.is_empty() {
             out.push_str(&format!("- Work Item: {}; pass it to /commit\n", input.wid));
         }
     }
@@ -572,6 +634,8 @@ pub fn brief_for(project: &Project, thread: &Thread, task: &str, restart: bool, 
         remote: thread.is_remote(),
         branch: if thread.kind == Kind::Worktree { &thread.branch } else { "" },
         wid: thread.work_item(),
+        wid_default: thread.wid_default && !thread.work_item().is_empty(),
+        id: &thread.id,
         mainline,
         instructions: &instructions,
         memory_index: &memory_index,
@@ -1253,7 +1317,7 @@ mod tests {
     #[test]
     fn branch_names_follow_the_team_convention() {
         let names = |title: &str, kind: BranchKind, given: &str| {
-            let n = branch_names(title, "t-0042", kind, given);
+            let n = branch_names(title, "t-0042", kind, "", given);
             let mut tried = n.iter();
             (tried.next().unwrap(), tried.next().unwrap_or_default())
         };
@@ -1267,15 +1331,32 @@ mod tests {
         assert_eq!(names("???", feature, ""), pair("feature/t-0042", "feature/t-0042-2"));
 
         // Then a counter.
-        let later = |title: &str| branch_names(title, "t-0042", feature, "").iter().skip(2).take(2).collect::<Vec<_>>();
+        let later = |title: &str| branch_names(title, "t-0042", feature, "", "").iter().skip(2).take(2).collect::<Vec<_>>();
         assert_eq!(later("Fix it"), ["feature/fix-it-t-0042-2", "feature/fix-it-t-0042-3"]);
-        assert_eq!(branch_names("x", "t-0042", feature, "my/name").iter().collect::<Vec<_>>(), ["my/name"]);
+        assert_eq!(branch_names("x", "t-0042", feature, "", "my/name").iter().collect::<Vec<_>>(), ["my/name"]);
         // The title slug is cut at 60 characters, a project slug at 40.
         let long = "Stop listing the hundred newest pull requests when a ticker pass looks for a branch";
-        let first = branch_names(long, "t-0042", feature, "").first;
+        let first = branch_names(long, "t-0042", feature, "", "").first;
         assert_eq!(first, "feature/stop-listing-the-hundred-newest-pull-requests-when-a-ticker");
         assert_eq!(first.len() - "feature/".len(), 59, "a trailing hyphen is dropped");
         assert_eq!(project::slugify(long).len(), 40);
+
+        // With a WID (Azure DevOps) the name carries it, in the shape the
+        // user's pre-push hook accepts.
+        let ado = |title: &str| branch_names(title, "t-0042", feature, "12345678", "").iter().take(3).collect::<Vec<_>>();
+        assert_eq!(ado("Fix login"), ["feature/ADO-12345678-fix-login", "feature/ADO-12345678-fix-login-t-0042", "feature/ADO-12345678-fix-login-t-0042-2"]);
+        assert_eq!(ado("???"), ["feature/ADO-12345678-t-0042", "feature/ADO-12345678-t-0042-2", "feature/ADO-12345678-t-0042-3"]);
+        assert_eq!(branch_names("Fix", "t-0042", bugfix, "12345678", "").first, "bugfix/ADO-12345678-fix");
+        assert_eq!(branch_names("Fix", "t-0042", bugfix, "12345678", "my/name").first, "my/name");
+        let hook = |name: &str| {
+            let rest = name.strip_prefix("feature/ADO-").or_else(|| name.strip_prefix("bugfix/ADO-")).unwrap_or("");
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            let tail = &rest[digits..];
+            digits > 0 && (tail.is_empty() || tail.strip_prefix('-').is_some_and(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')))
+        };
+        for name in ado("Fix login").iter().chain(&ado("???")).chain([&branch_names(long, "t-0042", feature, "16951176", "").first]) {
+            assert!(hook(name), "{name}");
+        }
 
         // Only a worktree thread in an Azure DevOps repository has a branch work item.
         let ado = "https://sc-ado@dev.azure.com/sc-ado/PDBQPR/_git/app";
@@ -1290,6 +1371,31 @@ mod tests {
         for bad in ["", "1234", "ADO-16349910", "1634991O"] {
             assert!(validate_wid(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn worktree_folders_name_the_project_and_thread() {
+        assert_eq!(worktree_folder("/h/.herdr/worktrees/", "app", "demo", "t-0042", "Fix login"), "/h/.herdr/worktrees/app/demo-t-0042-fix-login");
+        assert_eq!(worktree_folder("/w", "app", "demo", "t-0042", "???"), "/w/app/demo-t-0042");
+        assert_eq!(worktrees_base("", "/h"), "/h/.herdr/worktrees");
+        assert_eq!(worktrees_base("[worktrees]\ndirectory = \"~/wt\"\n", "/h/"), "/h/wt");
+        assert_eq!(worktrees_base("[worktrees]\ndirectory = \"/srv/wt\"\n", "/h"), "/srv/wt");
+        assert_eq!(worktrees_base("[ui]\nx = 1\n", "/h"), "/h/.herdr/worktrees");
+        assert_eq!(worktrees_base("not toml [", "/h"), "/h/.herdr/worktrees");
+    }
+
+    #[test]
+    fn the_default_wid_is_one_global_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(default_wid(dir.path()).unwrap(), DEFAULT_WID);
+        std::fs::write(dir.path().join("config.toml"), "root = \"/r\"\n").unwrap();
+        assert_eq!(default_wid(dir.path()).unwrap(), "16951176");
+        std::fs::write(dir.path().join("config.toml"), "default_wid = \"12345678\"\n").unwrap();
+        assert_eq!(default_wid(dir.path()).unwrap(), "12345678");
+        std::fs::write(dir.path().join("config.toml"), "default_wid = 23456789\n").unwrap();
+        assert_eq!(default_wid(dir.path()).unwrap(), "23456789");
+        std::fs::write(dir.path().join("config.toml"), "default_wid = \"ADO-1\"\n").unwrap();
+        assert!(default_wid(dir.path()).is_err());
     }
 
     #[test]
@@ -1343,6 +1449,8 @@ mod tests {
             remote: false,
             branch: "feature/fix-it",
             wid: "16349910",
+            wid_default: false,
+            id: "t-0001",
             mainline: "- Mainline: `origin/main` @ a1b2c3d (fetched 2026-10-12 09:00). Your branch starts here; cite this commit in your report.\n",
             instructions: "Always run the tests.",
             memory_index: "# Memory\n- a\n- b\n- c",
@@ -1383,6 +1491,9 @@ mod tests {
         assert!(!fresh.contains("previous attempt"));
         assert!(!fresh.contains("- Branch:"));
         assert!(!fresh.contains("- Work Item:"));
+
+        let default = compose_brief(&BriefInput { wid: "16951176", wid_default: true, ..input });
+        assert!(default.contains("- Work Item: 16951176, the default WID (none was given); pass it to /commit. Before the branch is pushed, the coordinator replaces it with the real one: `thread wid demo t-0001 <WID>` renames this branch.\n"), "{default}");
         assert!(!fresh.contains("- Mainline:"));
         assert!(fresh.contains("- Goal: (none set)\n- Repos: (none)\n"));
         assert!(fresh.contains("on the home machine; not copied"));

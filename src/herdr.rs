@@ -367,11 +367,12 @@ impl<'a> Herdr<'a> {
         Self::created(&result)
     }
 
-    /// Creates a worktree-backed workspace. Returns the ids and the checkout
-    /// path as herdr reports it (on the machine the call ran on).
-    pub fn worktree_create(&self, repo: &str, branch: &str, base: &str, label: &str) -> Result<(Created, String, String), HerdrError> {
+    /// Creates a worktree-backed workspace with its checkout at `path`.
+    /// Returns the ids and the checkout path as herdr reports it (on the
+    /// machine the call ran on).
+    pub fn worktree_create(&self, repo: &str, branch: &str, base: &str, path: &str, label: &str) -> Result<(Created, String, String), HerdrError> {
         let result = self.call(
-            &["worktree", "create", "--cwd", repo, "--branch", branch, "--base", base, "--label", label, "--no-focus"],
+            &["worktree", "create", "--cwd", repo, "--branch", branch, "--base", base, "--path", path, "--label", label, "--no-focus"],
             Duration::from_secs(20),
         )?;
         Self::worktree_reply(&result)

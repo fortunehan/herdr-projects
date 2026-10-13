@@ -267,8 +267,10 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             let at = mainline::Location { path: &record.repo, machine: &record.machine, target: Some(&target) };
             let found = start_point(project, runner, &record, &at)?;
             let origin = found.facts.origin.clone();
-            let record = name_branch(project, &record, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
-            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &found.mainline.reference, &record.title)?;
+            let record = name_branch(ctx, project, &record, &origin, restart, |name| remote::branch_taken(runner, &target, &record.repo, name))?;
+            let (base, repo_name) = remote::worktree_root(runner, &target, &record.repo)?;
+            let folder = thread::worktree_folder(&base, &repo_name, &project.slug, &record.id, &record.title);
+            let (created, path, cwd) = view.herdr.on_machine(&record.machine).worktree_create(&record.repo, &record.branch, &found.mainline.reference, &folder, &record.title)?;
             thread::update(project, id, |t| {
                 t.origin = origin;
                 record_start(t, &found);
@@ -280,17 +282,14 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
             })?
         }
         Kind::Worktree => {
-            git(runner, &record.repo, &["rev-parse", "--show-toplevel"], GIT_TIMEOUT)
+            let top = git(runner, &record.repo, &["rev-parse", "--show-toplevel"], GIT_TIMEOUT)
                 .with_context(|| format!("{} is not a git repository", record.repo))?;
             let at = mainline::Location { path: &record.repo, machine: "", target: None };
             let found = start_point(project, runner, &record, &at)?;
             let origin = found.facts.origin.clone();
-            let record = name_branch(project, &record, |name| {
-                let refs = [format!("refs/heads/{name}"), format!("refs/remotes/origin/{name}")];
-                let found = git(runner, &record.repo, &["for-each-ref", "--format=%(refname)", &refs[0], &refs[1]], GIT_TIMEOUT)?;
-                Ok(!found.is_empty())
-            })?;
-            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &found.mainline.reference, &record.title)?;
+            let record = name_branch(ctx, project, &record, &origin, restart, |name| branch_taken(runner, &record.repo, name))?;
+            let folder = local_worktree_folder(ctx, project, &record, &top);
+            let (created, path, cwd) = view.herdr.worktree_create(&record.repo, &record.branch, &found.mainline.reference, &folder, &record.title)?;
             let repo_workspace = repo_space(&view.herdr, &record.repo);
             // Recorded immediately, so a command killed midway still leaves a
             // record `thread restart` can act on.
@@ -331,21 +330,141 @@ fn record_start(t: &mut Thread, found: &mainline::Found) {
 /// Names a new worktree thread's branch once origin is known and fetched,
 /// and records it before `worktree create`: a start cut off right after it
 /// still names the branch, for `thread restart`'s half-made-worktree guard.
-/// A recorded branch (given, or from an earlier attempt) is kept. `taken`
-/// says whether a name exists as a local branch or as `origin/<name>`; the
-/// first free one of `branch_names` is used.
-fn name_branch(project: &Project, record: &Thread, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
-    const TRIES: usize = 100;
+/// A recorded branch (given, or from an earlier attempt) is kept. In an Azure
+/// DevOps repository a thread without `--wid` takes the default WID, and the
+/// name carries the WID; a restart leaves a recorded branch's WID as it is
+/// (threads from before ADR 0002 have none). `taken` says whether a name exists as a local branch
+/// or as `origin/<name>`; the first free one of `branch_names` is used.
+fn name_branch(ctx: &Ctx, project: &Project, record: &Thread, origin: &str, restart: bool, taken: impl Fn(&str) -> Result<bool>) -> Result<Thread> {
+    let ado = thread::takes_wid(origin);
+    let kept = restart && !record.branch.is_empty();
+    let default = if ado && record.wid.is_empty() && !kept { Some(thread::default_wid(&ctx.config_dir)?) } else { None };
     if !record.branch.is_empty() {
-        return Ok(record.clone());
+        return match default {
+            Some(wid) => thread::update(project, &record.id, |t| {
+                t.wid = wid;
+                t.wid_default = true;
+            }),
+            None => Ok(record.clone()),
+        };
     }
-    let names = thread::branch_names(&record.title, &record.id, record.branch_kind, "");
+    let wid = default.clone().unwrap_or_else(|| record.wid.clone());
+    let names = thread::branch_names(&record.title, &record.id, record.branch_kind, if ado { &wid } else { "" }, "");
+    let branch = first_free(&names, taken)?;
+    thread::update(project, &record.id, |t| {
+        t.branch = branch;
+        if default.is_some() {
+            t.wid = wid;
+            t.wid_default = true;
+        }
+    })
+}
+
+/// The first of `names` that `taken` says is free.
+fn first_free(names: &thread::BranchNames, taken: impl Fn(&str) -> Result<bool>) -> Result<String> {
+    const TRIES: usize = 100;
     for branch in names.iter().take(TRIES) {
         if !taken(&branch)? {
-            return thread::update(project, &record.id, |t| t.branch = branch);
+            return Ok(branch);
         }
     }
     bail!("`{}` and the next {} names after it all exist as branches", names.first, TRIES - 1)
+}
+
+/// Whether a name exists as a local branch or as `origin/<name>` here.
+fn branch_taken(runner: &dyn Runner, repo: &str, name: &str) -> Result<bool> {
+    let refs = [format!("refs/heads/{name}"), format!("refs/remotes/origin/{name}")];
+    let found = git(runner, repo, &["for-each-ref", "--format=%(refname)", &refs[0], &refs[1]], GIT_TIMEOUT)?;
+    Ok(!found.is_empty())
+}
+
+/// A local thread's worktree folder under Herdr's own `worktrees.directory`
+/// and the main checkout's folder name (`top`).
+fn local_worktree_folder(ctx: &Ctx, project: &Project, record: &Thread, top: &str) -> String {
+    let config = std::fs::read_to_string(crate::setup::herdr_config_path(ctx.env)).unwrap_or_default();
+    let base = thread::worktrees_base(&config, &ctx.env.home.to_string_lossy());
+    let repo_name = Path::new(top).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    thread::worktree_folder(&base, &repo_name, &project.slug, &record.id, &record.title)
+}
+
+/// `thread wid`: gives a worktree thread in an Azure DevOps repository
+/// another WID while its branch is unpushed, renaming the branch to the name
+/// the new WID gives (collision rules apply) and setting its branch work item
+/// (design ADR 0002). The worktree folder stays where it is.
+pub fn set_wid(ctx: &Ctx, slug: &str, id: &str, wid: &str) -> Result<(String, Thread)> {
+    thread::validate_wid(wid)?;
+    let project = Project::load(&ctx.root, slug)?;
+    let record = thread::load(&project, id)?;
+    if record.kind != Kind::Worktree {
+        bail!("{id} is not a worktree thread: it has no branch of its own to carry a WID");
+    }
+    if record.status == Status::Resolved {
+        bail!("{id} is resolved");
+    }
+    if record.branch.is_empty() {
+        bail!("{id} has no branch yet; `thread restart {slug} {id}` makes it");
+    }
+    let origin = if record.origin.is_empty() { repo_origin(ctx, &record.repo, &record.machine)? } else { record.origin.clone() };
+    if !thread::takes_wid(&origin) {
+        let shown = if origin.is_empty() { "not set".to_string() } else { format!("`{origin}`") };
+        bail!("a WID is an Azure DevOps work item, but the origin of {} is {shown} (not dev.azure.com)", record.repo);
+    }
+    let old = record.branch.clone();
+    if record.wid == wid {
+        let kept = thread::update(&project, id, |t| t.wid_default = false)?;
+        return Ok((old, kept));
+    }
+    let target = if record.is_remote() { Some(remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &record.machine)?) } else { None };
+    let refs = match &target {
+        Some(target) => remote::branch_refs(ctx.runner, target, &record.repo, &old)?,
+        None => {
+            let refs = [format!("refs/heads/{old}"), format!("refs/remotes/origin/{old}")];
+            git(ctx.runner, &record.repo, &["for-each-ref", "--format=%(refname)%09%(upstream)", &refs[0], &refs[1]], GIT_TIMEOUT)?
+        }
+    };
+    unpushed(&old, &refs)?;
+    let names = thread::branch_names(&record.title, &record.id, record.branch_kind, wid, "");
+    let new = first_free(&names, |name| match &target {
+        Some(target) => remote::branch_taken(ctx.runner, target, &record.repo, name),
+        None => branch_taken(ctx.runner, &record.repo, name),
+    })?;
+    let dir = if record.worktree_path.is_empty() { &record.repo } else { &record.worktree_path };
+    match &target {
+        Some(target) => remote::rename_branch(ctx.runner, target, dir, &old, &new, wid)?,
+        None => {
+            git(ctx.runner, dir, &["branch", "-m", &old, &new], GIT_TIMEOUT)?;
+            git(ctx.runner, dir, &["config", &format!("branch.{new}.ado-workitem"), wid], GIT_TIMEOUT)?;
+        }
+    }
+    let renamed = thread::update(&project, id, |t| {
+        t.branch = new;
+        t.wid = wid.to_string();
+        t.wid_default = false;
+        t.origin = origin;
+    })?;
+    Ok((old, renamed))
+}
+
+/// Refuses a branch that is gone or has been pushed: it has an upstream, or
+/// `origin/<branch>` exists. `refs` is `<refname>\t<upstream>` per line.
+fn unpushed(branch: &str, refs: &str) -> Result<()> {
+    let mut local = false;
+    for line in refs.lines() {
+        let (name, upstream) = line.split_once('\t').unwrap_or((line, ""));
+        if name == format!("refs/remotes/origin/{branch}") {
+            bail!("`origin/{branch}` exists: a pushed branch keeps the WID in its name. A branch with another WID must be made by hand");
+        }
+        if name == format!("refs/heads/{branch}") {
+            local = true;
+            if !upstream.is_empty() {
+                bail!("`{branch}` has an upstream ({upstream}): a pushed branch keeps the WID in its name. A branch with another WID must be made by hand");
+            }
+        }
+    }
+    if !local {
+        bail!("the branch `{branch}` does not exist");
+    }
+    Ok(())
 }
 
 /// The origin URL of a repository on the thread's machine, "" without one.

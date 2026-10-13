@@ -172,6 +172,61 @@ pub fn bind_work_item(runner: &dyn Runner, target: &str, worktree: &str, key: &s
     Ok(())
 }
 
+/// Where Herdr on the machine puts worktrees of a repository there: its
+/// `worktrees.directory` (from the machine's Herdr config) and the main
+/// checkout's folder name.
+pub fn worktree_root(runner: &dyn Runner, target: &str, repo: &str) -> Result<(String, String)> {
+    let script = format!(
+        "cd {} && top=$(git rev-parse --show-toplevel) && printf '%s\\n%s\\n' \"$HOME\" \"$top\" && \
+         {{ cat \"${{HERDR_CONFIG_PATH:-${{XDG_CONFIG_HOME:-$HOME/.config}}/herdr/config.toml}}\" 2>/dev/null || true; }}",
+        quote(repo)
+    );
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("could not read where Herdr puts worktrees of {repo} on {target}: {}", out.error_text());
+    }
+    let mut lines = out.stdout.splitn(3, '\n');
+    let (home, top, config) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+    let name = std::path::Path::new(top.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if home.trim().is_empty() || name.is_empty() {
+        bail!("could not read where Herdr puts worktrees of {repo} on {target}");
+    }
+    Ok((crate::thread::worktrees_base(config, home.trim()), name))
+}
+
+/// `<refname>\t<upstream>` of `refs/heads/<branch>` and
+/// `refs/remotes/origin/<branch>` in a repository on the machine.
+pub fn branch_refs(runner: &dyn Runner, target: &str, repo: &str, branch: &str) -> Result<String> {
+    let script = format!(
+        "cd {} && git for-each-ref --format='%(refname)%09%(upstream)' {} {}",
+        quote(repo),
+        quote(&format!("refs/heads/{branch}")),
+        quote(&format!("refs/remotes/origin/{branch}"))
+    );
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("could not list the branches of {repo} on {target}: {}", out.error_text());
+    }
+    Ok(out.stdout)
+}
+
+/// Renames a branch in a checkout on the machine and sets its work item.
+pub fn rename_branch(runner: &dyn Runner, target: &str, dir: &str, from: &str, to: &str, wid: &str) -> Result<()> {
+    let script = format!(
+        "cd {dir} && git branch -m {from} {to} && git config {key} {wid}",
+        dir = quote(dir),
+        from = quote(from),
+        to = quote(to),
+        key = quote(&format!("branch.{to}.ado-workitem")),
+        wid = quote(wid)
+    );
+    let out = ssh(runner, target, &script, None, SSH_TIMEOUT)?;
+    if !out.success() {
+        bail!("could not rename {from} to {to} on {target}: {}", out.error_text());
+    }
+    Ok(())
+}
+
 /// The origin URL of a repository on the machine, "" without one.
 pub fn origin_url(runner: &dyn Runner, target: &str, repo: &str) -> Result<String> {
     let script = format!("cd {} && {{ git remote get-url origin 2>/dev/null || true; }}", quote(repo));

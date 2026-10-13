@@ -432,29 +432,34 @@ fn existing_refs(world: &World, existing: &'static [&'static str]) {
     );
 }
 
-/// A new worktree thread is named `<kind>/<title>` in every repository (ADR
-/// 0006), `--branch` as given, with the thread id when the name exists as a
-/// local branch or on origin, then `-2`, `-3`, ... when that exists too. A
-/// `--wid` (Azure DevOps only) stays out of the name: it is written as the
-/// branch work item in the worktree and named in the brief.
+/// A new worktree thread is named `<kind>/<title>`, in an Azure DevOps
+/// repository `<kind>/ADO-<WID>-<title>` (design ADR 0002), `--branch` as
+/// given, with the thread id when the name exists as a local branch or on
+/// origin, then `-2`, `-3`, ... when that exists too. The WID (`--wid`, else
+/// the default WID) is also written as the branch work item in the worktree
+/// and named in the brief. The worktree folder names the project and thread
+/// (ADR 0008), whatever the branch.
 #[test]
 fn thread_start_names_the_branch_by_kind_and_existing_refs_and_binds_the_wid() {
     use crate::thread::BranchKind::Bugfix;
     const GITHUB: &str = "git@github.com:Owner/App.git";
     #[rustfmt::skip]
-    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 10] = [
+    let cases: [(&str, Option<&str>, Option<thread::BranchKind>, Option<&str>, &'static [&'static str], &str); 11] = [
         (GITHUB, None, None, None, &[], "feature/fix-the-login-bug"),
         (GITHUB, None, Some(Bugfix), None, &[], "bugfix/fix-the-login-bug"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/fix-the-login-bug"),
-        (ADO_ORIGIN, None, None, None, &[], "feature/fix-the-login-bug"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &[], "feature/ADO-16349910-fix-the-login-bug"),
+        (ADO_ORIGIN, None, None, None, &[], "feature/ADO-16951176-fix-the-login-bug"),
+        (ADO_ORIGIN, None, Some(Bugfix), None, &["refs/heads/bugfix/ADO-16951176-fix-the-login-bug"], "bugfix/ADO-16951176-fix-the-login-bug-t-0001"),
         (ADO_ORIGIN, Some("16349910"), Some(Bugfix), Some("my/name"), &["refs/heads/my/name"], "my/name"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/ADO-16349910-fix-the-login-bug"], "feature/ADO-16349910-fix-the-login-bug-t-0001"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/remotes/origin/feature/ADO-16349910-fix-the-login-bug"], "feature/ADO-16349910-fix-the-login-bug-t-0001"),
         (GITHUB, None, None, None, &["refs/remotes/origin/feature/fix-the-login-bug"], "feature/fix-the-login-bug-t-0001"),
         (GITHUB, None, None, None, &["refs/heads/feature/fix-the-login-bug", "refs/remotes/origin/feature/fix-the-login-bug-t-0001"], "feature/fix-the-login-bug-t-0001-2"),
-        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/fix-the-login-bug", "refs/heads/feature/fix-the-login-bug-t-0001", "refs/heads/feature/fix-the-login-bug-t-0001-2"], "feature/fix-the-login-bug-t-0001-3"),
+        (ADO_ORIGIN, Some("16349910"), None, None, &["refs/heads/feature/ADO-16349910-fix-the-login-bug", "refs/heads/feature/ADO-16349910-fix-the-login-bug-t-0001", "refs/heads/feature/ADO-16349910-fix-the-login-bug-t-0001-2"], "feature/ADO-16349910-fix-the-login-bug-t-0001-3"),
     ];
     for (origin, wid, branch_kind, branch, existing, expected) in cases {
+        let ado = origin == ADO_ORIGIN;
+        let bound_wid = if ado { wid.unwrap_or("16951176") } else { "" };
         let world = World::new();
         let project = world.project("demo", "a.sock");
         let repo = world.home.path().join("repo");
@@ -484,8 +489,9 @@ fn thread_start_names_the_branch_by_kind_and_existing_refs_and_binds_the_wid() {
         let case = format!("{origin} {wid:?} {branch_kind:?} {branch:?} {existing:?}");
         let t = threads::start(&world.ctx(), "demo", args).unwrap();
         assert_eq!(t.branch, expected, "{case}");
-        assert_eq!((t.wid.as_str(), t.branch_kind), (wid.unwrap_or(""), branch_kind.unwrap_or_default()), "{case}");
-        assert_eq!(world.runner.count(&format!("--branch {expected} --base origin/main")), 1, "{case}");
+        assert_eq!((t.wid.as_str(), t.wid_default, t.branch_kind), (bound_wid, ado && wid.is_none(), branch_kind.unwrap_or_default()), "{case}");
+        let folder = world.home.path().join(".herdr/worktrees/repo/demo-t-0001-fix-the-login-bug");
+        assert_eq!(world.runner.count(&format!("--branch {expected} --base origin/main --path {} ", folder.display())), 1, "{case}");
         // A given name is not checked; a generated one is, after the fetch.
         let tried = if branch.is_some() { 0 } else { existing.len() + 1 };
         assert_eq!(world.runner.count("for-each-ref"), tried, "{case}");
@@ -496,10 +502,12 @@ fn thread_start_names_the_branch_by_kind_and_existing_refs_and_binds_the_wid() {
         drop(calls);
         let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
         assert!(brief.contains(&format!("- Branch: `{expected}`. Stay on it: do not switch branches or create new ones.")), "{case}");
-        let bound = world.runner.count(&format!("git -C {wt} config branch.{expected}.ado-workitem 16349910"));
-        assert_eq!(bound, usize::from(wid.is_some()), "{case}");
-        assert_eq!(world.runner.count("config"), 2 * usize::from(wid.is_some()), "{case}");
+        let bound = world.runner.count(&format!("git -C {wt} config branch.{expected}.ado-workitem {bound_wid}"));
+        assert_eq!(bound, usize::from(ado), "{case}");
+        assert_eq!(world.runner.count("config"), 2 * usize::from(ado), "{case}");
         assert_eq!(brief.contains("- Work Item: 16349910; pass it to /commit"), wid.is_some(), "{case}");
+        assert_eq!(brief.contains("- Work Item: 16951176, the default WID (none was given)"), ado && wid.is_none(), "{case}");
+        assert!(!brief.contains("thread wid") || (ado && wid.is_none()), "{case}");
     }
 }
 
@@ -535,8 +543,8 @@ fn a_failed_branch_work_item_write_is_retried_by_restart_and_a_set_one_is_kept()
         ..Default::default()
     };
     let t = threads::start(&world.ctx(), "demo", args).unwrap();
-    assert_eq!((t.status, t.prompt_pending, t.branch.as_str()), (Status::Open, true, "feature/blog-widgets"));
-    let write = format!("git -C {wt} config branch.feature/blog-widgets.ado-workitem 16349910");
+    assert_eq!((t.status, t.prompt_pending, t.branch.as_str()), (Status::Open, true, "feature/ADO-16349910-blog-widgets"));
+    let write = format!("git -C {wt} config branch.feature/ADO-16349910-blog-widgets.ado-workitem 16349910");
     assert_eq!(world.runner.count(&write), 1);
     let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
     assert!(brief.contains("- Work Item: 16349910; pass it to /commit"), "{brief}");
@@ -612,12 +620,17 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
     world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":[]}"#));
     mainline_answers(&world, ADO_ORIGIN);
-    existing_refs(&world, &["refs/remotes/origin/feature/fix-the-login-bug"]);
+    existing_refs(&world, &["refs/remotes/origin/feature/ADO-16349910-fix-the-login-bug"]);
     world.runner.on(
         "worktree create",
         ok(r#"{"result":{"root_pane":{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"/remote/wt"},"worktree":{"path":"/remote/wt"}}}"#),
     );
     world.runner.on_fn(|cmd| cmd.program == "ssh" && cmd.display().contains("git remote get-url origin"), |_| Ok(ok(&format!("{ADO_ORIGIN}\n"))));
+    // Herdr on the machine keeps worktrees under its own configured folder.
+    world.runner.on_fn(
+        |cmd| cmd.program == "ssh" && cmd.display().contains("herdr/config.toml"),
+        |_| Ok(ok("/home/me\n/remote/app\n[worktrees]\ndirectory = \"~/wt\"\n")),
+    );
     world.runner.on("ssh", ok(""));
     let args = StartArgs {
         title: "Fix the login bug".into(),
@@ -628,16 +641,17 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
         ..Default::default()
     };
     let t = threads::start(&world.ctx(), "demo", args).unwrap();
-    assert_eq!((t.origin.as_str(), t.branch.as_str()), (ADO_ORIGIN, "feature/fix-the-login-bug-t-0001"));
+    assert_eq!((t.origin.as_str(), t.branch.as_str()), (ADO_ORIGIN, "feature/ADO-16349910-fix-the-login-bug-t-0001"));
     let calls = world.runner.calls.borrow();
     let check = calls.iter().find(|c| c.display().contains("for-each-ref")).unwrap();
     assert_eq!(check.program, "ssh");
     let create = calls.iter().find(|c| c.display().contains("worktree create")).unwrap();
-    assert!(is_machine_call(create) && create.args.contains(&"feature/fix-the-login-bug-t-0001".to_string()), "{}", create.display());
+    assert!(is_machine_call(create) && create.args.contains(&"feature/ADO-16349910-fix-the-login-bug-t-0001".to_string()), "{}", create.display());
+    assert!(create.args.windows(2).any(|w| w == ["--path", "/home/me/wt/app/demo-t-0001-fix-the-login-bug"]), "{}", create.display());
     // The branch work item is written on the thread's machine, in its worktree.
     let bind = calls.iter().find(|c| c.display().contains("ado-workitem")).unwrap();
     assert_eq!(bind.program, "ssh");
-    assert!(bind.display().contains("cd /remote/wt && { git config --get branch.feature/fix-the-login-bug-t-0001.ado-workitem >/dev/null || git config branch.feature/fix-the-login-bug-t-0001.ado-workitem 16349910; }"), "{}", bind.display());
+    assert!(bind.display().contains("cd /remote/wt && { git config --get branch.feature/ADO-16349910-fix-the-login-bug-t-0001.ado-workitem >/dev/null || git config branch.feature/ADO-16349910-fix-the-login-bug-t-0001.ado-workitem 16349910; }"), "{}", bind.display());
     assert!(create.args.windows(2).any(|w| w == ["--base", "origin/main"]), "{}", create.display());
     // The facts and the fetch are one ssh call on the thread's machine.
     let facts: Vec<_> = calls.iter().filter(|c| c.display().contains(crate::mainline::FACTS_MARK)).collect();
@@ -645,10 +659,103 @@ fn a_remote_thread_branch_is_named_by_the_same_rules() {
     assert!(facts[0].program == "ssh" && facts[0].stdin.as_deref().unwrap_or("").contains("if [ 1 = 1 ] && [ -n \"$o\" ]; then"));
     let brief = calls.iter().find(|c| c.display().contains("brief.md")).unwrap();
     let brief = brief.stdin.as_deref().unwrap_or("");
-    assert!(brief.contains("- Branch: `feature/fix-the-login-bug-t-0001`."));
+    assert!(brief.contains("- Branch: `feature/ADO-16349910-fix-the-login-bug-t-0001`."));
     assert!(brief.contains("- Work Item: 16349910; pass it to /commit"), "{brief}");
     assert!(brief.contains(&format!("- Mainline: `origin/main` @ {}", &MAIN_COMMIT[..7])), "{brief}");
     assert!(!brief.contains("fetch from origin failed"), "{brief}");
+}
+
+/// An Azure DevOps thread on the default WID, its branch named for it.
+fn default_wid_thread(world: &World, project: &Project) -> String {
+    let wt = world.home.path().to_string_lossy().into_owned();
+    world.thread(project, world.home.path(), |t| {
+        t.title = "Fix login".into();
+        t.origin = ADO_ORIGIN.into();
+        t.branch = "feature/ADO-16951176-fix-login".into();
+        t.wid = "16951176".into();
+        t.wid_default = true;
+    });
+    wt
+}
+
+/// `thread wid` renames an unpushed thread branch to carry the new WID (the
+/// collision rule applies), moves the branch work item, updates the record
+/// and drops the default-WID mark; a pushed branch, another forge or a
+/// thread without a worktree is refused (design ADR 0002).
+#[test]
+fn thread_wid_renames_an_unpushed_branch_and_refuses_a_pushed_one() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let wt = default_wid_thread(&world, &project);
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    assert!(digest.contains("  wid: 16951176 (the default WID; `thread wid demo t-0001 <WID>` replaces it before the branch is pushed)"), "{digest}");
+
+    let old = "feature/ADO-16951176-fix-login";
+    let refs = Rc::new(RefCell::new(format!("refs/heads/{old}\t\nrefs/remotes/origin/{old}\t\n")));
+    let listed = refs.clone();
+    world.runner.on_fn(|cmd| cmd.display().contains("%(upstream)"), move |_| Ok(ok(&listed.borrow())));
+    existing_refs(&world, &["refs/heads/feature/ADO-12345678-fix-login"]);
+    world.runner.on("branch -m", ok(""));
+    world.runner.on("config branch.", ok(""));
+    let ctx = world.ctx();
+    let wid = |id: &str, wid: &str| threads::set_wid(&ctx, "demo", id, wid).map_err(|e| format!("{e:#}"));
+
+    let error = wid("t-0001", "12345678").unwrap_err();
+    assert!(error.contains(&format!("`origin/{old}` exists")) && error.contains("made by hand"), "{error}");
+    *refs.borrow_mut() = format!("refs/heads/{old}\trefs/remotes/origin/elsewhere\n");
+    assert!(wid("t-0001", "12345678").unwrap_err().contains("has an upstream (refs/remotes/origin/elsewhere)"));
+    assert!(wid("t-0001", "ADO-1").unwrap_err().contains("is not a WID"));
+    assert_eq!(world.runner.count("branch -m"), 0);
+
+    *refs.borrow_mut() = format!("refs/heads/{old}\t\n");
+    let (from, t) = wid("t-0001", "12345678").unwrap();
+    let new = "feature/ADO-12345678-fix-login-t-0001";
+    assert_eq!((from.as_str(), t.branch.as_str(), t.wid.as_str(), t.wid_default), (old, new, "12345678", false));
+    assert_eq!(world.runner.count(&format!("git -C {wt} branch -m {old} {new}")), 1);
+    assert_eq!(world.runner.count(&format!("git -C {wt} config branch.{new}.ado-workitem 12345678")), 1);
+    assert_eq!(t.worktree_path, wt, "the folder stays");
+    let digest = coordinator::digest(&ctx, &project, "hp").unwrap().0;
+    assert!(!digest.contains("  wid: "), "{digest}");
+    // The same WID again renames nothing.
+    assert_eq!(wid("t-0001", "12345678").unwrap().1.branch, new);
+    assert_eq!(world.runner.count("branch -m"), 1);
+
+    // Another forge, or a thread without a branch of its own.
+    thread::update(&project, "t-0001", |t| t.origin = "git@github.com:Owner/App.git".into()).unwrap();
+    assert!(wid("t-0001", "23456789").unwrap_err().contains("not dev.azure.com"));
+    let tab = thread::allocate(&project, |t| {
+        t.kind = Kind::Tab;
+        t.status = Status::Open;
+    })
+    .unwrap();
+    assert!(wid(&tab.id, "23456789").unwrap_err().contains("not a worktree thread"));
+    assert_eq!(world.runner.count("branch -m"), 1);
+}
+
+/// A remote thread's branch is checked and renamed on its own machine.
+#[test]
+fn thread_wid_renames_a_remote_thread_branch_over_ssh() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    default_wid_thread(&world, &project);
+    thread::update(&project, "t-0001", |t| {
+        t.machine = "box".into();
+        t.repo = "/remote/repo".into();
+        t.worktree_path = "/remote/wt".into();
+    })
+    .unwrap();
+    let old = "feature/ADO-16951176-fix-login";
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    world.runner.on_fn(|cmd| cmd.display().contains("%(upstream)"), move |_| Ok(ok(&format!("refs/heads/{old}\t\n"))));
+    existing_refs(&world, &[]);
+    world.runner.on("ssh", ok(""));
+    let (_, t) = threads::set_wid(&world.ctx(), "demo", "t-0001", "12345678").unwrap();
+    assert_eq!(t.branch, "feature/ADO-12345678-fix-login");
+    let calls = world.runner.calls.borrow();
+    let rename = calls.iter().find(|c| c.display().contains("branch -m")).unwrap();
+    assert_eq!(rename.program, "ssh");
+    assert!(rename.display().contains(&format!("cd /remote/wt && git branch -m {old} feature/ADO-12345678-fix-login && git config branch.feature/ADO-12345678-fix-login.ado-workitem 12345678")), "{}", rename.display());
+    assert!(calls.iter().filter(|c| c.display().contains("for-each-ref")).all(|c| c.program == "ssh"));
 }
 
 /// The branch is in the record before `worktree create`, so a start cut off
@@ -715,6 +822,36 @@ fn restart_checks_and_reuses_the_recorded_branch_whatever_its_name() {
             assert_eq!(world.runner.count("worktree create --cwd /repo --branch feature/fix-it"), 1);
         }
     }
+}
+
+/// A thread from before ADR 0002 on a clean Azure DevOps branch keeps its
+/// branch and gets no default WID when restarted; its new worktree folder
+/// still names the project and thread.
+#[test]
+fn restarting_an_older_azure_devops_thread_keeps_its_branch_without_a_wid() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let wt = world.home.path().join("wt");
+    std::fs::create_dir(&wt).unwrap();
+    let wt = wt.to_string_lossy().into_owned();
+    world.thread(&project, world.home.path(), |t| {
+        t.status = Status::Failed;
+        t.title = "Fix it".into();
+        t.branch = "feature/fix-it".into();
+        t.worktree_path.clear();
+        t.pane_id.clear();
+    });
+    std::fs::write(thread::task_path(&project, "t-0001"), "The task.").unwrap();
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    mainline_answers(&world, ADO_ORIGIN);
+    world.runner.on("rev-parse --verify --quiet refs/heads/feature/fix-it", fail(1, ""));
+    let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
+    placement_answers(&world, move |_| Ok(ok(&created)));
+    let t = threads::restart(&world.ctx(), "demo", "t-0001", None).unwrap();
+    assert_eq!((t.branch.as_str(), t.wid.as_str(), t.wid_default, t.origin.as_str()), ("feature/fix-it", "", false, ADO_ORIGIN));
+    let folder = world.home.path().join(".herdr/worktrees/repo/demo-t-0001-fix-it");
+    assert_eq!(world.runner.count(&format!("--branch feature/fix-it --base origin/main --path {} ", folder.display())), 1);
+    assert_eq!(world.runner.count("ado-workitem"), 0);
 }
 
 #[test]

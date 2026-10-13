@@ -359,7 +359,7 @@ enum ThreadCommand {
         kind: Option<String>,
         #[arg(long, value_name = "REF")]
         base: Option<String>,
-        /// The Azure DevOps work item, only for a repository whose origin contains dev.azure.com: written as the worktree branch's `branch.<name>.ado-workitem` and named in the brief, never part of the branch name
+        /// The Azure DevOps work item, only for a repository whose origin contains dev.azure.com: part of the branch name (`<kind>/ADO-<WID>-<title>`), written as the branch's `branch.<name>.ado-workitem` and named in the brief. Without it such a thread takes the default WID (`default_wid` in config.toml, else 16951176); `thread wid` replaces it
         #[arg(long, value_name = "WID")]
         wid: Option<String>,
         /// The whole branch name of a worktree thread, used as given
@@ -372,6 +372,8 @@ enum ThreadCommand {
         #[arg(long, value_name = "TITLE")]
         from_task: Option<String>,
     },
+    /// Give an Azure DevOps worktree thread another WID: renames its unpushed branch to `<kind>/ADO-<WID>-<title>` and sets the branch work item
+    Wid { slug: String, id: String, wid: String },
     /// Bring back a thread whose pane is gone or whose start failed
     Restart {
         slug: String,
@@ -766,6 +768,15 @@ pub fn run() -> Result<()> {
             ThreadCommand::Restart { slug, id, profile } => {
                 let thread = threads::restart(&ctx, &slug, &id, profile.as_deref())?;
                 println!("{} is back in pane {}; the ticker launches its {} agent", thread.id, thread.pane_id, if thread.profile.is_empty() { &thread.agent } else { &thread.profile });
+                Ok(())
+            }
+            ThreadCommand::Wid { slug, id, wid } => {
+                let (old, thread) = threads::set_wid(&ctx, &slug, &id, &wid)?;
+                if old == thread.branch {
+                    println!("{id} is on `{old}` with WID {wid}; nothing to rename");
+                } else {
+                    println!("{id}: `{old}` is now `{}`, work item {wid}; its agent still knows the old name, so tell it with `thread prompt`", thread.branch);
+                }
                 Ok(())
             }
             ThreadCommand::Next { slug, id, line, add } => threads::next(&ctx, &slug, &id, line, add.as_deref()),
