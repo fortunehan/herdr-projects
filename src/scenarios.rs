@@ -2949,6 +2949,18 @@ fn open_leaves_a_matching_label_alone_and_a_failed_rename_does_not_block_it() {
 }
 
 #[test]
+fn the_digest_restates_the_chat_link_rules_near_the_top() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+    let chat = digest.lines().position(|l| l.starts_with("Chat: ")).expect("chat line");
+    assert!(chat < 5, "{digest}");
+    let line = digest.lines().nth(chat).unwrap();
+    assert!(line.contains("[<id>](https://hp.invalid/demo/<id>)") && line.contains("[<pane-id>](https://hp.invalid/pane/<pane-id>)"), "{line}");
+    assert!(line.contains("[PR #N](<url>)") && line.contains("[PR !N](<url>)"), "{line}");
+}
+
+#[test]
 fn the_digest_prints_the_task_list_or_none() {
     let world = World::new();
     let project = world.project("demo", "a.sock");

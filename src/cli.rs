@@ -875,10 +875,10 @@ pub fn run() -> Result<()> {
             SafetyCommand::Set { target, key, value } => crate::safety::set_cli(&ctx, &target, &key, &value),
         },
         Command::Skill => {
-            print!("{}", include_str!("../skill/COORDINATOR.md"));
-            // Every harness learns to report here; hooks only add reminders.
-            let pane = crate::progress::current(ctx.env, ctx.runner).map(|p| p.pane_id);
-            println!("\n## Progress\n\n{}", crate::progress::guidance(&crate::coordinator::current_prefix(&ctx.root)?, pane.as_deref()));
+            let pane = crate::progress::current(ctx.env, ctx.runner);
+            let hooked = pane.as_ref().is_some_and(|p| crate::setup::injects_progress(ctx.env, &p.agent));
+            let prefix = crate::coordinator::current_prefix(&ctx.root)?;
+            print!("{}", crate::coordinator::skill_text(&prefix, pane.as_ref().map(|p| p.pane_id.as_str()), hooked));
             Ok(())
         }
         Command::Doctor { fix, session } => {

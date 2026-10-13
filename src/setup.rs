@@ -256,6 +256,17 @@ pub fn harness_installed(env: &Env, agent: &str, claude_home: Option<&Path>, cod
     file.ancestors().nth(depth).is_some_and(Path::is_dir)
 }
 
+/// Whether the harness's SessionStart hook already injects the Progress text
+/// into every session: Claude Code and Codex with our hooks in their hook
+/// file. `hp skill` then leaves its own copy out.
+pub fn injects_progress(env: &Env, agent: &str) -> bool {
+    matches!(agent, "claude" | "codex")
+        && read(&hook_file(env, agent, None, None))
+            .ok()
+            .flatten()
+            .is_some_and(|text| text.contains("herdr-projects") && text.contains(&format!(" hook --agent {agent}")))
+}
+
 /// The skill bundled with the plugin, linked into each harness by `configure`.
 pub const SKILL: &str = "autoproject";
 
@@ -593,6 +604,27 @@ mod tests {
         assert!(has_agent_progress_hooks(&added));
         let removed = hooks(&added, CMD, true).unwrap();
         assert!(removed.contains("herdr-progress") && !removed.contains("herdr-projects"));
+    }
+
+    #[test]
+    fn only_claude_and_codex_with_our_hooks_inject_progress() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[]);
+        assert!(!injects_progress(&env, "claude"), "no hook file");
+        for agent in ["claude", "codex", "copilot"] {
+            let file = hook_file(&env, agent, None, None);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let text = hooks("{}", &format!("'/b/herdr-projects' --root /r hook --agent {agent}"), false).unwrap();
+            std::fs::write(&file, text).unwrap();
+        }
+        assert!(injects_progress(&env, "claude"));
+        assert!(injects_progress(&env, "codex"));
+        assert!(!injects_progress(&env, "copilot"));
+        assert!(!injects_progress(&env, "omp"));
+        assert!(!injects_progress(&env, "opencode"));
+        let other = "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'/x/herdr-progress' hook --agent claude\"}]}]}}";
+        std::fs::write(hook_file(&env, "claude", None, None), other).unwrap();
+        assert!(!injects_progress(&env, "claude"), "another plugin's hook");
     }
 
     #[test]

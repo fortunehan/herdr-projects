@@ -525,6 +525,16 @@ pub fn context(ctx: &Ctx, slug: &str, peek: bool) -> Result<()> {
     Ok(())
 }
 
+/// What `skill` prints: the coordinator skill, and the Progress text unless
+/// the harness's own hook already injects it (`setup::injects_progress`).
+pub fn skill_text(prefix: &str, pane_id: Option<&str>, hooked: bool) -> String {
+    let mut text = include_str!("../skill/COORDINATOR.md").to_string();
+    if !hooked {
+        let _ = writeln!(text, "\n## Progress\n\n{}", crate::progress::guidance(prefix, pane_id));
+    }
+    text
+}
+
 /// The folder where the coordinator keeps one file per pending proposal, so a
 /// proposal survives a context reset without becoming a task (ADR 0004).
 pub const PROPOSALS_DIR: &str = "scratch/proposals";
@@ -560,6 +570,11 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
     let _ = writeln!(out, "Commands: {prefix}");
     let _ = writeln!(out, "Project: {slug} ({})", project.status());
     let _ = writeln!(out, "Folder: {}", project.dir().display());
+    // Re-read every turn, so the link rules hold even when the skill was skimmed.
+    let _ = writeln!(
+        out,
+        "Chat: link thread ids as [<id>](https://hp.invalid/{slug}/<id>), pane ids as [<pane-id>](https://hp.invalid/pane/<pane-id>), PRs as [PR #N](<url>) or [PR !N](<url>) with the URL from their pr: line; never in files or commands"
+    );
 
     match project.read_project_md() {
         Ok((settings, _)) => {
@@ -680,6 +695,25 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The most `skill` may print, in characters. Claude Code keeps about
+    /// 30000 characters of a command's output inline and saves the rest to a
+    /// file a coordinator may only skim.
+    const SKILL_BUDGET: usize = 24_000;
+
+    #[test]
+    fn the_skill_fits_in_one_tool_output() {
+        // A long prefix: it appears three times in the Progress text.
+        let prefix = format!("/Users/{0}/.local/bin/herdr-projects --root /Users/{0}/.herdr-projects", "x".repeat(43));
+        assert_eq!(prefix.len(), 150);
+        let full = skill_text(&prefix, Some("w12AB:p12"), false);
+        let chars = full.chars().count();
+        assert!(chars <= SKILL_BUDGET, "`skill` prints {chars} characters, over the {SKILL_BUDGET} budget: tighten skill/COORDINATOR.md");
+        assert!(full.contains("\n## Progress\n\nReport the progress") && full.contains("(w12AB:p12)"));
+        let hooked = skill_text(&prefix, Some("w12AB:p12"), true);
+        assert_eq!(hooked, include_str!("../skill/COORDINATOR.md"));
+        assert!(!hooked.contains("## Progress"));
+    }
 
     #[test]
     fn prefix_has_the_fixed_shape_and_quotes_spaces() {

@@ -273,7 +273,7 @@ pub fn reset(source: &str) -> bool {
 pub fn reset_note(role: &Role, prefix: &str) -> Option<String> {
     let body = match role {
         Role::Coordinator { slug } => format!(
-            "Your conversation was just cleared or compacted; you are still the coordinator of `{slug}`. Before anything else run `{prefix} skill` and `{prefix} context {slug}`, and work from what they print: the rules and state you remember may be stale, and anything that was only in the conversation is lost. Proposals still waiting for the user's go-ahead are listed under \"Awaiting your go-ahead\"."
+            "Your conversation was just cleared or compacted; you are still the coordinator of `{slug}`. Before anything else run `{prefix} skill` and `{prefix} context {slug}`, and work from what they print: the rules and state you remember may be stale, and anything that was only in the conversation is lost. Read the whole `{prefix} skill` output; if the harness saved it to a file, read that file in full. Proposals still waiting for the user's go-ahead are listed under \"Awaiting your go-ahead\"."
         ),
         Role::Thread { brief } => format!("Your conversation was just cleared or compacted. Re-read your brief, `{brief}`, before you continue."),
         Role::Other => return None,
@@ -522,6 +522,7 @@ mod tests {
                 assert!(text.contains("`/p/hp --root /r skill`"), "{agent} {source}");
                 assert!(text.contains("`/p/hp --root /r context demo`"), "{agent} {source}");
                 assert!(text.contains("only in the conversation is lost"), "{agent} {source}");
+                assert!(text.contains("Read the whole `/p/hp --root /r skill` output; if the harness saved it to a file, read that file in full."), "{agent} {source}");
                 assert!(!text.contains("brief"), "{agent} {source}");
             }
             for source in ["startup", "resume", ""] {
