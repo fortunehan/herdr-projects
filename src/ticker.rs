@@ -387,6 +387,7 @@ fn pass(ctx: &Ctx, log: &Log, memory: &mut Memory, parts: &mut Vec<String>) -> b
     // Pull requests last, from a project further on each pass, so a budget
     // spent on one project does not starve the next.
     memory.pr_deadline = Some(Instant::now() + PR_BUDGET);
+    memory.gh_down.store(false, std::sync::atomic::Ordering::Relaxed);
     let start = if reachable.is_empty() { 0 } else { (memory.tick as usize) % reachable.len() };
     for (project, _) in reachable[start..].iter().chain(&reachable[..start]) {
         if memory.stopping() {

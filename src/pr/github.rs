@@ -1,15 +1,108 @@
 //! GitHub, through `gh`. Everything `gh` returns is attacker-chosen text: only
 //! a fixed set of fields is kept and names are sanitised.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use super::{Checked, Summary, Wanted, sanitize};
-use crate::runner::{Cmd, Runner};
+use crate::paths::Env;
+use crate::runner::{Cmd, Output, Runner};
 
+/// The process limit of one `gh` call. `gh` has no connect timeout of its
+/// own, so a proxy that accepts and then hangs is cut off here.
 pub const GH_TIMEOUT: Duration = Duration::from_secs(10);
+pub const PROXY_VAR: &str = "HERDR_PROJECTS_GH_PROXY";
+/// Set on `gh` to the `PROXY_VAR` value. Go reads the upper-case names first.
+const PROXY_ENV: [&str; 3] = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"];
+/// Removed from `gh`'s environment: they could send a request around the
+/// proxy or name another one.
+const BYPASS_ENV: [&str; 5] = ["https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"];
+
+/// How `gh` is run. With `HERDR_PROJECTS_GH_PROXY` set every call goes
+/// through that proxy and never around it; without it `gh` keeps the
+/// inherited proxy variables. In the ticker, a call that could not reach
+/// GitHub (`is_transient`) skips the later calls of the pass: the next pass
+/// tries again.
+#[derive(Clone)]
+pub struct Gh<'a> {
+    runner: &'a dyn Runner,
+    proxy: Option<String>,
+    down: Option<Arc<AtomicBool>>,
+}
+
+impl<'a> Gh<'a> {
+    pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
+        Gh { runner, proxy: env.var(PROXY_VAR).map(str::to_string), down: None }
+    }
+
+    /// Shares `down`, the pass's "GitHub could not be reached" flag.
+    pub fn for_ticker(self, down: Arc<AtomicBool>) -> Self {
+        Gh { down: Some(down), ..self }
+    }
+
+    /// `gh` for a repository on `host`. Off `github.com` (exe.dev VMs reach
+    /// GitHub only through `github.localhost`) `GH_HOST` is set for this call
+    /// alone.
+    pub fn cmd(&self, host: &str) -> Cmd {
+        let mut cmd = Cmd::new("gh", GH_TIMEOUT);
+        if !host.is_empty() && host != "github.com" {
+            cmd = cmd.env("GH_HOST", host);
+        }
+        if let Some(proxy) = &self.proxy {
+            for key in PROXY_ENV {
+                cmd = cmd.env(key, proxy);
+            }
+            cmd.env_remove.extend(BYPASS_ENV.map(String::from));
+        }
+        cmd
+    }
+
+    /// Runs `cmd`, or skips it once a call of this pass could not reach
+    /// GitHub.
+    pub fn run(&self, cmd: &Cmd) -> Result<Output> {
+        if self.down.as_ref().is_some_and(|d| d.load(Ordering::Relaxed)) {
+            return Err(Skipped.into());
+        }
+        let out = self.runner.run(cmd)?;
+        if !out.success() && is_transient(&out.error_text())
+            && let Some(down) = &self.down
+        {
+            down.store(true, Ordering::Relaxed);
+        }
+        Ok(out)
+    }
+}
+
+/// A `gh` call that was not made because an earlier one of the pass could
+/// not reach GitHub. It counts neither as a failure nor as a success.
+#[derive(Debug)]
+pub struct Skipped;
+
+impl std::fmt::Display for Skipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("skipped: an earlier `gh` call of this pass could not reach GitHub")
+    }
+}
+
+impl std::error::Error for Skipped {}
+
+pub fn is_skipped(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Skipped>())
+}
+
+/// Whether `gh`'s error text says GitHub could not be reached: the proxy
+/// refused, reset or dropped the connection, or nothing answered in time.
+/// Such a failure heals by itself (the proxy reconnects), so it is retried on
+/// the next pass.
+pub fn is_transient(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["proxyconnect", "connection refused", "connection reset", "timed out", "timeout", "error connecting to"].iter().any(|n| lower.contains(n))
+        || lower.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| word == "eof")
+}
 
 /// The `PR:` value of a report's first line, only when it is exactly
 /// `https://github.com/<owner>/<repo>/pull/<number>`. `Err` carries a note for
@@ -95,14 +188,6 @@ pub fn normalize_origin(origin: &str) -> Option<String> {
 /// The GitHub host of a remote URL; `github.com` when it names none.
 pub fn host_of(origin: &str) -> String {
     parse_remote(origin).map(|r| r.host).unwrap_or_else(|| "github.com".into())
-}
-
-/// `gh` for a repository on `host`. Off `github.com` (exe.dev VMs reach
-/// GitHub only through `github.localhost`) `GH_HOST` is set for this call
-/// alone; on `github.com` nothing is set.
-pub fn gh(host: &str) -> Cmd {
-    let cmd = Cmd::new("gh", GH_TIMEOUT);
-    if host.is_empty() || host == "github.com" { cmd } else { cmd.env("GH_HOST", host) }
 }
 
 #[derive(Deserialize, Default)]
@@ -210,8 +295,8 @@ pub fn reduce(json: &str, branch: &str, origin: &str) -> Result<Checked> {
 
 /// The login `gh` acts as on `origin`'s host: comments by it are the threads'
 /// own replies.
-pub fn own_login(runner: &dyn Runner, origin: &str) -> Result<String> {
-    let out = runner.run(&gh(&host_of(origin)).args(["api", "user", "--jq", ".login"]))?;
+pub fn own_login(gh: &Gh, origin: &str) -> Result<String> {
+    let out = gh.run(&gh.cmd(&host_of(origin)).args(["api", "user", "--jq", ".login"]))?;
     if !out.success() {
         bail!("gh api user: {}", out.error_text());
     }
@@ -225,20 +310,20 @@ pub fn own_login(runner: &dyn Runner, origin: &str) -> Result<String> {
 /// `gh pr view` of a pull request URL, asked through `origin`'s host. `gh`
 /// sends a URL to the URL's own host, so off `github.com` the pull request
 /// goes by number and `--repo` instead.
-pub fn view(runner: &dyn Runner, url: &str, origin: &str) -> Result<String> {
+pub fn view(gh: &Gh, url: &str, origin: &str) -> Result<String> {
     if !valid_pr_url(url) {
         bail!("not a pull request URL");
     }
     const FIELDS: &str = "state,reviewDecision,statusCheckRollup,comments,reviews,headRefName,headRefOid,headRepository,headRepositoryOwner";
     let host = host_of(origin);
     let cmd = if host == "github.com" {
-        gh(&host).args(["pr", "view", "--json", FIELDS, "--", url])
+        gh.cmd(&host).args(["pr", "view", "--json", FIELDS, "--", url])
     } else {
         let parts: Vec<&str> = url.trim_start_matches("https://github.com/").split('/').collect();
         let repo = format!("{}/{}", parts[0], parts[1]);
-        gh(&host).args(["pr", "view", "--json", FIELDS, "--repo", &repo, "--", parts[3]])
+        gh.cmd(&host).args(["pr", "view", "--json", FIELDS, "--repo", &repo, "--", parts[3]])
     };
-    let out = runner.run(&cmd)?;
+    let out = gh.run(&cmd)?;
     if !out.success() {
         bail!("gh pr view: {}", out.error_text());
     }
@@ -263,14 +348,14 @@ struct GhListed {
 /// ticker passes, so merged and closed ones count. One `gh` call; `None` without asking when
 /// `origin` is not on GitHub. A fork's pull request lives upstream and is
 /// found only through the report's `PR:` line.
-pub fn find_by_branch(runner: &dyn Runner, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
+pub fn find_by_branch(gh: &Gh, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
     let Some(Remote { host, repo }) = parse_remote(origin) else {
         return Ok(None);
     };
     if wanted.branch.is_empty() {
         return Ok(None);
     }
-    let out = runner.run(&gh(&host).args([
+    let out = gh.run(&gh.cmd(&host).args([
         "pr",
         "list",
         "--repo",
@@ -342,12 +427,12 @@ pub fn report_refs(report: &str, origin: &str, except: &str) -> std::collections
 
 /// Numbers of the open pull requests in `repo` (`owner/repo`) that the `gh`
 /// user opened, asked through `host`. One `gh` call.
-pub fn open_own_numbers(runner: &dyn Runner, repo: &str, host: &str) -> Result<std::collections::BTreeSet<u32>> {
+pub fn open_own_numbers(gh: &Gh, repo: &str, host: &str) -> Result<std::collections::BTreeSet<u32>> {
     #[derive(Deserialize)]
     struct Listed {
         number: u32,
     }
-    let out = runner.run(&gh(host).args(["pr", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "100", "--json", "number"]))?;
+    let out = gh.run(&gh.cmd(host).args(["pr", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "100", "--json", "number"]))?;
     if !out.success() {
         bail!("gh pr list: {}", out.error_text());
     }
@@ -421,8 +506,10 @@ mod tests {
         }
         assert_eq!(host_of("git@github.com:o/r.git"), "github.com");
         assert_eq!(host_of(""), "github.com");
-        assert!(gh("github.com").env.is_empty(), "github.com gets no GH_HOST, as before");
-        assert_eq!(gh("github.localhost").env, [("GH_HOST".to_string(), "github.localhost".to_string())]);
+        let runner = crate::runner::fake::FakeRunner::new();
+        let gh = Gh::new(&runner, &Env::for_test(std::path::Path::new("/h"), &[]));
+        assert!(gh.cmd("github.com").env.is_empty(), "github.com gets no GH_HOST, as before");
+        assert_eq!(gh.cmd("github.localhost").env, [("GH_HOST".to_string(), "github.localhost".to_string())]);
     }
 
     #[test]
@@ -430,11 +517,12 @@ mod tests {
         use crate::runner::fake::{FakeRunner, ok};
         let runner = FakeRunner::new();
         runner.on("gh", ok("[]"));
+        let gh = plain(&runner);
         let origin = "http://github.localhost/o/r.git";
-        view(&runner, "https://github.com/up/r/pull/7", origin).unwrap();
-        find_by_branch(&runner, origin, &Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" }).unwrap();
-        open_own_numbers(&runner, "o/r", &host_of(origin)).unwrap();
-        let _ = own_login(&runner, origin);
+        view(&gh, "https://github.com/up/r/pull/7", origin).unwrap();
+        find_by_branch(&gh, origin, &Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" }).unwrap();
+        open_own_numbers(&gh, "o/r", &host_of(origin)).unwrap();
+        let _ = own_login(&gh, origin);
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 4);
         for call in calls.iter() {
@@ -508,7 +596,7 @@ mod tests {
         let found = |listed: Vec<&String>| {
             let runner = FakeRunner::new();
             runner.on("gh pr list", ok(&format!("[{}]", listed.into_iter().cloned().collect::<Vec<_>>().join(","))));
-            let found = find_by_branch(&runner, "git@github.com:O/R.git", &wanted).unwrap();
+            let found = find_by_branch(&plain(&runner), "git@github.com:O/R.git", &wanted).unwrap();
             let display = runner.calls.borrow()[0].display();
             assert!(display.contains("--repo o/r --head b --state all --limit 100 --json url,state,createdAt,headRefName,isCrossRepository,author"), "{display}");
             found
@@ -517,8 +605,9 @@ mod tests {
         assert_eq!(found(not_ours.iter().chain(&ours).chain([&closed]).collect()).as_deref(), Some("https://github.com/o/r/pull/3"));
         assert_eq!(found(not_ours.iter().chain([&closed]).collect()).as_deref(), Some("https://github.com/o/r/pull/1"));
         assert_eq!(found(not_ours.iter().collect()), None);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "https://gitlab.com/o/r", &wanted).unwrap(), None);
-        assert_eq!(find_by_branch(&FakeRunner::new(), "git@github.com:o/r.git", &Wanted { branch: "", ..wanted }).unwrap(), None);
+        let none = FakeRunner::new();
+        assert_eq!(find_by_branch(&plain(&none), "https://gitlab.com/o/r", &wanted).unwrap(), None);
+        assert_eq!(find_by_branch(&plain(&none), "git@github.com:o/r.git", &Wanted { branch: "", ..wanted }).unwrap(), None);
     }
 
     #[test]
@@ -526,10 +615,74 @@ mod tests {
         use crate::runner::fake::{FakeRunner, ok};
         let runner = FakeRunner::new();
         runner.on("gh pr view", ok("{}"));
-        view(&runner, "https://github.com/o/r/pull/7", "git@github.com:o/r.git").unwrap();
+        view(&plain(&runner), "https://github.com/o/r/pull/7", "git@github.com:o/r.git").unwrap();
         let calls = runner.calls.borrow();
         let args = &calls[0].args;
         assert_eq!(&args[args.len() - 2..], ["--", "https://github.com/o/r/pull/7"]);
-        assert!(view(&runner, "--web", "").is_err());
+        assert!(view(&plain(&runner), "--web", "").is_err());
+    }
+
+    fn plain(runner: &dyn Runner) -> Gh<'_> {
+        Gh::new(runner, &Env::for_test(std::path::Path::new("/h"), &[]))
+    }
+
+    #[test]
+    fn the_gh_proxy_overrides_inherited_proxies_and_allows_no_bypass() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        let env = Env::for_test(std::path::Path::new("/h"), &[(PROXY_VAR, "http://127.0.0.1:10060")]);
+        for host in ["github.com", "github.localhost"] {
+            let cmd = Gh::new(&runner, &env).cmd(host);
+            for key in ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"] {
+                assert!(cmd.env.contains(&(key.to_string(), "http://127.0.0.1:10060".to_string())), "{key} on {host}: {:?}", cmd.env);
+            }
+            for key in ["https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"] {
+                assert!(cmd.env_remove.iter().any(|k| k == key), "{key} on {host}");
+            }
+            assert_eq!(cmd.timeout, GH_TIMEOUT);
+        }
+        let unset = Gh::new(&runner, &Env::for_test(std::path::Path::new("/h"), &[(PROXY_VAR, "")])).cmd("github.com");
+        assert!(unset.env.is_empty() && unset.env_remove.is_empty(), "unset keeps the inherited proxy variables");
+    }
+
+    #[test]
+    fn proxy_and_network_failures_are_transient_others_are_not() {
+        for text in [
+            "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:10060: connect: connection refused",
+            "Get \"https://api.github.com/user\": EOF",
+            "read tcp 127.0.0.1:50000->127.0.0.1:10060: read: connection reset by peer",
+            "net/http: TLS handshake timeout",
+            "timed out",
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com",
+            "unexpected EOF",
+        ] {
+            assert!(is_transient(text), "{text}");
+        }
+        for text in ["HTTP 401: Bad credentials", "GraphQL: Could not resolve to a PullRequest with the number of 7.", "no pull requests found for branch \"geofence\"", ""] {
+            assert!(!is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn in_the_ticker_a_transient_failure_skips_the_later_calls_of_the_pass() {
+        use crate::runner::fake::{FakeRunner, fail, ok};
+        let runner = FakeRunner::new();
+        runner.on("gh api user", fail(1, "proxyconnect tcp: dial tcp 127.0.0.1:10060: connect: connection refused"));
+        runner.on("gh pr", ok("[]"));
+        let down = Arc::new(AtomicBool::new(false));
+        let gh = plain(&runner).for_ticker(down.clone());
+        assert!(!is_skipped(&own_login(&gh, "git@github.com:o/r.git").unwrap_err()), "the first failure is a real one");
+        assert!(down.load(Ordering::Relaxed));
+        let other = plain(&runner).for_ticker(down.clone());
+        assert!(is_skipped(&find_by_branch(&other, "git@github.com:o/r.git", &Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" }).unwrap_err()));
+        assert_eq!(runner.calls.borrow().len(), 1, "nothing more is asked this pass");
+        down.store(false, Ordering::Relaxed);
+        assert_eq!(find_by_branch(&other, "git@github.com:o/r.git", &Wanted { branch: "b", since: "2026-01-01T00:00:00Z", own: "me" }).unwrap(), None, "the next pass asks again");
+
+        let refused = FakeRunner::new();
+        refused.on("gh", fail(1, "HTTP 401: Bad credentials"));
+        let down = Arc::new(AtomicBool::new(false));
+        let _ = own_login(&plain(&refused).for_ticker(down.clone()), "git@github.com:o/r.git");
+        assert!(!down.load(Ordering::Relaxed), "a refused login is not a network failure");
+        assert!(plain(&refused).run(&plain(&refused).cmd("github.com")).is_ok(), "outside the ticker nothing is skipped");
     }
 }

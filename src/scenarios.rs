@@ -1707,6 +1707,48 @@ fn a_long_gh_outage_gives_one_item_and_one_recovery_item() {
     assert!(outages[1].summary.contains("working again"));
 }
 
+/// `HERDR_PROJECTS_GH_PROXY` goes to every `gh` call; once one cannot reach
+/// GitHub through it, the pass asks nothing more and the next pass tries
+/// again. A short drop writes no item.
+#[test]
+fn gh_goes_through_its_proxy_and_a_dropped_proxy_ends_the_pass_quietly() {
+    let (mut world, project, t) = finished_world("idle");
+    world.env = Env::for_test(world.home.path(), &[("HERDR_PROJECTS_GH_PROXY", "http://127.0.0.1:10060")]);
+    let second = world.thread(&project, world.home.path(), |_| {});
+    for id in [&t.id, &second.id] {
+        thread::update(&project, id, |t| t.last_group = "idle".into()).unwrap();
+        std::fs::write(thread::home_report_path(&project, id), format!("PR: {PR_URL}\n")).unwrap();
+    }
+    let dropped = Rc::new(RefCell::new(true));
+    let flag = dropped.clone();
+    world.runner.on_fn(
+        |cmd| cmd.display().contains("gh pr view"),
+        move |_| Ok(if *flag.borrow() { fail(1, "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:10060: connect: connection refused") } else { ok(r#"{"state":"OPEN","headRefName":"x"}"#) }),
+    );
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let mut state = crate::steps::State::default();
+    let now = jiff::Timestamp::now();
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("gh pr view"), 1, "the second thread is skipped this pass");
+    assert!(memory.gh.last_error.contains("proxyconnect"), "{}", memory.gh.last_error);
+    assert!(items_of(&project, "outage").is_empty(), "a short drop writes nothing");
+
+    *dropped.borrow_mut() = false;
+    memory.gh_down.store(false, std::sync::atomic::Ordering::Relaxed);
+    state.last_pr_check.clear();
+    crate::steps::pull_requests(&ctx, &project, &mut state, &mut memory, now);
+    assert_eq!(world.runner.count("gh pr view"), 3, "the next pass asks for both again");
+    assert!(memory.pr_backoff.is_empty(), "no back-off for gh");
+    let calls = world.runner.calls.borrow();
+    for call in calls.iter().filter(|c| c.program == "gh") {
+        for key in ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"] {
+            assert!(call.env.contains(&(key.to_string(), "http://127.0.0.1:10060".to_string())), "{key}: {}", call.display());
+        }
+        assert!(call.env_remove.iter().any(|k| k == "NO_PROXY"), "{}", call.display());
+    }
+}
+
 const ADO_ORIGIN: &str = "https://sc-ado@dev.azure.com/sc-ado/My%20Project/_git/app";
 const ADO_PR_URL: &str = "https://dev.azure.com/sc-ado/My%20Project/_git/app/pullrequest/7";
 const ADO_PAT: &str = "ado-pat-SECRET-4711";

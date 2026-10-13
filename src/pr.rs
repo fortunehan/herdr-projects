@@ -42,21 +42,28 @@ impl Forge {
 }
 
 /// How one thread reaches its forge during one pass. Azure DevOps requests
-/// after a failed one are skipped; `gh` calls are not.
+/// after a failed one are skipped; in the ticker, `gh` calls after one that
+/// could not reach GitHub are skipped for the whole pass.
 pub struct Client<'a> {
-    pub runner: &'a dyn Runner,
+    gh: github::Gh<'a>,
     ado: ado::Client<'a>,
 }
 
 impl<'a> Client<'a> {
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
-        Client { runner, ado: ado::Client::new(runner, env) }
+        Client { gh: github::Gh::new(runner, env), ado: ado::Client::new(runner, env) }
     }
 
     /// The ticker's client: Azure DevOps answers kept in `cache` between
-    /// passes, no Azure DevOps request once `stop` exists.
-    pub fn for_ticker(runner: &'a dyn Runner, env: &Env, cache: &'a std::sync::Mutex<ado::Cache>, stop: Option<&'a std::path::Path>) -> Self {
-        Client { runner, ado: ado::Client::new(runner, env).for_ticker(cache, stop) }
+    /// passes, no Azure DevOps request once `stop` exists, and `gh_down` the
+    /// pass's "GitHub could not be reached" flag.
+    pub fn for_ticker(runner: &'a dyn Runner, env: &Env, cache: &'a std::sync::Mutex<ado::Cache>, stop: Option<&'a std::path::Path>, gh_down: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Client { gh: github::Gh::new(runner, env).for_ticker(gh_down), ado: ado::Client::new(runner, env).for_ticker(cache, stop) }
+    }
+
+    /// A plain client whose `gh` calls share the pass's `gh_down` flag.
+    pub fn with_gh_down(runner: &'a dyn Runner, env: &Env, gh_down: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Client { gh: github::Gh::new(runner, env).for_ticker(gh_down), ado: ado::Client::new(runner, env) }
     }
 
     /// How long each Azure DevOps request took, for the ticker log.
@@ -116,7 +123,7 @@ pub enum ViewError {
 pub fn view(client: &Client, url: &str, origin: &str, branch: &str) -> Result<Checked, ViewError> {
     match Forge::of(origin) {
         Some(Forge::GitHub(_)) | None => {
-            let json = github::view(client.runner, url, origin).map_err(ViewError::Unreachable)?;
+            let json = github::view(&client.gh, url, origin).map_err(ViewError::Unreachable)?;
             github::reduce(&json, branch, origin).map_err(ViewError::BadOutput)
         }
         Some(Forge::AzureDevOps(remote)) => {
@@ -169,7 +176,7 @@ impl Wanted<'_> {
 /// asking when no followed forge hosts `origin`.
 pub fn find_by_branch(client: &Client, origin: &str, wanted: &Wanted) -> Result<Option<String>> {
     match Forge::of(origin) {
-        Some(Forge::GitHub(_)) => github::find_by_branch(client.runner, origin, wanted),
+        Some(Forge::GitHub(_)) => github::find_by_branch(&client.gh, origin, wanted),
         Some(Forge::AzureDevOps(remote)) => ado::find_by_branch(&client.ado, &remote, wanted),
         None => Ok(None),
     }
@@ -188,7 +195,7 @@ pub fn account(origin: &str) -> String {
 /// threads' own replies.
 pub fn own_id(client: &Client, origin: &str) -> Result<String> {
     match Forge::of(origin) {
-        Some(Forge::GitHub(_)) | None => github::own_login(client.runner, origin),
+        Some(Forge::GitHub(_)) | None => github::own_login(&client.gh, origin),
         Some(Forge::AzureDevOps(remote)) => client.ado.own_user(&remote.org),
     }
 }
@@ -207,7 +214,7 @@ pub fn named_in_report(report: &str, origin: &str, except: &str) -> BTreeMap<Str
 /// that the threads' own account opened, asked through `origin`'s forge.
 pub fn own_open_numbers(client: &Client, origin: &str, repo: &str) -> Result<BTreeSet<u32>> {
     match Forge::of(origin) {
-        Some(Forge::GitHub(_)) | None => github::open_own_numbers(client.runner, repo, &github::host_of(origin)),
+        Some(Forge::GitHub(_)) | None => github::open_own_numbers(&client.gh, repo, &github::host_of(origin)),
         Some(Forge::AzureDevOps(_)) => {
             let remote = ado::parse_remote(repo).ok_or_else(|| anyhow!("not an Azure DevOps repository"))?;
             ado::own_open_numbers(&client.ado, &remote)

@@ -156,6 +156,9 @@ pub struct Memory {
     pub pr_backoff: BTreeMap<String, (u32, jiff::Timestamp)>,
     /// Azure DevOps answers kept between passes.
     pub ado_cache: std::sync::Mutex<pr::ado::Cache>,
+    /// Set once a `gh` call of this pass could not reach GitHub: the pass's
+    /// later `gh` calls are skipped, the next pass tries again.
+    pub gh_down: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Memory {
@@ -176,6 +179,7 @@ impl Memory {
             pr_queue: BTreeMap::new(),
             pr_backoff: BTreeMap::new(),
             ado_cache: Default::default(),
+            gh_down: Default::default(),
         }
     }
 
@@ -519,8 +523,8 @@ pub fn pull_requests(ctx: &Ctx, project: &Project, state: &mut State, memory: &m
             }
             jobs.extend(prepare(ctx, project, state, memory, &notifier, t, now, &mut errors));
         }
-        let (cache, stop) = (&memory.ado_cache, memory.stop_file.as_deref());
-        let fetched = crate::runner::parallel(ctx.runner, jobs, PR_THREADS_AT_ONCE, |runner, job| fetch(runner, ctx.env, cache, stop, job));
+        let (cache, stop, gh_down) = (&memory.ado_cache, memory.stop_file.as_deref(), &memory.gh_down);
+        let fetched = crate::runner::parallel(ctx.runner, jobs, PR_THREADS_AT_ONCE, |runner, job| fetch(runner, ctx.env, cache, stop, gh_down.clone(), job));
         // What was read while a stop came is not acted on: the next ticker
         // looks again.
         if memory.stopping() {
@@ -576,7 +580,7 @@ fn prepare(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory,
     if t.kind != thread::Kind::Worktree || t.branch.is_empty() || pr::Forge::of(&t.origin).is_none() {
         return None;
     }
-    let client = pr::Client::new(ctx.runner, ctx.env);
+    let client = pr::Client::with_gh_down(ctx.runner, ctx.env, memory.gh_down.clone());
     match own_id(&client, memory, &t.origin) {
         Ok(own) => Some(Job { t, url: String::new(), own: Some(own) }),
         Err(error) => {
@@ -588,8 +592,8 @@ fn prepare(ctx: &Ctx, project: &Project, state: &mut State, memory: &mut Memory,
 }
 
 /// The forge requests of one job; runs side by side with other jobs.
-fn fetch(runner: &dyn crate::runner::Runner, env: &crate::paths::Env, cache: &std::sync::Mutex<pr::ado::Cache>, stop: Option<&std::path::Path>, job: Job) -> Fetched {
-    let client = pr::Client::for_ticker(runner, env, cache, stop);
+fn fetch(runner: &dyn crate::runner::Runner, env: &crate::paths::Env, cache: &std::sync::Mutex<pr::ado::Cache>, stop: Option<&std::path::Path>, gh_down: std::sync::Arc<std::sync::atomic::AtomicBool>, job: Job) -> Fetched {
+    let client = pr::Client::for_ticker(runner, env, cache, stop, gh_down);
     let t = &job.t;
     let found = job.own.as_ref().map(|own| pr::find_by_branch(&client, &t.origin, &pr::Wanted { branch: &t.branch, since: &t.created, own }));
     let url = match &found {
@@ -724,13 +728,16 @@ fn forge_worked(project: &Project, memory: &mut Memory, t: &Thread, now: jiff::T
     }
 }
 
-/// A forge call that failed. `gh` failures count toward its outage. An Azure
+/// A forge call that failed. `gh` failures count toward its outage; a call
+/// skipped after another could not reach GitHub counts for nothing. An Azure
 /// DevOps failure is reported at once: a refused PAT does not heal by waiting,
 /// and one that does not answer is mostly waiting for a 2FA sign-in. One item
 /// and one notification per failure and kind; `ado_worked` writes its end.
 fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &mut Memory, t: &Thread, error: &anyhow::Error, now: jiff::Timestamp, errors: &mut Vec<anyhow::Error>) {
     if !pr::Forge::is_azure_devops(&t.origin) {
-        gh_failed(project, notifier, memory, error, now, errors);
+        if !pr::github::is_skipped(error) {
+            gh_failed(project, notifier, memory, error, now, errors);
+        }
         return;
     }
     let text = pr::sanitize(&format!("{error:#}"));

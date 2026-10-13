@@ -211,8 +211,13 @@ fn report(
     // pull request follow-up does, with `GH_HOST` set.
     let (project_forges, here) = origins(root, runner);
     let hosts = github_hosts(project_forges.iter().chain(&here));
+    let gh = crate::pr::github::Gh::new(runner, env);
+    match env.var(crate::pr::github::PROXY_VAR) {
+        Some(proxy) => check(&mut out, Some(true), "gh proxy", format!("{} is {}", crate::pr::github::PROXY_VAR, crate::pr::sanitize(&without_userinfo(proxy)))),
+        None => check(&mut out, None, "gh proxy", format!("{} is not set; `gh` uses the inherited proxy variables", crate::pr::github::PROXY_VAR)),
+    }
     if hosts.is_empty() || hosts.contains_key("github.com") {
-        match runner.run(&Cmd::new("gh", TOOL_TIMEOUT).args(["auth", "status"])) {
+        match runner.run(&gh.cmd("github.com").args(["auth", "status"])) {
             Ok(o) if o.success() => check(&mut out, Some(true), "gh auth", "logged in".into()),
             Ok(o) => check(
                 &mut out,
@@ -228,7 +233,7 @@ fn report(
     }
     for (host, repo) in hosts.iter().filter(|(host, _)| host.as_str() != "github.com") {
         let label = format!("github {host}");
-        let result = runner.run(&crate::pr::github::gh(host).args(["api", "user", "--jq", ".login"]));
+        let result = runner.run(&gh.cmd(host).args(["api", "user", "--jq", ".login"]));
         match result {
             Ok(o) if o.success() => check(&mut out, Some(true), &label, format!("reachable as {} (GH_HOST={host}, used for {repo})", crate::pr::sanitize(o.stdout.trim()))),
             Ok(o) => check(
@@ -693,6 +698,10 @@ mod tests {
         assert!(!text.contains("pw@"), "{text}");
         assert_eq!(curl.len(), 1);
         assert!(curl[0].contains("--proxy http://me:pw@127.0.0.1:7890 ") && curl[0].ends_with("https://dev.azure.com/sc-ado/_apis/connectionData?api-version=7.1-preview"), "{}", curl[0]);
+
+        assert!(text.contains("[warn] gh proxy: HERDR_PROJECTS_GH_PROXY is not set; `gh` uses the inherited proxy variables"), "{text}");
+        let (text, _) = run(ado, &[("HERDR_PROJECTS_GH_PROXY", "http://127.0.0.1:10060")], None);
+        assert!(text.contains("[ok  ] gh proxy: HERDR_PROJECTS_GH_PROXY is http://127.0.0.1:10060\n"), "{text}");
 
         let (text, _) = run(ado, &vars, Some(ok("<html>sign in</html>\n302")));
         assert!(text.contains("[warn] ado sc-ado: the PAT is refused (HTTP 302); renew AZURE_DEVOPS_PAT"), "{text}");
