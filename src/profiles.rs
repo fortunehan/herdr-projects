@@ -608,26 +608,40 @@ pub fn list_text(ctx: &Ctx, project: Option<&Project>) -> Result<String> {
 /// The `context` block: the profiles the coordinator may choose for threads,
 /// one line each, and what it may open another coordinator with.
 pub fn context_text(ctx: &Ctx, project: &Project, settings: &project::Settings) -> String {
-    use std::fmt::Write as _;
     let (config, safety) = match (load(&ctx.config_dir), project.safety(&ctx.config_dir)) {
         (Ok(c), Ok(s)) => (c, s),
         (Err(e), _) | (_, Err(e)) => return format!("config-error: {e:#}\n"),
     };
     let detected = detect(ctx.env);
+    let thread = usable(&config, &safety, Role::Thread, &detected, &settings.thread_profile);
+    let coordinator = usable(&config, &safety, Role::Coordinator, &detected, &settings.coordinator_profile);
+    lists_text((&settings.thread_profile, &thread), (&settings.coordinator_profile, &coordinator))
+}
+
+/// The two profile lists, each with its default; a coordinator list with the
+/// same names as the thread list is not printed twice, since `context` runs
+/// every turn.
+fn lists_text(thread: (&str, &[Profile]), coordinator: (&str, &[Profile])) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
-    for role in [Role::Thread, Role::Coordinator] {
-        let default = match role {
-            Role::Thread => &settings.thread_profile,
-            Role::Coordinator => &settings.coordinator_profile,
-        };
-        let names = usable(&config, &safety, role, &detected, default);
-        let _ = writeln!(out, "{} (--profile NAME; default {default}):", if role == Role::Thread { "Thread profiles" } else { "Coordinator profiles" });
-        if names.is_empty() {
-            let _ = writeln!(out, "- (none allowed; ask the user)");
-        }
-        for p in names {
-            let _ = writeln!(out, "- {}: {}", p.name, p.summary());
-        }
+    let _ = writeln!(out, "Thread profiles (--profile NAME; default {}):", thread.0);
+    if thread.1.is_empty() {
+        let _ = writeln!(out, "- (none allowed; ask the user)");
+    }
+    for p in thread.1 {
+        let _ = writeln!(out, "- {}: {}", p.name, p.summary());
+    }
+    let same = thread.1.iter().map(|p| &p.name).eq(coordinator.1.iter().map(|p| &p.name));
+    if same {
+        let _ = writeln!(out, "Coordinator profiles (--profile NAME; default {}): same as thread profiles", coordinator.0);
+        return out;
+    }
+    let _ = writeln!(out, "Coordinator profiles (--profile NAME; default {}):", coordinator.0);
+    if coordinator.1.is_empty() {
+        let _ = writeln!(out, "- (none allowed; ask the user)");
+    }
+    for p in coordinator.1 {
+        let _ = writeln!(out, "- {}: {}", p.name, p.summary());
     }
     out
 }
@@ -713,6 +727,20 @@ mod tests {
         assert_eq!(default["name"], "deep");
         assert_eq!(default["args"][0], "--model");
         assert!(resolve_json(&ctx, Some("nope")).is_err());
+    }
+
+    #[test]
+    fn a_coordinator_list_equal_to_the_thread_list_is_not_repeated() {
+        let config: Config = toml::from_str(CONFIG).unwrap();
+        let [luna, deep] = ["luna", "deep"].map(|n| config.get(n).unwrap());
+        let both = [luna.clone(), deep.clone()];
+        let text = lists_text(("luna", &both), ("deep", &both));
+        assert_eq!(text.matches("- luna: ").count(), 1, "{text}");
+        assert!(text.ends_with("Coordinator profiles (--profile NAME; default deep): same as thread profiles\n"), "{text}");
+        let text = lists_text(("luna", &both), ("deep", std::slice::from_ref(&deep)));
+        assert!(text.ends_with("Coordinator profiles (--profile NAME; default deep):\n- deep: codex · model gpt-5.5 · effort high\n"), "{text}");
+        let text = lists_text(("luna", &both), ("deep", &[]));
+        assert!(text.ends_with("default deep):\n- (none allowed; ask the user)\n"), "{text}");
     }
 
     #[test]
