@@ -72,11 +72,12 @@ impl View {
 }
 
 /// The attention order (ADR 0003): coordinators and design threads that need
-/// the user first (`hp_needs`), then every other agent before implementation
-/// threads (`hp_tier` 1). Implementation threads sort by [`RECENT_TOKEN`],
-/// which no other agent carries, so the rest tie on it and sort by Herdr's
-/// attention, then the latest state change. Herdr sorts a missing token last
-/// in both directions.
+/// the user first (`hp_needs`), then every working or blocked agent that is
+/// not a coordinator (`hp_tier` 0), then coordinators and the other agents
+/// (1), then idle implementation threads (2). Tiers 0 and 2 sort by
+/// [`RECENT_TOKEN`], which tier 1 does not carry, so it ties on it and sorts
+/// by Herdr's live attention, then the latest state change. Herdr sorts a
+/// missing token last in both directions.
 pub fn priority_view() -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
@@ -91,17 +92,30 @@ pub fn priority_view() -> serde_json::Value {
     })
 }
 
-/// An implementation thread's place among its tier: `1` while working or
-/// blocked, else `0`, then its `state_change_seq`, zero-padded as tokens
-/// compare as strings. It sorts ahead of Herdr's attention, which drops a
-/// done thread below the idle ones once it is viewed. Herdr 0.9.3's `done` is
-/// idle and unseen, so viewing it moves no sequence number; `completion_seq`
-/// is `state_change_seq` or absent, so it adds nothing here.
+/// An agent's place in tier 0 or 2: its `state_change_seq`, zero-padded as
+/// tokens compare as strings. It sorts ahead of Herdr's attention, which puts
+/// blocked above working and drops a done thread below the idle ones once it
+/// is viewed. Herdr 0.9.3's `done` is idle and unseen, so viewing it moves no
+/// sequence number; `completion_seq` is `state_change_seq` or absent, so it
+/// adds nothing here.
 pub const RECENT_TOKEN: &str = "hp_recent";
 
-fn recent(agent: &Agent) -> String {
-    let live = matches!(agent.agent_status.as_str(), "working" | "blocked");
-    format!("{}{:020}", u8::from(live), agent.state_change_seq)
+/// Working or blocked: blocked agents are mid-turn too.
+fn busy(agent: &Agent) -> bool {
+    matches!(agent.agent_status.as_str(), "working" | "blocked")
+}
+
+/// `0` for a busy agent that is no coordinator and does not lead with
+/// `hp_needs`, `2` for an idle implementation thread, else `1`.
+fn tier(rank: &Rank, agent: &Agent) -> u8 {
+    let leads = rank.needs && !rank.implementation;
+    if busy(agent) && !rank.coordinator && !leads {
+        0
+    } else if rank.implementation {
+        2
+    } else {
+        1
+    }
 }
 
 fn choice_path(root: &Path) -> PathBuf {
@@ -148,7 +162,10 @@ pub fn popup_toggle(ctx: &Ctx) -> String {
 pub struct Rank {
     /// In the needs-you group (never while the project is paused).
     pub needs: bool,
-    /// An implementation thread: after every other agent, never `hp_needs`.
+    /// A coordinator: never in the working tier.
+    pub coordinator: bool,
+    /// An implementation thread: idle ones after every other agent, never
+    /// `hp_needs`.
     pub implementation: bool,
     /// A design thread's own Space, whose label keeps [`DESIGN_MARK`]; none
     /// for a design thread started as a tab of the home Space.
@@ -179,7 +196,7 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
         let needs = !paused && state.is_some() && (thread_needs || state.as_ref().is_some_and(|(group, _)| *group == Group::WaitingOnYou));
         let line = state.map(|(_, line)| line).unwrap_or_default();
         let cells = if paused { SubCells::default() } else { coordinator_line(&threads, &line, report.as_ref()).cells };
-        out.push((pane.to_string(), Rank { needs, cells, ..Rank::default() }));
+        out.push((pane.to_string(), Rank { needs, coordinator: true, cells, ..Rank::default() }));
     }
     for t in threads.into_iter().filter(|t| !t.pane_id.is_empty()) {
         let needs = !paused && Group::from_token(&t.last_group) == Some(Group::WaitingOnYou);
@@ -191,18 +208,19 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
     out
 }
 
-/// A pane's tokens: every agent gets a tier (`0` unless an implementation
-/// thread); `hp_needs` is cleared, not set to 0, when it does not apply. An
-/// implementation thread never gets it: its coordinator, which then needs
-/// the user too, is where the user resolves it, and only it gets
-/// [`RECENT_TOKEN`]. A thread's title goes in [`TITLE_TOKEN`], a
-/// coordinator's [`SubCells`] in theirs; each is cleared on every other pane.
+/// A pane's tokens: every agent gets a tier ([`tier`]), and tiers 0 and 2
+/// [`RECENT_TOKEN`]; `hp_needs` is cleared, not set to 0, when it does not
+/// apply. An implementation thread never gets it: its coordinator, which
+/// then needs the user too, is where the user resolves it. A thread's title
+/// goes in [`TITLE_TOKEN`], a coordinator's [`SubCells`] in theirs; each is
+/// cleared on every other pane.
 pub fn tokens(rank: Option<&Rank>, agent: &Agent) -> Tokens {
     let rank = rank.cloned().unwrap_or_default();
+    let tier = tier(&rank, agent);
     vec![
-        ("hp_tier".to_string(), Some(if rank.implementation { "1" } else { "0" }.to_string())),
+        ("hp_tier".to_string(), Some(tier.to_string())),
         ("hp_needs".to_string(), (rank.needs && !rank.implementation).then(|| "1".to_string())),
-        (RECENT_TOKEN.to_string(), rank.implementation.then(|| recent(agent))),
+        (RECENT_TOKEN.to_string(), (tier != 1).then(|| format!("{:020}", agent.state_change_seq))),
         (TITLE_TOKEN.to_string(), rank.title),
         (PROGRESS_TOKEN.to_string(), rank.cells.progress),
         (WORKING_TOKEN.to_string(), rank.cells.working),
@@ -851,7 +869,7 @@ mod tests {
                 _ => thread_key(a.slug, a.group.rank(), a.name),
             };
             parts.entry(a.slug.to_string()).or_default().panes.push(PaneRow { pane: a.name.into(), key, sub: String::new() });
-            ranks.insert(a.name.into(), Rank { needs: a.group == Group::WaitingOnYou && !paused.contains(&a.slug), implementation: a.kind == 't', ..Rank::default() });
+            ranks.insert(a.name.into(), Rank { needs: a.group == Group::WaitingOnYou && !paused.contains(&a.slug), coordinator: a.kind == 'c', implementation: a.kind == 't', ..Rank::default() });
         }
         let list: Vec<Agent> = agents.iter().map(|a| Agent { pane_id: a.name.into(), agent_status: a.status().into(), state_change_seq: a.seq, ..Default::default() }).collect();
         let layout = crate::grouping::plan(&parts, &list, &[]);
@@ -892,15 +910,21 @@ mod tests {
     }
 
     #[test]
-    fn implementation_threads_follow_every_other_agent_working_and_blocked_first() {
+    fn working_and_blocked_agents_lead_the_idle_ones_by_latest_state_change_whatever_their_kind() {
         let agents = [
             outside("outside-idle", IDLE, 90),
             seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
             outside("outside-working", WORKING, 10),
             seen("thread-blocked", "demo", 't', Group::Working, BLOCKED, 5),
             seen("thread-done", "demo", 't', Group::ReadyForReview, DONE, 4),
+            seen("design-working", "demo", 'd', Group::Working, WORKING, 40),
+            seen("design-idle", "demo", 'd', Group::Idle, IDLE, 95),
+            outside("outside-blocked", BLOCKED, 20),
         ];
-        assert_eq!(priority(&agents), ["outside-working", "outside-idle", "thread-working", "thread-blocked", "thread-done"]);
+        assert_eq!(
+            priority(&agents),
+            ["thread-working", "design-working", "outside-blocked", "outside-working", "thread-blocked", "design-idle", "outside-idle", "thread-done"]
+        );
     }
 
     #[test]
@@ -916,18 +940,29 @@ mod tests {
             seen("coordinator", "demo", 'c', Group::Working, WORKING, 2),
             outside("outside-done", DONE, 3),
         ];
-        assert_eq!(priority(&agents), ["outside-done", "coordinator", "outside-idle", "blocked", "working", "viewed", "done", "idle"]);
+        assert_eq!(priority(&agents), ["blocked", "working", "outside-done", "coordinator", "outside-idle", "viewed", "done", "idle"]);
     }
 
     #[test]
-    fn coordinators_and_design_threads_are_not_demoted() {
+    fn a_working_coordinator_stays_with_the_idle_agents_by_attention_above_idle_threads() {
         let agents = [
             seen("thread", "demo", 't', Group::Working, WORKING, 99),
-            seen("design", "demo", 'd', Group::Working, WORKING, 20),
-            outside("outside", WORKING, 30),
+            seen("thread-idle", "demo", 't', Group::Idle, IDLE, 98),
+            outside("outside-idle", IDLE, 30),
             seen("coordinator", "demo", 'c', Group::Working, WORKING, 10),
+            outside("outside-done", DONE, 5),
         ];
-        assert_eq!(priority(&agents), ["outside", "design", "coordinator", "thread"]);
+        assert_eq!(priority(&agents), ["thread", "outside-done", "coordinator", "outside-idle", "thread-idle"]);
+    }
+
+    #[test]
+    fn a_working_design_thread_that_needs_the_user_stays_among_the_needs_you_rows_by_attention() {
+        let agents = [
+            outside("outside-working", WORKING, 90),
+            seen("coordinator-waiting", "demo", 'c', Group::WaitingOnYou, BLOCKED, 1),
+            seen("design-waiting", "demo", 'd', Group::WaitingOnYou, WORKING, 80),
+        ];
+        assert_eq!(priority(&agents), ["coordinator-waiting", "design-waiting", "outside-working"]);
     }
 
     #[test]
@@ -950,13 +985,14 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_projects_threads_stay_demoted_but_never_need_you() {
+    fn a_paused_projects_agents_never_need_you_and_its_working_threads_still_lead() {
         let agents = [
             outside("outside", WORKING, 1),
             seen("paused-thread", "zzz", 't', Group::WaitingOnYou, WORKING, 9),
+            seen("paused-idle-thread", "zzz", 't', Group::WaitingOnYou, IDLE, 10),
             seen("paused-coordinator", "zzz", 'c', Group::WaitingOnYou, WORKING, 8),
         ];
-        assert_eq!(herdr_sort(&priority_view(), scene(&agents, &["zzz"])), ["paused-coordinator", "outside", "paused-thread"]);
+        assert_eq!(herdr_sort(&priority_view(), scene(&agents, &["zzz"])), ["paused-thread", "outside", "paused-coordinator", "paused-idle-thread"]);
     }
 
     fn mixed() -> Vec<Seen> {
@@ -993,14 +1029,19 @@ mod tests {
         let no_cells = [none(PROGRESS_TOKEN), none(WORKING_TOKEN), none(REST_TOKEN)];
         let with = |head: Vec<(String, Option<String>)>| head.into_iter().chain(no_cells.clone()).collect::<Vec<_>>();
         let idle = Agent { agent_status: "idle".into(), state_change_seq: 593, ..Agent::default() };
-        assert_eq!(tokens(None, &idle), with(vec![some("hp_tier", "0"), none("hp_needs"), none(RECENT_TOKEN), title(None)]));
-        let blocked = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
-        assert_eq!(tokens(Some(&blocked), &idle), with(vec![some("hp_tier", "1"), none("hp_needs"), some(RECENT_TOKEN, "000000000000000000593"), title(Some("Fix the build"))]));
-        let working = Agent { agent_status: "blocked".into(), ..idle.clone() };
-        assert_eq!(tokens(Some(&blocked), &working)[2], some(RECENT_TOKEN, "100000000000000000593"));
+        let blocked = Agent { agent_status: "blocked".into(), ..idle.clone() };
+        assert_eq!(tokens(None, &idle), with(vec![some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN), title(None)]));
+        assert_eq!(tokens(None, &blocked), with(vec![some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593"), title(None)]));
+        let thread = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
+        assert_eq!(tokens(Some(&thread), &idle), with(vec![some("hp_tier", "2"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593"), title(Some("Fix the build"))]));
+        assert_eq!(tokens(Some(&thread), &blocked)[..3], [some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593")]);
+        let design = Rank { needs: true, ..Rank::default() };
+        assert_eq!(tokens(Some(&design), &blocked)[..3], [some("hp_tier", "1"), some("hp_needs", "1"), none(RECENT_TOKEN)]);
         let cells = SubCells { progress: Some("~10%".into()), working: Some("2 working".into()), rest: None };
-        let waiting = Rank { needs: true, cells, ..Rank::default() };
-        assert_eq!(tokens(Some(&waiting), &idle), vec![some("hp_tier", "0"), some("hp_needs", "1"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
+        let coordinator = Rank { coordinator: true, cells, ..Rank::default() };
+        assert_eq!(tokens(Some(&coordinator), &blocked), vec![some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
+        let waiting = Rank { needs: true, ..coordinator };
+        assert_eq!(tokens(Some(&waiting), &idle)[..3], [some("hp_tier", "1"), some("hp_needs", "1"), none(RECENT_TOKEN)]);
     }
 
     #[test]

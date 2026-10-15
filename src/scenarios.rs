@@ -2807,44 +2807,44 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
 
     ticker::tick_for_test(&ctx, &mut memory);
     let thread = last(0, "w2:p1");
-    assert!(thread.contains("--token hp_tier=1") && thread.contains("--clear-token hp_needs"), "a blocked implementation thread: {thread}");
+    assert!(thread.contains("--token hp_tier=0") && thread.contains("--clear-token hp_needs") && thread.contains("--token hp_recent="), "a blocked implementation thread joins the working tier: {thread}");
     // Its row names the project and the id; its title is the row below.
     assert!(thread.contains("--token hp_title=Task"), "{thread}");
     assert!(world.runner.count("pane report-metadata w2:p1 --source herdr-projects --display-agent Demo · t-0001 --ttl-ms") >= 1);
     // Its sub-line says needs you, but starts with the quiet mark, so it is not coloured.
     assert!(world.runner.count(&format!("--token hp_sub={}needs you", crate::views::QUIET_MARK)) >= 1);
     let outside = last(0, "w9:p1");
-    assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs") && outside.contains("--clear-token hp_title"), "an outside agent: {outside}");
+    assert!(outside.contains("--token hp_tier=0") && outside.contains("--clear-token hp_needs") && outside.contains("--token hp_recent=") && outside.contains("--clear-token hp_title"), "a working outside agent: {outside}");
     // It is named after its folder, with the tokens' TTL; project agents keep their own names.
     assert!(outside.starts_with("herdr pane report-metadata w9:p1 --source herdr-projects --display-agent elsewhere --ttl-ms 300000 "), "{outside}");
     assert!(!last(0, "w2:p1").contains("--display-agent") && !last(0, "w5:p1").contains("--display-agent"), "{thread}");
     // Its coordinator carries the need; another project's does not.
     let own = last(0, "w1:p1");
-    assert!(own.contains("--token hp_tier=0") && own.contains("--token hp_needs=1") && own.contains("--clear-token hp_title"), "{own}");
+    assert!(own.contains("--token hp_tier=1") && own.contains("--token hp_needs=1") && own.contains("--clear-token hp_recent") && own.contains("--clear-token hp_title"), "{own}");
     let other = last(0, "w5:p1");
-    assert!(other.contains("--token hp_tier=0") && other.contains("--clear-token hp_needs"), "{other}");
+    assert!(other.contains("--token hp_tier=1") && other.contains("--clear-token hp_needs"), "{other}");
     assert!(world.runner.count(&format!("pane report-metadata w1:p1 --source herdr-projects --ttl-ms 300000 --token hp_sub={}needs you · 1 blocked ", crate::views::CLEAR_MARK)) >= 1);
     // Its percentage leads the row in a cell of its own, which only coordinators get.
     assert!(own.contains("--token hp_pct=~50%") && own.contains("--clear-token hp_work") && own.contains("--clear-token hp_rest"), "{own}");
     assert!(thread.contains("--clear-token hp_pct") && outside.contains("--clear-token hp_pct"), "{thread}");
     assert_eq!(world.runner.count("Waiting on thread"), 0);
 
-    // A design thread is not demoted, leads when it needs the user, and its name starts with the design mark.
+    // A design thread leads when it needs the user, even while blocked, and its name starts with the design mark.
     thread::update(&project, &t.id, |t| t.kind = Kind::Design).unwrap();
     let from = world.runner.calls.borrow().len();
     ticker::tick_for_test(&ctx, &mut memory);
     let design = last(from, "w2:p1");
-    assert!(design.contains("--token hp_tier=0") && design.contains("--token hp_needs=1"), "{design}");
+    assert!(design.contains("--token hp_tier=1") && design.contains("--token hp_needs=1") && design.contains("--clear-token hp_recent"), "{design}");
     assert!(design.contains("--token hp_title=Task"), "{design}");
     assert!(world.runner.count(&format!("--display-agent {}Demo · t-0001 --ttl-ms", crate::views::DESIGN_MARK)) >= 1);
 
-    // Paused: its thread keeps its tier from the session another project lists, and needs no one.
+    // Paused: its blocked thread stays in the working tier from the session another project lists, and needs no one.
     thread::update(&project, &t.id, |t| t.kind = Kind::Worktree).unwrap();
     project.set_status(project::Status::Paused).unwrap();
     let from = world.runner.calls.borrow().len();
     ticker::tick_for_test(&ctx, &mut memory);
     let paused = last(from, "w2:p1");
-    assert!(paused.contains("--token hp_tier=1") && paused.contains("--clear-token hp_needs"), "{paused}");
+    assert!(paused.contains("--token hp_tier=0") && paused.contains("--clear-token hp_needs"), "{paused}");
 }
 
 #[test]
