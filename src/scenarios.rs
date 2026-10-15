@@ -2848,6 +2848,45 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
 }
 
 #[test]
+fn a_pending_proposal_puts_go_ahead_on_the_coordinator_and_leads_the_priority_view_until_it_is_gone() {
+    let (world, project, _t) = finished_world("working");
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let last = |from: usize| -> String {
+        let calls = world.runner.calls.borrow();
+        calls[from..].iter().map(|c| c.display()).rfind(|c| c.contains("pane report-metadata w1:p1 ") && c.contains("hp_tier")).unwrap_or_default()
+    };
+    let tick = |memory: &mut Memory| {
+        let from = world.runner.calls.borrow().len();
+        ticker::tick_for_test(&ctx, memory);
+        last(from)
+    };
+
+    let quiet = tick(&mut memory);
+    assert!(quiet.contains("--clear-token hp_ask") && quiet.contains("--clear-token hp_needs"), "nothing waits: {quiet}");
+
+    let proposals = project.dir().join(crate::coordinator::PROPOSALS_DIR);
+    std::fs::create_dir_all(&proposals).unwrap();
+    std::fs::write(proposals.join("notes.txt"), "not a proposal\n").unwrap();
+    assert!(!tick(&mut memory).contains("--token hp_ask"), "only *.md files are proposals; unchanged tokens are not re-sent");
+
+    std::fs::write(proposals.join("login-fix.md"), "# Fix the login redirect\n").unwrap();
+    let asking = tick(&mut memory);
+    assert!(asking.contains("--token hp_ask=go-ahead?") && asking.contains("--token hp_needs=1") && asking.contains("--token hp_tier=1"), "{asking}");
+    assert!(!asking.contains("needs you"), "no red `needs you` for a proposal alone: {asking}");
+
+    std::fs::remove_file(proposals.join("login-fix.md")).unwrap();
+    let gone = tick(&mut memory);
+    assert!(gone.contains("--clear-token hp_ask") && gone.contains("--clear-token hp_needs"), "{gone}");
+
+    // A paused project asks no one.
+    std::fs::write(proposals.join("login-fix.md"), "# Fix the login redirect\n").unwrap();
+    project.set_status(project::Status::Paused).unwrap();
+    let paused = tick(&mut memory);
+    assert!(!paused.contains("--token hp_ask") && !paused.contains("--token hp_needs"), "{paused}");
+}
+
+#[test]
 fn the_ticker_keeps_a_design_threads_own_space_marked_and_leaves_tab_ones_alone() {
     let mark = crate::views::DESIGN_MARK;
     let spaces = |design_label: &str| format!(r#"{{"result":{{"workspaces":[{{"workspace_id":"w1","label":"Demo{}"}},{{"workspace_id":"w2","label":"{design_label}"}}]}}}}"#, crate::grouping::HOME_MARK);

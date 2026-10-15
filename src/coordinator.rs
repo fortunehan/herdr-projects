@@ -741,9 +741,8 @@ pub fn skill_line(ctx: &Ctx, project: &Project, prefix: &str) -> Option<String> 
 /// proposal survives a context reset without becoming a task (ADR 0004).
 pub const PROPOSALS_DIR: &str = "scratch/proposals";
 
-/// One line per proposal file: its path in the project folder and its first
-/// non-empty line, in file-name order.
-pub fn pending_proposals(project: &Project) -> Vec<String> {
+/// The proposal files (`*.md`, not hidden), by file name.
+fn proposal_files(project: &Project) -> Vec<(String, std::path::PathBuf)> {
     let Ok(entries) = std::fs::read_dir(project.dir().join(PROPOSALS_DIR)) else {
         return Vec::new();
     };
@@ -751,10 +750,21 @@ pub fn pending_proposals(project: &Project) -> Vec<String> {
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| e.file_name().into_string().ok().map(|name| (name, e.path())))
-        .filter(|(name, _)| !name.starts_with('.'))
+        .filter(|(name, _)| !name.starts_with('.') && name.ends_with(".md"))
         .collect();
     files.sort();
     files
+}
+
+/// Whether a proposal waits for the user's go-ahead (the sidebar's `go-ahead?`).
+pub fn has_pending_proposals(project: &Project) -> bool {
+    !proposal_files(project).is_empty()
+}
+
+/// One line per proposal file: its path in the project folder and its first
+/// non-empty line, in file-name order.
+pub fn pending_proposals(project: &Project) -> Vec<String> {
+    proposal_files(project)
         .into_iter()
         .map(|(name, path)| {
             let text = std::fs::read_to_string(&path).unwrap_or_default();

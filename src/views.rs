@@ -185,6 +185,7 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
     let mut out = Vec::new();
     let threads: Vec<thread::Thread> = thread::list(project).into_iter().filter(|t| !t.is_remote() && matches!(t.status, thread::Status::Open | thread::Status::Starting)).collect();
     let thread_needs = threads.iter().any(|t| Group::from_token(&t.last_group) == Some(Group::WaitingOnYou));
+    let awaiting = crate::coordinator::has_pending_proposals(project);
     let recorded = (!record.pane_id.is_empty()).then_some(record.pane_id.as_str());
     for pane in coordinators.iter().map(|c| c.pane_id.as_str()).chain(recorded) {
         if out.iter().any(|(p, _)| p == pane) {
@@ -193,9 +194,9 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
         let terminal = agents.iter().find(|a| a.pane_id == pane).map(|a| a.terminal_id.clone()).unwrap_or_default();
         let report = crate::progress::self_report(&ctx.root, &record.socket, pane, &terminal);
         let state = coordinators.iter().find(|c| c.pane_id == pane).map(|c| crate::coordinator::row_state(c, report.as_ref()));
-        let needs = !paused && state.is_some() && (thread_needs || state.as_ref().is_some_and(|(group, _)| *group == Group::WaitingOnYou));
+        let needs = !paused && state.is_some() && (thread_needs || awaiting || state.as_ref().is_some_and(|(group, _)| *group == Group::WaitingOnYou));
         let line = state.map(|(_, line)| line).unwrap_or_default();
-        let cells = if paused { SubCells::default() } else { coordinator_line(&threads, &line, report.as_ref()).cells };
+        let cells = if paused { SubCells::default() } else { SubCells { ask: awaiting.then(|| ASK_TEXT.to_string()), ..coordinator_line(&threads, &line, report.as_ref()).cells } };
         out.push((pane.to_string(), Rank { needs, coordinator: true, cells, ..Rank::default() }));
     }
     for t in threads.into_iter().filter(|t| !t.pane_id.is_empty()) {
@@ -223,6 +224,7 @@ pub fn tokens(rank: Option<&Rank>, agent: &Agent) -> Tokens {
         (RECENT_TOKEN.to_string(), (tier != 1).then(|| format!("{:020}", agent.state_change_seq))),
         (TITLE_TOKEN.to_string(), rank.title),
         (PROGRESS_TOKEN.to_string(), rank.cells.progress),
+        (ASK_TOKEN.to_string(), rank.cells.ask),
         (WORKING_TOKEN.to_string(), rank.cells.working),
         (REST_TOKEN.to_string(), rank.cells.rest),
     ]
@@ -427,7 +429,11 @@ pub fn state_line(group: Group, t: &thread::Thread, live: &thread::Live, now: ji
 
 /// A coordinator's own percentage, the first cell of its sub-line row.
 pub const PROGRESS_TOKEN: &str = "hp_pct";
-/// A coordinator's `N working`, the cell after `$hp_sub`.
+/// A coordinator's [`ASK_TEXT`] while a proposal waits in
+/// `scratch/proposals/`, the cell after `$hp_sub`.
+pub const ASK_TOKEN: &str = "hp_ask";
+pub const ASK_TEXT: &str = "go-ahead?";
+/// A coordinator's `N working`, the cell after [`ASK_TOKEN`].
 pub const WORKING_TOKEN: &str = "hp_work";
 /// A coordinator's other thread counts, the last cell.
 pub const REST_TOKEN: &str = "hp_rest";
@@ -435,10 +441,12 @@ pub const REST_TOKEN: &str = "hp_rest";
 /// The cells of a coordinator's sub-line row other than `$hp_sub`. Herdr
 /// colours a whole token, so the yellow parts need tokens of their own; it
 /// joins a row's tokens with ` · ` and skips missing ones, so the row reads
-/// `~10% · needs you · 1 blocked · 2 working · 1 review` as one line.
+/// `~10% · needs you · 1 blocked · go-ahead? · 2 working · 1 review` as one line.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SubCells {
     pub progress: Option<String>,
+    /// Set by [`project_ranks`], not by [`coordinator_line`].
+    pub ask: Option<String>,
     pub working: Option<String>,
     pub rest: Option<String>,
 }
@@ -462,7 +470,7 @@ fn coordinator_line(threads: &[thread::Thread], state_line: &str, report: Option
     let lead: Vec<String> = needs.into_iter().chain(count(Group::WaitingOnYou, "blocked")).collect();
     let rest: Vec<String> = [(Group::ReadyForReview, "review"), (Group::Landing, "landing"), (Group::Idle, "idle")].into_iter().filter_map(|(g, l)| count(g, l)).collect();
     let progress = report.filter(|r| r.reported()).and_then(|r| r.percent).filter(|p| *p < 100).map(|p| format!("~{p}%"));
-    CoordinatorLine { lead: lead.join(" · "), cells: SubCells { progress, working: count(Group::Working, "working"), rest: Some(rest.join(" · ")).filter(|r| !r.is_empty()) } }
+    CoordinatorLine { lead: lead.join(" · "), cells: SubCells { progress, ask: None, working: count(Group::Working, "working"), rest: Some(rest.join(" · ")).filter(|r| !r.is_empty()) } }
 }
 
 /// A coordinator's `$hp_sub` (see [`coordinator_line`]): `needs you` and the
@@ -642,8 +650,12 @@ fn agent_row_lists(doc: &mut DocumentMut) -> Vec<&mut Array> {
 const PROGRESS_COLOUR: &str = "#e0af68";
 
 /// The [`SubCells`] cells as `(token, fg)`, before `$hp_sub` and after it.
-const BEFORE_SUB: [(&str, &str); 1] = [(PROGRESS_TOKEN, PROGRESS_COLOUR)];
-const AFTER_SUB: [(&str, &str); 2] = [(WORKING_TOKEN, PROGRESS_COLOUR), (REST_TOKEN, CLEAR_COLOUR)];
+const BEFORE_SUB: [(&str, &str, bool); 1] = [(PROGRESS_TOKEN, PROGRESS_COLOUR, false)];
+const AFTER_SUB: [(&str, &str, bool); 3] = [(ASK_TOKEN, ASK_COLOUR, true), (WORKING_TOKEN, PROGRESS_COLOUR, false), (REST_TOKEN, CLEAR_COLOUR, false)];
+
+/// `go-ahead?`: Tokyo Night's orange, bold, apart from the needs-you red and
+/// the percentage's yellow.
+const ASK_COLOUR: &str = "#ff9e64";
 
 fn cell_token(cell: &Value) -> Option<&str> {
     cell.as_str().or_else(|| cell.as_inline_table().and_then(|t| t.get("token")).and_then(Value::as_str))
@@ -656,12 +668,15 @@ fn cell_token(cell: &Value) -> Option<&str> {
 /// and only the last bare `$hp_sub` row is kept. Before upstream's removal,
 /// the row is left bare for upstream to recognise.
 fn place_sub_cells(doc: &mut DocumentMut, remove: bool) {
-    let ours: Vec<String> = BEFORE_SUB.iter().chain(&AFTER_SUB).map(|(t, _)| format!("${t}")).collect();
+    let ours: Vec<String> = BEFORE_SUB.iter().chain(&AFTER_SUB).map(|(t, _, _)| format!("${t}")).collect();
     let bare = |row: &Value| row.as_array().is_some_and(|cells| cells.len() == 1 && cells.get(0).and_then(cell_token) == Some("$hp_sub"));
-    let cell = |(token, colour): &(&str, &str)| {
+    let cell = |(token, colour, bold): &(&str, &str, bool)| {
         let mut t = InlineTable::new();
         t.insert("token", format!("${token}").into());
         t.insert("fg", (*colour).into());
+        if *bold {
+            t.insert("bold", true.into());
+        }
         Value::InlineTable(t)
     };
     for rows in agent_row_lists(doc) {
@@ -1026,7 +1041,7 @@ mod tests {
         let title = |t: Option<&str>| (TITLE_TOKEN.to_string(), t.map(str::to_string));
         let none = |token: &str| (token.to_string(), None);
         let some = |token: &str, value: &str| (token.to_string(), Some(value.to_string()));
-        let no_cells = [none(PROGRESS_TOKEN), none(WORKING_TOKEN), none(REST_TOKEN)];
+        let no_cells = [none(PROGRESS_TOKEN), none(ASK_TOKEN), none(WORKING_TOKEN), none(REST_TOKEN)];
         let with = |head: Vec<(String, Option<String>)>| head.into_iter().chain(no_cells.clone()).collect::<Vec<_>>();
         let idle = Agent { agent_status: "idle".into(), state_change_seq: 593, ..Agent::default() };
         let blocked = Agent { agent_status: "blocked".into(), ..idle.clone() };
@@ -1037,11 +1052,39 @@ mod tests {
         assert_eq!(tokens(Some(&thread), &blocked)[..3], [some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593")]);
         let design = Rank { needs: true, ..Rank::default() };
         assert_eq!(tokens(Some(&design), &blocked)[..3], [some("hp_tier", "1"), some("hp_needs", "1"), none(RECENT_TOKEN)]);
-        let cells = SubCells { progress: Some("~10%".into()), working: Some("2 working".into()), rest: None };
+        let cells = SubCells { progress: Some("~10%".into()), ask: None, working: Some("2 working".into()), rest: None };
         let coordinator = Rank { coordinator: true, cells, ..Rank::default() };
-        assert_eq!(tokens(Some(&coordinator), &blocked), vec![some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
+        assert_eq!(tokens(Some(&coordinator), &blocked), vec![some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN), title(None), some(PROGRESS_TOKEN, "~10%"), none(ASK_TOKEN), some(WORKING_TOKEN, "2 working"), none(REST_TOKEN)]);
         let waiting = Rank { needs: true, ..coordinator };
         assert_eq!(tokens(Some(&waiting), &idle)[..3], [some("hp_tier", "1"), some("hp_needs", "1"), none(RECENT_TOKEN)]);
+    }
+
+    #[test]
+    fn a_coordinator_awaiting_a_go_ahead_ranks_with_the_needs_you_group() {
+        let agents = [
+            seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
+            seen("quiet-coordinator", "other", 'c', Group::Idle, IDLE, 70),
+            seen("asking-coordinator", "demo", 'c', Group::Idle, IDLE, 10),
+        ];
+        let mut rows = scene(&agents, &[]);
+        assert_eq!(herdr_sort(&priority_view(), rows.iter().map(|r| Row { name: r.name, tokens: r.tokens.clone(), attention: r.attention, seq: r.seq }).collect()), ["thread-working", "quiet-coordinator", "asking-coordinator"]);
+        rows.iter_mut().find(|r| r.name == "asking-coordinator").unwrap().tokens.insert("hp_needs".into(), "1".into());
+        assert_eq!(herdr_sort(&priority_view(), rows), ["asking-coordinator", "thread-working", "quiet-coordinator"]);
+    }
+
+    #[test]
+    fn go_ahead_shows_only_for_a_markdown_proposal_in_an_unpaused_project() {
+        let root = tempfile::tempdir().unwrap();
+        let project = project::create(root.path(), "Demo", "", vec![]).unwrap();
+        let proposals = project.dir().join(crate::coordinator::PROPOSALS_DIR);
+        assert!(!crate::coordinator::has_pending_proposals(&project));
+        std::fs::create_dir_all(&proposals).unwrap();
+        std::fs::write(proposals.join("notes.txt"), "x").unwrap();
+        std::fs::write(proposals.join(".hidden.md"), "x").unwrap();
+        assert!(!crate::coordinator::has_pending_proposals(&project));
+        std::fs::write(proposals.join("a.md"), "# A\n").unwrap();
+        assert!(crate::coordinator::has_pending_proposals(&project));
+        assert_eq!(crate::coordinator::pending_proposals(&project), [format!("{}/a.md: A", crate::coordinator::PROPOSALS_DIR)]);
     }
 
     #[test]
@@ -1165,7 +1208,7 @@ mod tests {
         assert_eq!(row(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "~50% · 1 working", "no activity text");
         assert_eq!(coordinator_sub(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)), "", "nothing red, so no `$hp_sub` cell");
         let cells = coordinator_line(&[t(Group::Working, worker)], "idle", Some(&waiting_on_thread)).cells;
-        assert_eq!(cells, SubCells { progress: Some("~50%".into()), working: Some("1 working".into()), rest: None });
+        assert_eq!(cells, SubCells { progress: Some("~50%".into()), ask: None, working: Some("1 working".into()), rest: None });
         let two = [t(Group::Working, worker), t(Group::ReadyForReview, worker), t(Group::Working, thread::Kind::Design), t(Group::Idle, worker)];
         assert_eq!(row(&two, "idle", None), "2 working · 1 review · 1 idle");
         assert_eq!(coordinator_line(&two, "idle", None).cells.rest.as_deref(), Some("1 review · 1 idle"));
@@ -1192,8 +1235,8 @@ mod tests {
         let sub = rows.iter().filter_map(Value::as_array).filter(|r| row_names(&Value::Array((*r).clone()), "$hp_sub")).collect::<Vec<_>>();
         assert_eq!(sub.len(), 1, "one sub-line row: {once}");
         let cells: Vec<(&str, Option<&str>)> = sub[0].iter().map(|c| (cell_token(c).unwrap(), c.as_inline_table().unwrap().get("fg").and_then(Value::as_str))).collect();
-        assert_eq!(cells, [("$hp_pct", Some(PROGRESS_COLOUR)), ("$hp_sub", None), ("$hp_work", Some(PROGRESS_COLOUR)), ("$hp_rest", Some(CLEAR_COLOUR))]);
-        assert!(sub[0].iter().all(|c| c.as_inline_table().unwrap().iter().all(|(k, _)| ["token", "fg", "dim", "rules"].contains(&k))), "only keys Herdr 0.9.3 takes");
+        assert_eq!(cells, [("$hp_pct", Some(PROGRESS_COLOUR)), ("$hp_sub", None), ("$hp_ask", Some(ASK_COLOUR)), ("$hp_work", Some(PROGRESS_COLOUR)), ("$hp_rest", Some(CLEAR_COLOUR))]);
+        assert!(sub[0].iter().all(|c| c.as_inline_table().unwrap().iter().all(|(k, _)| ["token", "fg", "bold", "dim", "rules"].contains(&k))), "only keys Herdr 0.9.3 takes");
         // A row from before this change (bare `$hp_sub`) is upgraded in place.
         let (bare, _) = config_edit(&once, &[], true).unwrap();
         assert!(!bare.contains("$hp_pct") && bare.contains("$hp_sub"), "{bare}");
@@ -1285,7 +1328,7 @@ mod tests {
         assert_eq!(configure(&once), once, "idempotent");
         let doc = once.parse::<DocumentMut>().unwrap();
         let tokens = |rows: &Item| -> Vec<String> { rows.as_array().unwrap().iter().map(|r| r.as_array().unwrap().iter().map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.as_inline_table().unwrap().get("token").unwrap().as_str().unwrap().to_string())).collect::<Vec<_>>().join(",")).collect() };
-        let sub = "$hp_pct,$hp_sub,$hp_work,$hp_rest";
+        let sub = "$hp_pct,$hp_sub,$hp_ask,$hp_work,$hp_rest";
         assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows"]), ["state_icon,agent,state_text", "$hp_title", sub], "{once}");
         assert_eq!(tokens(&doc["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]), ["agent", "$hp_title", sub], "{once}");
         // The title row has no style rule, so no key Herdr 0.9.3 would reject.
