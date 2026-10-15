@@ -613,7 +613,7 @@ fn entry_for<'a>(reads: &'a mut SkillReads, socket: &str, pane_id: &str, termina
 /// The project this pane is the coordinator of: an agent in the project home
 /// (`progress::role`), in the session the project belongs to.
 fn coordinator_project(ctx: &Ctx, pane: &crate::progress::Current) -> Option<Project> {
-    let crate::progress::Role::Coordinator { slug } = crate::progress::role(&ctx.root, &pane.pane_id, &[&pane.cwd, &pane.foreground_cwd]) else {
+    let crate::progress::Role::Coordinator { slug } = crate::progress::role(&ctx.root, &pane.pane_id, &[&pane.pane.cwd, &pane.pane.foreground_cwd]) else {
         return None;
     };
     let project = Project::load(&ctx.root, &slug).ok()?;

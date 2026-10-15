@@ -5013,7 +5013,7 @@ fn skill_records_what_a_coordinator_read_and_nothing_for_anyone_else() {
 
     // A new conversation in the pane no longer holds what it read.
     let socket = world.home.path().join("a.sock").to_string_lossy().into_owned();
-    let pane = crate::progress::Current { socket, pane_id: "w1:p1".into(), terminal_id: String::new(), agent: "claude".into(), cwd: dir, foreground_cwd: String::new() };
+    let pane = crate::progress::Current { socket, pane_id: "w1:p1".into(), terminal_id: String::new(), agent: "claude".into(), pane: crate::herdr::Pane { pane_id: "w1:p1".into(), cwd: dir, ..Default::default() } };
     coordinator::forget_skill_read(&world.ctx(), &pane).unwrap();
     assert!(coordinator::skill_reads(&project)["w1:p1"].hash.is_empty());
 }
