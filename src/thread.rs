@@ -156,6 +156,8 @@ pub struct Thread {
     /// A design thread's first wait for the user has been announced; its
     /// later questions are the interview and announce nothing.
     pub interview_announced: bool,
+    /// A worktree thread's `wt hook pre-start` (ADR 0009).
+    pub setup: crate::wt_hooks::Setup,
 }
 
 impl Thread {

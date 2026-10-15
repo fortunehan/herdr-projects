@@ -34,7 +34,7 @@ How Herdr Projects works, what it writes where, what its safety settings do and 
   library/<id>/           home copy of files a thread produced
   .state/                 status, coordinator record, live coordinators, ticker state, lock
 ~/.herdr-projects/.ticker.lock  .ticker.log  .progress/  .trash/
-~/.config/herdr-projects/config.toml             yours: root, profiles, safety tables, machines, default_wid
+~/.config/herdr-projects/config.toml             yours: root, profiles, safety tables, machines, default_wid, worktree_hooks
 ~/.config/herdr-projects/owned.json              what `configure` changed, for `unconfigure`
 ~/.config/herdr-projects/approved-routines.json  written only by `routine approve`
 ```
@@ -44,6 +44,8 @@ Every thread works from `<its working directory>/.herdr-project/<project>-<id>/`
 `PROJECT.md` settings, all changeable from the popup's settings section, from chat, or with `herdr-projects set <project> <key> <value>`: `name` (the workspace label), `goal`, `repos` (`repos.add PATH[@MACHINE]`, `repos.remove PATH`), `coordinator_profile` and `thread_profile` (the default [profiles](#agent-profiles); the old names `coordinator_agent` and `thread_agent` still read), `design_profile` (a [design thread](#design-threads)'s default, a Claude Code profile; empty means `thread_profile`), `max_parallel_threads` (10), `auto_resolve_days` (7), `nudge` (`true`), `mute` (`false`).
 
 The default WID, which a thread in an Azure DevOps repository takes when `thread start` gets no `--wid`, is one value for every project: a top-level `default_wid = "16951176"` in `~/.config/herdr-projects/config.toml` (above any `[table]`), `16951176` when the key is absent. Each `thread start` reads it, so a change needs no rebuild; a value that is not five or more digits makes `thread start` fail for Azure DevOps repositories.
+
+A new worktree thread gets worktrunk's blocking create hooks before its brief is written and its agent starts: `wt -C <worktree> hook pre-start`, on the thread's machine (over ssh for `--machine`), with stdin closed and never `--yes`. Your user hooks (`~/.config/worktrunk/config.toml`) run; a repository's project hooks (`.config/wt.toml`) run only once you have approved them in that repository (`wt config approvals add`). Without a TTY, wt refuses the whole run when project hooks are unapproved, so herdr-projects then runs the user hooks alone. `post-start` never runs, because dev servers belong in visible Herdr tabs. The output goes to `setup.log` in the thread folder. Whatever `wt step copy-ignored` brings into `.herdr-project/` from the main checkout (other threads' folders) is removed before the brief is written, whether or not your wt config excludes it; `[step.copy-ignored] exclude = [".herdr-project/"]` in your wt config skips the copy itself. No `wt` on the machine adds nothing. A failure, unapproved project hooks, or a run that exceeds `worktree_hooks_timeout` keeps the thread going: its brief gets a `Setup:` line naming the log, and the coordinator gets an inbox item. `thread restart` runs the hooks again only when the last run failed, timed out or was cut off. Top-level keys in `config.toml`: `worktree_hooks = "wt"` (the default) or `"off"`, and `worktree_hooks_timeout = 600` (seconds). Herdr's own `worktree create` and `remove` are unchanged (ADR 0009).
 
 ## Design threads
 

@@ -11,6 +11,7 @@ use crate::paths::Ctx;
 use crate::project::{self, Project};
 use crate::runner::{Cmd, Runner};
 use crate::thread::{self, BranchKind, CopyOutcome, Group, Kind, Live, Status, Thread};
+use crate::wt_hooks::{self, Setup};
 use crate::{coordinator, mainline, remote, ticker};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -258,6 +259,7 @@ pub fn start(ctx: &Ctx, slug: &str, args: StartArgs) -> Result<Thread> {
 fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, restart: bool) -> Result<Thread> {
     let record = thread::load(project, id)?;
     let runner = ctx.runner;
+    let hooks = if record.kind == Kind::Worktree { Some(wt_hooks::settings(&ctx.config_dir)?) } else { None };
 
     let placed = match record.kind {
         Kind::Worktree if record.is_remote() => {
@@ -307,9 +309,44 @@ fn place_and_brief(ctx: &Ctx, project: &Project, view: &SessionView, id: &str, r
         Kind::Tab | Kind::Checkout | Kind::Design => place_tab(project, view, &record)?,
         Kind::Adopted => bail!("an adopted thread is not placed by the binary"),
     };
+    let placed = match &hooks {
+        Some(hooks) => run_setup(ctx, project, placed, hooks)?,
+        None => placed,
+    };
     bind_work_item(ctx, &placed);
     write_brief(ctx, project, &placed, restart)?;
     finish_placement(project, view, id)
+}
+
+/// worktrunk's blocking create hooks in a new thread worktree, on the
+/// thread's machine, before the brief and the agent (ADR 0009). A missing
+/// `wt` is skipped quietly; a failure, a timeout or unapproved project hooks
+/// keep the thread going with a brief line and an inbox item.
+fn run_setup(ctx: &Ctx, project: &Project, placed: Thread, hooks: &wt_hooks::Settings) -> Result<Thread> {
+    if !hooks.enabled {
+        return thread::update(project, &placed.id, |t| t.setup = Setup::Skipped);
+    }
+    let target = if placed.is_remote() { Some(remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &placed.machine)?) } else { None };
+    let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
+    thread::update(project, &placed.id, |t| t.setup = Setup::Running)?;
+    let outcome = wt_hooks::run(ctx.runner, target.as_deref(), &placed.worktree_path, &dir, hooks.timeout);
+    let placed = thread::update(project, &placed.id, |t| t.setup = outcome.setup())?;
+    let (event, what) = match &outcome {
+        wt_hooks::Outcome::Missing | wt_hooks::Outcome::Done => return Ok(placed),
+        wt_hooks::Outcome::Failed(error) => ("setup failed", format!("`wt hook pre-start` failed ({error})")),
+        wt_hooks::Outcome::TimedOut => ("setup timed out", format!("`wt hook pre-start` was stopped after {} s", hooks.timeout.as_secs())),
+        wt_hooks::Outcome::Unapproved => (
+            "setup hooks not approved",
+            "the repository's wt project hooks are not approved, so only the user hooks ran; `wt config approvals add` in the repository approves them".to_string(),
+        ),
+    };
+    let on = if placed.is_remote() { format!(" on {}", placed.machine) } else { String::new() };
+    let summary = format!("{}: {what}; log {dir}/setup.log{on}", crate::steps::thread_label(&placed));
+    eprintln!("warning: {summary}");
+    if let Err(error) = crate::inbox::write(project, "setup", &placed.id, event, &summary, "") {
+        eprintln!("warning: could not write the inbox item: {error:#}");
+    }
+    Ok(placed)
 }
 
 /// Where a new worktree starts: `--base`, else the mainline, after a fetch
@@ -515,7 +552,8 @@ fn write_brief(ctx: &Ctx, project: &Project, placed: &Thread, restart: bool) -> 
     let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
     let with_dir = Thread { thread_dir: dir.clone(), ..placed.clone() };
     let task = std::fs::read_to_string(thread::task_path(project, &placed.id)).unwrap_or_default();
-    let brief = thread::brief_for(project, &with_dir, &task, restart, &mainline::worktree_lines(placed))?;
+    let lines = mainline::worktree_lines(placed) + &wt_hooks::brief_line(placed.setup, &dir);
+    let brief = thread::brief_for(project, &with_dir, &task, restart, &lines)?;
     let target = remote::ssh_target(ctx.runner, &ctx.env.herdr_bin(), &ctx.config_dir, &placed.machine)?;
     remote::write_brief(ctx.runner, &target, &placed.cwd, &dir, &brief)?;
     thread::update(project, &placed.id, |t| t.thread_dir = dir)?;
@@ -586,7 +624,8 @@ fn write_brief_local(ctx: &Ctx, project: &Project, placed: &Thread, restart: boo
     let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
     let with_dir = Thread { thread_dir: dir.clone(), ..placed.clone() };
     let task = std::fs::read_to_string(thread::task_path(project, &placed.id)).unwrap_or_default();
-    let brief = thread::brief_for(project, &with_dir, &task, restart, &mainline_lines(ctx, project, placed))?;
+    let lines = mainline_lines(ctx, project, placed) + &wt_hooks::brief_line(placed.setup, &dir);
+    let brief = thread::brief_for(project, &with_dir, &task, restart, &lines)?;
 
     std::fs::create_dir_all(Path::new(&dir).join("library")).with_context(|| format!("could not create {dir}"))?;
     if !matches!(placed.kind, Kind::Tab | Kind::Design) {
@@ -757,6 +796,12 @@ pub fn restart(ctx: &Ctx, slug: &str, id: &str, profile: Option<&str>) -> Result
         },
     }
     let placed = thread::load(&project, id)?;
+    // A run that succeeded is never repeated; one that did not finish is.
+    let placed = if placed.kind == Kind::Worktree && placed.setup.needs_retry() {
+        run_setup(ctx, &project, placed, &wt_hooks::settings(&ctx.config_dir)?)?
+    } else {
+        placed
+    };
     bind_work_item(ctx, &placed);
     write_brief(ctx, &project, &placed, true)?;
     finish_placement(&project, &view, id)

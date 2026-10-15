@@ -24,6 +24,8 @@ pub struct World {
     pub panes: Rc<RefCell<String>>,
     /// The styled screen `agent read --format ansi` serves for every pane.
     pub screen: Rc<RefCell<String>>,
+    /// The answer to `wt hook pre-start`, here or over ssh: no `wt` by default.
+    pub hooks: Rc<RefCell<Output>>,
 }
 
 /// A Claude input box, empty (dim placeholder) or holding `draft`.
@@ -48,8 +50,11 @@ impl World {
             agents: Rc::new(RefCell::new("[]".into())),
             panes: Rc::new(RefCell::new("[]".into())),
             screen: Rc::new(RefCell::new(claude_screen(None))),
+            hooks: Rc::new(RefCell::new(ok("hp-setup:missing\n"))),
             home,
         };
+        let hooks = world.hooks.clone();
+        world.runner.on_fn(|cmd| cmd.display().contains(crate::wt_hooks::MARK), move |_| Ok(hooks.borrow().clone()));
         let screen = world.screen.clone();
         world.runner.on_fn(
             |cmd| cmd.display().contains("agent read") && cmd.display().contains("--format ansi"),
@@ -4929,4 +4934,162 @@ fn no_skill_message_while_paused_muted_nudge_off_busy_or_without_a_live_coordina
     set_agents(&world, &project, "idle");
     skill_ticks(&world, &project);
     assert_eq!(skill_messages(&world).len(), 1);
+}
+
+// ------------------------------------------------- wt pre-start (ADR 0009)
+
+/// Starts a local worktree thread of `/repo` at `<home>/wt` with the hooks
+/// answering `hooks`; returns the project, the thread and the worktree.
+fn start_with_hooks(hooks: Output, config: &str) -> (World, Project, Thread, PathBuf) {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    let worktree = world.home.path().join("wt");
+    std::fs::create_dir_all(worktree.join(".herdr-project/demo-t-0001")).unwrap();
+    let repo = world.home.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let wt = worktree.to_string_lossy().into_owned();
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    *world.hooks.borrow_mut() = hooks;
+    let created = format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#);
+    placement_answers(&world, move |_| Ok(ok(&created)));
+    let ctx = world.ctx();
+    std::fs::create_dir_all(&ctx.config_dir).unwrap();
+    std::fs::write(ctx.config_dir.join("config.toml"), config).unwrap();
+    let args = StartArgs { title: "Fix it".into(), repo: Some(repo.to_string_lossy().into_owned()), task: "Do it.".into(), ..Default::default() };
+    let t = threads::start(&ctx, "demo", args).unwrap();
+    (world, project, t, worktree)
+}
+
+fn hook_calls(world: &World) -> Vec<Cmd> {
+    world.runner.calls.borrow().iter().filter(|c| c.display().contains(crate::wt_hooks::MARK)).cloned().collect()
+}
+
+fn brief_of(worktree: &Path) -> String {
+    std::fs::read_to_string(worktree.join(".herdr-project/demo-t-0001/brief.md")).unwrap()
+}
+
+#[test]
+fn without_wt_a_worktree_thread_starts_as_before() {
+    let (world, project, t, worktree) = start_with_hooks(ok("hp-setup:missing\n"), "");
+    assert_eq!((t.status, t.setup), (Status::Open, crate::wt_hooks::Setup::Skipped));
+    assert_eq!(hook_calls(&world).len(), 1);
+    assert!(!brief_of(&worktree).contains("- Setup:"));
+    assert!(items_of(&project, "setup").is_empty());
+}
+
+#[test]
+fn wt_pre_start_runs_in_the_new_worktree_before_the_brief() {
+    let (world, project, t, worktree) = start_with_hooks(ok("hp-setup:done\n"), "");
+    assert_eq!((t.status, t.setup), (Status::Open, crate::wt_hooks::Setup::Done));
+    let calls = world.runner.calls.borrow();
+    let create = calls.iter().position(|c| c.display().contains("worktree create")).unwrap();
+    let hook = calls.iter().position(|c| c.display().contains(crate::wt_hooks::MARK)).unwrap();
+    assert!(create < hook);
+    let cmd = &calls[hook];
+    // Here, in its own process group, stdin closed, never approving anything.
+    assert_eq!(cmd.program, "sh");
+    assert!(cmd.own_group && cmd.stdin.is_none());
+    assert_eq!(cmd.timeout, crate::wt_hooks::DEFAULT_TIMEOUT);
+    let script = cmd.args.last().unwrap();
+    assert!(script.contains(&format!("d={}", worktree.display())), "{script}");
+    assert!(script.contains("hook pre-start </dev/null") && !script.contains("--yes") && !script.contains("post-start"), "{script}");
+    drop(calls);
+    assert!(!brief_of(&worktree).contains("- Setup:"));
+    assert!(items_of(&project, "setup").is_empty());
+}
+
+#[test]
+fn a_failed_pre_start_keeps_the_thread_going_with_a_brief_line_and_an_inbox_item() {
+    let (_world, project, t, worktree) = start_with_hooks(ok("hp-setup:failed 3\n"), "");
+    assert_eq!((t.status, t.setup), (Status::Open, crate::wt_hooks::Setup::Failed));
+    assert!(t.prompt_pending);
+    let brief = brief_of(&worktree);
+    let log = format!("{}/.herdr-project/demo-t-0001/setup.log", worktree.display());
+    assert!(brief.contains(&format!("- Setup: `wt hook pre-start` failed in this worktree. Log: `{log}`.")), "{brief}");
+    let items = items_of(&project, "setup");
+    assert_eq!(items.len(), 1);
+    assert_eq!((items[0].subject.as_str(), items[0].event.as_str()), ("t-0001", "setup failed"));
+    assert!(items[0].summary.contains("(exit 3)") && items[0].summary.contains(&log), "{}", items[0].summary);
+}
+
+#[test]
+fn unapproved_project_hooks_are_skipped_and_said_so() {
+    let (_world, project, t, worktree) = start_with_hooks(ok("hp-setup:unapproved\n"), "");
+    assert_eq!(t.setup, crate::wt_hooks::Setup::Unapproved);
+    assert!(brief_of(&worktree).contains("project hooks (`.config/wt.toml`) are not approved and were skipped"));
+    assert_eq!(items_of(&project, "setup")[0].event, "setup hooks not approved");
+}
+
+#[test]
+fn a_pre_start_past_its_time_limit_is_stopped_and_the_thread_goes_on() {
+    let (world, project, t, worktree) = start_with_hooks(crate::runner::fake::timeout(), "worktree_hooks_timeout = 42\n");
+    assert_eq!((t.status, t.setup), (Status::Open, crate::wt_hooks::Setup::TimedOut));
+    assert_eq!(hook_calls(&world)[0].timeout, std::time::Duration::from_secs(42));
+    assert!(brief_of(&worktree).contains("- Setup: `wt hook pre-start` was stopped at its time limit."));
+    let log = std::fs::read_to_string(worktree.join(".herdr-project/demo-t-0001/setup.log")).unwrap();
+    assert!(log.contains("timed out after 42 s"), "{log}");
+    let items = items_of(&project, "setup");
+    assert_eq!(items[0].event, "setup timed out");
+    assert!(items[0].summary.contains("stopped after 42 s"));
+}
+
+#[test]
+fn worktree_hooks_off_runs_nothing() {
+    let (world, _project, t, _worktree) = start_with_hooks(ok("hp-setup:done\n"), "worktree_hooks = \"off\"\n");
+    assert_eq!(t.setup, crate::wt_hooks::Setup::Skipped);
+    assert!(hook_calls(&world).is_empty());
+}
+
+#[test]
+fn restart_reruns_only_a_pre_start_that_did_not_finish() {
+    use crate::wt_hooks::Setup;
+    for (before, runs) in [(Setup::Done, 0), (Setup::Unapproved, 0), (Setup::Skipped, 0), (Setup::None, 0), (Setup::Failed, 1), (Setup::TimedOut, 1), (Setup::Running, 1)] {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let cwd = world.home.path().to_string_lossy().into_owned();
+        world.thread(&project, world.home.path(), |t| {
+            t.status = Status::Failed;
+            t.setup = before;
+        });
+        std::fs::write(thread::task_path(&project, "t-0001"), "The task.").unwrap();
+        *world.panes.borrow_mut() = format!("[{}]", pane_json("w2", "w2:t1", "w2:p1", &cwd));
+        world.runner.on("rev-parse --git-path", fail(1, "not a repo"));
+        *world.hooks.borrow_mut() = ok("hp-setup:done\n");
+        let t = threads::restart(&world.ctx(), "demo", "t-0001", None).unwrap();
+        assert_eq!(hook_calls(&world).len(), runs, "{before:?}");
+        assert_eq!(t.setup, if runs == 1 { Setup::Done } else { before }, "{before:?}");
+    }
+}
+
+#[test]
+fn a_remote_thread_runs_its_hooks_over_ssh_on_its_machine() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+    *world.hooks.borrow_mut() = ok("hp-setup:failed 1\n");
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    world.runner.on("profile resolve", ok(r#"{"name":"deep","agent":"claude","args":[]}"#));
+    mainline_answers(&world, "git@github.com:Owner/App.git");
+    world.runner.on(
+        "worktree create",
+        ok(r#"{"result":{"root_pane":{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"/remote/wt"},"worktree":{"path":"/remote/wt"}}}"#),
+    );
+    world.runner.on_fn(|cmd| cmd.program == "ssh" && cmd.display().contains("herdr/config.toml"), |_| Ok(ok("/home/me\n/remote/app\n")));
+    world.runner.on("ssh", ok(""));
+    let args = StartArgs { title: "Fix it".into(), repo: Some("/remote/repo".into()), machine: Some("box".into()), task: "Do it.".into(), ..Default::default() };
+    let t = threads::start(&world.ctx(), "demo", args).unwrap();
+    assert_eq!((t.status, t.setup), (Status::Open, crate::wt_hooks::Setup::Failed));
+    let hooks = hook_calls(&world);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].program, "ssh");
+    let line = hooks[0].display();
+    assert!(line.contains("me@box") && line.contains("d=/remote/wt") && line.contains("command -v wt") && line.contains(".local/bin"), "{line}");
+    let calls = world.runner.calls.borrow();
+    let hook = calls.iter().position(|c| c.display().contains(crate::wt_hooks::MARK)).unwrap();
+    let brief = calls.iter().position(|c| c.display().contains("brief.md")).unwrap();
+    assert!(hook < brief);
+    let text = calls[brief].stdin.clone().unwrap_or_default();
+    assert!(text.contains("- Setup: `wt hook pre-start` failed in this worktree. Log: `/remote/wt/.herdr-project/demo-t-0001/setup.log`."), "{text}");
+    drop(calls);
+    assert!(items_of(&project, "setup")[0].summary.ends_with("on box"));
 }
