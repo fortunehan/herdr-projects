@@ -183,7 +183,7 @@ fn managed(ctx: &Ctx, current: &Current) -> bool {
         .collect();
     let in_home = |project: &project::Project| {
         let home = project.canonical_dir().to_string_lossy().into_owned();
-        pane.cwd == home || pane.foreground_cwd == home
+        crate::herdr::own_dir(&pane.cwd, &pane.foreground_cwd) == home
     };
     // A thread record carries no socket of its own: only the project's
     // coordinator record ties its pane ids to this server.
@@ -508,7 +508,7 @@ pub fn hook(ctx: &Ctx, agent: &str) -> Result<()> {
     let prefix = crate::coordinator::current_prefix(&ctx.root)?;
     let source = event["source"].as_str().unwrap_or("");
     let who = if kind == "SessionStart" && reset(source) {
-        role(&ctx.root, &pane.pane_id, &[event["cwd"].as_str().unwrap_or(""), &pane.pane.cwd, &pane.pane.foreground_cwd])
+        role(&ctx.root, &pane.pane_id, &[event["cwd"].as_str().unwrap_or(""), crate::herdr::own_dir(&pane.pane.cwd, &pane.pane.foreground_cwd)])
     } else {
         Role::Other
     };

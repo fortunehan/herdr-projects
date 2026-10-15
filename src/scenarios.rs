@@ -4953,10 +4953,14 @@ fn skill_world() -> (World, Project) {
 
 /// `skill` run by the agent in `pane`, working in `cwd`.
 fn skill_in(world: &World, pane: &str, cwd: &str) -> String {
+    skill_in_with(world, pane, cwd, "")
+}
+
+fn skill_in_with(world: &World, pane: &str, cwd: &str, foreground_cwd: &str) -> String {
     let socket = world.home.path().join("a.sock").to_string_lossy().into_owned();
     let env = Env::for_test(world.home.path(), &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", pane), ("HERDR_SOCKET_PATH", &socket)]);
     let runner = FakeRunner::new();
-    runner.on("pane current", ok(&format!(r#"{{"result":{{"pane":{{"pane_id":"{pane}","agent":"claude","cwd":"{cwd}"}}}}}}"#)));
+    runner.on("pane current", ok(&format!(r#"{{"result":{{"pane":{{"pane_id":"{pane}","agent":"claude","cwd":"{cwd}","foreground_cwd":"{foreground_cwd}"}}}}}}"#)));
     let ctx = Ctx { env: &env, root: world.root.clone(), config_dir: world.home.path().join("cfg"), runner: &runner, detached_ticker: false };
     coordinator::skill(&ctx).unwrap()
 }
@@ -5009,6 +5013,8 @@ fn skill_records_what_a_coordinator_read_and_nothing_for_anyone_else() {
     skill_in(&world, "w2:p1", &world.home.path().to_string_lossy());
     skill_in(&world, "w3:p1", &format!("{dir}/design"));
     skill_in(&world, "w9:p1", "/elsewhere");
+    // A shell in the project home running an agent from elsewhere (#97).
+    skill_in_with(&world, "w8:p1", &dir, "/elsewhere");
     assert_eq!(coordinator::skill_reads(&project).keys().collect::<Vec<_>>(), ["w1:p1"]);
 
     // A new conversation in the pane no longer holds what it read.
@@ -5267,4 +5273,38 @@ fn a_remote_thread_runs_its_hooks_over_ssh_on_its_machine() {
     assert!(text.contains("- Setup: `wt hook pre-start` failed in this worktree. Log: `/remote/wt/.herdr-project/demo-t-0001/setup.log`."), "{text}");
     drop(calls);
     assert!(items_of(&project, "setup")[0].summary.ends_with("on box"));
+}
+
+#[test]
+fn coordinator_prompt_reaches_its_own_project_s_coordinator_not_one_whose_shell_sits_in_its_folder() {
+    // #97: alpha's coordinator was started from a shell in beta's home.
+    let world = World::new();
+    let alpha = world.project("alpha", "a.sock");
+    let beta = world.project("beta", "a.sock");
+    let home = |p: &Project| p.canonical_dir().to_string_lossy().into_owned();
+    let agent = |pane: &str, cwd: &str, foreground_cwd: &str, name: &str, state: &str, seq: u64| {
+        let (workspace, _) = pane.split_once(':').unwrap();
+        format!(
+            r#"{{"pane_id":"{pane}","tab_id":"{workspace}:t1","workspace_id":"{workspace}","cwd":"{cwd}","foreground_cwd":"{foreground_cwd}","name":"{name}","agent":"claude","agent_status":"{state}","state_change_seq":{seq}}}"#
+        )
+    };
+    *world.agents.borrow_mut() = format!(
+        "[{},{}]",
+        agent("wW:p1", &home(&beta), &home(&alpha), "hpc-alpha", "working", 9),
+        agent("wH:p1", "/code/beta", &home(&beta), "hpc-beta", "done", 3)
+    );
+    world.runner.on("agent prompt", ok(r#"{"result":{}}"#));
+    let ctx = world.ctx();
+    coordinator::prompt(&ctx, "beta", "Merge the open PRs.").unwrap();
+    coordinator::prompt(&ctx, "alpha", "Status?").unwrap();
+    let calls = world.runner.calls.borrow();
+    let sent: Vec<(String, String)> = calls
+        .iter()
+        .filter(|c| c.display().contains("agent prompt"))
+        .map(|c| {
+            let at = c.args.iter().position(|a| a == "prompt").unwrap();
+            (c.args[at + 1].clone(), prompt_text(c).to_string())
+        })
+        .collect();
+    assert_eq!(sent, [("wH:p1".to_string(), "Merge the open PRs.".to_string()), ("wW:p1".to_string(), "Status?".to_string())]);
 }
