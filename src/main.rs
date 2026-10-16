@@ -23,6 +23,7 @@ mod pr;
 mod profiles;
 mod progress;
 mod prompt_box;
+mod proxy;
 mod project;
 mod remote;
 mod rename;

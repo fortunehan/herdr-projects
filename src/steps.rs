@@ -77,12 +77,14 @@ pub fn save_state(project: &Project, state: &State) -> Result<()> {
     project::write_json(&project.state_dir().join("ticker.json"), state)
 }
 
-/// How Azure DevOps failed: it refused the PAT, or it did not answer (a
-/// timeout, a network or proxy error, a 5xx), as it does while it waits for
-/// a 2FA sign-in.
+/// How Azure DevOps failed: it refused the PAT, it refused the requests
+/// (HTTP 403, mostly ones that did not go through the proxy), or it did not
+/// answer (a timeout, a network or proxy error, a 5xx), as it does while it
+/// waits for a 2FA sign-in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AdoFailure {
     SignIn,
+    Forbidden,
     NoAnswer,
 }
 
@@ -762,12 +764,25 @@ fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &
     }
     let text = pr::sanitize(&format!("{error:#}"));
     errors.push(anyhow::anyhow!("{}: Azure DevOps: {text}", t.id));
-    let kind = if pr::ado::is_auth_failure(error) { AdoFailure::SignIn } else { AdoFailure::NoAnswer };
+    let kind = if pr::ado::is_auth_failure(error) {
+        AdoFailure::SignIn
+    } else if pr::ado::is_forbidden(error) {
+        AdoFailure::Forbidden
+    } else {
+        AdoFailure::NoAnswer
+    };
     if memory.ado_failing == Some(kind) {
         return;
     }
     memory.ado_failing = Some(kind);
-    if kind == AdoFailure::NoAnswer {
+    if kind == AdoFailure::Forbidden {
+        let summary = format!(
+            "Azure DevOps refuses the requests ({text}); its pull requests are not being followed. A 403 mostly means they leave through a network Azure DevOps does not accept: set `{}` or `ado_proxy` in config.toml to the proxy that reaches it; the ticker reads config.toml on its next pass",
+            pr::ado::PROXY_VAR
+        );
+        errors.extend(inbox::write(project, "outage", ADO_SUBJECT, "requests refused", &summary, "").err());
+        notifier.send("Azure DevOps", "pull requests are not being followed: Azure DevOps answers HTTP 403 (proxy?)", crate::notify::Sound::Request, true);
+    } else if kind == AdoFailure::NoAnswer {
         let summary = format!(
             "Azure DevOps is not answering ({text}); its pull requests are not being followed. It may be waiting for a 2FA sign-in: sign in to Azure DevOps, and follow-up resumes on its own at the next answer"
         );
@@ -786,6 +801,7 @@ fn forge_failed(project: &Project, notifier: &crate::notify::Notifier, memory: &
 fn ado_worked(project: &Project, memory: &mut Memory, errors: &mut Vec<anyhow::Error>) {
     let ended = match memory.ado_failing.take() {
         Some(AdoFailure::SignIn) => inbox::write(project, "outage", ADO_SUBJECT, "signed in again", "Azure DevOps accepts the PAT again; pull request follow-up has resumed", ""),
+        Some(AdoFailure::Forbidden) => inbox::write(project, "outage", ADO_SUBJECT, "accepted again", "Azure DevOps accepts the requests again; pull request follow-up has resumed", ""),
         Some(AdoFailure::NoAnswer) => inbox::write(project, "outage", ADO_SUBJECT, "answering again", "Azure DevOps answers again; pull request follow-up has resumed", ""),
         None => return,
     };

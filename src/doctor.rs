@@ -42,9 +42,10 @@ fn github_hosts<'a>(forges: impl Iterator<Item = &'a crate::pr::Forge>) -> std::
 }
 
 /// The Azure DevOps section, only for projects with a repository there: the
-/// PAT, the proxy variable, and per organisation whether `connectionData`
-/// names the PAT's user. Report only. It checks this shell's variables; the
-/// ticker has them only when started from such a shell.
+/// PAT, the proxy, and per organisation whether `connectionData` names the
+/// PAT's user. Report only. It checks this shell's variables; the ticker has
+/// them only when started from such a shell, and the ticker check shows
+/// whether it has a proxy.
 fn azure_devops(env: &Env, runner: &dyn Runner, forges: &[crate::pr::Forge], check: &mut dyn FnMut(Option<bool>, &str, String)) {
     use crate::pr::ado;
     let mut orgs: std::collections::BTreeMap<String, ado::Remote> = std::collections::BTreeMap::new();
@@ -62,10 +63,7 @@ fn azure_devops(env: &Env, runner: &dyn Runner, forges: &[crate::pr::Forge], che
     } else {
         check(None, "ado PAT", format!("{} is not set; Azure DevOps pull requests are not followed. The ticker needs it in the shell that runs `ticker start`", ado::PAT_VAR));
     }
-    match env.var(ado::PROXY_VAR).filter(|v| !v.is_empty()) {
-        Some(proxy) => check(Some(true), "ado proxy", format!("{} is {}", ado::PROXY_VAR, crate::pr::sanitize(&without_userinfo(proxy)))),
-        None => check(None, "ado proxy", format!("{} is not set; Azure DevOps requests use the inherited proxy variables", ado::PROXY_VAR)),
-    }
+    proxy_check(env, crate::proxy::Kind::Ado, "Azure DevOps requests", check);
     for (org, remote) in &orgs {
         let label = format!("ado {org}");
         if !pat {
@@ -79,19 +77,25 @@ fn azure_devops(env: &Env, runner: &dyn Runner, forges: &[crate::pr::Forge], che
             Err(error) if ado::is_auth_failure(&error) => {
                 check(None, &label, format!("the PAT is refused ({}); renew {} ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PAT_VAR))
             }
-            Err(error) => check(None, &label, format!("not reached ({}); check {} ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PROXY_VAR)),
+            Err(error) if ado::is_forbidden(&error) => {
+                check(None, &label, format!("refused ({}); check {} or `ado_proxy` ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PROXY_VAR))
+            }
+            Err(error) => check(None, &label, format!("not reached ({}); check {} or `ado_proxy` ({used})", crate::pr::sanitize(&format!("{error:#}")), ado::PROXY_VAR)),
         }
     }
 }
 
-/// A proxy URL without its `user:password@`.
-fn without_userinfo(url: &str) -> String {
-    match url.rsplit_once('@') {
-        Some((before, host)) => match before.split_once("://") {
-            Some((scheme, _)) => format!("{scheme}://{host}"),
-            None => host.to_string(),
-        },
-        None => url.to_string(),
+/// Where this process's proxy for `kind` comes from, or a warning that there
+/// is none.
+fn proxy_check(env: &Env, kind: crate::proxy::Kind, what: &str, check: &mut dyn FnMut(Option<bool>, &str, String)) {
+    let label = format!("{} proxy", kind.key().trim_end_matches("_proxy"));
+    match crate::proxy::resolve(env, kind) {
+        Some(proxy) => check(Some(true), &label, format!("{} is {}", proxy.source, crate::proxy::redact(&proxy.url))),
+        None => check(
+            None,
+            &label,
+            format!("neither {} nor `{}` in config.toml is set; {what} use the inherited proxy variables", kind.var(), kind.key()),
+        ),
     }
 }
 
@@ -212,10 +216,7 @@ fn report(
     let (project_forges, here) = origins(root, runner);
     let hosts = github_hosts(project_forges.iter().chain(&here));
     let gh = crate::pr::github::Gh::new(runner, env);
-    match env.var(crate::pr::github::PROXY_VAR) {
-        Some(proxy) => check(&mut out, Some(true), "gh proxy", format!("{} is {}", crate::pr::github::PROXY_VAR, crate::pr::sanitize(&without_userinfo(proxy)))),
-        None => check(&mut out, None, "gh proxy", format!("{} is not set; `gh` uses the inherited proxy variables", crate::pr::github::PROXY_VAR)),
-    }
+    proxy_check(env, crate::proxy::Kind::Gh, "`gh` calls", &mut |ok, label, detail| check(&mut out, ok, label, detail));
     if hosts.is_empty() || hosts.contains_key("github.com") {
         match runner.run(&gh.cmd("github.com").args(["auth", "status"])) {
             Ok(o) if o.success() => check(&mut out, Some(true), "gh auth", "logged in".into()),
@@ -264,17 +265,23 @@ fn report(
 
     match crate::ticker::lock_state(root) {
         crate::ticker::LockState::Free => check(&mut out, None, "ticker", "not running".into()),
-        crate::ticker::LockState::Held(info) => check(
-            &mut out,
-            Some(true),
-            "ticker",
-            format!(
-                "running, version {} (this binary: {}), root {}",
-                info.version,
-                crate::VERSION,
-                info.root
-            ),
-        ),
+        crate::ticker::LockState::Held(info) => {
+            check(
+                &mut out,
+                Some(true),
+                "ticker",
+                format!(
+                    "running, version {} (this binary: {}), root {}",
+                    info.version,
+                    crate::VERSION,
+                    info.root
+                ),
+            );
+            let needed = crate::proxy::needed(&project_forges);
+            for gap in crate::proxy::ticker_gaps(&info, env, &needed) {
+                check(&mut out, None, "ticker proxy", gap);
+            }
+        }
     }
 
     // Every project's priming files, and the binary path they carry: a
@@ -686,7 +693,7 @@ mod tests {
 
         let (text, curl) = run(ado, &[], None);
         assert!(text.contains("[warn] ado PAT: AZURE_DEVOPS_PAT is not set; Azure DevOps pull requests are not followed"), "{text}");
-        assert!(text.contains("[warn] ado proxy: HERDR_PROJECTS_ADO_PROXY is not set; Azure DevOps requests use the inherited proxy variables"), "{text}");
+        assert!(text.contains("[warn] ado proxy: neither HERDR_PROJECTS_ADO_PROXY nor `ado_proxy` in config.toml is set; Azure DevOps requests use the inherited proxy variables"), "{text}");
         assert!(text.contains("[warn] ado sc-ado: not asked: AZURE_DEVOPS_PAT is not set"), "{text}");
         assert!(curl.is_empty());
 
@@ -699,14 +706,35 @@ mod tests {
         assert_eq!(curl.len(), 1);
         assert!(curl[0].contains("--proxy http://me:pw@127.0.0.1:7890 ") && curl[0].ends_with("https://dev.azure.com/sc-ado/_apis/connectionData?api-version=7.1-preview"), "{}", curl[0]);
 
-        assert!(text.contains("[warn] gh proxy: HERDR_PROJECTS_GH_PROXY is not set; `gh` uses the inherited proxy variables"), "{text}");
+        assert!(text.contains("[warn] gh proxy: neither HERDR_PROJECTS_GH_PROXY nor `gh_proxy` in config.toml is set; `gh` calls use the inherited proxy variables"), "{text}");
         let (text, _) = run(ado, &[("HERDR_PROJECTS_GH_PROXY", "http://127.0.0.1:10060")], None);
         assert!(text.contains("[ok  ] gh proxy: HERDR_PROJECTS_GH_PROXY is http://127.0.0.1:10060\n"), "{text}");
 
         let (text, _) = run(ado, &vars, Some(ok("<html>sign in</html>\n302")));
         assert!(text.contains("[warn] ado sc-ado: the PAT is refused (HTTP 302); renew AZURE_DEVOPS_PAT"), "{text}");
         let (text, _) = run(ado, &vars, Some(fail(28, "curl: (28) Operation timed out")));
-        assert!(text.contains("[warn] ado sc-ado: not reached (curl: curl: (28) Operation timed out); check HERDR_PROJECTS_ADO_PROXY"), "{text}");
+        assert!(text.contains("[warn] ado sc-ado: not reached (curl: curl: (28) Operation timed out); check HERDR_PROJECTS_ADO_PROXY or `ado_proxy`"), "{text}");
+        let (text, _) = run(ado, &vars, Some(ok("{}\n403")));
+        assert!(text.contains("[warn] ado sc-ado: refused (HTTP 403 through proxy http://127.0.0.1:7890); check HERDR_PROJECTS_ADO_PROXY or `ado_proxy`"), "{text}");
+
+        // config.toml fills in for a missing variable, and names itself.
+        let config = home.path().join(".config/herdr-projects/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "ado_proxy = \"http://127.0.0.1:7890\"\ngh_proxy = \"http://127.0.0.1:10060\"\n").unwrap();
+        let (text, curl) = run(ado, &[("AZURE_DEVOPS_PAT", pat)], Some(ok("{\"authenticatedUser\":{\"id\":\"me-id\"}}\n200")));
+        assert!(text.contains(&format!("[ok  ] ado proxy: ado_proxy in {} is http://127.0.0.1:7890\n", config.display())), "{text}");
+        assert!(text.contains(&format!("[ok  ] gh proxy: gh_proxy in {} is http://127.0.0.1:10060\n", config.display())), "{text}");
+        assert!(curl[0].contains("--proxy http://127.0.0.1:7890 "), "{}", curl[0]);
+        std::fs::remove_file(&config).unwrap();
+
+        // A running ticker that started without the proxy, while a project needs it.
+        let mut lock = std::fs::File::options().create(true).truncate(true).read(true).write(true).open(root.join(".ticker.lock")).unwrap();
+        lock.try_lock().unwrap();
+        let info = crate::ticker::Info { pid: 9969, proxy_vars: Some(vec![]), ..crate::ticker::Info::default() };
+        std::io::Write::write_all(&mut lock, serde_json::to_string(&info).unwrap().as_bytes()).unwrap();
+        let (text, _) = run(ado, &vars, Some(ok("{\"authenticatedUser\":{\"id\":\"me-id\"}}\n200")));
+        assert!(text.contains("[warn] ticker proxy: the ticker (pid 9969) has no Azure DevOps proxy: it started without HERDR_PROJECTS_ADO_PROXY"), "{text}");
+        assert!(!text.contains("no GitHub proxy"), "no GitHub repository: {text}");
     }
 
     #[test]

@@ -737,6 +737,21 @@ pub fn skill_line(ctx: &Ctx, project: &Project, prefix: &str) -> Option<String> 
     Some(format!("Skill: not current in pane {}; the coordinator there runs `{prefix} skill` and reads it in full", ids.join(", ")))
 }
 
+/// `Warning:` lines for each proxy the running ticker lacks while an open
+/// thread of the project follows a forge that needs it (`proxy::ticker_gaps`).
+pub fn ticker_proxy_lines(ctx: &Ctx, project: &Project) -> Vec<String> {
+    let ticker::LockState::Held(info) = ticker::lock_state(&ctx.root) else {
+        return Vec::new();
+    };
+    let forges: Vec<crate::pr::Forge> = crate::thread::list(project)
+        .iter()
+        .filter(|t| t.status != crate::thread::Status::Resolved)
+        .filter_map(|t| crate::pr::Forge::of(&t.origin))
+        .collect();
+    let needed = crate::proxy::needed(&forges);
+    crate::proxy::ticker_gaps(&info, ctx.env, &needed).into_iter().map(|gap| format!("Warning: {gap}")).collect()
+}
+
 /// The folder where the coordinator keeps one file per pending proposal, so a
 /// proposal survives a context reset without becoming a task (ADR 0004).
 pub const PROPOSALS_DIR: &str = "scratch/proposals";
@@ -788,6 +803,9 @@ pub fn digest(ctx: &Ctx, project: &Project, prefix: &str) -> Result<(String, Vec
         "Chat: link thread ids as [<id>](https://hp.invalid/{slug}/<id>), pane ids as [<pane-id>](https://hp.invalid/pane/<pane-id>), PRs as [PR #N](<url>) or [PR !N](<url>) with the URL from their pr: line; never in files or commands"
     );
     if let Some(line) = skill_line(ctx, project, prefix) {
+        let _ = writeln!(out, "{line}");
+    }
+    for line in ticker_proxy_lines(ctx, project) {
         let _ = writeln!(out, "{line}");
     }
 

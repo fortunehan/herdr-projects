@@ -61,7 +61,15 @@ pub struct Info {
     /// Where the ticker resolves its tools from its own environment, which may
     /// differ from the user's shell.
     pub tools: Vec<(String, String)>,
+    /// The proxy variables its environment had (`proxy::vars_set`); `None`
+    /// from a ticker that predates this field.
+    pub proxy_vars: Option<Vec<String>>,
+    /// The command line that started it, without the binary.
+    pub started_by: String,
 }
+
+/// Set on `ticker run` to the command line of the process that spawned it.
+const STARTER_VAR: &str = "HERDR_PROJECTS_TICKER_STARTER";
 
 #[derive(Debug, PartialEq)]
 pub enum LockState {
@@ -141,7 +149,8 @@ fn spawn(root: &Path) -> Result<()> {
         .args(["ticker", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .env(STARTER_VAR, starter());
     // Pane variables belong to whoever started us, not to the ticker: every
     // project carries its own recorded socket.
     for key in ["HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"] {
@@ -156,6 +165,12 @@ fn spawn(root: &Path) -> Result<()> {
     }
     command.spawn().context("could not start the ticker")?;
     Ok(())
+}
+
+/// This process's arguments after the binary, cut to 120 characters.
+fn starter() -> String {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    crate::progress::clean(&args.join(" "), 120)
 }
 
 /// Asks the running ticker to exit and waits for the lock to be released.
@@ -177,6 +192,18 @@ pub fn stop(root: &Path) -> Result<()> {
     bail!("the ticker did not exit within {} seconds", STOP_WAIT.as_secs())
 }
 
+/// Each proxy the ticker uses now and where it comes from, for the log.
+fn proxies_line(env: &crate::paths::Env) -> String {
+    crate::proxy::KINDS
+        .iter()
+        .map(|kind| match crate::proxy::resolve(env, *kind) {
+            Some(proxy) => format!("{} {}", kind.key().replace('_', " "), proxy.describe()),
+            None => format!("{} none", kind.key().replace('_', " ")),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn status(root: &Path) -> Result<()> {
     match lock_state(root) {
         LockState::Free => println!("ticker: not running (root {})", root.display()),
@@ -186,6 +213,12 @@ pub fn status(root: &Path) -> Result<()> {
             println!("  pid:     {}", info.pid);
             println!("  root:    {}", info.root);
             println!("  started: {}", info.started);
+            if !info.started_by.is_empty() {
+                println!("  by:      {}", info.started_by);
+            }
+            if let Some(vars) = &info.proxy_vars {
+                println!("  proxy variables: {}", if vars.is_empty() { "none".to_string() } else { vars.join(", ") });
+            }
             for (tool, path) in &info.tools {
                 println!("  {tool:<6} {path}");
             }
@@ -261,13 +294,15 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 (tool.to_string(), which(&name, &path_var))
             })
             .collect(),
+        proxy_vars: Some(crate::proxy::vars_set(ctx.env)),
+        started_by: ctx.env.var(STARTER_VAR).unwrap_or("").to_string(),
     };
     lock.set_len(0)?;
     lock.write_all(serde_json::to_string_pretty(&info)?.as_bytes())?;
     lock.flush()?;
 
     let log = Log { path: log_path(root) };
-    log.line(&format!("ticker {} started (pid {})", info.version, info.pid));
+    log.line(&format!("ticker {} started (pid {}) by `{}`; {}", info.version, info.pid, info.started_by, proxies_line(ctx.env)));
     let mut last_reachable = Instant::now();
     let mut memory = Memory::new(ctx);
     memory.stop_file = Some(stop_path(root));
@@ -1106,6 +1141,19 @@ mod tests {
             version: version.into(),
             ..Info::default()
         })
+    }
+
+    #[test]
+    fn an_older_lock_file_leaves_the_proxy_variables_unknown() {
+        let info: Info = serde_json::from_str(r#"{"version":"v0","pid":9969,"root":"/r","started":"s","tools":[]}"#).unwrap();
+        assert_eq!((info.proxy_vars, info.started_by.as_str()), (None, ""));
+    }
+
+    #[test]
+    fn the_start_line_names_each_proxy_and_its_source() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[("HERDR_PROJECTS_ADO_PROXY", "http://u:p@127.0.0.1:7890")]);
+        assert_eq!(proxies_line(&env), "ado proxy http://127.0.0.1:7890 (HERDR_PROJECTS_ADO_PROXY), gh proxy none");
     }
 
     #[test]

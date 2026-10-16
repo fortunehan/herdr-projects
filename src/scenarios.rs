@@ -2361,6 +2361,77 @@ fn without_an_open_azure_devops_thread_nothing_is_asked_or_reported() {
     }
 }
 
+/// A ticker the Herdr server started has no `HERDR_*` variable (herdr-gpui
+/// drops them), so its requests leave without the proxy and Azure DevOps
+/// answers 403. That is reported at once as its own kind, naming the missing
+/// proxy; `ado_proxy` in config.toml then reaches the next pass's curl.
+#[test]
+fn a_403_without_the_proxy_is_reported_at_once_and_config_toml_heals_it() {
+    let (mut world, project, _) = ado_world("## Report\nworking\n", "idle");
+    world.env = Env::for_test(world.home.path(), &[("AZURE_DEVOPS_PAT", ADO_PAT)]);
+    let answer = ado_branch_answer(&world, ok("{\"message\":\"denied\"}\n403"));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let start = jiff::Timestamp::now();
+    let at = |secs: i64| start + jiff::SignedDuration::from_secs(secs);
+    pr_pass(&ctx, &project, &mut memory, at(0));
+    pr_pass(&ctx, &project, &mut memory, at(60));
+    let items = ado_items(&project);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].0, "requests refused");
+    assert!(items[0].1.contains("HTTP 403 without a proxy"), "{}", items[0].1);
+    assert!(items[0].1.contains("`ado_proxy` in config.toml") && !items[0].1.contains("2FA"), "{}", items[0].1);
+    assert_eq!(notifications(&world, "Azure DevOps answers HTTP 403 (proxy?)"), 1);
+    assert_eq!(memory.ado_failing, Some(crate::steps::AdoFailure::Forbidden));
+
+    std::fs::create_dir_all(world.env.config_dir()).unwrap();
+    std::fs::write(world.env.config_dir().join("config.toml"), format!("ado_proxy = \"{ADO_PROXY}\"\n")).unwrap();
+    *answer.borrow_mut() = ado_answer(r#"{"value":[]}"#);
+    pr_pass(&ctx, &project, &mut memory, at(120));
+    let events: Vec<String> = ado_items(&project).into_iter().map(|i| i.0).collect();
+    assert_eq!(events, ["requests refused", "accepted again"]);
+    let calls = world.runner.calls.borrow();
+    let last = calls.iter().rev().find(|c| c.program == "curl").unwrap();
+    assert!(last.display().contains(&format!("--proxy {ADO_PROXY}")), "{}", last.display());
+}
+
+/// `context` warns while the running ticker has no proxy for a forge an open
+/// thread follows, and stops once config.toml names one.
+#[test]
+fn context_warns_when_the_ticker_lacks_a_proxy_an_open_thread_needs() {
+    let (world, project, _) = ado_world("## Report\nworking\n", "idle");
+    let ctx = world.ctx();
+    let warnings = || {
+        let prefix = coordinator::current_prefix(&world.root).unwrap();
+        let digest = coordinator::digest(&ctx, &project, &prefix).unwrap().0;
+        digest.lines().filter(|l| l.starts_with("Warning: the ticker")).map(str::to_string).collect::<Vec<_>>()
+    };
+    assert!(warnings().is_empty(), "no ticker running");
+
+    let hold = |vars: &[&str]| {
+        let mut lock = std::fs::File::options().create(true).truncate(true).read(true).write(true).open(world.root.join(".ticker.lock")).unwrap();
+        lock.try_lock().unwrap();
+        let info = ticker::Info { pid: 4242, proxy_vars: Some(vars.iter().map(|v| v.to_string()).collect()), ..ticker::Info::default() };
+        std::io::Write::write_all(&mut lock, serde_json::to_string(&info).unwrap().as_bytes()).unwrap();
+        lock
+    };
+    let lock = hold(&[]);
+    let lines = warnings();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("Warning: the ticker (pid 4242) has no Azure DevOps proxy: it started without HERDR_PROJECTS_ADO_PROXY"), "{}", lines[0]);
+    drop(lock);
+
+    let lock = hold(&["HERDR_PROJECTS_ADO_PROXY"]);
+    assert!(warnings().is_empty());
+    drop(lock);
+
+    let lock = hold(&[]);
+    std::fs::create_dir_all(world.env.config_dir()).unwrap();
+    std::fs::write(world.env.config_dir().join("config.toml"), format!("ado_proxy = \"{ADO_PROXY}\"\n")).unwrap();
+    assert!(warnings().is_empty());
+    drop(lock);
+}
+
 /// A timeout, a network error or a 5xx (as while Azure DevOps waits for a 2FA
 /// sign-in) is reported at once with one item and one notification that say
 /// so; more failures add nothing, the first answer ends it with one item. A

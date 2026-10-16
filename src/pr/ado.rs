@@ -186,6 +186,25 @@ pub fn is_auth_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|e| e.is::<AuthFailure>())
 }
 
+/// An answer of HTTP 403. Azure DevOps sends it to requests that leave
+/// through a network its access policy refuses, as they do without the
+/// proxy, so the error names the proxy the request went through.
+#[derive(Debug)]
+pub struct Forbidden(String);
+
+impl std::fmt::Display for Forbidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Forbidden {}
+
+/// Whether `error` is an answer of HTTP 403.
+pub fn is_forbidden(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Forbidden>())
+}
+
 /// A request that got no answer within `CURL_TIMEOUT`.
 #[derive(Debug)]
 pub struct Timeout(String);
@@ -276,14 +295,15 @@ pub struct Client<'a> {
 }
 
 impl<'a> Client<'a> {
-    /// The PAT and the proxy come from `AZURE_DEVOPS_PAT` and
-    /// `HERDR_PROJECTS_ADO_PROXY`; without the proxy curl uses the inherited
-    /// proxy variables.
+    /// The PAT comes from `AZURE_DEVOPS_PAT`, the proxy from
+    /// `HERDR_PROJECTS_ADO_PROXY` or `ado_proxy` in config.toml
+    /// (`proxy::resolve`); without a proxy curl uses the inherited proxy
+    /// variables.
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
         Client {
             runner,
             pat: env.var(PAT_VAR).map(str::to_string),
-            proxy: env.var(PROXY_VAR).map(str::to_string),
+            proxy: crate::proxy::resolve(env, crate::proxy::Kind::Ado).map(|p| p.url),
             failed: AtomicBool::new(false),
             users: RefCell::default(),
             cache: None,
@@ -419,6 +439,13 @@ fn request(runner: &dyn Runner, pat: Option<&str>, proxy: Option<&str>, url: &st
     match status.trim() {
         "200" => {}
         "302" | "401" | "203" => return Err(AuthFailure(format!("HTTP {}", status.trim())).into()),
+        "403" => {
+            let through = match proxy {
+                Some(proxy) => format!("through proxy {}", crate::proxy::redact(proxy)),
+                None => "without a proxy".to_string(),
+            };
+            return Err(Forbidden(format!("HTTP 403 {through}")).into());
+        }
         other => bail!("HTTP {}", sanitize(other)),
     }
     if serde_json::from_str::<serde::de::IgnoredAny>(body).is_err() {
@@ -1221,6 +1248,15 @@ mod tests {
         let display = runner.calls.borrow()[0].display();
         assert!(!display.contains("--proxy"), "{display}");
         assert!(display.ends_with("https://dev.azure.com/org/Proj/_apis/git/repositories/app/pullrequests/7?api-version=7.1"), "{display}");
+
+        // A ticker the Herdr server starts has no `HERDR_*` variable: config.toml fills in.
+        std::fs::create_dir_all(env.config_dir()).unwrap();
+        std::fs::write(env.config_dir().join("config.toml"), "ado_proxy = \"http://127.0.0.1:7890\"\n").unwrap();
+        let runner = FakeRunner::new();
+        runner.on("curl", ok("{}\n403"));
+        let error = Client::new(&runner, &env).pull_request(&parse_remote(ORIGIN).unwrap(), 7).unwrap_err();
+        assert!(runner.calls.borrow()[0].display().contains("--proxy http://127.0.0.1:7890 "));
+        assert_eq!(format!("{error:#}"), "HTTP 403 through proxy http://127.0.0.1:7890");
     }
 
     #[test]
@@ -1267,6 +1303,10 @@ mod tests {
         for status in ["500", "503", "403", "404"] {
             assert!(!is_auth_failure(&answer(ok(&format!("{{}}\n{status}")))), "{status}");
         }
+        let error = answer(ok("{}\n403"));
+        assert!(is_forbidden(&error));
+        assert_eq!(format!("{error:#}"), "HTTP 403 without a proxy");
+        assert!(!is_forbidden(&answer(ok("{}\n500"))));
         let error = answer(crate::runner::fake::fail(28, "curl: (28) Operation timed out after 10000 milliseconds"));
         assert!(!is_auth_failure(&error));
     }

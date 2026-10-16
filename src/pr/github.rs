@@ -22,7 +22,8 @@ const PROXY_ENV: [&str; 3] = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"];
 /// proxy or name another one.
 const BYPASS_ENV: [&str; 5] = ["https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"];
 
-/// How `gh` is run. With `HERDR_PROJECTS_GH_PROXY` set every call goes
+/// How `gh` is run. With `HERDR_PROJECTS_GH_PROXY` (or `gh_proxy` in
+/// config.toml, `proxy::resolve`) set every call goes
 /// through that proxy and never around it; without it `gh` keeps the
 /// inherited proxy variables. In the ticker, a call that could not reach
 /// GitHub (`is_transient`) skips the later calls of the pass: the next pass
@@ -36,7 +37,7 @@ pub struct Gh<'a> {
 
 impl<'a> Gh<'a> {
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
-        Gh { runner, proxy: env.var(PROXY_VAR).map(str::to_string), down: None }
+        Gh { runner, proxy: crate::proxy::resolve(env, crate::proxy::Kind::Gh).map(|p| p.url), down: None }
     }
 
     /// Shares `down`, the pass's "GitHub could not be reached" flag.
@@ -642,6 +643,13 @@ mod tests {
         }
         let unset = Gh::new(&runner, &Env::for_test(std::path::Path::new("/h"), &[(PROXY_VAR, "")])).cmd("github.com");
         assert!(unset.env.is_empty() && unset.env_remove.is_empty(), "unset keeps the inherited proxy variables");
+
+        let home = tempfile::tempdir().unwrap();
+        let env = Env::for_test(home.path(), &[]);
+        std::fs::create_dir_all(env.config_dir()).unwrap();
+        std::fs::write(env.config_dir().join("config.toml"), "gh_proxy = \"http://127.0.0.1:10060\"\n").unwrap();
+        let cmd = Gh::new(&runner, &env).cmd("github.com");
+        assert!(cmd.env.contains(&("HTTPS_PROXY".to_string(), "http://127.0.0.1:10060".to_string())), "config.toml fills in: {:?}", cmd.env);
     }
 
     #[test]
