@@ -2812,7 +2812,7 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
 
     ticker::tick_for_test(&ctx, &mut memory);
     let thread = last(0, "w2:p1");
-    assert!(thread.contains("--token hp_tier=0") && thread.contains("--clear-token hp_needs") && thread.contains("--token hp_recent="), "a blocked implementation thread joins the working tier: {thread}");
+    assert!(thread.contains("--token hp_tier=2") && thread.contains("--clear-token hp_needs") && thread.contains("--token hp_recent="), "a blocked implementation thread sorts below coordinators: {thread}");
     // Its row names the project and the id; its title is the row below.
     assert!(thread.contains("--token hp_title=Task"), "{thread}");
     assert!(world.runner.count("pane report-metadata w2:p1 --source herdr-projects --display-agent Demo · t-0001 --ttl-ms") >= 1);
@@ -2843,13 +2843,13 @@ fn the_ticker_writes_the_priority_view_tokens_on_every_agent_pane() {
     assert!(design.contains("--token hp_title=Task"), "{design}");
     assert!(world.runner.count(&format!("--display-agent {}Demo · t-0001 --ttl-ms", crate::views::DESIGN_MARK)) >= 1);
 
-    // Paused: its blocked thread stays in the working tier from the session another project lists, and needs no one.
+    // Paused: its blocked thread stays in the busy implementation tier from the session another project lists, and needs no one.
     thread::update(&project, &t.id, |t| t.kind = Kind::Worktree).unwrap();
     project.set_status(project::Status::Paused).unwrap();
     let from = world.runner.calls.borrow().len();
     ticker::tick_for_test(&ctx, &mut memory);
     let paused = last(from, "w2:p1");
-    assert!(paused.contains("--token hp_tier=0") && paused.contains("--clear-token hp_needs"), "{paused}");
+    assert!(paused.contains("--token hp_tier=2") && paused.contains("--clear-token hp_needs"), "{paused}");
 }
 
 #[test]

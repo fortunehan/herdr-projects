@@ -72,12 +72,12 @@ impl View {
 }
 
 /// The attention order (ADR 0003): coordinators and design threads that need
-/// the user first (`hp_needs`), then every working or blocked agent that is
-/// not a coordinator (`hp_tier` 0), then coordinators and the other agents
-/// (1), then idle implementation threads (2). Tiers 0 and 2 sort by
-/// [`RECENT_TOKEN`], which tier 1 does not carry, so it ties on it and sorts
-/// by Herdr's live attention, then the latest state change. Herdr sorts a
-/// missing token last in both directions.
+/// the user first (`hp_needs`), then every working or blocked agent that is a
+/// design thread or outside agent (`hp_tier` 0), then coordinators and the
+/// other agents (1), then working or blocked implementation threads (2), then
+/// idle ones (3). Tiers 0, 2 and 3 sort by [`RECENT_TOKEN`], which tier 1 does
+/// not carry, so it ties on it and sorts by Herdr's live attention, then the
+/// latest state change. Herdr sorts a missing token last in both directions.
 pub fn priority_view() -> serde_json::Value {
     serde_json::json!({
         "source": crate::herdr::SOURCE,
@@ -92,7 +92,7 @@ pub fn priority_view() -> serde_json::Value {
     })
 }
 
-/// An agent's place in tier 0 or 2: its `state_change_seq`, zero-padded as
+/// An agent's place in tier 0, 2 or 3: its `state_change_seq`, zero-padded as
 /// tokens compare as strings. It sorts ahead of Herdr's attention, which puts
 /// blocked above working and drops a done thread below the idle ones once it
 /// is viewed. Herdr 0.9.3's `done` is idle and unseen, so viewing it moves no
@@ -105,14 +105,15 @@ fn busy(agent: &Agent) -> bool {
     matches!(agent.agent_status.as_str(), "working" | "blocked")
 }
 
-/// `0` for a busy agent that is no coordinator and does not lead with
-/// `hp_needs`, `2` for an idle implementation thread, else `1`.
+/// `0` for a busy design thread or outside agent that does not lead with
+/// `hp_needs`, `2` for a busy implementation thread, `3` for an idle one,
+/// else `1` (coordinators, idle design threads and outside agents).
 fn tier(rank: &Rank, agent: &Agent) -> u8 {
     let leads = rank.needs && !rank.implementation;
-    if busy(agent) && !rank.coordinator && !leads {
+    if rank.implementation {
+        if busy(agent) { 2 } else { 3 }
+    } else if busy(agent) && !rank.coordinator && !leads {
         0
-    } else if rank.implementation {
-        2
     } else {
         1
     }
@@ -162,10 +163,9 @@ pub fn popup_toggle(ctx: &Ctx) -> String {
 pub struct Rank {
     /// In the needs-you group (never while the project is paused).
     pub needs: bool,
-    /// A coordinator: never in the working tier.
+    /// A coordinator: never in tier 0.
     pub coordinator: bool,
-    /// An implementation thread: idle ones after every other agent, never
-    /// `hp_needs`.
+    /// An implementation thread: after every other agent, never `hp_needs`.
     pub implementation: bool,
     /// A design thread's own Space, whose label keeps [`DESIGN_MARK`]; none
     /// for a design thread started as a tab of the home Space.
@@ -209,7 +209,7 @@ pub fn project_ranks(ctx: &Ctx, project: &Project, record: &project::Coordinator
     out
 }
 
-/// A pane's tokens: every agent gets a tier ([`tier`]), and tiers 0 and 2
+/// A pane's tokens: every agent gets a tier ([`tier`]), and tiers 0, 2 and 3
 /// [`RECENT_TOKEN`]; `hp_needs` is cleared, not set to 0, when it does not
 /// apply. An implementation thread never gets it: its coordinator, which
 /// then needs the user too, is where the user resolves it. A thread's title
@@ -925,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn working_and_blocked_agents_lead_the_idle_ones_by_latest_state_change_whatever_their_kind() {
+    fn working_design_threads_and_outside_agents_lead_and_busy_implementation_threads_follow_the_coordinators() {
         let agents = [
             outside("outside-idle", IDLE, 90),
             seen("thread-working", "demo", 't', Group::Working, WORKING, 80),
@@ -938,7 +938,7 @@ mod tests {
         ];
         assert_eq!(
             priority(&agents),
-            ["thread-working", "design-working", "outside-blocked", "outside-working", "thread-blocked", "design-idle", "outside-idle", "thread-done"]
+            ["design-working", "outside-blocked", "outside-working", "design-idle", "outside-idle", "thread-working", "thread-blocked", "thread-done"]
         );
     }
 
@@ -955,11 +955,11 @@ mod tests {
             seen("coordinator", "demo", 'c', Group::Working, WORKING, 2),
             outside("outside-done", DONE, 3),
         ];
-        assert_eq!(priority(&agents), ["blocked", "working", "outside-done", "coordinator", "outside-idle", "viewed", "done", "idle"]);
+        assert_eq!(priority(&agents), ["outside-done", "coordinator", "outside-idle", "blocked", "working", "viewed", "done", "idle"]);
     }
 
     #[test]
-    fn a_working_coordinator_stays_with_the_idle_agents_by_attention_above_idle_threads() {
+    fn a_working_coordinator_stays_with_the_idle_agents_by_attention_above_implementation_threads() {
         let agents = [
             seen("thread", "demo", 't', Group::Working, WORKING, 99),
             seen("thread-idle", "demo", 't', Group::Idle, IDLE, 98),
@@ -967,7 +967,7 @@ mod tests {
             seen("coordinator", "demo", 'c', Group::Working, WORKING, 10),
             outside("outside-done", DONE, 5),
         ];
-        assert_eq!(priority(&agents), ["thread", "outside-done", "coordinator", "outside-idle", "thread-idle"]);
+        assert_eq!(priority(&agents), ["outside-done", "coordinator", "outside-idle", "thread", "thread-idle"]);
     }
 
     #[test]
@@ -1000,14 +1000,14 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_projects_agents_never_need_you_and_its_working_threads_still_lead() {
+    fn a_paused_projects_agents_never_need_you_and_its_threads_still_sort_below_every_other_agent() {
         let agents = [
             outside("outside", WORKING, 1),
             seen("paused-thread", "zzz", 't', Group::WaitingOnYou, WORKING, 9),
             seen("paused-idle-thread", "zzz", 't', Group::WaitingOnYou, IDLE, 10),
             seen("paused-coordinator", "zzz", 'c', Group::WaitingOnYou, WORKING, 8),
         ];
-        assert_eq!(herdr_sort(&priority_view(), scene(&agents, &["zzz"])), ["paused-thread", "outside", "paused-coordinator", "paused-idle-thread"]);
+        assert_eq!(herdr_sort(&priority_view(), scene(&agents, &["zzz"])), ["outside", "paused-coordinator", "paused-thread", "paused-idle-thread"]);
     }
 
     fn mixed() -> Vec<Seen> {
@@ -1048,8 +1048,11 @@ mod tests {
         assert_eq!(tokens(None, &idle), with(vec![some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN), title(None)]));
         assert_eq!(tokens(None, &blocked), with(vec![some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593"), title(None)]));
         let thread = Rank { needs: true, implementation: true, title: Some("Fix the build".into()), ..Rank::default() };
-        assert_eq!(tokens(Some(&thread), &idle), with(vec![some("hp_tier", "2"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593"), title(Some("Fix the build"))]));
-        assert_eq!(tokens(Some(&thread), &blocked)[..3], [some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593")]);
+        assert_eq!(tokens(Some(&thread), &idle), with(vec![some("hp_tier", "3"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593"), title(Some("Fix the build"))]));
+        assert_eq!(tokens(Some(&thread), &blocked)[..3], [some("hp_tier", "2"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593")]);
+        let quiet_design = Rank::default();
+        assert_eq!(tokens(Some(&quiet_design), &blocked)[..3], [some("hp_tier", "0"), none("hp_needs"), some(RECENT_TOKEN, "00000000000000000593")]);
+        assert_eq!(tokens(Some(&quiet_design), &idle)[..3], [some("hp_tier", "1"), none("hp_needs"), none(RECENT_TOKEN)]);
         let design = Rank { needs: true, ..Rank::default() };
         assert_eq!(tokens(Some(&design), &blocked)[..3], [some("hp_tier", "1"), some("hp_needs", "1"), none(RECENT_TOKEN)]);
         let cells = SubCells { progress: Some("~10%".into()), ask: None, working: Some("2 working".into()), rest: None };
@@ -1067,9 +1070,9 @@ mod tests {
             seen("asking-coordinator", "demo", 'c', Group::Idle, IDLE, 10),
         ];
         let mut rows = scene(&agents, &[]);
-        assert_eq!(herdr_sort(&priority_view(), rows.iter().map(|r| Row { name: r.name, tokens: r.tokens.clone(), attention: r.attention, seq: r.seq }).collect()), ["thread-working", "quiet-coordinator", "asking-coordinator"]);
+        assert_eq!(herdr_sort(&priority_view(), rows.iter().map(|r| Row { name: r.name, tokens: r.tokens.clone(), attention: r.attention, seq: r.seq }).collect()), ["quiet-coordinator", "asking-coordinator", "thread-working"]);
         rows.iter_mut().find(|r| r.name == "asking-coordinator").unwrap().tokens.insert("hp_needs".into(), "1".into());
-        assert_eq!(herdr_sort(&priority_view(), rows), ["asking-coordinator", "thread-working", "quiet-coordinator"]);
+        assert_eq!(herdr_sort(&priority_view(), rows), ["asking-coordinator", "quiet-coordinator", "thread-working"]);
     }
 
     #[test]
