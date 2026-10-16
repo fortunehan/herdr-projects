@@ -103,6 +103,9 @@ pub struct Thread {
     pub base_commit: String,
     /// `base` came from `--base`, not from the mainline rule.
     pub base_given: bool,
+    /// `base` came from the repository's mainline override in PROJECT.md.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub base_pinned: bool,
     /// `fetched <time>` of origin at start, empty without an origin.
     pub base_fetched: String,
     /// A failed fetch and the mainline rule's warnings, for the brief.
@@ -1439,8 +1442,8 @@ mod tests {
             ("c.md".to_string(), "gamma fact".to_string()),
         ];
         let repos = vec![
-            project::Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None },
-            project::Repo { path: "/home/me/lib".into(), machine: None, name: None },
+            project::Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None, mainline: None },
+            project::Repo { path: "/home/me/lib".into(), machine: None, name: None, mainline: None },
         ];
         let input = BriefInput {
             project_name: "Demo",

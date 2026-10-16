@@ -95,7 +95,7 @@ mod tests {
     use crate::scenarios::World;
 
     fn repo(path: &Path, name: Option<&str>) -> Repo {
-        Repo { path: path.to_string_lossy().into_owned(), machine: None, name: name.map(str::to_string) }
+        Repo { path: path.to_string_lossy().into_owned(), machine: None, name: name.map(str::to_string), mainline: None }
     }
 
     #[test]
@@ -106,7 +106,7 @@ mod tests {
         let api = world.home.path().join("code/api");
         std::fs::create_dir_all(&app).unwrap();
         std::fs::create_dir_all(&api).unwrap();
-        let far = Repo { path: "/srv/far".into(), machine: Some("box".into()), name: None };
+        let far = Repo { path: "/srv/far".into(), machine: Some("box".into()), name: None, mainline: None };
         let settings = Settings { repos: vec![repo(&app, Some("ios")), repo(&api, None), far], ..Settings::default() };
 
         let dir = prepare(&project, &settings).unwrap();

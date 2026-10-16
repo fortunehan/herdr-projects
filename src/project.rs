@@ -132,9 +132,31 @@ pub struct Repo {
     /// and a ticket's `Repo:` line); the last part of `path` when not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The mainline override: a local branch (taken when it exists) or a
+    /// remote ref such as `origin/release`. It replaces the rule (ADR 0007);
+    /// `--base` still wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mainline: Option<String>,
 }
 
 impl Repo {
+    /// The override, when set to something other than blanks.
+    pub fn pinned_mainline(&self) -> Option<&str> {
+        self.mainline.as_deref().map(str::trim).filter(|m| !m.is_empty())
+    }
+
+    /// Whether this entry is the repository at `path` on `machine` (empty for
+    /// this machine), however a local path is spelled.
+    pub fn is_at(&self, path: &str, machine: &str) -> bool {
+        if self.machine.as_deref().unwrap_or("") != machine {
+            return false;
+        }
+        if self.path == path {
+            return true;
+        }
+        machine.is_empty() && matches!((std::fs::canonicalize(&self.path), std::fs::canonicalize(path)), (Ok(a), Ok(b)) if a == b)
+    }
+
     pub fn short_name(&self) -> String {
         match &self.name {
             Some(name) if !name.trim().is_empty() => name.trim().to_string(),
@@ -167,6 +189,13 @@ pub struct Settings {
     /// Silences every notification for the project except errors.
     pub mute: bool,
     pub repos: Vec<Repo>,
+}
+
+impl Settings {
+    /// The mainline override of the listed repository at `path` on `machine`.
+    pub fn pinned_mainline(&self, path: &str, machine: &str) -> Option<&str> {
+        self.repos.iter().find(|r| r.is_at(path, machine)).and_then(Repo::pinned_mainline)
+    }
 }
 
 impl Default for Settings {
@@ -549,6 +578,7 @@ pub fn parse_repo_arg(arg: &str) -> Repo {
                 path: path.to_string(),
                 machine: Some(machine.to_string()),
                 name: None,
+                mainline: None,
             };
         }
     }
@@ -556,6 +586,7 @@ pub fn parse_repo_arg(arg: &str) -> Repo {
         path: arg.to_string(),
         machine: None,
         name: None,
+        mainline: None,
     }
 }
 
@@ -709,6 +740,7 @@ pub fn create(root: &Path, name: &str, goal: &str, repos: Vec<Repo>) -> Result<P
                     .unwrap_or(repo.path),
                 machine: None,
                 name: repo.name,
+                mainline: repo.mainline,
             },
         })
         .collect();
@@ -831,8 +863,8 @@ mod tests {
         assert_eq!(
             settings.repos,
             vec![
-                Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None },
-                Repo { path: "/no/such/repo".into(), machine: None, name: None },
+                Repo { path: "/srv/app".into(), machine: Some("box".into()), name: None, mainline: None },
+                Repo { path: "/no/such/repo".into(), machine: None, name: None, mainline: None },
             ]
         );
         assert!(body.starts_with("# Instructions"));

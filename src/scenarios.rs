@@ -4495,7 +4495,7 @@ fn rename_keeps_the_design_folder_and_its_threads_records_valid() {
     let old = project.canonical_dir();
     let repo = world.home.path().join("code/app");
     std::fs::create_dir_all(&repo).unwrap();
-    let settings = project::Settings { repos: vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None, name: None }], ..project::Settings::default() };
+    let settings = project::Settings { repos: vec![project::Repo { path: repo.to_string_lossy().into_owned(), machine: None, name: None, mainline: None }], ..project::Settings::default() };
     crate::design::prepare(&project, &settings).unwrap();
     let design = world.thread(&project, &old.join("design"), |t| {
         t.kind = Kind::Design;
@@ -4762,6 +4762,56 @@ fn a_worktree_thread_without_a_base_starts_from_the_mainline_of_a_real_repositor
     }
 }
 
+/// A `mainline` override in PROJECT.md is where a worktree thread starts,
+/// over the rule; `--base` still wins, and a missing ref fails the start.
+#[test]
+fn a_mainline_override_is_the_start_of_worktree_threads() {
+    use crate::mainline::tests::{Repos, commit, git};
+    let lab = Repos::new(None, None, false);
+    commit(&lab.clone, "v1.rs", "upstream v1");
+    git(&lab.clone, &["checkout", "-q", "-b", "legacy"]);
+    let legacy = commit(&lab.clone, "fork.rs", "fork");
+    git(&lab.clone, &["checkout", "-q", "main"]);
+    let start = |pin: &str, base: Option<&str>| {
+        let world = World::new();
+        let project = world.project("demo", "a.sock");
+        let text = std::fs::read_to_string(project.project_md()).unwrap();
+        let text = crate::settings::set_in(&text, "repos.add", &lab.path()).unwrap();
+        let text = crate::settings::set_in(&text, "repos.mainline", &format!("{} {pin}", lab.path())).unwrap();
+        std::fs::write(project.project_md(), text).unwrap();
+        let wt = world.home.path().join("wt");
+        std::fs::create_dir(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        *world.panes.borrow_mut() = format!("[{}]", world.coordinator_pane(&project));
+        real_git(&world);
+        world.runner.on(
+            "worktree create",
+            ok(&format!(r#"{{"result":{{"root_pane":{{"workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","cwd":"{wt}"}},"worktree":{{"path":"{wt}"}}}}}}"#)),
+        );
+        let args = StartArgs { title: "Fix it".into(), repo: Some(lab.path()), profile: Some("claude".into()), base: base.map(str::to_string), task: "Do it.".into(), ..Default::default() };
+        let started = threads::start(&world.ctx(), "demo", args);
+        let digest = coordinator::digest(&world.ctx(), &project, "hp").unwrap().0;
+        (started, digest, world)
+    };
+
+    let (t, digest, world) = start("legacy", None);
+    let t = t.unwrap();
+    assert_eq!((t.base.as_str(), t.base_commit.as_str(), t.base_pinned, t.base_given), ("legacy", legacy.as_str(), true, false));
+    assert_eq!(world.runner.count("--branch feature/fix-it --base legacy"), 1);
+    let brief = std::fs::read_to_string(Path::new(&t.thread_dir).join("brief.md")).unwrap();
+    assert!(brief.contains(&format!("- Mainline (override in PROJECT.md): `legacy` @ {}", &legacy[..7])), "{brief}");
+    assert!(digest.contains(&format!("mainline `legacy` @ {} (fetched ", &legacy[..7])) && digest.contains("), override in PROJECT.md, as of "), "{digest}");
+
+    let (t, _, _) = start("legacy", Some("main"));
+    let t = t.unwrap();
+    assert_eq!((t.base.as_str(), t.base_pinned, t.base_given), ("main", false, true));
+
+    let (t, digest, _) = start("gone", None);
+    let error = format!("{:#}", t.err().unwrap());
+    assert!(error.contains("the mainline override `gone` (PROJECT.md) is neither a local branch nor a remote ref"), "{error}");
+    assert!(digest.contains("mainline override, warning: the mainline override `gone`"), "{digest}");
+}
+
 /// A tab thread reads the main checkout where it is; its brief says how far
 /// that is from the mainline, and nothing in the checkout moves.
 #[test]
@@ -4814,8 +4864,8 @@ fn context_shows_each_repository_mainline_from_the_cache() {
     let fork = commit(&repos.clone, "fork.rs", "custom");
     let world = World::new();
     let list = vec![
-        project::Repo { path: repos.path(), machine: None, name: None },
-        project::Repo { path: "/remote/app".into(), machine: Some("box".into()), name: None },
+        project::Repo { path: repos.path(), machine: None, name: None, mainline: None },
+        project::Repo { path: "/remote/app".into(), machine: Some("box".into()), name: None, mainline: None },
     ];
     let project = project::create(&world.root, "demo", "", list).unwrap();
     real_git(&world);

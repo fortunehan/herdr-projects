@@ -353,13 +353,16 @@ fn run_setup(ctx: &Ctx, project: &Project, placed: Thread, hooks: &wt_hooks::Set
 /// of origin whose failure does not stop the thread (ADR 0007).
 fn start_point(project: &Project, runner: &dyn Runner, record: &Thread, at: &mainline::Location) -> Result<mainline::Found> {
     let base = (!record.base.is_empty()).then_some(record.base.as_str());
-    mainline::find(project, runner, at, &mainline::Options { fetch: true, base, ..Default::default() })
+    let settings = project.read_project_md().map(|(settings, _)| settings).unwrap_or_default();
+    let pinned = settings.pinned_mainline(at.path, at.machine);
+    mainline::find(project, runner, at, &mainline::Options { fetch: true, base, pinned, ..Default::default() })
 }
 
 fn record_start(t: &mut Thread, found: &mainline::Found) {
     t.base = found.mainline.reference.clone();
     t.base_commit = found.mainline.commit.clone();
     t.base_given = found.mainline.given;
+    t.base_pinned = found.mainline.pinned;
     t.base_fetched = found.fetched();
     t.base_notes = found.notes();
 }
@@ -608,15 +611,15 @@ fn place_tab(project: &Project, view: &SessionView, record: &Thread) -> Result<T
 /// The brief's mainline lines: a worktree thread's start point from its
 /// record; for tab, checkout and design threads each local repository's
 /// mainline next to its main checkout, read as it is now.
-fn mainline_lines(ctx: &Ctx, project: &Project, placed: &Thread) -> String {
-    match placed.kind {
+fn mainline_lines(ctx: &Ctx, project: &Project, placed: &Thread) -> Result<String> {
+    Ok(match placed.kind {
         Kind::Worktree => mainline::worktree_lines(placed),
         Kind::Tab | Kind::Checkout | Kind::Design => {
             let repos = project.read_project_md().map(|(settings, _)| settings.repos).unwrap_or_default();
-            mainline::checkout_lines(project, ctx.runner, &repos, &placed.repo)
+            mainline::checkout_lines(project, ctx.runner, &repos, &placed.repo)?
         }
         Kind::Adopted => String::new(),
-    }
+    })
 }
 
 /// Creates the thread directory, keeps it out of git, writes `brief.md`.
@@ -624,7 +627,7 @@ fn write_brief_local(ctx: &Ctx, project: &Project, placed: &Thread, restart: boo
     let dir = thread::thread_dir(&placed.cwd, &project.slug, &placed.id);
     let with_dir = Thread { thread_dir: dir.clone(), ..placed.clone() };
     let task = std::fs::read_to_string(thread::task_path(project, &placed.id)).unwrap_or_default();
-    let lines = mainline_lines(ctx, project, placed) + &wt_hooks::brief_line(placed.setup, &dir);
+    let lines = mainline_lines(ctx, project, placed)? + &wt_hooks::brief_line(placed.setup, &dir);
     let brief = thread::brief_for(project, &with_dir, &task, restart, &lines)?;
 
     std::fs::create_dir_all(Path::new(&dir).join("library")).with_context(|| format!("could not create {dir}"))?;

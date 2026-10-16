@@ -11,7 +11,7 @@ use crate::paths::Ctx;
 use crate::project::{self, Project, Settings};
 
 /// The keys `set` accepts, with what they hold.
-pub const KEYS: [(&str, &str); 11] = [
+pub const KEYS: [(&str, &str); 12] = [
     ("name", "text"),
     ("goal", "text"),
     ("coordinator_profile", "profile name"),
@@ -23,6 +23,7 @@ pub const KEYS: [(&str, &str); 11] = [
     ("mute", "true/false"),
     ("repos.add", "PATH or PATH@MACHINE"),
     ("repos.remove", "PATH"),
+    ("repos.mainline", "PATH[@MACHINE] REF (PATH alone = by rule)"),
 ];
 
 /// Splits `+++` front matter from the rest, keeping both verbatim.
@@ -137,6 +138,32 @@ pub fn set_in(text: &str, key: &str, value: &str) -> Result<String> {
             });
             if repos.len() == before {
                 bail!("{value} is not listed");
+            }
+        }
+        "repos.mainline" => {
+            normalize_repos(&mut doc)?;
+            let repos = doc.get_mut("repos").and_then(Item::as_array_of_tables_mut).context("no repos are listed")?;
+            let at = |t: &Table, arg: &str| {
+                let wanted = project::parse_repo_arg(arg);
+                let listed = project::Repo {
+                    path: t.get("path").and_then(Item::as_str).unwrap_or("").to_string(),
+                    machine: t.get("machine").and_then(Item::as_str).map(str::to_string),
+                    name: None,
+                    mainline: None,
+                };
+                listed.path == arg || listed.is_at(&wanted.path, wanted.machine.as_deref().unwrap_or(""))
+            };
+            // A path may hold spaces: the whole value is a path before it is `PATH REF`.
+            let (repo, reference) = match value.rsplit_once(char::is_whitespace) {
+                Some((repo, reference)) if !repos.iter().any(|t| at(t, value)) => (repo.trim(), reference),
+                _ => (value, ""),
+            };
+            let table = repos.iter_mut().find(|t| at(t, repo)).with_context(|| format!("{repo} is not listed"))?;
+            if reference.is_empty() {
+                table.remove("mainline");
+            } else {
+                crate::mainline::validate_override(reference)?;
+                table["mainline"] = toml_edit::value(reference);
             }
         }
         other => bail!("unknown setting `{other}`; one of: {}", KEYS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")),
@@ -285,6 +312,19 @@ mod tests {
         assert!(project::parse_project_md(&muted).unwrap().0.mute);
         let goal = set_in(MD, "goal", "Ship \"it\"").unwrap();
         assert_eq!(project::parse_project_md(&goal).unwrap().0.goal, "Ship \"it\"");
+    }
+
+    #[test]
+    fn a_repo_mainline_override_is_set_and_cleared() {
+        let set = set_in(MD, "repos.mainline", "/srv/app@box main-legacy-v0.2").unwrap();
+        assert!(set.contains("mainline = \"main-legacy-v0.2\""), "{set}");
+        let (settings, _) = project::parse_project_md(&set).unwrap();
+        assert_eq!(settings.pinned_mainline("/srv/app", "box"), Some("main-legacy-v0.2"));
+        assert_eq!(settings.pinned_mainline("/srv/app", ""), None, "another machine's entry");
+        let cleared = set_in(&set, "repos.mainline", "/srv/app@box").unwrap();
+        assert_eq!(cleared, MD);
+        assert!(set_in(MD, "repos.mainline", "/nope main").is_err());
+        assert!(set_in(MD, "repos.mainline", "/srv/app@box -x").is_err());
     }
 
     #[test]

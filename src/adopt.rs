@@ -153,7 +153,7 @@ pub fn adopt_workspace(ctx: &Ctx, args: &AdoptWorkspace) -> Result<()> {
         .filter(|o| o.success())
         .map(|o| o.stdout.trim().to_string())
         .filter(|s| !s.is_empty());
-    let repos = is_repo.map(|path| vec![project::Repo { path, machine: None, name: None }]).unwrap_or_default();
+    let repos = is_repo.map(|path| vec![project::Repo { path, machine: None, name: None, mainline: None }]).unwrap_or_default();
 
     let project = project::create(&ctx.root, &args.name, &args.goal, repos)?;
     let config = crate::profiles::load(&ctx.config_dir)?;

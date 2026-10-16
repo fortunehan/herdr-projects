@@ -1,7 +1,8 @@
 //! The mainline of a repository: the line new work starts from and analysis
-//! reads, found by rule (ADR 0007), never by setting.
+//! reads, found by rule (ADR 0007) unless PROJECT.md overrides it.
 //!
-//! 1. `--base` wins.
+//! 1. `--base` wins; then a repository's `mainline` override, which skips
+//!    the rest and the cache.
 //! 2. An origin not on Azure DevOps: candidate `origin/main`.
 //! 3. An Azure DevOps origin: `origin/main` when its README (from `origin/main`,
 //!    else `origin/HEAD`) mentions `trunk-`, otherwise `origin/develop`; a
@@ -87,6 +88,8 @@ pub struct Facts {
     pub pairs: BTreeMap<String, (u32, u32)>,
     /// The commit `--base` names, when one was asked for.
     pub base: Option<String>,
+    /// The override's full ref name and facts, when it was asked for and found.
+    pub pin: Option<(String, RefFacts)>,
     /// Lines `git status --porcelain` printed, when asked for.
     pub dirty: Option<usize>,
     pub readme: Option<Readme>,
@@ -106,6 +109,8 @@ pub struct Mainline {
     pub commit: String,
     /// Named by `--base`, not found by rule.
     pub given: bool,
+    /// The repository's mainline override in PROJECT.md.
+    pub pinned: bool,
     pub warnings: Vec<String>,
     /// How far the checkout is from it (behind, ahead).
     pub gap: Option<(u32, u32)>,
@@ -128,6 +133,8 @@ pub struct Options<'a> {
     /// Detect the rule again instead of using the cache.
     pub refresh: bool,
     pub base: Option<&'a str>,
+    /// The repository's mainline override (`mainline` in `[[repos]]`).
+    pub pinned: Option<&'a str>,
 }
 
 pub struct Found {
@@ -168,7 +175,7 @@ pub fn short(commit: &str) -> &str {
 
 /// The facts script. `fetch`, `readme` and `status` switch its optional
 /// parts on; `base` is resolved when not empty.
-fn script(repo: &str, fetch: bool, readme: bool, status: bool, base: &str) -> String {
+fn script(repo: &str, fetch: bool, readme: bool, status: bool, base: &str, pin: &str) -> String {
     let on = |b: bool| if b { "1" } else { "0" };
     format!(
         r#"cd {repo} || exit 3
@@ -195,6 +202,16 @@ for b in main develop; do
   u=$(git rev-parse --verify --quiet "refs/remotes/origin/$b^{{commit}}") || continue
   printf 'pair\t%s\t%s\n' "$b" "$(git rev-list --left-right --count "$u...$l")"
 done
+p={pin}
+if [ -n "$p" ]; then
+  for r in "refs/heads/$p" "refs/remotes/$p" "refs/remotes/origin/$p"; do
+    s=$(git rev-parse --verify --quiet "$r^{{commit}}") || continue
+    g=
+    if [ -n "$h" ]; then g=$(git rev-list --left-right --count "$s...$h"); fi
+    printf 'pin\t%s\t%s\t%s\n' "$r" "$s" "$g"
+    break
+  done
+fi
 b={base}
 if [ -n "$b" ]; then printf 'base\t%s\n' "$(git rev-parse --verify --quiet --end-of-options "$b^{{commit}}")"; fi
 if [ {status} = 1 ]; then printf 'dirty\t%s\n' "$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"; fi
@@ -213,6 +230,7 @@ exit 0
 "#,
         repo = remote::quote(repo),
         base = remote::quote(base),
+        pin = remote::quote(pin),
         fetch = on(fetch),
         status = on(status),
         readme = on(readme),
@@ -251,6 +269,7 @@ pub fn parse(text: &str) -> Facts {
                     facts.pairs.insert(branch.to_string(), pair);
                 }
             }
+            ["pin", name, commit, rest @ ..] => facts.pin = Some((name.to_string(), RefFacts { commit: commit.trim().to_string(), gap: gap(rest) })),
             ["base", commit] => facts.base = Some(commit.trim().to_string()),
             ["dirty", lines] => facts.dirty = lines.trim().parse().ok(),
             ["readme", found] => {
@@ -266,8 +285,8 @@ pub fn parse(text: &str) -> Facts {
     facts
 }
 
-fn gather(runner: &dyn Runner, at: &Location, fetch: bool, readme: bool, status: bool, base: &str) -> Result<Facts> {
-    let script = script(at.path, fetch, readme, status, base);
+fn gather(runner: &dyn Runner, at: &Location, fetch: bool, readme: bool, status: bool, base: &str, pin: &str) -> Result<Facts> {
+    let script = script(at.path, fetch, readme, status, base, pin);
     let out = match at.target {
         None => runner.run(&Cmd::new("sh", FACTS_TIMEOUT).args(["-s", "--", FACTS_MARK]).stdin(script))?,
         Some(target) => {
@@ -299,7 +318,7 @@ pub fn resolve(facts: &Facts, rule: Rule) -> Result<Mainline> {
     let mut warnings = Vec::new();
     let found = |reference: &str, full: &str, warnings: Vec<String>| {
         let at = facts.commit(full).cloned().unwrap_or_default();
-        Mainline { reference: reference.to_string(), commit: at.commit, gap: at.gap, warnings, given: false }
+        Mainline { reference: reference.to_string(), commit: at.commit, gap: at.gap, warnings, ..Default::default() }
     };
     if !facts.origin.is_empty() {
         let mut branch = rule.branch();
@@ -333,14 +352,16 @@ pub fn resolve(facts: &Facts, rule: Rule) -> Result<Mainline> {
     }
     let name = if facts.branch.is_empty() { facts.head.clone() } else { facts.branch.clone() };
     warnings.push(format!("{missing}, and no origin/HEAD; taking the main checkout's current branch `{name}`"));
-    Ok(Mainline { reference: name, commit: facts.head.clone(), gap: Some((0, 0)), warnings, given: false })
+    Ok(Mainline { reference: name, commit: facts.head.clone(), gap: Some((0, 0)), warnings, ..Default::default() })
 }
 
 /// What the cache holds for one repository: the rule and the origin URL it
 /// was found for, and the mainline as last found, for `context`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Entry {
-    rule: Rule,
+    /// `None` while only an override has been resolved.
+    #[serde(default)]
+    rule: Option<Rule>,
     origin: String,
     #[serde(default)]
     last: Option<Last>,
@@ -355,6 +376,34 @@ struct Last {
     warnings: Vec<String>,
     /// When it was found.
     at: String,
+    /// The override it was found from; `None` when found by rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pinned: Option<String>,
+}
+
+fn now() -> String {
+    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M").to_string()
+}
+
+/// A mainline override that names no local branch and no remote ref: an
+/// error at `thread start`, a warning in `mainline` and `context`.
+#[derive(Debug)]
+pub struct MissingOverride(pub String);
+
+impl std::fmt::Display for MissingOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MissingOverride {}
+
+/// Refuses an override git could read as an option or a range.
+pub fn validate_override(name: &str) -> Result<()> {
+    if name.is_empty() || name.starts_with('-') || name.contains("..") || name.chars().any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c)) {
+        bail!("`{name}` is not a usable branch or remote ref for a mainline override");
+    }
+    Ok(())
 }
 
 fn cache_path(project: &Project) -> PathBuf {
@@ -390,8 +439,12 @@ pub fn find(project: &Project, runner: &dyn Runner, at: &Location, options: &Opt
     if base.starts_with('-') {
         bail!("`{base}` is not a usable base");
     }
+    let pin = if base.is_empty() { options.pinned.unwrap_or("") } else { "" };
+    if !pin.is_empty() {
+        validate_override(pin)?;
+    }
     let key = cache_key(at.path, at.machine);
-    let entry = if options.refresh || !base.is_empty() { None } else { cached(project, &key) };
+    let entry = if options.refresh || !base.is_empty() || !pin.is_empty() { None } else { cached(project, &key) };
     let mut fetch_ok = None;
     if options.fetch && at.target.is_none() {
         let git = |args: &[&str], timeout| runner.run(&Cmd::new("git", timeout).args(["-C", at.path]).args(args.iter().copied()));
@@ -404,8 +457,8 @@ pub fn find(project: &Project, runner: &dyn Runner, at: &Location, options: &Opt
             fetch_ok = Some(fetched.is_ok_and(|o| o.success()));
         }
     }
-    let readme = base.is_empty() && entry.is_none();
-    let mut facts = gather(runner, at, options.fetch && at.target.is_some(), readme, options.status, base)?;
+    let readme = base.is_empty() && pin.is_empty() && entry.as_ref().and_then(|e| e.rule).is_none();
+    let mut facts = gather(runner, at, options.fetch && at.target.is_some(), readme, options.status, base, pin)?;
     if fetch_ok.is_some() {
         facts.fetch_ok = fetch_ok;
     }
@@ -415,15 +468,38 @@ pub fn find(project: &Project, runner: &dyn Runner, at: &Location, options: &Opt
             bail!("`{base}` is not a commit in {}", at.path);
         }
         let gap = facts.refs.values().find(|r| r.commit == commit).and_then(|r| r.gap);
-        let mainline = Mainline { reference: base.to_string(), commit, given: true, warnings: Vec::new(), gap };
+        let mainline = Mainline { reference: base.to_string(), commit, given: true, gap, ..Default::default() };
         return Ok(Found { facts, mainline });
     }
+    if !pin.is_empty() {
+        // The rule found earlier is kept for when the override goes.
+        let rule = cached(project, &key).filter(|e| e.origin == facts.origin).and_then(|e| e.rule);
+        let place = if at.machine.is_empty() { String::new() } else { format!(" on {}", at.machine) };
+        let found = facts.pin.clone().map(|(full, at)| {
+            let reference = full.strip_prefix("refs/heads/").or(full.strip_prefix("refs/remotes/")).unwrap_or(&full).to_string();
+            Mainline { reference, commit: at.commit, gap: at.gap, pinned: true, ..Default::default() }
+        });
+        let missing = format!("the mainline override `{pin}` (PROJECT.md) is neither a local branch nor a remote ref in {}{place}", at.path);
+        let last = Last {
+            reference: found.as_ref().map_or(pin.to_string(), |m| m.reference.clone()),
+            commit: found.as_ref().map(|m| m.commit.clone()).unwrap_or_default(),
+            fetched: fetched_label(&facts),
+            warnings: if found.is_some() { Vec::new() } else { vec![missing.clone()] },
+            at: now(),
+            pinned: Some(pin.to_string()),
+        };
+        remember(project, &key, Entry { rule, origin: facts.origin.clone(), last: Some(last) })?;
+        return match found {
+            Some(mainline) => Ok(Found { facts, mainline }),
+            None => Err(MissingOverride(missing).into()),
+        };
+    }
     let mut warning = None;
-    let rule = match entry.filter(|e| e.origin == facts.origin) {
-        Some(entry) => entry.rule,
+    let rule = match entry.filter(|e| e.origin == facts.origin).and_then(|e| e.rule) {
+        Some(rule) => rule,
         None => {
             if facts.readme.is_none() && crate::pr::Forge::is_azure_devops(&facts.origin) {
-                facts.readme = gather(runner, at, false, true, false, "")?.readme;
+                facts.readme = gather(runner, at, false, true, false, "", "")?.readme;
             }
             let (rule, missing) = rule_of(&facts);
             warning = missing;
@@ -439,9 +515,10 @@ pub fn find(project: &Project, runner: &dyn Runner, at: &Location, options: &Opt
         commit: m.commit.clone(),
         fetched: fetched_label(&facts),
         warnings: m.warnings.clone(),
-        at: jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M").to_string(),
+        at: now(),
+        pinned: None,
     });
-    remember(project, &key, Entry { rule, origin: facts.origin.clone(), last })?;
+    remember(project, &key, Entry { rule: Some(rule), origin: facts.origin.clone(), last })?;
     Ok(Found { facts, mainline: resolved? })
 }
 
@@ -450,7 +527,13 @@ pub fn worktree_lines(thread: &crate::thread::Thread) -> String {
     if thread.base_commit.is_empty() {
         return String::new();
     }
-    let label = if thread.base_given { "Base (from --base)" } else { "Mainline" };
+    let label = if thread.base_given {
+        "Base (from --base)"
+    } else if thread.base_pinned {
+        "Mainline (override in PROJECT.md)"
+    } else {
+        "Mainline"
+    };
     let when = if thread.base_fetched.is_empty() { String::new() } else { format!(" ({})", thread.base_fetched) };
     let mut out = format!("- {label}: `{}` @ {}{when}. Your branch starts here; cite this commit in your report.\n", thread.base, short(&thread.base_commit));
     for note in &thread.base_notes {
@@ -487,7 +570,8 @@ fn checkout_line(path: &str, found: &Found) -> (String, bool) {
     } else {
         parts.join(", ")
     };
-    let mut line = format!("  - {path}: mainline `{}` @ {}{when}; main checkout on {on} @ {}: {state}.\n", m.reference, short(&m.commit), short(&f.head));
+    let kind = if m.pinned { "mainline (override)" } else { "mainline" };
+    let mut line = format!("  - {path}: {kind} `{}` @ {}{when}; main checkout on {on} @ {}: {state}.\n", m.reference, short(&m.commit), short(&f.head));
     for note in found.notes() {
         line.push_str(&format!("    - {note}\n"));
     }
@@ -497,25 +581,26 @@ fn checkout_line(path: &str, found: &Found) -> (String, bool) {
 /// The brief lines of a tab, checkout or design thread: every local
 /// repository of the project (and the thread's own) as its main checkout is
 /// now, after a fetch of origin. The fetch moves only remote-tracking refs;
-/// the checkouts are never touched.
-pub fn checkout_lines(project: &Project, runner: &dyn Runner, repos: &[project::Repo], own: &str) -> String {
-    let mut paths: Vec<String> = repos.iter().filter(|r| r.machine.is_none()).map(|r| r.path.clone()).collect();
-    if !own.is_empty() && !paths.iter().any(|p| p == own || std::fs::canonicalize(p).is_ok_and(|c| c.to_string_lossy() == own)) {
-        paths.push(own.to_string());
+/// the checkouts are never touched. A missing mainline override is an error.
+pub fn checkout_lines(project: &Project, runner: &dyn Runner, repos: &[project::Repo], own: &str) -> Result<String> {
+    let mut paths: Vec<(String, Option<&str>)> = repos.iter().filter(|r| r.machine.is_none()).map(|r| (r.path.clone(), r.pinned_mainline())).collect();
+    if !own.is_empty() && !paths.iter().any(|(p, _)| p == own || std::fs::canonicalize(p).is_ok_and(|c| c.to_string_lossy() == own)) {
+        paths.push((own.to_string(), None));
     }
     if paths.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
     let mut out = String::from("- Mainlines, and the main checkouts as they are now:\n");
     let mut any_differs = false;
-    for path in &paths {
+    for (path, pinned) in &paths {
         let at = Location { path, machine: "", target: None };
-        match find(project, runner, &at, &Options { fetch: true, status: true, ..Default::default() }) {
+        match find(project, runner, &at, &Options { fetch: true, status: true, pinned: *pinned, ..Default::default() }) {
             Ok(found) => {
                 let (line, differs) = checkout_line(path, &found);
                 any_differs |= differs;
                 out.push_str(&line);
             }
+            Err(error) if error.is::<MissingOverride>() => return Err(error),
             Err(error) => out.push_str(&format!("  - {path}: mainline unknown ({error:#})\n")),
         }
     }
@@ -524,7 +609,7 @@ pub fn checkout_lines(project: &Project, runner: &dyn Runner, repos: &[project::
     } else {
         out.push_str("  - Say in your report which commit you read.\n");
     }
-    out
+    Ok(out)
 }
 
 fn location_for<'a>(ctx: &Ctx, repo: &'a project::Repo, target: &'a mut Option<String>) -> Result<Location<'a>> {
@@ -550,9 +635,15 @@ fn describe(reference: &str, commit: &str, fetched: &str, warnings: &[String]) -
 /// fetch or ssh. Thread starts and `mainline` keep it current.
 pub fn summary(project: &Project, repo: &project::Repo) -> String {
     let key = cache_key(&repo.path, repo.machine.as_deref().unwrap_or(""));
-    match cached(project, &key).and_then(|e| e.last) {
-        Some(last) => format!("{}, as of {}", describe(&last.reference, &last.commit, &last.fetched, &last.warnings), last.at),
-        None => format!("not found yet (`mainline {}` finds it)", project.slug),
+    let pinned = repo.pinned_mainline();
+    // A result found under another override, or by rule, is not this one.
+    let last = cached(project, &key).and_then(|e| e.last).filter(|l| l.pinned.as_deref() == pinned);
+    match (last, pinned) {
+        (Some(last), Some(_)) if last.commit.is_empty() => format!("override, warning: {}, as of {}", last.warnings.join("; "), last.at),
+        (Some(last), Some(_)) => format!("{}, override in PROJECT.md, as of {}", describe(&last.reference, &last.commit, &last.fetched, &last.warnings), last.at),
+        (Some(last), None) => format!("{}, as of {}", describe(&last.reference, &last.commit, &last.fetched, &last.warnings), last.at),
+        (None, Some(pin)) => format!("override `{pin}` in PROJECT.md, not resolved yet (`mainline {}` resolves it)", project.slug),
+        (None, None) => format!("not found yet (`mainline {}` finds it)", project.slug),
     }
 }
 
@@ -568,9 +659,12 @@ pub fn cli(ctx: &Ctx, slug: &str, refresh: bool) -> Result<()> {
     for repo in &settings.repos {
         let place = repo.machine.as_ref().map(|m| format!(" (machine {m})")).unwrap_or_default();
         let mut target = None;
-        let found = location_for(ctx, repo, &mut target).and_then(|at| find(&project, ctx.runner, &at, &Options { refresh, ..Default::default() }));
+        let options = Options { refresh, pinned: repo.pinned_mainline(), ..Default::default() };
+        let found = location_for(ctx, repo, &mut target).and_then(|at| find(&project, ctx.runner, &at, &options));
         let text = match found {
+            Ok(found) if found.mainline.pinned => format!("{} (override)", describe(&found.mainline.reference, &found.mainline.commit, &found.fetched(), &found.mainline.warnings)),
             Ok(found) => describe(&found.mainline.reference, &found.mainline.commit, &found.fetched(), &found.mainline.warnings),
+            Err(error) if error.is::<MissingOverride>() => format!("warning: {error}"),
             Err(error) => format!("unknown ({})", format!("{error:#}").lines().next().unwrap_or("")),
         };
         println!("{}{place}: {text}", repo.path);
@@ -891,8 +985,8 @@ pub mod tests {
         let head = git(&repos.clone, &["rev-parse", "HEAD"]);
         let status = git(&repos.clone, &["status", "--porcelain"]);
 
-        let list = vec![project::Repo { path: repos.path(), machine: None, name: None }, project::Repo { path: "/remote/x".into(), machine: Some("box".into()), name: None }];
-        let text = checkout_lines(&project, &RealRunner, &list, "");
+        let list = vec![project::Repo { path: repos.path(), machine: None, name: None, mainline: None }, project::Repo { path: "/remote/x".into(), machine: Some("box".into()), name: None, mainline: None }];
+        let text = checkout_lines(&project, &RealRunner, &list, "").unwrap();
         let mainline = git(&repos.clone, &["rev-parse", "origin/main"]);
         assert!(text.contains(&format!("mainline `origin/main` @ {}", short(&mainline))), "{text}");
         assert!(text.contains(&format!("main checkout on `feature/y` @ {}: 1 behind, 1 ahead, with uncommitted changes", short(&head))), "{text}");
@@ -904,13 +998,102 @@ pub mod tests {
         assert_eq!(git(&repos.clone, &["branch", "--show-current"]), "feature/y");
     }
 
+    fn pinned_repo(path: String, pin: &str) -> project::Repo {
+        project::Repo { path, machine: None, name: None, mainline: Some(pin.into()) }
+    }
+
+    #[test]
+    fn an_override_beats_the_rule_and_its_cache_and_prefers_the_local_branch() {
+        let (_home, project) = project();
+        let repos = Repos::new(None, None, false);
+        // The rule takes the local main ahead of origin/main, and caches main.
+        commit(&repos.clone, "v1.rs", "upstream v1");
+        assert_eq!(mainline(&project, &repos.path()).reference, "main");
+        git(&repos.clone, &["branch", "legacy", "origin/main"]);
+        let legacy = commit(&repos.seed, "fork.rs", "fork");
+        git(&repos.seed, &["push", "-q", "origin", "main:legacy"]);
+        repos.fetch();
+
+        let options = Options { pinned: Some("legacy"), ..Default::default() };
+        let m = found(&project, &repos.path(), &options).mainline;
+        assert_eq!((m.reference.as_str(), m.pinned, m.given), ("legacy", true, false), "the local branch first");
+        assert_ne!(m.commit, legacy);
+        git(&repos.clone, &["branch", "-q", "-D", "legacy"]);
+        let m = found(&project, &repos.path(), &options).mainline;
+        assert_eq!((m.reference.as_str(), m.commit.as_str()), ("origin/legacy", legacy.as_str()), "then origin/<name>");
+        let m = found(&project, &repos.path(), &Options { pinned: Some("origin/legacy"), ..Default::default() }).mainline;
+        assert_eq!(m.reference, "origin/legacy");
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+
+        // --base still wins over the override.
+        let given = found(&project, &repos.path(), &Options { pinned: Some("legacy"), base: Some("origin/main"), ..Default::default() }).mainline;
+        assert!(given.given && !given.pinned);
+        assert_eq!(given.reference, "origin/main");
+
+        // The cached rule outlives the override.
+        let cache = std::fs::read_to_string(cache_path(&project)).unwrap();
+        assert!(cache.contains("\"main\""), "{cache}");
+        assert_eq!(mainline(&project, &repos.path()).reference, "main");
+    }
+
+    #[test]
+    fn a_missing_override_is_an_error_and_a_warning_in_context() {
+        let (_home, project) = project();
+        let repos = Repos::new(None, None, false);
+        let repo = pinned_repo(repos.path(), "nope");
+        assert!(summary(&project, &repo).contains("override `nope` in PROJECT.md, not resolved yet"), "{}", summary(&project, &repo));
+        let at = Location { path: &repos.path(), machine: "", target: None };
+        let error = find(&project, &RealRunner, &at, &Options { pinned: Some("nope"), ..Default::default() }).err().unwrap();
+        assert!(error.is::<MissingOverride>());
+        assert!(error.to_string().contains("override `nope` (PROJECT.md) is neither a local branch nor a remote ref"), "{error}");
+        let text = summary(&project, &repo);
+        assert!(text.starts_with("override, warning: the mainline override `nope`"), "{text}");
+        assert!(checkout_lines(&project, &RealRunner, &[repo], "").is_err(), "a read-only brief refuses it too");
+        // The rule's result is not taken for the override, nor the other way round.
+        let plain = project::Repo { mainline: None, ..pinned_repo(repos.path(), "") };
+        assert!(summary(&project, &plain).starts_with("not found yet"), "{}", summary(&project, &plain));
+        for bad in ["-x", "a..b", "a b", "HEAD~1"] {
+            assert!(find(&project, &RealRunner, &at, &Options { pinned: Some(bad), ..Default::default() }).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_override_shows_in_context_and_in_read_only_briefs() {
+        let (_home, project) = project();
+        let repos = Repos::new(None, None, false);
+        git(&repos.clone, &["branch", "legacy"]);
+        let repo = pinned_repo(repos.path(), "legacy");
+        let text = checkout_lines(&project, &RealRunner, std::slice::from_ref(&repo), "").unwrap();
+        assert!(text.contains("mainline (override) `legacy` @ "), "{text}");
+        let text = summary(&project, &repo);
+        assert!(text.starts_with("`legacy` @ ") && text.contains("override in PROJECT.md, as of "), "{text}");
+    }
+
+    #[test]
+    fn an_override_resolves_over_ssh_on_the_other_machine() {
+        let (_home, project) = project();
+        let repos = Repos::new(None, None, false);
+        git(&repos.clone, &["branch", "legacy"]);
+        let runner = FakeRunner::new();
+        runner.on_fn(
+            |cmd| cmd.program == "ssh",
+            |cmd| RealRunner.run(&Cmd { program: "sh".into(), args: vec!["-c".into(), cmd.args.last().unwrap().clone()], ..cmd.clone() }),
+        );
+        let at = Location { path: &repos.path(), machine: "box", target: Some("box") };
+        let found = find(&project, &runner, &at, &Options { pinned: Some("legacy"), ..Default::default() }).unwrap();
+        assert_eq!((found.mainline.reference.as_str(), found.mainline.pinned), ("legacy", true));
+        assert_eq!(runner.count("ssh"), 1);
+        let error = find(&project, &runner, &at, &Options { pinned: Some("gone"), ..Default::default() }).err().unwrap();
+        assert!(error.to_string().contains(" on box"), "{error}");
+    }
+
     #[test]
     fn a_failed_fetch_before_a_read_only_brief_is_noted_and_not_fatal() {
         let (_home, project) = project();
         let repos = Repos::new(None, None, false);
         git(&repos.clone, &["remote", "set-url", "origin", repos.root.path().join("gone.git").to_str().unwrap()]);
-        let list = vec![project::Repo { path: repos.path(), machine: None, name: None }];
-        let text = checkout_lines(&project, &RealRunner, &list, "");
+        let list = vec![project::Repo { path: repos.path(), machine: None, name: None, mainline: None }];
+        let text = checkout_lines(&project, &RealRunner, &list, "").unwrap();
         assert!(text.contains("mainline `origin/main` @ "), "{text}");
         assert!(text.contains("The fetch from origin failed: the mainline is as of the last fetch."), "{text}");
     }
