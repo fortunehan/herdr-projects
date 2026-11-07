@@ -1,5 +1,5 @@
 """This machine's own additions, kept out of Shepherdr's settings and templates: an Assistant's local
-notes (~/.herdr/assistant), and a repo's own git config (herdr.base, herdr.branch, herdr.wid).
+notes (~/.herdr/assistant), and a repo's own git config (herdr.base, herdr.branch, herdr.wid, herdr.setup).
 
 git config herdr.*: the repo's (its main checkout's .git/config, shared by its worktrees) over the
 global one (git config --global), both over Shepherdr's space settings; a task's own --base, --branch
@@ -89,3 +89,36 @@ def set_wid(s, t, wid):
         t["wid"] = m.group(1)
     else:
         t.pop("wid", None)
+
+
+# ---- preparing a new worktree (herdr.setup) ---------------------------------------------------
+# A fresh worktree has no ignored files (.env, node_modules): herdr.setup (e.g. "wt hook pre-start")
+# prepares it, in the task agent's own terminal before the agent starts, never in the scheduler. Once
+# it succeeds a mark in the worktree's own git folder keeps it from running again; git removes that
+# folder with the worktree.
+
+SETUP_DONE = "herdr-setup-done"
+SETUP = ('printf "\\033[2mherdr.setup: %s\\033[0m\\n" "$1"; '
+         'if sh -c "$1"; then touch "$2"; else printf "herdr.setup failed; the agent starts anyway.\\n" >&2; fi; '
+         'shift 2; exec "$@"')
+
+
+def setup_mark(folder):
+    ok, gitdir, _ = git(folder, "rev-parse", "--absolute-git-dir")
+    return os.path.join(gitdir, SETUP_DONE) if ok and gitdir else None
+
+
+def with_setup(task, folder, cmd):
+    """A worktree task's agent argv, herdr.setup run first while the worktree hasn't had it."""
+    setup = git_setting(folder, "setup") if task.get("mode") == "worktree" else ""
+    mark = setup_mark(folder) if setup else None
+    if not mark or os.path.exists(mark):
+        return cmd
+    return ["sh", "-c", SETUP, "herdr-setup", setup, mark, *cmd]
+
+
+def setup_line(s, task):
+    """The brief's word on it, for a worktree task when herdr.setup is set."""
+    setup = git_setting(s.loc["folder"], "setup") if task.get("mode") == "worktree" and task.get("worktree") else ""
+    return (f"Before you started, Herdr ran `{setup}` in your worktree (git config herdr.setup); if something it "
+            f"prepares (ignored files, dependencies) is missing, run it there again.") if setup else ""

@@ -1,5 +1,5 @@
-"""herdr-task's local additions (herdr_task/local.py): an Assistant's local notes and a repo's own git
-config. Throwaway folders and git repos (no global git config); hc and the settings file are never touched."""
+"""herdr-task's local additions (herdr_task/local.py): an Assistant's local notes, a repo's own git
+config and its worktree setup command. Throwaway folders and git repos (no global git config); hc and the settings file are never touched."""
 import os
 import shutil
 import subprocess
@@ -157,6 +157,44 @@ class RepoGitConfig(Base):
         self.assertNotIn("wid", t)
         with self.assertRaises(local.Fail):
             local.set_wid(self.store, t, "login")
+
+
+class WorktreeSetup(Base):
+    """P3: git config herdr.setup runs once in a new worktree, in the agent's own terminal, before the agent."""
+
+    def setUp(self):
+        super().setUp()
+        self.main = self.repo()
+        self.wt = os.path.join(self.tmp, "wt")
+        self.git(self.main, "worktree", "add", "-q", "-b", "task/1", self.wt)
+        self.task = {"id": 1, "title": "Login", "mode": "worktree", "worktree": self.wt}
+        self.agent = ["sh", "-c", 'echo "agent in $PWD"']
+
+    def run_argv(self, argv):
+        return subprocess.run(argv, cwd=self.wt, capture_output=True, text=True)
+
+    def test_it_runs_once_before_the_agent(self):
+        self.assertEqual(local.with_setup(self.task, self.wt, self.agent), self.agent)  # unset: as it was
+        self.git(self.main, "config", "herdr.setup", "echo ready > prepared.txt")
+        argv = local.with_setup(self.task, self.wt, self.agent)
+        r = self.run_argv(argv)
+        self.assertIn(f"agent in {self.wt}", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.wt, "prepared.txt")))
+        self.assertEqual(local.with_setup(self.task, self.wt, self.agent), self.agent)  # done once
+        self.assertFalse(os.path.exists(os.path.join(self.main, ".git", local.SETUP_DONE)))  # the worktree's own mark
+
+    def test_a_failed_setup_still_starts_the_agent_and_runs_again_next_time(self):
+        self.git(self.main, "config", "herdr.setup", "exit 3")
+        r = self.run_argv(local.with_setup(self.task, self.wt, self.agent))
+        self.assertIn("agent in", r.stdout)
+        self.assertIn("herdr.setup failed", r.stderr)
+        self.assertNotEqual(local.with_setup(self.task, self.wt, self.agent), self.agent)
+
+    def test_never_for_a_task_in_the_folder_itself_and_the_brief_says_so(self):
+        self.git(self.main, "config", "herdr.setup", "wt hook pre-start")
+        self.assertEqual(local.with_setup({"mode": "here"}, self.main, self.agent), self.agent)
+        self.assertEqual(local.setup_line(Store(self.main), {"mode": "here"}), "")
+        self.assertIn("`wt hook pre-start`", local.setup_line(Store(self.main), self.task))
 
 
 if __name__ == "__main__":

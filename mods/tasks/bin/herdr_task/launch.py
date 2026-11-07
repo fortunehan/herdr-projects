@@ -353,7 +353,7 @@ def brief(s, task, parent=None, space=None, argv=None):
         start += f"\n(The main folder is {s.loc['folder']}.)"
     body = "Your task, " + s.ref(task) + ":\n" + ((task.get("prompt") or "").strip() or task["title"])
     finish = notes_part("Before you say ready", notes(s, task, "finish", space))
-    return "\n\n".join(x for x in [instructions("worker"), start, body, where_line(task), finish, closing_line(s, task, parent, argv),
+    return "\n\n".join(x for x in [instructions("worker"), start, body, where_line(task), local.setup_line(s, task), finish, closing_line(s, task, parent, argv),
                                     settings_block(s, task, space, argv)] if x)
 
 
@@ -545,7 +545,9 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     rel = ["--parent", parent, "--outlive-parent"] if parent else ["--no-parent"]
     name = agent_name(s, task, "review" if role else None)
     # HERDR_BROWSER_TASK: which task's browser herdr-browser drives (HERD-57), for it and its children.
-    r = run(["hc", "run", "--bg", "--json", "--keep", "--cwd", folder_for(s, task), "--name", name,
+    folder = folder_for(s, task)
+    cmd = local.with_setup(task, folder, cmd)
+    r = run(["hc", "run", "--bg", "--json", "--keep", "--cwd", folder, "--name", name,
              *labels, *rel, "--", *low_priority(["env", f"HERDR_BROWSER_TASK={key}", *in_shell(cmd)], name)])
     try:
         out = json.loads(r.stdout)
