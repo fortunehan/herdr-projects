@@ -25,6 +25,7 @@ from .star import cmd_star
 from .home import cmd_home
 from .assistant_settings import cmd_session_note
 from .feedback import cmd_feedback
+from . import ado
 
 
 # ---- another machine ------------------------------------------------------------------------
@@ -444,6 +445,7 @@ def main():
     c.add_argument("--space")
     c.add_argument("--parent")
     c.add_argument("--keep", action="store_true", help="add the agent beside the old one")
+    ado.add_cli(sub)
     c = sub.add_parser("_allow")  # Codex's PermissionRequest hook (own_argv)
     c.add_argument("--command", required=True)
     c.set_defaults(fn=cmd_allow, json=False)

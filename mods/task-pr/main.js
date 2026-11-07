@@ -16,7 +16,9 @@ async function ask(w) {
   const on = w.machine ?? undefined;
   let r;
   if (w.pr?.number && w.pr?.repo) {
-    r = await exec("gh", ["pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS], { on });
+    // On Azure DevOps (ado:<org>/<project>/<repo>) herdr-task answers as gh would.
+    const ado = w.pr.repo.startsWith("ado:");
+    r = await exec(ado ? "herdr-task" : "gh", [...(ado ? ["ado"] : []), "pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS], { on });
   } else if (w.branch) {
     r = await exec("gh", ["pr", "view", w.branch, "--json", PR_FIELDS], { cwd: w.folder, on }).catch(() => null);
     if (!r) return { why: "This task has no pull request." };

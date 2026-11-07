@@ -30,7 +30,9 @@ export async function worktree(hub: Hub, w: Where, what: string, path?: string):
   if (what === "pr") {
     // as the window's Pull request (mods/task-pr ask()): { pr }, or { why } there's none, or { error }
     if (!w.pr?.number && !w.branch) return { why: VIEW_WORDS.noBranch };
-    const r = w.pr?.number && w.pr.repo ? await sh(["gh", "pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS])
+    // On Azure DevOps (ado:<org>/<project>/<repo>) herdr-task answers as gh would.
+    const ado = w.pr?.repo?.startsWith("ado:") ? ["herdr-task", "ado"] : ["gh"];
+    const r = w.pr?.number && w.pr.repo ? await sh([...ado, "pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS])
       : await sh(["gh", "pr", "view", w.branch!, "--json", PR_FIELDS]).catch(() => null);
     if (!r) return { why: VIEW_WORDS.noPr };
     const err = (r.stderr || r.stdout).trim();

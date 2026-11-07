@@ -6,6 +6,7 @@ import shutil
 
 from .base import Fail, GH, git, now, run, STORE
 from .agents import agent_running, live_agents
+from . import ado
 
 
 # ---- GitHub ---------------------------------------------------------------------------------
@@ -21,7 +22,9 @@ def gh(*args, cwd=None):
 
 def github(s):
     """The repo on GitHub ("owner/name") when it has a GitHub remote and gh works there; asked
-    again after an hour. None: tasks merge locally."""
+    again after an hour. None: tasks merge locally. On Azure DevOps: "ado:<org>/<project>/<repo>" (ado.py)."""
+    if (repo := ado.repo_of(s)):
+        return repo
     if s.loc["kind"] != "repo" or not shutil.which(GH):
         return None
     g = s.data.get("github") or {}
@@ -41,6 +44,8 @@ def remote_of(main):
 def pr_open(s, task, repo, summary=None):
     """Pushes the task's branch and opens its pull request (or keeps the open one, also one opened
     by hand or by its agent for the branch: SHEP-13's "already exists")."""
+    if ado.owns(repo):
+        return ado.pr_open(s, task, repo, summary)
     wt, br = task["worktree"], task["branch"]
     ok, _, err = git(wt, "push", "--force-with-lease", "-u", remote_of(s.loc["folder"]), br)
     if not ok:
@@ -80,6 +85,8 @@ def pr_adopt(task, repo):
     """The open pull request for the task's branch, opened by hand or by its agent, recorded on the
     task; None when there is none (SHEP-13: ready failed with "already exists"). Only one from this
     repo (never a fork's branch of the same name), into the task's base, at the branch's tip here."""
+    if ado.owns(repo):
+        return ado.pr_adopt(task, repo)
     ok, out, _ = gh("pr", "list", "--repo", repo, "--head", task["branch"], "--state", "open",
                     "--json", "number,url,isCrossRepository,baseRefName,headRefOid")
     tip_ok, tip, _ = git(task["worktree"], "rev-parse", task["branch"])
@@ -97,6 +104,8 @@ def pr_adopt(task, repo):
 def pr_merged(task, repo):
     """The merged pull request for the task's branch (from this repo, into its base), or None
     (SHEP-59: a squash merge leaves the branch's commits out of the base)."""
+    if ado.owns(repo):
+        return ado.pr_merged(task, repo)
     ok, out, _ = gh("pr", "list", "--repo", repo, "--head", task["branch"], "--state", "merged",
                     "--json", "number,url,isCrossRepository,baseRefName,headRefOid,mergeCommit")
     try:
@@ -152,6 +161,8 @@ PENDING = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED", "EXPECTED
 
 def pr_view(task):
     pr = task["pr"]
+    if ado.owns(pr["repo"]):
+        return ado.pr_view(task)
     ok, out, _ = gh("pr", "view", str(pr["number"]), "--repo", pr["repo"], "--json", "state,mergeable,headRefOid,statusCheckRollup,mergeCommit")
     try:
         return json.loads(out) if ok else None

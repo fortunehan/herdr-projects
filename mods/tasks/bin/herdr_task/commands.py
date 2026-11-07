@@ -19,6 +19,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
+from . import ado
 from .github import already_merged, finish, gh, github, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
@@ -920,8 +921,8 @@ def merge_now(s, t):
             return problem
         if pr_pending(v):
             return "Checks are still running."
-        ok, _, err = gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
-                        "--match-head-commit", v.get("headRefOid") or "")
+        ok, _, err = ado.merge(t, v) if ado.owns(repo) else gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
+                                                                "--match-head-commit", v.get("headRefOid") or "")
         # A one-off GitHub error can come after the merge went through: asked again.
         again = None if ok else pr_view(t)
         if not ok and (again or {}).get("state") == "MERGED":

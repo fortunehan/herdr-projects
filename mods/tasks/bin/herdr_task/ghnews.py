@@ -8,6 +8,7 @@ import re
 from .base import now
 from .agents import status_word
 from .github import BAD, gh
+from . import ado
 from .launch import coordinator_in
 from .commands import workers
 from .news import news_send
@@ -51,6 +52,8 @@ def when(text):
 def pr_comments(repo, n):
     """A pull request's published reviews and comments with words, oldest first: {id, at, who,
     body, url, state?, where?}; None when GitHub didn't answer. Pending reviews are left out."""
+    if ado.owns(repo):
+        return ado.pr_comments(repo, n)
     reviews = api_pages(f"repos/{repo}/pulls/{n}/reviews")
     lines = api_pages(f"repos/{repo}/pulls/{n}/comments")
     notes = api_pages(f"repos/{repo}/issues/{n}/comments")
@@ -77,13 +80,13 @@ def pr_comments(repo, n):
 
 
 def run_id(url):
-    m = re.search(r"/actions/runs/(\d+)", url or "")
-    return m.group(1) if m else None
+    m = re.search(r"/actions/runs/(\d+)|[?&]buildId=(\d+)", url or "")  # an Azure DevOps build: ?buildId=
+    return (m.group(1) or m.group(2)) if m else None
 
 
 def log_tail(repo, run):
     """The end of a failed run's failed steps' log, or None."""
-    ok, out, _ = gh("run", "view", str(run), "--repo", repo, "--log-failed")
+    ok, out, _ = ado.build_log(repo, run) if ado.owns(repo) else gh("run", "view", str(run), "--repo", repo, "--log-failed")
     if not ok or not out:
         return None
     text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", out)
@@ -134,7 +137,7 @@ def pr_news(s, t, v, report):
     pr["watch"] = w
     if not news_checks and not fresh:
         return
-    lines = [f"GitHub news on pull request #{pr['number']} ({pr.get('url') or ''}), since you said ready:"]
+    lines = [f"{'Azure DevOps' if ado.owns(pr['repo']) else 'GitHub'} news on pull request #{pr['number']} ({pr.get('url') or ''}), since you said ready:"]
     for c in news_checks[:10]:
         name, url = c.get("name") or c.get("context") or "A check", c.get("detailsUrl") or c.get("targetUrl") or ""
         lines.append(f"- Check \"{name}\" failed: {url}")
@@ -198,13 +201,13 @@ def main_check(s, base, w, report):
     decides. Red for the first time since it was green: news for the Assistant (w["notice"]),
     with the failing runs, the end of a failed log and what merged since it was last green."""
     repo = w["repo"]
-    ok, out, _ = gh("api", f"repos/{repo}/commits?sha={base}&per_page=50", "--jq", "map(.sha)")
+    ok, out, _ = ado.main_commits(repo, base) if ado.owns(repo) else gh("api", f"repos/{repo}/commits?sha={base}&per_page=50", "--jq", "map(.sha)")
     try:
         history = json.loads(out) if ok else None
     except ValueError:
         history = None
-    ok, out, _ = gh("run", "list", "--repo", repo, "--branch", base, "--event", "push", "--limit", "100",
-                    "--json", "headSha,status,conclusion,url,workflowName,databaseId")
+    ok, out, _ = ado.main_runs(repo, base) if ado.owns(repo) else gh("run", "list", "--repo", repo, "--branch", base, "--event", "push", "--limit", "100",
+                                                                     "--json", "headSha,status,conclusion,url,workflowName,databaseId")
     try:
         runs = json.loads(out) if ok else None
     except ValueError:
@@ -233,7 +236,7 @@ def main_check(s, base, w, report):
             green = next((h for h in history[history.index(sha) + 1:] if verdict(runs, h)[0] == "pass"), None)
         since = []
         if green:
-            ok, out, _ = gh("api", f"repos/{repo}/compare/{green}...{sha}", "--jq", "[.commits[-20:][] | .commit.message | split(\"\\n\")[0]]")
+            ok, out, _ = ado.commits_since(repo, green, sha) if ado.owns(repo) else gh("api", f"repos/{repo}/compare/{green}...{sha}", "--jq", "[.commits[-20:][] | .commit.message | split(\"\\n\")[0]]")
             try:
                 since = json.loads(out) if ok else []
             except ValueError:
