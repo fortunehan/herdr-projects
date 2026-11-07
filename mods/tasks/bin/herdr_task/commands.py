@@ -19,7 +19,7 @@ from .agents import (
     agent_running, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX, WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from . import ado
+from . import ado, local
 from .github import already_merged, finish, gh, github, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
@@ -106,6 +106,7 @@ def cmd_add(args):
         space = bare(args.space) if args.space else caller_space()
         set_base(s, t, args.base, space, new=True)
         set_branch(s, t, getattr(args, "branch", None))
+        local.set_wid(s, t, getattr(args, "wid", None))
         set_notes(t, args)
         if args.after:
             set_after(s, t, *parse_after(s, args.after))
@@ -165,7 +166,7 @@ def set_base(s, t, base, space=None, new=False):
     as Shepherdr's space.base: captured when added, so a later change only touches new tasks);
     unset, the folder's current branch, kept unmarked. "" goes back to the folder's."""
     if base is None:
-        own = space_base(s, space) if new and t.get("mode") == "worktree" else ""
+        own = (local.base(s.loc["folder"]) or space_base(s, space)) if new and t.get("mode") == "worktree" else ""
         main = s.loc["folder"]
         if own and own != current_base(main):
             try:

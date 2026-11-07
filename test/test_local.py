@@ -1,5 +1,5 @@
-"""herdr-task's local additions (herdr_task/local.py): an Assistant's local notes. Throwaway folders
-and git repos; hc and the settings file are never touched."""
+"""herdr-task's local additions (herdr_task/local.py): an Assistant's local notes and a repo's own git
+config. Throwaway folders and git repos (no global git config); hc and the settings file are never touched."""
 import os
 import shutil
 import subprocess
@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.join(ROOT, "mods", "tasks", "bin"))
 sys.dont_write_bytecode = True
 
 import herdr_task.assistant_settings as assistant_settings  # noqa: E402
+import herdr_task.commands as commands  # noqa: E402
+import herdr_task.launch as launch  # noqa: E402
 import herdr_task.local as local  # noqa: E402
 import herdr_task.store as store  # noqa: E402
 
@@ -86,6 +88,75 @@ class AssistantNotes(Base):
             k["labels"] = {"herdr.task": "repo#1"}
             with mock.patch.object(assistant_settings.reactions, "agent_note", lambda terminal, k: "reactions"):
                 self.assertEqual(assistant_settings.session_note("t2"), "reactions")
+
+
+class Store:
+    def __init__(self, folder, tasks=()):
+        self.data, self.loc = {"tasks": list(tasks)}, {"folder": folder, "kind": "repo", "name": os.path.basename(folder)}
+
+    def ref(self, t):
+        return f"SHEP-{t['id']}"
+
+
+class RepoGitConfig(Base):
+    """P2: git config herdr.base / herdr.branch / herdr.wid, the repo's over the global one, over the space's settings."""
+
+    def setUp(self):
+        super().setUp()
+        self.main = self.repo()
+        self.git(self.main, "branch", "develop")
+        self.store = Store(self.main)
+        for mod, name, value in ((launch, "settings_for", lambda s, space: {"tasks": {"branch": "", "base": ""}}),
+                                 (commands, "space_base", lambda s, space=None: "")):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def task(self, **extra):
+        return {"id": 4, "title": "Fix login", "mode": "worktree", **extra}
+
+    def test_a_new_task_takes_the_repos_base(self):
+        t = self.task()
+        commands.set_base(self.store, t, None, new=True)
+        self.assertNotIn("base", t)
+        self.git(self.main, "config", "herdr.base", "develop")
+        commands.set_base(self.store, t, None, new=True)
+        self.assertEqual((t["base"], t["base_set"]), ("develop", True))
+        t = self.task()
+        commands.set_base(self.store, t, "main", new=True)  # its own --base wins
+        self.assertNotIn("base", t)
+
+    def test_the_repos_setting_wins_over_the_global_one(self):
+        glob = os.path.join(self.tmp, "gitconfig")
+        with open(glob, "w") as f:
+            f.write("[herdr]\n\tbase = nope\n\twid = 99\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": glob}):
+            self.assertEqual(local.base(self.main), "nope")
+            self.git(self.main, "config", "herdr.base", "develop")
+            self.assertEqual(local.base(self.main), "develop")
+            t = self.task()
+            local.set_wid(self.store, t, None)
+            self.assertEqual(t["wid"], "99")
+
+    def test_the_branch_pattern_with_its_work_item(self):
+        self.git(self.main, "config", "herdr.branch", "feature/ADO-{wid}-{n}-{slug}")
+        self.assertEqual(launch.branch_for(self.store, self.task(wid="16951176")), "feature/ADO-16951176-4-fix-login")
+        self.assertEqual(launch.branch_for(self.store, self.task()), "task/4-fix-login")  # no work item: the space's, else the default
+        self.git(self.main, "config", "herdr.branch", "feature/{slug}")  # no {n}: refused as Branch names refuses it
+        self.assertEqual(launch.branch_for(self.store, self.task()), "task/4-fix-login")
+
+    def test_wid_forms(self):
+        t = self.task()
+        for given, kept in (("16951176", "16951176"), ("#16951176", "16951176"), ("ADO-16951176", "16951176"), ("", None)):
+            local.set_wid(self.store, t, given)
+            self.assertEqual(t.get("wid"), kept, given)
+        self.git(self.main, "config", "herdr.wid", "123")
+        local.set_wid(self.store, t, None)
+        self.assertEqual(t["wid"], "123")
+        local.set_wid(self.store, t, "")
+        self.assertNotIn("wid", t)
+        with self.assertRaises(local.Fail):
+            local.set_wid(self.store, t, "login")
 
 
 if __name__ == "__main__":

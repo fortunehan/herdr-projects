@@ -16,6 +16,7 @@ import sys
 import time
 
 from .base import ENTRY, Fail, git, hc_json, now, run, WORKTREES
+from . import local
 from .settings import agent_key, ASSISTANT_TEMPLATES, bare, BRANCH_PATTERN, branch_pattern_problem, notes, notes_part, review_limits, settings_block, settings_for
 from .templates import instructions
 from .agents import detail, LINE_MAX, live_agents, SUMMARY_MAX
@@ -482,7 +483,7 @@ def branch_for(s, task):
     if task.get("branch"):
         return task["branch"]
     words = re.sub(r"[^a-z0-9]+", "-", task["title"].lower()).strip("-")[:40].strip("-") or "task"
-    pattern = str(settings_for(s, task.get("space"))["tasks"].get("branch") or "").strip()
+    pattern = local.branch_pattern(s, task) or str(settings_for(s, task.get("space"))["tasks"].get("branch") or "").strip()
     if not pattern or branch_pattern_problem(pattern):
         pattern = BRANCH_PATTERN
     name = pattern.replace("{n}", str(task["id"])).replace("{key}", s.ref(task)).replace("{slug}", words)

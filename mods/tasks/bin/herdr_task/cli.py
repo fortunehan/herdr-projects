@@ -194,6 +194,8 @@ def main():
     c.add_argument("--archived", action="store_true", help="the archived tasks instead (Done ones archive themselves after a week), latest first")
     c = cmd("add", cmd_add, "add a task; prints its id", id=False)
     c.add_argument("title")
+    c.add_argument("--wid", help="its Azure DevOps work item: its pull request links it, {wid} in git config herdr.branch "
+                                  "(default: git config herdr.wid; \"\": none)")
     c.add_argument("--prompt")
     c.add_argument("--prompt-file")
     task_opts(c)
