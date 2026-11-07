@@ -16,6 +16,7 @@ from .base import addon_off, hc_json, MAX_RUNNING, now, run, STORE
 from .settings import DEFAULTS, LOCAL_MACHINE, MUST_WORDS, SETTINGS, agent_key, bare, read_settings
 from .launch import coordinators, is_coordinator
 from . import reactions
+from . import local
 
 # What an Assistant was last told, on its terminal: "review:1a2b3c,merge:…", a short hash of each line.
 LABEL = "herdr.settings"
@@ -188,7 +189,7 @@ def session_note(terminal):
     on = next(r for r in rs if r["key"] == "reactions")["value"] == "on"
     run(["hc", "label", terminal, f"{LABEL}={digest(rs)}"])
     run(["hc", "label", terminal, f"{reactions.LABEL}={'on' if on else 'off'}"])
-    return block(rs) + "\n" + (reactions.GUIDE if on else reactions.OFF)
+    return block(rs) + "\n" + (reactions.GUIDE if on else reactions.OFF) + local.assistant_notes(k)
 
 
 def cmd_session_note(args):
