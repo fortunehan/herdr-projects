@@ -103,7 +103,8 @@ def guard(args):
 
 def run(args, cwd=None, check=False):
     guard(args)
-    r = subprocess.run(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    r = subprocess.run(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                       env=gh_env() if args[0] == GH else None)
     if check and r.returncode != 0:
         raise Fail((r.stderr or r.stdout).strip() or f"{args[0]} failed")
     return r
@@ -112,6 +113,29 @@ def run(args, cwd=None, check=False):
 def git(cwd, *args):
     r = run(["git", "-C", cwd, *args])
     return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
+
+
+def proxy_for(url):
+    """(proxy URL or None, where it came from): the one git uses for url (git config
+    http.<url>.proxy, http.proxy), else the environment's https_proxy."""
+    ok, out, _ = git(HOME, "config", "--get-urlmatch", "http.proxy", url)
+    if ok and out.strip():
+        return out.strip(), "git config"
+    env = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+    return (env, "HTTPS_PROXY") if env else (None, None)
+
+
+_gh_proxy = []
+
+
+def gh_env():
+    """gh's environment: the caller's, with the proxy git uses for GitHub as HTTPS_PROXY and
+    HTTP_PROXY. A caller started by launchd (the window, the service) has no proxy variables of
+    its own. Looked up once per process (the tick asks GitHub often)."""
+    if not _gh_proxy:
+        _gh_proxy.append(proxy_for("https://github.com/")[0])
+    p = _gh_proxy[0]
+    return {**os.environ, "HTTPS_PROXY": p, "HTTP_PROXY": p} if p else dict(os.environ)
 
 
 def hc_json(*args):
