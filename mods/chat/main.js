@@ -44,7 +44,7 @@ import { openViewer, noteChatArea } from "./artview.js";
 import { KEY_HOLDER, holdKeys, keysElsewhere } from "./keyholder.js";
 import { SecretCards } from "./secret-card.js";
 import * as secrets from "./secrets.js";
-import { taskDot, ownProgress } from "./dot.js";
+import { taskDot, ownProgress, pie } from "./dot.js";
 import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
@@ -3744,17 +3744,20 @@ export default class Chat extends View {
     // Sized to its words, never cut: a narrow chat drops "· 1M" first.
     const model = String(c?.label ?? agent.modelName(c?.model) ?? "");
     const pick = [(this.width ?? 600) < 460 ? model.replace(/\s*·?\s*1M$/, "") : model, agent.levelName(c?.effort), c?.fast ? "Fast" : null].filter(Boolean).join(" · ") || agent.NAMES[this.kind] || "Agent";
-    // How full its context window is, once its log says: in the theme's working amber past 80%.
+    // How full its context window is, once its log says, before the model and apart from it (the picker
+    // leaves it be): a pie and the tokens in use, in the theme's working amber past 80%.
     const ctx = agent.contextUse(c);
     return [
+      ctx ? h_flex().id("chat-context").h(ROUND).gap(4).flex_none().items_center().text_size(12).font_medium()
+        .text_color(ctx.high ? t.working : t.muted).accessibility_label(`Context ${ctx.words}, ${ctx.title}`)
+        .child(svg(pie(ctx.pct)).size(14).flex_none())
+        .child(div().flex_none().whitespace_nowrap().child(ctx.used)) : null,
       h_flex().id("chat-agent-pick").h(ROUND).pl(8).pr(5).gap(4).flex_none().items_center().rounded(6)
         .text_size(12).font_medium().text_color(t.muted)
-        .when(Boolean(ctx), (el) => el.accessibility_label(`${pick}, context ${ctx.title}`))
         .when(open, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (e) => { this.pickAt = e.position; })
           .on_click((_e, cx) => { cx.stop_propagation(); this.openPicker(this.pickAt, cx); }))
-        .child(h_flex().flex_none().whitespace_nowrap().child(pick)
-          .when(Boolean(ctx), (el) => el.child("\u00a0·\u00a0").child(div().when(ctx.high, (d) => d.text_color(t.working)).child(ctx.words))))
+        .child(div().flex_none().whitespace_nowrap().child(pick))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none()),
     ].filter(Boolean);
   }

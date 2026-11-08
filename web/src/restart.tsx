@@ -6,7 +6,7 @@ import { StarIcon as StarSolid } from '@heroicons/react/16/solid'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
 import { createPortal } from 'react-dom'
 import * as AGc from '@core/agents.js'
-import { taskChatId, type Chat, type Place, type RestartCli, type RestartInfo } from '@shared/types.ts'
+import { taskChatId, type AgentContext, type Chat, type Place, type RestartCli, type RestartInfo } from '@shared/types.ts'
 import { act, setUI, taskOf, useSnap, useStore, useUI } from './kernel.ts'
 import { Dialog } from './rowmenu.tsx'
 import { Pick, shown, Switch, TextValue } from './Settings.tsx'
@@ -525,17 +525,33 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   // in the box's row, before the mic (as the window's): the menu opens over the box, at its right (the box holds it)
   return (
     <>
+      {ctx ? <ContextUse ctx={ctx} /> : null}
       <button type="button" data-agent-line aria-haspopup="menu" aria-expanded={open?.chat === chatKey}
         onClick={() => setMenuOpen(open?.chat === chatKey ? null : { chat: chatKey })}
-        aria-label={ctx ? `${shown}, context ${ctx.title}. Change it` : undefined}
         className={agentPick}>
         <span className="min-w-0 truncate">{shown}</span>
-        {/* how full its context window is, in the theme's working amber past 80% */}
-        {ctx ? <span className="shrink-0">{'·\u00a0'}<span className={clsx(ctx.high && 'text-work-fg')}>{ctx.words}</span></span> : null}
         <DownIcon className="size-3 shrink-0" />
       </button>
       {open?.chat === chatKey ? <ModelMenu key={`${chatKey}|${open.typed ?? ''}`} chat={chatKey} typed={open.typed} /> : null}
     </>
+  )
+}
+
+/** how full its agent's context window is, before the model button and apart from it (the menu leaves it be): a pie
+ *  and the tokens in use, in the theme's working amber past 80% (the window's chat says the same) */
+function ContextUse({ ctx }: { ctx: AgentContext }) {
+  // the wedge from twelve o'clock clockwise, inside a ring, as the task dots' pie
+  const a = (Math.min(99.9, ctx.pct) / 100) * 2 * Math.PI
+  const wedge = `M7 7V3.5A3.5 3.5 0 ${ctx.pct > 50 ? 1 : 0} 1 ${(7 + 3.5 * Math.sin(a)).toFixed(3)} ${(7 - 3.5 * Math.cos(a)).toFixed(3)}Z`
+  return (
+    <span data-agent-context role="img" aria-label={`Context ${ctx.words}, ${ctx.title}`}
+      className={clsx('flex h-[34px] shrink-0 items-center gap-1 text-[0.75rem] font-medium whitespace-nowrap phone:h-11 phone:text-[0.8125rem]', ctx.high ? 'text-work-fg' : 'text-fg2')}>
+      <svg viewBox="0 0 14 14" className="size-3.5 shrink-0" aria-hidden="true">
+        <circle cx="7" cy="7" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+        <path d={wedge} fill="currentColor" />
+      </svg>
+      {ctx.used}
+    </span>
   )
 }
 

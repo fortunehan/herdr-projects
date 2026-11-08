@@ -897,8 +897,8 @@ export interface RestartCli {
   permDefault?: string
 }
 
-/** how full an agent's context window is: "12%", tinted past 80% (high), its exact numbers as the title */
-export interface AgentContext { pct: number; high: boolean; words: string; title: string }
+/** how full an agent's context window is: "12%" (a pie), the tokens in use ("116k"), tinted past 80% (high) */
+export interface AgentContext { pct: number; high: boolean; words: string; used: string; title: string }
 
 /** what the restart sheet shows: what its agent runs on now and what Settings say for its role (what it restarts with
  *  unless changed), each a CLI kind with a model id and level (none: the CLI's own) */

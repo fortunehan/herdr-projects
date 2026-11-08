@@ -87,7 +87,7 @@ test("Claude's context window: 1M for Opus, Sonnet and Fable from 4.6 on, 200k f
 
 test("the context in use: its share of the window, tinted past 80%, nothing while unknown", () => {
   const c = current("claude", [], { model: "claude-opus-5-5", used: 116000, at: 2000 }, {}, 1000);
-  expect(contextUse(c)).toEqual({ pct: 12, high: false, words: "12%", title: "116k of 1M tokens" });
+  expect(contextUse(c)).toEqual({ pct: 12, high: false, words: "12%", used: "116k", title: "116k of 1M tokens" });
   expect(contextUse(current("claude", ["--model", "haiku"], { model: "claude-haiku-5-5", used: 170000 }, {}))).toMatchObject({ pct: 85, high: true, title: "170k of 200k tokens" });
   expect(contextUse(current("claude", [], { model: "claude-opus-5-5", used: 800000 }, {})).high).toBe(false);
   expect(contextUse(current("claude", [], { model: "claude-opus-5-5", used: 810000 }, {})).high).toBe(true);

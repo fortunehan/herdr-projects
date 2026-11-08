@@ -157,12 +157,12 @@ function tokens(n) {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
-// How full the context window is, for the model button: { pct, high (past 80%), words ("12%"), title ("116k of 1M
-// tokens") }, or null while it isn't known.
+// How full the context window is, beside the model button: { pct, high (past 80%), words ("12%"), used ("116k"),
+// title ("116k of 1M tokens") }, or null while it isn't known.
 export function contextUse(c) {
   if (!c?.used || !c.window) return null;
   const pct = Math.min(100, Math.round((c.used / c.window) * 100));
-  return { pct, high: pct > 80, words: `${pct}%`, title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
+  return { pct, high: pct > 80, words: `${pct}%`, used: tokens(c.used), title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
 }
 
 // What the model picker (mods/chat-models, the web's restart.tsx) shows for one agent, as plain data:
