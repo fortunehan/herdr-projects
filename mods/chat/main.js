@@ -2480,12 +2480,9 @@ export default class Chat extends View {
 
   current() {
     if (!this.kind) return null;
-    // A resumed conversation's log names the model it ran on before: until this process
-    // writes, its arguments and settings say what it runs on.
-    let meta = this.conv?.meta ?? {};
-    const born = this.t?.created_ms;
-    if (born && meta.at && meta.at < born) meta = { used: meta.used, window: meta.window };
-    return agent.current(this.kind, this.argv, meta, this.dflt);
+    // A resumed conversation's log says what it ran on before: until this process writes,
+    // its arguments and settings say what it runs on (core/agents.js current).
+    return agent.current(this.kind, this.argv, this.conv?.meta, this.dflt, this.t?.created_ms);
   }
 
   // The model picker (mods/chat-models), as a popover just above the model button: the chat
@@ -3747,13 +3744,17 @@ export default class Chat extends View {
     // Sized to its words, never cut: a narrow chat drops "· 1M" first.
     const model = String(c?.label ?? agent.modelName(c?.model) ?? "");
     const pick = [(this.width ?? 600) < 460 ? model.replace(/\s*·?\s*1M$/, "") : model, agent.levelName(c?.effort), c?.fast ? "Fast" : null].filter(Boolean).join(" · ") || agent.NAMES[this.kind] || "Agent";
+    // How full its context window is, once its log says: in the theme's working amber past 80%.
+    const ctx = agent.contextUse(c);
     return [
       h_flex().id("chat-agent-pick").h(ROUND).pl(8).pr(5).gap(4).flex_none().items_center().rounded(6)
         .text_size(12).font_medium().text_color(t.muted)
+        .when(Boolean(ctx), (el) => el.accessibility_label(`${pick}, context ${ctx.title}`))
         .when(open, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (e) => { this.pickAt = e.position; })
           .on_click((_e, cx) => { cx.stop_propagation(); this.openPicker(this.pickAt, cx); }))
-        .child(div().flex_none().whitespace_nowrap().child(pick))
+        .child(h_flex().flex_none().whitespace_nowrap().child(pick)
+          .when(Boolean(ctx), (el) => el.child(div().when(ctx.high, (d) => d.text_color(t.working)).child(`\u00a0·\u00a0${ctx.words}`))))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none()),
     ].filter(Boolean);
   }

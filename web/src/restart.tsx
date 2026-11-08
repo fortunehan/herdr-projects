@@ -516,6 +516,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
  *  the model menu */
 export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   const words = useStore((s) => s.chats[chatKey]?.agent?.words)
+  const ctx = useStore((s) => s.chats[chatKey]?.agent?.context)
   const open = useMenuOpen()
   const phone = useUI((u) => u.device === 'phone')
   if (!words) return <OldAgentLine chatKey={chatKey} cli={cli} />
@@ -526,8 +527,11 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
     <>
       <button type="button" data-agent-line aria-haspopup="menu" aria-expanded={open?.chat === chatKey}
         onClick={() => setMenuOpen(open?.chat === chatKey ? null : { chat: chatKey })}
+        aria-label={ctx ? `${shown}, context ${ctx.title}. Change it` : undefined}
         className={agentPick}>
         <span className="min-w-0 truncate">{shown}</span>
+        {/* how full its context window is, in the theme's working amber past 80% */}
+        {ctx ? <span className={clsx('shrink-0', ctx.high && 'text-work-fg')}>{`\u00a0·\u00a0${ctx.words}`}</span> : null}
         <DownIcon className="size-3 shrink-0" />
       </button>
       {open?.chat === chatKey ? <ModelMenu key={`${chatKey}|${open.typed ?? ''}`} chat={chatKey} typed={open.typed} /> : null}

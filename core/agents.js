@@ -97,23 +97,36 @@ export function parseDefaults(kind, stdout) {
       sandbox: out.sandbox_mode || null, approval: out.approval_policy || null, models };
 }
 
-// What the agent runs on now: { agent, model, effort, fast, used, window, alias }.
-export function current(kind, argv, meta, dflt) {
+// A Claude model's context window in Claude Code: 1M for Opus, Sonnet and Fable from 4.6 on (their logs run far past
+// 200k without "[1m]"), 200k for Haiku and older models unless "[1m]" asks for more.
+export function claudeWindow(model, alias, used) {
+  if (/\[1m\]/.test(`${alias ?? ""} ${model ?? ""}`) || (used ?? 0) > 200000) return 1000000;
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(model ?? "");
+  if (m) return m[1] !== "haiku" && (Number(m[2]) > 4 || (Number(m[2]) === 4 && Number(m[3] ?? 0) >= 6)) ? 1000000 : 200000;
+  // an alias Claude Code resolves to its newest model
+  return /^(opus|sonnet|fable)$/.test(alias ?? "") ? 1000000 : 200000;
+}
+
+// What the agent runs on now: { agent, model, effort, fast, used, window, alias }. `born`: when its process started
+// (ms): a resumed conversation's log names the model and context it had before, which count only once this process
+// writes.
+export function current(kind, argv, meta, dflt, born = null) {
   argv = argv ?? [];
   meta = meta ?? {};
   dflt = dflt ?? {};
+  if (born && meta.at && meta.at < born) meta = { window: meta.window };
   if (kind === "claude") {
     const alias = flag(argv, "--model") ?? dflt.model;
     let fast = dflt.fast;
     const s = flag(argv, "--settings");
     if (s && /"fastMode"\s*:\s*(true|false)/.test(s)) fast = /"fastMode"\s*:\s*true/.test(s);
     if (meta.speed) fast = meta.speed === "fast";
-    const big = /\[1m\]/.test(alias ?? "") || (meta.used ?? 0) > 200000;
     // Claude keeps an effort per model (modelSettings), known once the log names the model.
     const per = meta.model ? dflt.per?.[meta.model] ?? dflt.per?.[meta.model.replace(/-\d+$/, "")] : null;
     const perm = argv.includes("--dangerously-skip-permissions") ? "bypassPermissions" : flag(argv, "--permission-mode") ?? dflt.mode ?? "manual";
     return { agent: "claude", model: meta.model ?? alias, alias, effort: meta.effort ?? flag(argv, "--effort") ?? per ?? dflt.effort,
-      fast: Boolean(fast), perm: perm === "default" ? "manual" : perm, used: meta.used ?? null, window: meta.window ?? (big ? 1000000 : 200000) };
+      fast: Boolean(fast), perm: perm === "default" ? "manual" : perm, used: meta.used ?? null,
+      window: meta.window ?? claudeWindow(meta.model ?? alias, alias, meta.used) };
   }
   const o = overrides(argv);
   const tier = o.service_tier;
@@ -138,10 +151,18 @@ export function line(c) {
   return [NAMES[c.agent], c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ");
 }
 
-// How full the context window is: "38% context", or null.
-export function contextWords(c) {
+// "116k", "1M", "1.2M"
+function tokens(n) {
+  if (n >= 1000000) return `${Math.round(n / 100000) / 10}M`;
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+// How full the context window is, for the model button: { pct, high (past 80%), words ("12%"), title ("116k of 1M
+// tokens") }, or null while it isn't known.
+export function contextUse(c) {
   if (!c?.used || !c.window) return null;
-  return `${Math.min(100, Math.round((c.used / c.window) * 100))}% context`;
+  const pct = Math.min(100, Math.round((c.used / c.window) * 100));
+  return { pct, high: pct > 80, words: `${pct}%`, title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
 }
 
 // What the model picker (mods/chat-models, the web's restart.tsx) shows for one agent, as plain data:
