@@ -156,6 +156,11 @@ def worktrees_on(s, space=None):
     return s.loc["kind"] == "repo" and settings_for(s, space)["tasks"].get("worktrees") is not False
 
 
+# The status line of every Claude agent started here (core/agents.js STATUS_LINE): bin/shepherdr-statusline keeps the
+# subscription usage for the chat and runs the person's own statusLine command as before.
+STATUS_LINE = {"type": "command", "command": '"$HOME/.local/bin/shepherdr-statusline"'}
+
+
 def argv_for(pick):
     """How to start an agent from a role's settings {agent, model, effort, fast, perm} (or its own
     argv), as the chat's agent picker builds it (mods/chat/agent.js argvFor). None: no setting."""
@@ -170,7 +175,7 @@ def argv_for(pick):
             a += ["--model", pick["model"]]
         if pick.get("effort"):
             a += ["--effort", pick["effort"]]
-        a += ["--settings", json.dumps({"fastMode": bool(pick.get("fast"))})]
+        a += ["--settings", json.dumps({"fastMode": bool(pick.get("fast")), "statusLine": STATUS_LINE})]
         perm = pick.get("perm")
         if perm == "bypassPermissions":
             a.append("--dangerously-skip-permissions")

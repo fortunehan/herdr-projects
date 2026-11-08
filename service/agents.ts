@@ -10,7 +10,7 @@ import { sh } from "./model.ts";
 import * as AG from "../core/agents.js";
 import { kindOf } from "../core/chat-reader.js";
 
-const { DEFAULTS, parseDefaults, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent } = AG as any;
+const { DEFAULTS, parseDefaults, USAGE_FILE, parseUsage, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent } = AG as any;
 const APP = process.env.HERDR_APP_HOME || join(HOME, ".config", "herdr-app");
 
 async function run(cmd: string[]) {
@@ -51,6 +51,19 @@ export class Agents {
     if (!was || Date.now() - was.at > 60_000) {
       this.known.set(k, { at: Date.now(), value: was?.value ?? null });
       void this.defaults(kind, machine).then((value) => this.known.set(k, { at: Date.now(), value }), () => undefined);
+    }
+    return was?.value ?? null;
+  }
+
+  /** Claude's subscription usage on a machine (core/agents.js USAGE_FILE, kept by bin/shepherdr-statusline) as last
+   *  read, read again in the background at most every 30 s, as the window's chat does (readUsage). */
+  private usages = new Map<string, { at: number; value: any }>();
+  usage(machine: string | null) {
+    const k = machine ?? "", was = this.usages.get(k);
+    if (!was || Date.now() - was.at > 30_000) {
+      this.usages.set(k, { at: Date.now(), value: was?.value ?? null });
+      void sh(this.hub, `cat "$HOME/${USAGE_FILE}" 2>/dev/null`, ["usage"], machine)
+        .then((r: any) => this.usages.set(k, { at: Date.now(), value: parseUsage(r?.stdout) }), () => undefined);
     }
     return was?.value ?? null;
   }

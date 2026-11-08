@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOG, Conversation, records, pilotLine, sendsOf } from "./chat-log.js";
+import { LOG, Conversation, records, pilotLine, sendsOf, codexLimits } from "./chat-log.js";
 
 // A Claude Code log as LOG reads it, fed to a Conversation.
 async function read(lines) {
@@ -264,4 +264,27 @@ test("the context in use is the last reply's, and a compaction brings it down at
   const d = await read([person, reply("m1", [text("Done.")], { message: { model: "claude-opus-5-5", id: "m1", role: "assistant", content: [text("Done.")], usage } }),
     { parentUuid: null, logicalParentUuid: "m1", isSidechain: false, type: "system", subtype: "compact_boundary", compactMetadata: { trigger: "manual", preTokens: 757261, postTokens: 36397 }, uuid: "s1", timestamp: at }]);
   expect(d.meta.used).toBe(36397);
+});
+
+// SHEP-12: Codex's own log carries its subscription's windows (token_count rate_limits).
+test("a Codex token_count's rate limits become its 5-hour and 7-day windows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chatlog-"));
+  const f = join(dir, "rollout.jsonl");
+  const ev = (rate_limits) => ({ timestamp: "2026-11-08T10:00:00.000Z", type: "event_msg",
+    payload: { type: "token_count", info: { last_token_usage: { total_tokens: 1200 }, model_context_window: 258400 }, rate_limits } });
+  writeFileSync(f, [
+    ev({ limit_id: "codex", primary: { used_percent: 49.0, window_minutes: 300, resets_at: 1781696453 },
+      secondary: { used_percent: 73.0, window_minutes: 10080, resets_at: 1781768638 }, plan_type: "prolite" }),
+    // a later count without limits keeps the last ones
+    ev(null),
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const p = Bun.spawn(["sh", "-c", LOG, "log", "tail", f, "0"], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(p.stdout).text();
+  rmSync(dir, { recursive: true });
+  const c = new Conversation("codex");
+  c.feed(records(out).records);
+  expect(c.meta.limits).toEqual({ at: Date.parse("2026-11-08T10:00:00.000Z"),
+    five_hour: { used_percentage: 49, resets_at: 1781696453 }, seven_day: { used_percentage: 73, resets_at: 1781768638 } });
+  expect(c.meta.used).toBe(1200);
+  expect(codexLimits({ primary: { used_percent: 5, window_minutes: 60, resets_at: 1 } }, 0)).toBeNull();
 });

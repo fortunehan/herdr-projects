@@ -1218,6 +1218,7 @@ export default class Chat extends View {
         await this.pull(cx);
         await this.lookJobs(cx);
         await this.flag();
+        await this.readUsage(cx);
         // Its own start screen, while it has no session (or a card is still open).
         const k = this.ownTerminal();
         if (k && (starting(k) || openCard(this.addr))) { await this.screens.tick(this.addr, k); cx.notify(); }
@@ -3738,6 +3739,18 @@ export default class Chat extends View {
       .on_click((_e, cx) => { cx.stop_propagation(); fn(cx); cx.notify(); });
   }
 
+  // Claude's subscription usage, as bin/shepherdr-statusline last kept it on the agent's machine: read again at
+  // most every 30 s (it changes only as agents reply). Codex's comes from its own log (conv.meta.limits).
+  async readUsage(cx) {
+    if (this.kind !== "claude" || Date.now() - (this.usageRead ?? 0) < 30000) return;
+    this.usageRead = Date.now();
+    const text = this.machine
+      ? (await exec("sh", ["-c", `cat "$HOME/${agent.USAGE_FILE}" 2>/dev/null`], { on: this.machine }).catch(() => null))?.stdout
+      : await readTextFile(`${home()}/${agent.USAGE_FILE}`).catch(() => null);
+    const snap = agent.parseUsage(text);
+    if (JSON.stringify(snap) !== JSON.stringify(this.usageSnap ?? null)) { this.usageSnap = snap; cx.notify(); }
+  }
+
   // The bottom row's left part, the same in a call and out of it: what the agent runs on (opens the picker; not during a call).
   pickParts(t, open) {
     const c = this.current();
@@ -3747,11 +3760,26 @@ export default class Chat extends View {
     // How full its context window is, once its log says, before the model and apart from it (the picker
     // leaves it be): a pie and the tokens in use, in the theme's working amber past 80%.
     const ctx = agent.contextUse(c);
+    // (a very narrow chat leaves it out: the model button comes first)
+    const use = (this.width ?? 600) < 400 ? null : agent.usageUse(this.kind === "claude" ? this.usageSnap : this.kind === "codex" ? this.conv?.meta?.limits : null);
     return [
       ctx ? h_flex().id("chat-context").h(ROUND).gap(4).flex_none().items_center().text_size(12).font_medium()
         .text_color(ctx.high ? t.working : t.muted).accessibility_label(`Context ${ctx.words}, ${ctx.title}`)
         .child(svg(pie(ctx.pct)).size(14).flex_none())
         .child(div().flex_none().whitespace_nowrap().child(ctx.used)) : null,
+      // The subscription's 5-hour and 7-day windows beside it, each share in the same amber past 80%. Nothing pops up on
+      // hover (SHEP-25): a click says when each resets instead, for a few seconds.
+      use ? h_flex().id("chat-usage").h(ROUND).px(4).flex_none().items_center().rounded(6).text_size(12).font_medium().text_color(t.muted)
+        .cursor_pointer().hover((x) => x.bg(t.hover)).accessibility_label(`Usage ${use.words}, ${use.title}`)
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          const at = this.usageResets = this.usageResets ? null : Date.now();
+          if (at) cx.timer.after(6000, (cx) => { if (this.usageResets === at) { this.usageResets = null; cx.notify(); } });
+          cx.notify();
+        })
+        .children(use.windows.map((w, i) => h_flex().flex_none().whitespace_nowrap()
+          .child(`${i ? "\u00a0·\u00a0" : ""}${w.label}\u00a0`)
+          .child(this.usageResets ? `resets ${w.resets}` : div().flex_none().when(w.high, (d) => d.text_color(t.working)).child(w.words)))) : null,
       h_flex().id("chat-agent-pick").h(ROUND).pl(8).pr(5).gap(4).flex_none().items_center().rounded(6)
         .text_size(12).font_medium().text_color(t.muted)
         .when(open, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(t.foreground))

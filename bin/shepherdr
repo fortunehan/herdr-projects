@@ -23,7 +23,7 @@ What goes where (each under --root, default your home):
   .config/herdr-app/layouts/shepherdr.json, lib/, core/, bin/
   .config/herdr-app/keys.json           our keys merged in: free ones added, a key you use asked about first
   .config/herdr-core/templates/*.md     the Assistant's, worker's and reviewer's instructions
-  .local/bin/{herdr-task,herdr-artifact,herdr-secret,herdr-browser,shepherdr}   links into the above
+  .local/bin/{herdr-task,herdr-artifact,herdr-secret,herdr-browser,shepherdr,shepherdr-statusline}   links into the above
   .local/bin/herdr-app                  with --guard: a guard that refuses a window with another home
   .local/share/shepherdr/               the Shepherdr service (service/, core/) and the built web app (web/dist)
   .config/systemd/user/shepherdr.service    Linux: keeps the service running (systemctl --user)
@@ -66,7 +66,9 @@ RECORD = f"{APP}/data/shepherdr/installed.json"
 HOLD = f"{HERDR}/sync-hold"
 # Helpers on the PATH: their name, and where the link leads (under the app home).
 LINKS = {"herdr-task": "mods/tasks/bin/herdr-task", "herdr-artifact": "mods/artifacts/bin/herdr-artifact",
-         "herdr-secret": "bin/herdr-secret", "herdr-browser": "bin/herdr-browser", "shepherdr": "bin/shepherdr"}
+         "herdr-secret": "bin/herdr-secret", "herdr-browser": "bin/herdr-browser", "shepherdr": "bin/shepherdr",
+         # the status line of the agents Shepherdr starts: keeps Claude's usage for the chat (--settings statusLine)
+         "shepherdr-statusline": "bin/shepherdr-statusline"}
 # Written by Herdr into each mod (editor types): never ours, never touched.
 GENERATED = {"gpui-kit.d.ts", "jsconfig.json"}
 SKIP = {"__pycache__", ".DS_Store"}

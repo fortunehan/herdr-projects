@@ -165,6 +165,53 @@ export function contextUse(c) {
   return { pct, high: pct > 80, words: `${pct}%`, used: tokens(c.used), title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
 }
 
+// Where bin/shepherdr-statusline keeps Claude's subscription usage, under the home of the machine the agent runs on:
+// { at (ms), five_hour?, seven_day? }, each { used_percentage (0-100), resets_at (unix seconds) }.
+export const USAGE_FILE = ".herdr/usage/claude.json";
+// A snapshot older than one 5-hour window says nothing sure about now: it shows nothing.
+export const USAGE_STALE = 6 * 3600 * 1000;
+const USAGE_WINDOWS = [["five_hour", "5h"], ["seven_day", "7d"]];
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// When a window resets, in local time: "18:40" today, else "Tue 09:00".
+export function resetWords(ms, now = Date.now()) {
+  const d = new Date(ms), n = new Date(now);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toDateString() === n.toDateString() ? hm : `${DAYS[d.getDay()]} ${hm}`;
+}
+
+// The subscription's usage beside the context pie: { words ("5h 34% · 7d 61%"), title ("5h resets 18:40, 7d resets
+// Tue 09:00"), high (any past 80%), windows: [{ label, pct, high, words ("34%"), resets }] }, or null: no snapshot,
+// one too old, or every window already reset (Claude drops one once it resets; so do we).
+export function usageUse(snap, now = Date.now()) {
+  if (!snap || typeof snap !== "object") return null;
+  if (typeof snap.at === "number" && now - snap.at > USAGE_STALE) return null;
+  const windows = [];
+  for (const [key, label] of USAGE_WINDOWS) {
+    const w = snap[key];
+    if (typeof w?.used_percentage !== "number" || typeof w.resets_at !== "number" || w.resets_at * 1000 <= now) continue;
+    const pct = Math.max(0, Math.min(100, Math.round(w.used_percentage)));
+    windows.push({ label, pct, high: pct > 80, words: `${pct}%`, resets: resetWords(w.resets_at * 1000, now) });
+  }
+  if (!windows.length) return null;
+  return { windows, high: windows.some((w) => w.high), words: windows.map((w) => `${w.label} ${w.words}`).join(" · "),
+    title: windows.map((w) => `${w.label} resets ${w.resets}`).join(", ") };
+}
+
+// The snapshot file's text, parsed down to its numbers; null when it's missing or broken.
+export function parseUsage(text) {
+  let v;
+  try { v = JSON.parse(text ?? ""); } catch { return null; }
+  if (!v || typeof v !== "object") return null;
+  const out = {};
+  for (const [key] of USAGE_WINDOWS) {
+    const w = v[key];
+    if (typeof w?.used_percentage === "number" && typeof w.resets_at === "number") out[key] = { used_percentage: w.used_percentage, resets_at: w.resets_at };
+  }
+  if (!Object.keys(out).length) return null;
+  return typeof v.at === "number" ? { ...out, at: v.at } : out;
+}
+
 // What the model picker (mods/chat-models, the web's restart.tsx) shows for one agent, as plain data:
 // { name, models: [{ id, name, efforts, defaultEffort, fast }], perms }: every model the CLI
 // offers (Codex: its own models_cache.json; Claude Code: its /model menu), the picker searches them.
@@ -340,6 +387,10 @@ export function freshArgv(kind, argv) {
   return resumed ? out.filter((x) => x !== undefined) : null;
 }
 
+// The status line of every Claude agent Shepherdr starts (its --settings): bin/shepherdr-statusline keeps the
+// subscription usage for the chat (usageUse) and runs the person's own statusLine command as before.
+export const STATUS_LINE = { type: "command", command: '"$HOME/.local/bin/shepherdr-statusline"' };
+
 // How to start the chosen agent: { argv, resume } (resume: argv already continues the session).
 // `session`: the old conversation's id when it can be resumed (same agent only).
 export function argvFor(pick, old) {
@@ -349,7 +400,7 @@ export function argvFor(pick, old) {
     const a = ["claude", ...flags];
     if (pick.model) a.push("--model", pick.model);
     if (pick.effort) a.push("--effort", pick.effort);
-    a.push("--settings", JSON.stringify({ fastMode: Boolean(pick.fast) }));
+    a.push("--settings", JSON.stringify({ fastMode: Boolean(pick.fast), statusLine: STATUS_LINE }));
     if (pick.perm === "bypassPermissions") a.push("--dangerously-skip-permissions");
     else if (pick.perm) a.push("--permission-mode", pick.perm === "manual" ? "default" : pick.perm);
     if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };

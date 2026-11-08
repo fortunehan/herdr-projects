@@ -27,7 +27,7 @@ import { HOME } from "./paths.ts";
 const { spaceName } = SPc as any;
 import type { Where } from "./worktree.ts";
 import * as AGc from "../core/agents.js";
-const { current, contextUse, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
+const { current, contextUse, usageUse, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
 import * as NF from "../core/notify.js";
 const { NOTIFY, everywhereOf, spaceLevel, machineLevel, machineOfSpace, spaceOwn, machineOwn } = NF as any;
 // Settings › Notify's words, the window's own (core/settings.js)
@@ -660,7 +660,11 @@ export class Compat {
       // the window's model button (mods/chat pickParts): model, level, Fast
       const words = [c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ") || NAMES[kind] || "Agent";
       const ctx = contextUse(c);
-      agent = { kind, words, ...(ctx ? { context: ctx } : {}), ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
+      // the subscription's 5-hour and 7-day windows: Claude's as its status line keeps them, Codex's from its log
+      // (only the numbers and reset times: the web app words them in its own time zone, core/agents.js usageUse)
+      const limits = kind === "claude" ? (this.agents as any)?.usage?.(machine) : kind === "codex" ? reader.conv?.meta?.limits : null;
+      const use = usageUse(limits) ? limits : null;
+      agent = { kind, words, ...(ctx ? { context: ctx } : {}), ...(use ? { limits: use } : {}), ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
     } catch {}
     // the first row: the log's very start, or earlier pages to load as it scrolls up
     const head = reader.start === 0 ? { top: true } : reader.start ? { earlier: true } : {};
