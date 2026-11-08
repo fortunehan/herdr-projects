@@ -114,6 +114,43 @@ class Install(unittest.TestCase):
                 self.assertEqual(after[k], v, k)
         self.assertFalse(os.path.lexists(self.p(".local/bin/herdr-task")))
 
+    def test_layout_key_added_to_existing_keys(self):
+        """Cmd+W in the Shepherdr layout lands in a keys.json that already has a layout:shepherdr section and a
+        global cmd-w, keeping the person's keys; an install from before it (record without the key) gets it on the
+        next run."""
+        path = self.p(APP, "keys.json")
+        with open(path, "w") as f:
+            json.dump({"global": {"cmd-w": "tab.close"},
+                       "layout:shepherdr": {"ctrl-shift-n": "mine.new", "f9": "mine.f9"}}, f)
+        run("install", "--root", self.root, "--yes")
+        keys = json.load(open(path))
+        self.assertEqual(keys["global"]["cmd-w"], "tab.close")
+        self.assertEqual(keys["layout:shepherdr"]["cmd-w"], "tabs-tasks.close-smart")
+        self.assertEqual(keys["layout:shepherdr"]["ctrl-shift-n"], "mine.new")
+        self.assertEqual(keys["layout:shepherdr"]["f9"], "mine.f9")
+
+        # An earlier release's install: neither the file nor the record has the key yet.
+        del keys["layout:shepherdr"]["cmd-w"]
+        with open(path, "w") as f:
+            json.dump(keys, f)
+        rec_path = self.p(APP, "data/shepherdr/installed.json")
+        rec = json.load(open(rec_path))
+        del rec["keys"]["layout:shepherdr cmd-w"]
+        with open(rec_path, "w") as f:
+            json.dump(rec, f)
+        run("install", "--root", self.root, "--yes")
+        keys = json.load(open(path))
+        self.assertEqual(keys["layout:shepherdr"]["cmd-w"], "tabs-tasks.close-smart")
+        self.assertEqual(keys["layout:shepherdr"]["ctrl-shift-n"], "mine.new")
+        self.assertEqual(keys["global"]["cmd-w"], "tab.close")
+
+        # Uninstall takes only ours back out.
+        run("uninstall", "--root", self.root)
+        keys = json.load(open(path))
+        self.assertNotIn("cmd-w", keys.get("layout:shepherdr", {}))
+        self.assertEqual(keys["layout:shepherdr"]["f9"], "mine.f9")
+        self.assertEqual(keys["global"]["cmd-w"], "tab.close")
+
     def test_service_unit_and_files(self):
         """The service and the shared core land in .local/share/shepherdr; a scratch root gets the unit file only
         (nothing is started), and uninstall takes both away."""

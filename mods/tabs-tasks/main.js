@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, readTextFile, appHome, home } from "herdr";
 import { spacesWithChats as spaces, sweep } from "./parked.js";
-import { agentIn, isCoordinatorTab, closeTab, watchNewSpaces, newSpace, openCoordinator, renameTab, renameSpace } from "./coordinator.js";
+import { agentIn, isCoordinatorTab, closeTab, closeFocused, watchNewSpaces, newSpace, openCoordinator, renameTab, renameSpace } from "./coordinator.js";
 import { startTick, tickOnChange } from "./tick.js";
 import { startInbox, count as inboxCount, countsByTab, readyCount, readyByTab, showInbox, toAlert } from "./inbox.js";
 import { serveRemote } from "./secrets.js";
@@ -57,6 +57,8 @@ export default class Tabs extends View {
         cmd = null;
         const tab = spaces().find(s => s.active)?.tabs.find(t => t.active);
         if (c === "close" && tab) closeTab(tab.id);
+        // Cmd+W: the focused pane, else the tab, else the space, asking before what ends work.
+        if (c === "close-smart") closeFocused();
         // F2 / Shift+F2 (keys.json): our Rename dialogs for the shown tab and space.
         if (c === "rename-tab" && tab) renameTab(tab);
         if (c === "rename-space") { const sp = spaces().find(s => s.active); if (sp) renameSpace(sp.id); }

@@ -34,6 +34,7 @@ export const NAMES = {
   "terminal.copy": () => "Copy",
   "terminal.paste": () => "Paste",
   "tabs-tasks.close": () => "Close tab",
+  "tabs-tasks.close-smart": () => "Close pane, tab or space",
   "tabs-tasks.newspace": () => "New space",
   "tabs-tasks.rename-tab": () => "Rename tab",
   "tabs-tasks.rename-space": () => "Rename space",
