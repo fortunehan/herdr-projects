@@ -17,10 +17,12 @@ async function ask(w) {
   let r;
   if (w.pr?.number && w.pr?.repo) {
     // On Azure DevOps (ado:<org>/<project>/<repo>) herdr-task answers as gh would.
+    // herdr-task answers: on Azure DevOps (ado:<org>/<project>/<repo>) as gh would, else it runs gh with the proxy
+    // git uses for GitHub there (the window, started by launchd, has none of its own).
     const ado = w.pr.repo.startsWith("ado:");
-    r = await exec(ado ? "herdr-task" : "gh", [...(ado ? ["ado"] : []), "pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS], { on });
+    r = await exec("herdr-task", [ado ? "ado" : "gh", "pr", "view", String(w.pr.number), "--repo", w.pr.repo, "--json", PR_FIELDS], { on });
   } else if (w.branch) {
-    r = await exec("gh", ["pr", "view", w.branch, "--json", PR_FIELDS], { cwd: w.folder, on }).catch(() => null);
+    r = await exec("herdr-task", ["gh", "pr", "view", w.branch, "--json", PR_FIELDS], { cwd: w.folder, on }).catch(() => null);
     if (!r) return { why: "This task has no pull request." };
   } else {
     return { why: "This task works in its folder, with no branch of its own, so it has no pull request." };

@@ -16,6 +16,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Still write tests with your change: the installer's in `test/test_install.py`, the repo's rules in
   `test/test_repo.py`, herdr-task's in `test/test_herdr_task.py`. herdr-task's can use a real throwaway git repo
   (tempfile) for git logic and mock only hc and gh.
+- On a dev Mac about 34 `test_herdr_task` tests fail at `git commit` because they inherit the global git config (hooks,
+  signing): compare the failure list before and after a change, or set `GIT_CONFIG_GLOBAL=/dev/null` as
+  `test/test_local.py` does.
 
 ## Trying a change
 

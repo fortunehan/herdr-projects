@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "mods", "tasks", "bin"))
 sys.dont_write_bytecode = True
 
 import herdr_task.ado as ado  # noqa: E402
+import herdr_task.base as base  # noqa: E402
 import herdr_task.commands as commands  # noqa: E402
 import herdr_task.ghnews as ghnews  # noqa: E402
 import herdr_task.github as github  # noqa: E402
@@ -418,7 +419,7 @@ class Transport(Base):
         self.assertEqual(e.exception.kind, "auth")
 
     def test_the_proxy_git_uses_for_dev_azure_com(self):
-        with mock.patch.object(ado, "git", lambda cwd, *a: (True, "http://127.0.0.1:7890", "") if "--get-urlmatch" in a else (False, "", "")):
+        with mock.patch.object(base, "git", lambda cwd, *a: (True, "http://127.0.0.1:7890", "") if "--get-urlmatch" in a else (False, "", "")):
             self.assertEqual(ado.proxy(REPO), ("http://127.0.0.1:7890", "git config"))
         with open(ado.CONFIG, "w") as fh:
             json.dump({"proxy": ""}, fh)

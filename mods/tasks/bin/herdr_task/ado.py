@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .base import Fail, git, HOME, now, STORE
+from .base import Fail, git, HOME, now, proxy_for, STORE
 
 
 PREFIX = "ado:"
@@ -221,11 +221,7 @@ def proxy(repo):
     c = config()
     if "proxy" in c:
         return (str(c["proxy"]).strip() or None), CONFIG
-    ok, out, _ = git(HOME, "config", "--get-urlmatch", "http.proxy", f"https://dev.azure.com/{_q(parts(repo)[0])}/")
-    if ok and out.strip():
-        return out.strip(), "git config"
-    env = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
-    return (env, "HTTPS_PROXY") if env else (None, None)
+    return proxy_for(f"https://dev.azure.com/{_q(parts(repo)[0])}/")
 
 
 def redact(url):

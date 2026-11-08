@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 
-from .base import bundle, Fail, guard, run, STORE, sync_held, VERSION
+from .base import bundle, Fail, GH, gh_env, guard, run, STORE, sync_held, VERSION
 from .agents import LINE_MAX, SUMMARY_MAX
 from .launch import cmd_allow, name_tabs
 from .commands import (
@@ -144,6 +144,14 @@ def main():
     if argv[:1] == ["--version"]:
         print(VERSION)
         return 0
+    if argv[:1] == ["gh"]:
+        # gh with the proxy git uses for GitHub, for callers started by launchd (the service, the
+        # window's Pull request) that have no proxy variables: herdr-task gh pr view 4 --json ...
+        try:
+            os.execvpe(GH, [GH, *argv[1:]], gh_env())
+        except FileNotFoundError:
+            sys.stderr.write("gh isn't installed here (GitHub CLI)\n")
+            return 127
 
     p = argparse.ArgumentParser(prog="herdr-task", description="Herdr's tasks: add, start and finish work for a folder.",
                                 epilog="Run on another machine's folder: herdr-task --on <machine> <command> ...")

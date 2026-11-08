@@ -2945,3 +2945,65 @@ class Feedback(unittest.TestCase):
         with open(os.path.join(BIN, "herdr_task", "autopilot.py")) as f:
             self.assertIn("herdr-task feedback", f.read())
         self.assertIn("feedback", __import__("herdr_task.launch", fromlist=["OWN"]).OWN)
+
+
+class GhThroughTheProxy(unittest.TestCase):
+    """SHEP-3: gh gets the proxy git uses for GitHub, even from a caller with no proxy variables (one
+    started by launchd). A fake gh (HERDR_TASK_GH) records its environment; a throwaway global git config."""
+
+    PROXIES = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.gitconfig = os.path.join(self.tmp, "gitconfig")
+        open(self.gitconfig, "w").close()
+        self.seen = os.path.join(self.tmp, "seen.json")
+        os.makedirs(os.path.join(self.tmp, "tasks"))
+        self.fake = os.path.join(self.tmp, "gh")
+        with open(self.fake, "w") as f:
+            f.write(f"#!{sys.executable}\nimport json, os, sys\njson.dump({{'argv': sys.argv[1:], 'env': dict(os.environ)}}, open({self.seen!r}, 'w'))\n")
+        os.chmod(self.fake, 0o755)
+
+    def env(self, **extra):
+        base = {k: v for k, v in os.environ.items() if k not in self.PROXIES}
+        return {**base, "HERDR_TASK_GH": self.fake, "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1",
+                "HERDR_TASK_STORE": os.path.join(self.tmp, "tasks"), **extra}
+
+    def git_proxy(self, url):
+        subprocess.run(["git", "config", "--file", self.gitconfig, "http.proxy", url], check=True)
+
+    def gh_env(self, how, **extra):
+        """gh's environment when herdr-task runs it: as `herdr-task gh ...` (the service and the window) or
+        through github.gh (the tick, merges) and feedback's direct run([GH, ...])."""
+        if os.path.exists(self.seen):
+            os.unlink(self.seen)
+        if how == "cli":
+            r = subprocess.run([sys.executable, os.path.join(BIN, "herdr-task"), "gh", "pr", "view", "4"],
+                               capture_output=True, text=True, env=self.env(**extra))
+        else:
+            code = ("import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]);"
+                    + ("from herdr_task.github import gh; gh('pr', 'view', '4')" if how == "github" else
+                       "from herdr_task.base import run, GH; run([GH, 'pr', 'view', '4'])"))
+            r = subprocess.run([sys.executable, "-c", code, BIN], capture_output=True, text=True, env=self.env(**extra))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.seen) as f:
+            got = json.load(f)
+        self.assertEqual(got["argv"], ["pr", "view", "4"])
+        return got["env"]
+
+    def test_git_config_proxy_reaches_gh_without_proxy_variables(self):
+        self.git_proxy("http://127.0.0.1:3128")
+        for how in ("cli", "github", "run"):
+            e = self.gh_env(how)
+            self.assertEqual((e.get("HTTPS_PROXY"), e.get("HTTP_PROXY")), ("http://127.0.0.1:3128",) * 2, how)
+
+    def test_no_proxy_anywhere_gives_gh_none(self):
+        for how in ("cli", "github", "run"):
+            e = self.gh_env(how)
+            self.assertFalse([k for k in self.PROXIES if k in e], how)
+
+    def test_the_callers_proxy_variables_and_no_proxy_pass_through(self):
+        for how in ("cli", "github", "run"):
+            e = self.gh_env(how, https_proxy="http://10.0.0.1:8080", NO_PROXY="localhost,.corp", no_proxy="localhost")
+            self.assertEqual((e.get("HTTPS_PROXY"), e.get("https_proxy")), ("http://10.0.0.1:8080",) * 2, how)
+            self.assertEqual((e.get("NO_PROXY"), e.get("no_proxy")), ("localhost,.corp", "localhost"), how)
