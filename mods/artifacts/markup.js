@@ -22,10 +22,23 @@ const where = () => (props()?.overlay ? "viewer" : "panel");
 const isOn = () => { const s = shared(KEY); return Boolean(s && s.mod === MOD && s.where === where()); };
 const stop = () => setShared(KEY, null);
 
+// The keyboard: while Mark up is on, its note holds it (shared "keyboard.holder", as lib/keyholder.js writes it; this
+// file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it, whose pane
+// Herdr still counts as focused, takes it back to its own box. In the viewer (an overlay) it's held "over" the panes.
+const HOLDER = "keyboard.holder", ME = "artifact.markup";
+function holdKeys() {
+  const h = shared(HOLDER), over = where() === "viewer";
+  if (h?.who === ME && Boolean(h.over) === over) return;
+  setShared(HOLDER, over ? { who: ME, at: Date.now(), over: true } : { who: ME, at: Date.now() });
+}
+const releaseKeys = () => { if (shared(HOLDER)?.who === ME) setShared(HOLDER, null); };
+const focusNote = (m) => { holdKeys(); m.input.focus(); };
+
 export function markupInit(_cx) {
   const m = { spot: null, press: null, origin: null, size: null, shot: null, sending: false, said: "", failed: false, was: false, pictured: false };
   m.input = InputState.new({ placeholder: "What should change?" });
   m.input.on("submit", (_e, cx) => send(m, cx));
+  m.input.on("focus", () => holdKeys());
   m.input.on("change", (_e, cx) => { if (m.said && !m.sending) { m.said = ""; m.failed = false; cx.notify(); } });
   return m;
 }
@@ -33,8 +46,8 @@ export function markupInit(_cx) {
 export function markupWrap(m, inner, cx) {
   if (!m) return inner;
   const on = isOn();
-  if (on && !m.was) cx.timer.after(0, () => m.input.focus());
-  if (!on && m.was) Object.assign(m, { spot: null, press: null, shot: null, said: "", failed: false });
+  if (on && !m.was) cx.timer.after(0, () => focusNote(m));
+  if (!on && m.was) { Object.assign(m, { spot: null, press: null, shot: null, said: "", failed: false }); cx.timer.after(0, releaseKeys); }
   m.was = on;
   return v_flex().id("art-mark-root").relative().size_full()
     .on_size_change((size) => { m.size = size; })
@@ -89,6 +102,7 @@ function layer(m, t) {
       if (e.local_position) m.origin = { x: e.position.x - q.x, y: e.position.y - q.y };
       m.press = { x0: q.x, y0: q.y, x1: q.x, y1: q.y, moved: false };
       m.said = ""; m.failed = false;
+      holdKeys();
       cx.stop_propagation();
       cx.notify();
     })
@@ -115,7 +129,7 @@ function pick(m, cx) {
   exec("sh", ["-c", 'mkdir -p "$1" && exec herdr-app shot "$2"', "shot", dir, file])
     .then((r) => { if (r.code === 0) m.shot = file; })
     .catch(() => {});
-  cx.timer.after(0, () => m.input.focus());
+  cx.timer.after(0, () => focusNote(m));
   cx.notify();
 }
 
@@ -141,9 +155,11 @@ function card(m, t) {
     : `Click a spot or drag over an area, or write to ${keeperName()} about all of it.`);
   return v_flex().id("art-mark-card").absolute().left(10).right(10).bottom(10).p(8).gap(6).rounded(10)
     .bg(t.popover).border_1().border_color(t.border).shadow_lg().cursor_default().text_size(12)
-    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+    // A press anywhere on the card (the box, its padding) puts the keyboard in the note at once.
+    .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); focusNote(m); })
     .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
     .on_key_down((e, cx) => {
+      holdKeys();
       if (e.keystroke !== "escape" && e.key !== "escape") return;
       cx.stop_propagation();
       if (m.spot) { m.spot = null; m.shot = null; cx.notify(); } else stop();

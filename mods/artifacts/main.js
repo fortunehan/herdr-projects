@@ -16,6 +16,7 @@ import { spaces, panes, agents, readTextFile, watchFolder, home, theme, closeOve
 import { showInSidebar, backToList } from "./sidebar.js";
 import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
+import { holdKeys } from "./keyholder.js";
 
 const ICON = "mods/artifacts/artifacts.svg";
 const modOf = (machine, id) => (machine ? `art-${machine.replace(/[^A-Za-z0-9_-]+/g, "-")}-${id}` : `art-${id}`);
@@ -43,7 +44,8 @@ export default class Artifacts extends View {
     // you type. Esc clears it; F gets to it while the list holds the keyboard.
     this.query = InputState.new({ placeholder: "Filter artifacts" });
     this.query.on("change", (_e, cx) => cx.notify());
-    this.query.on("focus", (_e, cx) => { this.searching = true; cx.notify(); });
+    // Its search or list taking the keyboard: the Assistant chat beside it leaves it here (keyholder.js, #633).
+    this.query.on("focus", (_e, cx) => { this.searching = true; holdKeys("artifacts"); cx.notify(); });
     this.query.on("blur", (_e, cx) => { this.searching = false; cx.notify(); });
     this.listFocus = cx.focus_handle();
     if (!bound) {
@@ -173,7 +175,7 @@ export default class Artifacts extends View {
       // A press in the list gives it the keyboard: F then goes to the search field.
       .child(v_flex().id("art-list").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(2)
         .track_focus(this.listFocus)
-        .on_mouse_down("left", () => this.listFocus.focus())
+        .on_mouse_down("left", () => { holdKeys("artifacts"); this.listFocus.focus(); })
         .on_key_down((e, cx) => { if (e.keystroke === "f" && !this.searching) { cx.stop_propagation(); this.query.focus(); cx.notify(); } })
         .when(Boolean(this.error), (el) => el.child(h_flex().m(6).p(10).gap(8).items_start().rounded(8).bg(t.surface).border_1().border_color(t.border)
           .child(div().size(8).mt(5).flex_none().rounded(4).bg(t.blocked))
