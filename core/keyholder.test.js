@@ -1,9 +1,15 @@
-import { expect, mock, test, beforeEach } from "bun:test";
+import { expect, test, beforeEach } from "bun:test";
 import { readFileSync } from "node:fs";
 
+// lib/keyholder.js run against a stand-in shared state. Not mock.module("herdr"): Bun's module mocks last the whole
+// run, and every later test file importing "herdr" would get this stub.
 const state = new Map();
-mock.module("herdr", () => ({ shared: (k) => state.get(k) ?? null, setShared: (k, v) => state.set(k, v) }));
-const { KEY_HOLDER, holdKeys, releaseKeys, keysElsewhere, keysOver } = await import("../lib/keyholder.js");
+const src = readFileSync(new URL("../lib/keyholder.js", import.meta.url), "utf8")
+  .replace(/^import .* from "herdr";$/m, "")
+  .replace(/^export /gm, "");
+const { KEY_HOLDER, holdKeys, releaseKeys, keysElsewhere, keysOver } = new Function("shared", "setShared",
+  `${src}\nreturn { KEY_HOLDER, holdKeys, releaseKeys, keysElsewhere, keysOver };`)(
+  (k) => state.get(k) ?? null, (k, v) => state.set(k, v));
 
 beforeEach(() => state.clear());
 
