@@ -141,7 +141,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
           'flex flex-col transition-opacity duration-200',
           you ? 'items-end self-end' : 'items-start self-start',
           // something big (an artifact) takes the chat's whole width; the words above it keep a bubble's
-          wide ? 'w-full' : you ? 'max-w-[88%]' : 'max-w-[92%] phone:max-w-[96%]',
+          wide ? 'w-full' : you ? 'max-w-[90%]' : 'max-w-[92%] phone:max-w-[96%]',
           (msg.waiting || out?.state === 'sending') && 'opacity-60',
         )}
       >

@@ -68,7 +68,9 @@ const PAGE = 200;
 // oldest go (scrolling to the top reads them again).
 const KEEP = 2000;
 // The conversation's width at most, in px: lines stay readable in a wide pane.
-const COLUMN = 760;
+const COLUMN = 1100;
+// A message bubble's width at most, as a share of the column.
+const BUBBLE = 0.9;
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 // The role templates' folder on the machine a command runs on (sh -c prefix: $dir).
@@ -2836,7 +2838,7 @@ export default class Chat extends View {
   foldOf(x, ps) {
     const q = this.findQuery().toLowerCase();
     if (q && String(x.text).toLowerCase().includes(q)) return null;
-    const w = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * 0.8)) - 24;
+    const w = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * BUBBLE)) - 24;
     const est = ps.map((p) => (p.type === "md" ? wrapLines(p.text, w) * LINE_H : 34 + 16 + p.code.split("\n").length * 19));
     if (est.reduce((a, b) => a + b, 0) <= FOLD_TALL * LINE_H) return null;
     if (this.unfolded.has(x.id)) return { open: true, clips: new Map(), last: ps.length - 1 };
@@ -2957,8 +2959,8 @@ export default class Chat extends View {
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": case "queued": return 26;
       case "day": return 18;
-      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
-      case "agent": return 30 + (x.clip ?? lines(x.text, w * 0.8 - 24) * 21);
+      case "user": case "pending": return 30 + lines(x.text, w * BUBBLE - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
+      case "agent": return 30 + (x.clip ?? lines(x.text, w * BUBBLE - 24) * 21);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "tasknews": return x.accept ? 26 : 20;
@@ -3020,7 +3022,7 @@ export default class Chat extends View {
       .child(div().w_full().max_w(COLUMN + 2 * px).px(px).pt(x.top0 ? 0 : py).pb(x.bot0 ? 0 : py).child(el));
     const pad = (el) => col(el, 18, 7);
     // The person's words on the right in an accent tint; the agent's on the left, quieter.
-    const most = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * 0.8));
+    const most = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * BUBBLE));
     const bubble = (text, faded) => h_flex().w_full().justify_end().child(
       // An accent tint under the normal text color: readable in light and dark themes (the
       // accent's own text color on the full accent was too faint on light accents).

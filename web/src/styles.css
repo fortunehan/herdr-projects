@@ -406,12 +406,10 @@
   }
 }
 
-/* A chat's column of messages and its box: a comfortable line, a little wider on a very wide window */
+/* A chat's column of messages and its box: wide enough that a wide window's bubbles use its width (the window's
+   mods/chat COLUMN) */
 @utility max-w-read {
-  max-width: 720px;
-  @media (width >= 1920px) {
-    max-width: 800px;
-  }
+  max-width: 1100px;
 }
 
 /* Rendered agent replies (markdown): paragraphs, lists, inline code, code blocks that scroll sideways */
