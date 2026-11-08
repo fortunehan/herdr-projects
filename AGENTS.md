@@ -82,6 +82,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 
 ## Add-ons
 
+- Window mods, `keys.json` sections, layouts and app commands (`tab.close`, `pane.close`, `focused()`...): Herdr's own
+  reference is `~/.config/herdr-app/AGENTS.md` and `~/.config/herdr-app/herdr.d.ts` (written by the app on each start;
+  read the parts you need, never edit them).
 - `lib/addons.json` lists every mod by add-on; a new mod goes in one (the tests check). Shared modules have one
   source in `lib/`: edit it, run `bin/sync-shared`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
 - Mod names, the layout's node ids and `keys.json` contexts are what people's state and keys hang on: change them
