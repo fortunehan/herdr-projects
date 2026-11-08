@@ -59,6 +59,7 @@ import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
 import { ScreenWatch, screenStrips, openCard, cardsOf, starting, cliOf } from "./screens.js";
 import { dayLabel, dayOf } from "./days.js";
+import { ListWidth, carry, anchorRow } from "./core/chat-resize.js";
 import { CallScreen } from "./call-screen.js";
 import { on as addonOn } from "./addons.js";
 
@@ -257,7 +258,10 @@ export default class Chat extends View {
     this.heights = new Map();
     // When each row's height was first measured: kept measuring a few seconds after (measurer).
     this.measuredAt = new Map();
-    this.heightsFor = 0;
+    // The width the rows are laid out at, apart from the live one while a drag goes on (core/chat-resize.js); the
+    // last heights stay as the rows' sizes until each is measured at the new width (no jump to an estimate).
+    this.listW = new ListWidth();
+    this.prevHeights = new Map();
     // Bumped whenever the heights are forgotten: the measuring boxes get new ids with it, so
     // each reports its size again. A box that kept its id reports only a change, and a row
     // whose height came out the same at the new width then stayed on its guess (squeezed).
@@ -469,7 +473,7 @@ export default class Chat extends View {
     cx.timer.every(1500, (cx) => {
       if (!this.blank) return;
       this.blank = false;
-      this.heights.clear(); this.measuredAt.clear(); this.measureGen++;
+      this.heights.clear(); this.prevHeights.clear(); this.measuredAt.clear(); this.measureGen++;
       this.anchor = null; this.pinned = true; this.stick = true;
       cx.notify();
     });
@@ -2838,7 +2842,7 @@ export default class Chat extends View {
   foldOf(x, ps) {
     const q = this.findQuery().toLowerCase();
     if (q && String(x.text).toLowerCase().includes(q)) return null;
-    const w = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * BUBBLE)) - 24;
+    const w = Math.max(240, Math.floor(Math.min(this.layW(), COLUMN) * BUBBLE)) - 24;
     const est = ps.map((p) => (p.type === "md" ? wrapLines(p.text, w) * LINE_H : 34 + 16 + p.code.split("\n").length * 19));
     if (est.reduce((a, b) => a + b, 0) <= FOLD_TALL * LINE_H) return null;
     if (this.unfolded.has(x.id)) return { open: true, clips: new Map(), last: ps.length - 1 };
@@ -2945,8 +2949,13 @@ export default class Chat extends View {
     return x.kind === "band" || x.kind === "gap" ? x.h : this.guessBare(x);
   }
 
+  // The width the rows are laid out at: folds and estimates hold still while the pane is dragged.
+  layW() {
+    return this.listW.laid || this.width;
+  }
+
   guessBare(x) {
-    const w = Math.min(this.width, COLUMN) - 36;
+    const w = Math.min(this.layW(), COLUMN) - 36;
     const lines = (text, width) => String(text ?? "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil((l.length * 7) / Math.max(120, width))), 0);
     switch (x.kind) {
       case "end": return 10;
@@ -3023,6 +3032,7 @@ export default class Chat extends View {
     const pad = (el) => col(el, 18, 7);
     // The person's words on the right in an accent tint; the agent's on the left, quieter.
     const most = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * BUBBLE));
+    const laidMost = Math.max(240, Math.floor(Math.min(this.layW(), COLUMN) * BUBBLE));
     const bubble = (text, faded) => h_flex().w_full().justify_end().child(
       // An accent tint under the normal text color: readable in light and dark themes (the
       // accent's own text color on the full accent was too faint on light accents).
@@ -3032,7 +3042,7 @@ export default class Chat extends View {
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
         // Folded: only the lines that show (shownLines()), as their own view
-        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.mentionsIn(shownLines(text, x.clip, most - 24))) || " ").selectable(true))
+        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.mentionsIn(shownLines(text, x.clip, laidMost - 24))) || " ").selectable(true))
           : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.mentionsIn(text)) || " ").selectable(true)));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
@@ -4131,6 +4141,15 @@ export default class Chat extends View {
       if (Date.now() - this.focusSecret > 5000) this.focusSecret = null;
       else if (ask && this.secretCards.ready(ask)) { this.focusSecret = null; cx.timer.after(0, () => this.secretCards.focus(ask)); }
     }
+    // The width settled (or moved far): the rows are laid out at it, the row read at the top kept there.
+    const now = Date.now();
+    this.listW.note(this.width, now);
+    const relaid = this.listW.relayout(now);
+    if (relaid && !this.pinned && this.range && this.shown) {
+      const i = anchorRow(this.shown.sizes, this.range.start, this.scrollTop ?? 0);
+      if (i >= 0 && this.shown.ids[i] != null) { this.anchor = { id: this.shown.ids[i], until: now + 1500 }; this.reanchor = true; }
+    }
+    if (!relaid) this.settleSoon(cx);
     const rows = this.rows();
     // First-seen times this render found (seenAt()), shared once it's done; the newest 60 kept.
     if (this.seenNew && !this.seenFlush) {
@@ -4155,13 +4174,14 @@ export default class Chat extends View {
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
     const below = `${this.asks.length}|${this.sasks.map((a) => a.name + (a.kept ? "+" : "")).join(",")}|${this.wasks.map((a) => a.id).join(",")}|${[this.addr, ...this.workerTasks().keys()].map((a) => openCard(a)?.id ?? "").join("")}|${st}|${this.focused}|${this.queue.length}|${Boolean(this.call)}|${this.files.length}|${Boolean(this.quote)}`;
     if (below !== this.below) { this.below = below; if (this.pinned) this.stick = true; }
-    if (Math.abs(this.heightsFor - this.width) > 1) { this.heights.clear(); this.measuredAt.clear(); this.heightsFor = this.width; this.measureGen++; }
     const keys = rows.map((x) => this.key(x));
+    if (relaid) { this.prevHeights = carry(this.prevHeights, this.heights, keys); this.heights = new Map(); this.measuredAt.clear(); this.measureGen++; }
     // Every size a real number of pixels: one NaN, zero or runaway height leaves the list blank.
     const sizes = rows.map((x, i) => {
-      const h = this.heights.get(keys[i]) ?? this.guess(x);
+      const h = this.heights.get(keys[i]) ?? this.prevHeights.get(keys[i]) ?? this.guess(x);
       return Number.isFinite(h) && h > 0 ? Math.min(h, 40000) : 60;
     });
+    this.shown = { ids: rows.map((r) => r.id), sizes };
     this.follow_bottom(rows);
     // Following the newest, the list sits at its end: the scroll position is exactly that.
     if (this.pinned && this.listH) this.scrollTop = Math.max(0, sizes.reduce((a, b) => a + b, 0) - (this.listH - 8));
@@ -4245,6 +4265,14 @@ export default class Chat extends View {
       .child(this.background(t, st, cx) ?? div())
       .child(this.composer(t, st))
       .child(div().flex_none().h(12));
+  }
+
+  // A redraw once the width has stayed put a moment, for the rows to be laid out at it (render()).
+  settleSoon(cx) {
+    const ms = this.listW.wait(Date.now());
+    if (ms == null || this.settleTimer) return;
+    this.settleTimer = true;
+    cx.timer.after(ms + 10, (cx) => { this.settleTimer = false; if (this.listW.wait(Date.now()) === 0) cx.notify(); else this.settleSoon(cx); });
   }
 
   // Rows not measured yet, drawn once out of sight at the list's width; their heights go to
