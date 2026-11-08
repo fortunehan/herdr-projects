@@ -863,7 +863,7 @@ export interface Chat {
   /** what this CLI lets the + menu change; only what it supports is listed */
   controls?: ChatControls
   /** Recorded launch values, never inferred from Settings. Missing values are CLI defaults, not observed telemetry. */
-  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string }
+  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string; /** how full its context window is (core/agents.js contextUse), once known */ context?: AgentContext }
   /** Settings for its role now say something else than what its agent runs on: a calm hint offers a restart */
   restart?: RestartHint
 }
@@ -896,6 +896,9 @@ export interface RestartCli {
   perms?: { id: string; label: string }[]
   permDefault?: string
 }
+
+/** how full an agent's context window is: "12%" (a pie), the tokens in use ("116k"), tinted past 80% (high) */
+export interface AgentContext { pct: number; high: boolean; words: string; used: string; title: string }
 
 /** what the restart sheet shows: what its agent runs on now and what Settings say for its role (what it restarts with
  *  unless changed), each a CLI kind with a model id and level (none: the CLI's own) */

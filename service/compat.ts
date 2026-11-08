@@ -27,7 +27,7 @@ import { HOME } from "./paths.ts";
 const { spaceName } = SPc as any;
 import type { Where } from "./worktree.ts";
 import * as AGc from "../core/agents.js";
-const { current, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
+const { current, contextUse, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
 import * as NF from "../core/notify.js";
 const { NOTIFY, everywhereOf, spaceLevel, machineLevel, machineOfSpace, spaceOwn, machineOwn } = NF as any;
 // Settings › Notify's words, the window's own (core/settings.js)
@@ -655,13 +655,12 @@ export class Compat {
       // as the window's chat: the CLI's own settings fill what its arguments and log don't say; a resumed log's model
       // counts only once this process writes
       const kind = reader.kind ?? "claude", dflt = (this.agents as any)?.cached?.(kind, machine) ?? {};
-      let meta = reader.conv?.meta ?? {};
-      if (t?.created_ms && meta.at && meta.at < t.created_ms) meta = { used: meta.used, window: meta.window };
-      const c = current(kind, t?.foreground?.argv ?? t?.argv ?? [], meta, dflt);
+      const c = current(kind, t?.foreground?.argv ?? t?.argv ?? [], reader.conv?.meta, dflt, t?.created_ms);
       const row = rowFor(kind, c), label = menuFor(kind, {}).models.find((m: any) => m.id === row)?.name ?? modelName(c.model);
       // the window's model button (mods/chat pickParts): model, level, Fast
       const words = [c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ") || NAMES[kind] || "Agent";
-      agent = { kind, words, ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
+      const ctx = contextUse(c);
+      agent = { kind, words, ...(ctx ? { context: ctx } : {}), ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
     } catch {}
     // the first row: the log's very start, or earlier pages to load as it scrolls up
     const head = reader.start === 0 ? { top: true } : reader.start ? { earlier: true } : {};

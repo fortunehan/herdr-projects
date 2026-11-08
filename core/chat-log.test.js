@@ -256,3 +256,12 @@ test("a template's example news lines are words, real news lines are news (#589)
   // a real tag holding code is still Herdr's: hidden whole, the words around it shown
   expect(c.items[3].text).toBe("And look at `<herdr-news>` too");
 });
+
+test("the context in use is the last reply's, and a compaction brings it down at once", async () => {
+  const usage = { input_tokens: 2, cache_creation_input_tokens: 7538, cache_read_input_tokens: 101000, output_tokens: 674 };
+  const c = await read([person, reply("m1", [text("Done.")], { message: { model: "claude-opus-5-5", id: "m1", role: "assistant", content: [text("Done.")], usage } })]);
+  expect(c.meta.used).toBe(109214);
+  const d = await read([person, reply("m1", [text("Done.")], { message: { model: "claude-opus-5-5", id: "m1", role: "assistant", content: [text("Done.")], usage } }),
+    { parentUuid: null, logicalParentUuid: "m1", isSidechain: false, type: "system", subtype: "compact_boundary", compactMetadata: { trigger: "manual", preTokens: 757261, postTokens: 36397 }, uuid: "s1", timestamp: at }]);
+  expect(d.meta.used).toBe(36397);
+});

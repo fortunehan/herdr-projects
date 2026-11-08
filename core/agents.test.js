@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { argvFor, current, line, menuFor, modelSections, parseDefaults, parsePicks, pickKey, withPin, withRecent } from "./agents.js";
+import { argvFor, claudeWindow, contextUse, current, line, menuFor, modelSections, parseDefaults, parsePicks, pickKey, withPin, withRecent } from "./agents.js";
 
 const codex = { models: Array.from({ length: 250 }, (_, i) => ({ id: `gpt-${i}`, label: `GPT ${i}`, efforts: ["low", "high"] })) };
 const menus = { claude: menuFor("claude", {}), codex: menuFor("codex", codex) };
@@ -68,4 +68,43 @@ test("every agent with a fast mode shows the Fast switch, and turning it off sti
   expect(current("codex", on, {}, dflt).fast).toBe(true);
   const claudeOff = argvFor({ agent: "claude", model: "opus", fast: false }, { agent: "claude", argv: ["claude"] }).argv;
   expect(current("claude", claudeOff, {}, { fast: true }).fast).toBe(false);
+});
+
+// SHEP-8: the chat's model button shows how full the context window is.
+test("Claude's context window: 1M for Opus, Sonnet and Fable from 4.6 on, 200k for Haiku and older ones", () => {
+  expect(claudeWindow("claude-opus-5-5", "opus")).toBe(1000000);
+  expect(claudeWindow("claude-sonnet-5-5", null)).toBe(1000000);
+  expect(claudeWindow("claude-fable-5-1", null)).toBe(1000000);
+  expect(claudeWindow("claude-opus-4-6", null)).toBe(1000000);
+  expect(claudeWindow("claude-haiku-5-5", "haiku")).toBe(200000);
+  expect(claudeWindow("claude-opus-4-5-20251101", null)).toBe(200000);
+  expect(claudeWindow("claude-opus-4-20250514", null)).toBe(200000);
+  expect(claudeWindow("claude-haiku-5-5", "haiku[1m]")).toBe(1000000);
+  expect(claudeWindow("claude-opus-4-5", null, 250000)).toBe(1000000);
+  expect(claudeWindow(null, "opus")).toBe(1000000);
+  expect(claudeWindow(null, "haiku")).toBe(200000);
+});
+
+test("the context in use: its share of the window, tinted past 80%, nothing while unknown", () => {
+  const c = current("claude", [], { model: "claude-opus-5-5", used: 116000, at: 2000 }, {}, 1000);
+  expect(contextUse(c)).toEqual({ pct: 12, high: false, words: "12%", used: "116k", title: "116k of 1M tokens" });
+  expect(contextUse(current("claude", ["--model", "haiku"], { model: "claude-haiku-5-5", used: 170000 }, {}))).toMatchObject({ pct: 85, high: true, title: "170k of 200k tokens" });
+  expect(contextUse(current("claude", [], { model: "claude-opus-5-5", used: 800000 }, {})).high).toBe(false);
+  expect(contextUse(current("claude", [], { model: "claude-opus-5-5", used: 810000 }, {})).high).toBe(true);
+  expect(contextUse(current("claude", [], {}, {}))).toBeNull();
+  expect(contextUse(current("claude", [], { used: 0 }, {}))).toBeNull();
+  expect(contextUse(null)).toBeNull();
+});
+
+test("a resumed conversation's context from before this process isn't shown", () => {
+  const meta = { model: "claude-opus-5-5", effort: "high", used: 400000, at: 1000 };
+  const c = current("claude", ["--model", "sonnet"], meta, {}, 5000);
+  expect(c.model).toBe("sonnet");
+  expect(contextUse(c)).toBeNull();
+  expect(contextUse(current("claude", [], { ...meta, at: 6000 }, {}, 5000)).words).toBe("40%");
+});
+
+test("Codex: its log's own usage and window, nothing without them", () => {
+  expect(contextUse(current("codex", [], { model: "gpt-x", used: 129000, window: 258400, at: 2000 }, {}, 1000))).toMatchObject({ pct: 50, title: "129k of 258k tokens" });
+  expect(contextUse(current("codex", [], { model: "gpt-x", used: 129000 }, {}))).toBeNull();
 });

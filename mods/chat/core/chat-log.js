@@ -90,6 +90,8 @@ BEGIN { pos = base; first = base; msgs = 0 }
   keep = 0
   if (index(head, "\"isSidechain\":false")) {
     if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\""))) keep = 1
+    # a compaction: the context it leaves
+    if (index(head, "\"type\":\"system\",\"subtype\":\"compact_boundary\"")) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
@@ -849,6 +851,12 @@ export class Conversation {
   claude(l, off) {
     if (l.isSidechain) return;
     if (l.type === "queue-operation") { this.queueOp(l, off); return; }
+    // A compaction empties the context down to its summary before the next reply says so.
+    if (l.type === "system" && l.subtype === "compact_boundary") {
+      const left = l.compactMetadata?.postTokens;
+      if (left) this.meta = { ...this.meta, used: left, at: time(l.timestamp) };
+      return;
+    }
     if (l.type === "user" && l.origin?.kind === "task-notification") {
       // A helper or a background job finished (Claude Code tells the agent so): it's done.
       const c = l.message?.content;

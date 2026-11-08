@@ -66,10 +66,8 @@ export class Agents {
     const [claude, codex, have] = await Promise.all([this.defaults("claude", machine), this.defaults("codex", machine),
       sh(this.hub, 'for c in "$@"; do command -v "$c" >/dev/null 2>&1 && echo "$c"; done', ["agents", "claude", "codex"], machine).then((r: any) => new Set(String(r?.stdout ?? "").split("\n").filter(Boolean)), () => null)]);
     const dflts: any = { claude, codex };
-    let meta = reader?.conv?.meta ?? {};
     // a resumed conversation's log names the model it ran on before: until this process writes, its arguments say
-    if (t.created_ms && meta.at && meta.at < t.created_ms) meta = { used: meta.used, window: meta.window };
-    const c = current(kind, t.foreground?.argv ?? t.argv ?? [], meta, dflts[kind]);
+    const c = current(kind, t.foreground?.argv ?? t.argv ?? [], reader?.conv?.meta, dflts[kind], t.created_ms);
     const row = rowFor(kind, c);
     const menus = Object.fromEntries(["claude", "codex"].filter((k) => k === kind || !have || have.has(k)).map((k) => [k, menuFor(k, dflts[k], k === kind ? row : null)]));
     return { current: { agent: kind, model: row, effort: c.effort ?? null, fast: !!c.fast, perm: c.perm ?? null }, menus,
