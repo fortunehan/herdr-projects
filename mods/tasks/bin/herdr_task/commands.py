@@ -1014,7 +1014,7 @@ def cmd_accept(args):
     once when there is nothing to merge, else merged first, as the merge settings say how: a pull
     request is squash-merged on GitHub (or merges once its checks pass); a local branch is
     fast-forwarded when it can be, else its agent merges it (rebase, checks) and marks it done."""
-    error, how, sent, started, back = None, "done", None, False, False
+    error, how, sent, started, back, auto = None, "done", None, False, False, None
     with open_store(args) as s:
         t = s.find(args.id)
         if t["state"] != "ready":
@@ -1052,6 +1052,15 @@ def cmd_accept(args):
             if error == WAITING:
                 # Accepted: it merges by itself once they pass (Merging).
                 t["auto_merge"], how, error = "checks", "checks", None
+                if ado.owns(t["pr"]["repo"]):
+                    # Also in Azure DevOps itself, which completes it with this machine off; the
+                    # tick stays a backup and does the follow-up here (update_main, finish).
+                    ok, why = ado.auto_complete(t)
+                    auto = True if ok else why
+                    if ok:
+                        t["ado_auto_complete"] = now()
+                    else:
+                        t.pop("ado_auto_complete", None)
         elif merged_here(s, t) or in_base(s, t):
             # Its own work already in the base branch, or none of its own: nothing to merge.
             t["merged"] = merged_here(s, t)
@@ -1071,9 +1080,13 @@ def cmd_accept(args):
     text = {"done": f"{s.ref(t)} accepted: done.",
             "merged": f"{s.ref(t)} accepted: merged into {t.get('base') or 'main'}; done.",
             "github": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} merged; done.",
-            "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
+            "checks": f"{s.ref(t)} accepted: " + ("Azure DevOps completes it once it's approved and its checks pass (auto-complete is on)."
+                                                 if auto is True else "it merges once its checks pass."
+                                                 + (f" Azure DevOps auto-complete couldn't be set ({auto}): it merges while Herdr runs." if auto else "")),
             "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
-    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
+    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started,
+               **({"auto_complete": auto is True} if auto is not None else {}),
+               **({"auto_complete_error": auto} if isinstance(auto, str) else {})}, text)
 
 
 def cmd_fix(args):

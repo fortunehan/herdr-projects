@@ -554,6 +554,49 @@ def publish(task):
     return True, ""
 
 
+def completion_options(repo):
+    cfg = repo_config(repo)
+    return {"mergeStrategy": cfg.get("merge") or "squash", "deleteSourceBranch": True,
+            "transitionWorkItems": bool(cfg.get("transition_work_items"))}
+
+
+_me = {}
+
+
+def me(repo):
+    """The identity id of the account Herdr calls Azure DevOps with (connectionData), or None."""
+    org = parts(repo)[0]
+    if org.lower() not in _me:
+        user = call(repo, "GET", f"https://dev.azure.com/{_q(org)}/_apis/connectionData?api-version={API}-preview").get("authenticatedUser") or {}
+        found = str(user.get("id") or "")
+        _me[org.lower()] = found if re.fullmatch(r"[0-9a-fA-F-]{36}", found) else None
+    return _me[org.lower()]
+
+
+def auto_complete(task):
+    """Turns on Azure DevOps' auto-complete for the task's pull request, set by Herdr's own account
+    with merge()'s completion options: it completes there once its reviewers approve and its
+    policies pass, whether or not this machine is on. Never cleared by Herdr (the person's call),
+    not even after new pushes. Returns (ok, why not)."""
+    repo, n = task["pr"]["repo"], int(task["pr"]["number"])
+    try:
+        who = me(repo)
+        if not who:
+            return False, "Azure DevOps didn't say which account Herdr signs in as"
+        d = call(repo, "GET", git_api(repo, f"pullrequests/{n}"))
+        if d.get("status") != "active":
+            return False, f"the pull request is {d.get('status') or 'not open'}"
+        title = str(d.get("title") or task.get("title") or "")
+        d = call(repo, "PATCH", git_api(repo, f"pullrequests/{n}"), {
+            "autoCompleteSetBy": {"id": who},
+            "completionOptions": {**completion_options(repo), "mergeCommitMessage": f"Merged PR {n}: {title}"}})
+    except AdoError as e:
+        return False, str(e)
+    if str((d.get("autoCompleteSetBy") or {}).get("id") or "").lower() != who.lower():
+        return False, "Azure DevOps didn't keep it"
+    return True, ""
+
+
 MERGE_WAIT = 12  # seconds a completion is watched before the tick takes over
 
 
@@ -562,12 +605,10 @@ def merge(task, v):
     never a commit pushed since), with the repo's merge strategy (default squash), deleting its
     branch there. Returns (ok, "", why not), as gh pr merge."""
     repo, n = task["pr"]["repo"], int(task["pr"]["number"])
-    cfg = repo_config(repo)
     try:
         call(repo, "PATCH", git_api(repo, f"pullrequests/{n}"), {
             "status": "completed", "lastMergeSourceCommit": {"commitId": v.get("headRefOid") or ""},
-            "completionOptions": {"mergeStrategy": cfg.get("merge") or "squash", "deleteSourceBranch": True,
-                                  "transitionWorkItems": bool(cfg.get("transition_work_items"))}})
+            "completionOptions": completion_options(repo)})
         # Azure DevOps completes it in the background: watched a moment, then the tick's next look.
         until = time.time() + MERGE_WAIT
         while True:
