@@ -18,6 +18,7 @@ import herdr_task.launch as launch  # noqa: E402
 import herdr_task.local as local  # noqa: E402
 import herdr_task.store as store  # noqa: E402
 
+ADO_URL = "https://acme@dev.azure.com/acme/Shop/_git/shop"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null"}
 
 
@@ -134,6 +135,7 @@ class RepoGitConfig(Base):
             self.assertEqual(local.base(self.main), "nope")
             self.git(self.main, "config", "herdr.base", "develop")
             self.assertEqual(local.base(self.main), "develop")
+            self.git(self.main, "remote", "add", "origin", ADO_URL)
             t = self.task()
             local.set_wid(self.store, t, None)
             self.assertEqual(t["wid"], "99")
@@ -150,6 +152,7 @@ class RepoGitConfig(Base):
         for given, kept in (("16951176", "16951176"), ("#16951176", "16951176"), ("ADO-16951176", "16951176"), ("", None)):
             local.set_wid(self.store, t, given)
             self.assertEqual(t.get("wid"), kept, given)
+        self.git(self.main, "remote", "add", "origin", ADO_URL)
         self.git(self.main, "config", "herdr.wid", "123")
         local.set_wid(self.store, t, None)
         self.assertEqual(t["wid"], "123")
@@ -157,6 +160,33 @@ class RepoGitConfig(Base):
         self.assertNotIn("wid", t)
         with self.assertRaises(local.Fail):
             local.set_wid(self.store, t, "login")
+
+    def global_wid(self, origin):
+        glob = os.path.join(self.tmp, "gitconfig")
+        with open(glob, "w") as f:
+            f.write("[herdr]\n\twid = 16951176\n")
+        self.git(self.main, "remote", "add", "origin", origin)
+        return mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": glob})
+
+    def test_a_github_repo_never_takes_the_global_wid(self):
+        with self.global_wid("https://github.com/acme/shop.git"):
+            t = self.task()
+            local.set_wid(self.store, t, None)
+            self.assertNotIn("wid", t)
+
+    def test_an_azure_devops_repo_takes_the_global_wid(self):
+        with self.global_wid(ADO_URL):
+            t = self.task()
+            local.set_wid(self.store, t, None)
+            self.assertEqual(t["wid"], "16951176")
+
+    def test_an_explicit_wid_applies_in_a_github_repo(self):
+        with self.global_wid("git@github.com:acme/shop.git"):
+            t = self.task()
+            local.set_wid(self.store, t, "ADO-42")
+            self.assertEqual(t["wid"], "42")
+            local.set_wid(self.store, t, "")
+            self.assertNotIn("wid", t)
 
 
 class WorktreeSetup(Base):
