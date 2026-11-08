@@ -531,7 +531,7 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
         className={agentPick}>
         <span className="min-w-0 truncate">{shown}</span>
         {/* how full its context window is, in the theme's working amber past 80% */}
-        {ctx ? <span className={clsx('shrink-0', ctx.high && 'text-work-fg')}>{`\u00a0·\u00a0${ctx.words}`}</span> : null}
+        {ctx ? <span className="shrink-0">{'·\u00a0'}<span className={clsx(ctx.high && 'text-work-fg')}>{ctx.words}</span></span> : null}
         <DownIcon className="size-3 shrink-0" />
       </button>
       {open?.chat === chatKey ? <ModelMenu key={`${chatKey}|${open.typed ?? ''}`} chat={chatKey} typed={open.typed} /> : null}

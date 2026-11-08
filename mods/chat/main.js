@@ -3754,7 +3754,7 @@ export default class Chat extends View {
           .on_mouse_down("left", (e) => { this.pickAt = e.position; })
           .on_click((_e, cx) => { cx.stop_propagation(); this.openPicker(this.pickAt, cx); }))
         .child(h_flex().flex_none().whitespace_nowrap().child(pick)
-          .when(Boolean(ctx), (el) => el.child(div().when(ctx.high, (d) => d.text_color(t.working)).child(`\u00a0·\u00a0${ctx.words}`))))
+          .when(Boolean(ctx), (el) => el.child("\u00a0·\u00a0").child(div().when(ctx.high, (d) => d.text_color(t.working)).child(ctx.words))))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none()),
     ].filter(Boolean);
   }
