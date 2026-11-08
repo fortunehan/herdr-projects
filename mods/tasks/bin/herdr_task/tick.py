@@ -13,7 +13,7 @@ from .settings import machine_name, worker_argv
 from .agents import agent_log, agent_running, busy_again, detail, held_ask, live_agents, status_word, task_status
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
-from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_view, watch_main
+from .github import already_merged, finish, github, merged_here, pr_merged, pr_pending, pr_problem, pr_view, update_main, watch_main
 from .launch import default_space
 from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
@@ -51,11 +51,13 @@ def facts(s, t, report):
                 return
             t["merged"] = True
             watch_main(s, t, (v.get("mergeCommit") or {}).get("oid"))
+            update_main(s, t)
             finish(s, t)
             report["done"].append(t["id"])
             return
         problem = pr_problem(v)
-        t["_pr_fresh"] = not problem and not pr_pending(v)
+        # A draft merges only through the person's Accept, which publishes it first.
+        t["_pr_fresh"] = not problem and not pr_pending(v) and not v.get("isDraft")
         try:
             pr_news(s, t, v, report)
         except Exception as e:  # never stops the tick
@@ -66,7 +68,12 @@ def facts(s, t, report):
             if problem:
                 t["attention"], t["attention_at"] = problem, now()
                 report["attention"].append(t["id"])
-            elif t.get("attention", "").startswith(("Checks failing", "It conflicts", "The pull request was closed", MERGE_FAILED)):
+            elif t.get("attention", "").startswith(MERGE_FAILED):
+                # A failed merge stays until something changed: a new push, or the person's next Accept.
+                if v.get("headRefOid") != t.get("merge_failed_head"):
+                    t.pop("attention")
+                    t.pop("merge_failed_head", None)
+            elif t.get("attention", "").startswith(("Checks failing", "It conflicts", "The pull request was closed")):
                 t.pop("attention")
     elif merged_here(s, t) and not at_work(s, t):
         t["merged"] = True
@@ -82,6 +89,7 @@ def facts(s, t, report):
             t["merged"] = True
             if gone:
                 watch_main(s, t, (gone.get("mergeCommit") or {}).get("oid"))
+                update_main(s, t)
             finish(s, t)
             report["done"].append(t["id"])
 

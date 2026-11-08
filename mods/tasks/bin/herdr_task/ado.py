@@ -545,6 +545,15 @@ def pr_open(s, task, repo, summary=None):
     return task["pr"]
 
 
+def publish(task):
+    """github.publish on Azure DevOps: the draft pull request published (its reviewers told)."""
+    try:
+        call(task["pr"]["repo"], "PATCH", git_api(task["pr"]["repo"], f"pullrequests/{int(task['pr']['number'])}"), {"isDraft": False})
+    except AdoError as e:
+        return False, f"Azure DevOps: {e}"
+    return True, ""
+
+
 MERGE_WAIT = 12  # seconds a completion is watched before the tick takes over
 
 

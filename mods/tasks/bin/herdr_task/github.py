@@ -163,11 +163,20 @@ def pr_view(task):
     pr = task["pr"]
     if ado.owns(pr["repo"]):
         return ado.pr_view(task)
-    ok, out, _ = gh("pr", "view", str(pr["number"]), "--repo", pr["repo"], "--json", "state,mergeable,headRefOid,statusCheckRollup,mergeCommit")
+    ok, out, _ = gh("pr", "view", str(pr["number"]), "--repo", pr["repo"], "--json", "state,isDraft,mergeable,headRefOid,statusCheckRollup,mergeCommit")
     try:
         return json.loads(out) if ok else None
     except ValueError:
         return None
+
+
+def publish(task):
+    """Takes the task's draft pull request out of draft (ready for review). Returns (ok, why not)."""
+    pr = task["pr"]
+    if ado.owns(pr["repo"]):
+        return ado.publish(task)
+    ok, _, err = gh("pr", "ready", str(pr["number"]), "--repo", pr["repo"])
+    return ok, err
 
 
 def pr_problem(v):

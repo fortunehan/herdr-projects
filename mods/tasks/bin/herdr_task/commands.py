@@ -20,7 +20,7 @@ from .agents import (
 )
 from .sessions import refresh_sessions
 from . import ado, local
-from .github import already_merged, finish, gh, github, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, update_main, watch_main
+from .github import already_merged, finish, gh, github, merged_here, own_work, pr_adopt, pr_open, pr_pending, pr_problem, pr_view, publish as publish_pr, update_main, watch_main
 from .launch import (
     base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
@@ -904,24 +904,39 @@ def local_merge_msg(s, t):
             f"5. Run: herdr-task done {s.ref(t)} --folder {q(main)}")
 
 
-MERGE_FAILED = "GitHub didn't merge it"  # a merge that failed: never in the way of the next try
+MERGE_FAILED = "The merge didn't go through"  # a merge that failed: never in the way of the next try
+WAITING = "Checks are still running."
 
 
-def merge_now(s, t):
-    """Merges the task's pull request on GitHub (squash) and tidies up here. Returns why it
-    couldn't, or None when it's merged (and the task done)."""
+def merge_failed(t, v, err):
+    t["attention"], t["attention_at"], t["merge_failed_head"] = f"{MERGE_FAILED}: {err}", now(), v.get("headRefOid")
+    return t["attention"]
+
+
+def merge_now(s, t, publish=False):
+    """Merges the task's pull request on GitHub or Azure DevOps (squash) and tidies up here. A
+    draft is published first when the person asked (publish: Accept, Merge), then merges once its
+    checks pass. Returns why it couldn't, or None when it's merged (and the task done)."""
     n, repo = str(t["pr"]["number"]), t["pr"]["repo"]
     v = pr_view(t)
     s.dirty = True
     if not v:
-        return f"Couldn't reach pull request #{n} on GitHub."
+        return f"Couldn't reach pull request #{n}."
     if v.get("state") != "MERGED":
         problem = pr_problem(v)
         if problem:
             t["attention"], t["attention_at"] = problem, now()
             return problem
+        if v.get("isDraft"):
+            if not publish:
+                return "It's still a draft pull request: Accept publishes and merges it."
+            ok, err = publish_pr(t)
+            if not ok:
+                return merge_failed(t, v, f"couldn't publish the draft: {err}")
+            # Its reviewers and policies start on the published one: merged by a later tick.
+            return WAITING
         if pr_pending(v):
-            return "Checks are still running."
+            return WAITING
         ok, _, err = ado.merge(t, v) if ado.owns(repo) else gh("pr", "merge", n, "--repo", repo, "--squash", "--delete-branch",
                                                                 "--match-head-commit", v.get("headRefOid") or "")
         # A one-off GitHub error can come after the merge went through: asked again.
@@ -929,7 +944,7 @@ def merge_now(s, t):
         if not ok and (again or {}).get("state") == "MERGED":
             v = again
         elif not ok:
-            t["attention"], t["attention_at"] = f"{MERGE_FAILED}: {err}", now()
+            merge_failed(t, v, err)
             # The next tick reads the pull request at once (merged by hand meanwhile: done).
             t["pr"]["checked"] = 0
             return t["attention"]
@@ -950,8 +965,8 @@ def cmd_merge(args):
         if t.get("pr"):
             # On GitHub: Herdr merges the pull request itself (squash), then tidies up here.
             how = "github"
-            error = merge_now(s, t)
-            if error == "Checks are still running.":
+            error = merge_now(s, t, publish=True)
+            if error == WAITING:
                 error += " Merge again when they pass."
         else:
             t["merge_requested"] = now()
@@ -1023,7 +1038,8 @@ def cmd_accept(args):
         t = s.find(args.id)
         if t["state"] != "ready":
             raise Fail(f"{s.ref(t)} isn't ready ({t['state']}); only a Ready task can be accepted.")
-        t.pop("attention", None)
+        for k in ("attention", "merge_failed_head"):
+            t.pop(k, None)
         wt = t.get("worktree") if t.get("mode") == "worktree" else None
         t["accepted_at"] = now()
         s.dirty = True
@@ -1032,8 +1048,8 @@ def cmd_accept(args):
             finish(s, t)
         elif t.get("pr"):
             how = "github"
-            error = merge_now(s, t)
-            if error == "Checks are still running.":
+            error = merge_now(s, t, publish=True)
+            if error == WAITING:
                 # Accepted: it merges by itself once they pass (Merging).
                 t["auto_merge"], how, error = "checks", "checks", None
         elif merged_here(s, t) or in_base(s, t):

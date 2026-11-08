@@ -857,14 +857,15 @@ class BackToWork(unittest.TestCase):
         self.merging([fine, fine, fine], [(False, "", "GraphQL: Something went wrong"), (True, "", "")])
         with self.assertRaises(SystemExit):
             self.commands.cmd_accept(self.args())
-        self.assertEqual((t["state"], t["attention"]), ("ready", "GitHub didn't merge it: GraphQL: Something went wrong"))
+        self.assertEqual((t["state"], t["attention"]), ("ready", "The merge didn't go through: GraphQL: Something went wrong"))
+        self.assertEqual(t["merge_failed_head"], "abc")
         self.assertEqual(t["pr"]["checked"], 0)  # the next tick reads it at once
         self.commands.cmd_accept(self.args())
         self.assertEqual((t["state"], t.get("merged")), ("done", True))
 
     def test_accept_finds_it_merged_by_hand(self):
         t = self.pr_task()
-        t["attention"] = "GitHub didn't merge it: GraphQL: Something went wrong"
+        t["attention"] = "The merge didn't go through: GraphQL: Something went wrong"
         self.merging([{"state": "MERGED", "mergeCommit": {"oid": "f00"}}], [])
         self.commands.cmd_accept(self.args())
         self.assertEqual((t["state"], t.get("merged")), ("done", True))
@@ -950,13 +951,74 @@ class BackToWork(unittest.TestCase):
         self.assertEqual((t["state"], t["pr"]["number"]), ("done", 599))
         self.assertNotIn("attention", t)
 
-    def test_the_tick_clears_a_failed_merge(self):
+    def test_a_failed_merge_stays_until_a_new_push(self):
+        # SHEP-4: a merge refused for good (a branch policy) never slips back to plain Ready.
         t = self.pr_task()
-        t["attention"], t["pr"]["checked"] = "GitHub didn't merge it: GraphQL: Something went wrong", 0
-        fine = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
-        with self.mock.patch.object(self.tick, "pr_view", lambda t: fine), self.mock.patch.object(self.tick, "pr_news", lambda *a: None):
+        failed = "The merge didn't go through: base branch policy prohibits the merge"
+        t.update(attention=failed, merge_failed_head="abc")
+        views = [{"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}]
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: views[0]), self.mock.patch.object(self.tick, "pr_news", lambda *a: None):
+            t["pr"]["checked"] = 0
+            self.tick.facts(self.store, t, {"attention": [], "done": []})
+            self.assertEqual(t["attention"], failed)
+            self.assertFalse(t["_pr_fresh"] and not t.get("attention"))  # no merge retried behind the person
+            views[0] = dict(views[0], headRefOid="def")  # a fix pushed
+            t["pr"]["checked"] = 0
             self.tick.facts(self.store, t, {"attention": [], "done": []})
         self.assertNotIn("attention", t)  # Ready, its Accept back
+        self.assertNotIn("merge_failed_head", t)
+
+    # SHEP-4: a draft pull request is published by the person's Accept, then merges once its checks
+    # pass; a merge policy alone never takes it out of draft.
+    def drafting(self, views):
+        import herdr_task.github as github
+        views, calls = list(views), []
+
+        def fake(*a, **k):
+            calls.append(a)
+            return True, "", ""
+        for mod, name, value in ((github, "gh", fake), (self.commands, "gh", fake), (self.commands, "pr_view", lambda t: views.pop(0))):
+            p = self.mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        return calls
+
+    def test_accept_publishes_a_draft_and_it_merges_once_its_checks_pass(self):
+        t = self.pr_task()
+        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        calls = self.drafting([draft])
+        self.commands.cmd_accept(self.args())
+        self.assertEqual(calls, [("pr", "ready", "593", "--repo", "o/r")])
+        self.assertEqual((t["state"], t["auto_merge"]), ("ready", "checks"))
+        self.assertNotIn("attention", t)
+
+    def test_a_merge_policy_never_publishes_a_draft(self):
+        t = self.pr_task()
+        calls = self.drafting([{"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}])
+        self.assertIn("draft", self.commands.merge_now(self.store, t))
+        self.assertEqual((calls, t["state"]), ([], "ready"))
+        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        t["pr"]["checked"] = 0
+        with self.mock.patch.object(self.tick, "pr_view", lambda t: draft), self.mock.patch.object(self.tick, "pr_news", lambda *a: None):
+            self.tick.facts(self.store, t, {"attention": [], "done": []})
+        self.assertFalse(t["_pr_fresh"])  # the tick's auto-merge leaves it be
+
+    def test_a_draft_that_wont_publish_needs_the_person(self):
+        t = self.pr_task()
+        import herdr_task.github as github
+        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        with self.mock.patch.object(github, "gh", lambda *a, **k: (False, "", "not allowed")), \
+                self.mock.patch.object(self.commands, "pr_view", lambda t: draft):
+            self.assertEqual(self.commands.merge_now(self.store, t, publish=True),
+                             "The merge didn't go through: couldn't publish the draft: not allowed")
+        self.assertEqual(t["merge_failed_head"], "abc")
+
+    def test_gh_is_asked_whether_it_is_a_draft(self):
+        import herdr_task.github as github
+        asked = []
+        with self.mock.patch.object(github, "gh", lambda *a, **k: (asked.append(a), (True, "{}", ""))[1]):
+            github.pr_view(self.pr_task())
+        self.assertIn("isDraft", asked[0][asked[0].index("--json") + 1].split(","))
 
 
 class OwnBackgroundWork(unittest.TestCase):
@@ -1369,6 +1431,36 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
     def mock_pr(self, v):
         from unittest import mock
         return mock.patch.object(self.tick, "pr_view", lambda t: v)
+
+    def merged_on_the_remote(self):
+        """SHEP-4: main here has an origin (a bare repo) where someone else merges: origin's new tip."""
+        bare, other = os.path.join(self.root, "origin.git"), os.path.join(self.root, "other")
+        self.git(self.root, "init", "-q", "--bare", "-b", "main", bare)
+        self.git(self.main, "remote", "add", "origin", bare)
+        self.git(self.main, "push", "-q", "origin", "main")
+        self.git(self.root, "clone", "-q", bare, other)
+        for k, v in (("user.name", "U"), ("user.email", "u@example.com"), ("commit.gpgsign", "false")):
+            self.git(other, "config", k, v)
+        tip = self.commit(other, "SHEP-1 Reactions (#610)")
+        self.git(other, "push", "-q", "origin", "main")
+        return tip
+
+    def test_a_pull_request_merged_elsewhere_brings_main_here_up_to_date(self):
+        self.commit(self.task["worktree"], "reactions on the left")
+        tip = self.merged_on_the_remote()
+        self.task.update(state="ready", pr={"number": 610, "repo": "o/r", "checked": 0})
+        with self.mock_pr({"state": "MERGED", "mergeCommit": {"oid": tip}}):
+            self.assertEqual(self.tick_once(), ("done", True))
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), tip)
+
+    def test_a_squash_merged_one_found_by_the_tick_brings_main_up_to_date_too(self):
+        own = self.change(self.task["worktree"], "reactions on the left")
+        self.tick_once()
+        tip = self.merged_on_the_remote()
+        self.github([{"number": 704, "url": "u", "isCrossRepository": False, "baseRefName": "main", "headRefOid": own}])
+        self.task["gh_checked"] = 0
+        self.assertEqual(self.tick_once(), ("done", True))
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), tip)
 
     # SHEP-59: a pull request squash-merged (its commits never in main), then ready: done, never a
     # second pull request; nor when its work is in main some other way (nothing left to merge).
