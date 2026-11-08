@@ -23,9 +23,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   includes a random tempdir path. A lone failure there isn't yours.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
-- Logic in `lib/*.js` can be exercised outside the window with `bun test` and `mock.module('herdr', ...)` (plus
-  gpui-kit/gpui-base stubs; a mocked `exec` must return a promise), then `await import('../lib/x.js')`. Put such tests in
-  `core/*.test.js`: CI runs `bun test service core web`, not `lib`.
+- Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
+  `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
+  file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`); `python3 -m unittest
   test.test_x` fails because `test/` is not a package.
 
