@@ -3,11 +3,12 @@ notes (~/.herdr/assistant), and a repo's own git config (herdr.base, herdr.branc
 
 git config herdr.*: the repo's (its main checkout's .git/config, shared by its worktrees) over the
 global one (git config --global), both over Shepherdr's space settings; a task's own --base, --branch
-or --wid over all of them."""
+or --wid over all of them. herdr.wid applies only to repos on Azure DevOps."""
 
 import os
 import re
 
+from . import ado
 from .base import Fail, git, HOME
 
 
@@ -78,9 +79,10 @@ def branch_pattern(s, task):
 
 def set_wid(s, t, wid):
     """--wid: the task's Azure DevOps work item (its pull request links it; {wid} in herdr.branch),
-    else herdr.wid; "" for none. 16951176, #16951176 and ADO-16951176 all say the same."""
+    else herdr.wid when the repo is on Azure DevOps (a global one would reach GitHub repos too); ""
+    for none. 16951176, #16951176 and ADO-16951176 all say the same."""
     if wid is None:
-        wid = git_setting(s.loc["folder"], "wid")
+        wid = git_setting(s.loc["folder"], "wid") if ado.repo_in(s.loc["folder"]) else ""
     wid = str(wid).strip()
     m = re.fullmatch(r"(?:ADO-|#)?(\d+)", wid, re.I)
     if wid and not m:
