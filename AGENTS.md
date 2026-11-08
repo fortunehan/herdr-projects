@@ -19,10 +19,13 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On a dev Mac about 34 `test_herdr_task` tests fail at `git commit` because they inherit the global git config (hooks,
   signing): compare the failure list before and after a change, or set `GIT_CONFIG_GLOBAL=/dev/null` as
   `test/test_local.py` does.
+- `test_local` `AssistantNotes.test_nothing_without_notes_and_a_long_file_is_cut` is flaky: it counts 'x' in text that
+  includes a random tempdir path. A lone failure there isn't yours.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
-- Logic in `lib/*.js` can be exercised outside the window with `bun test` and `mock.module('herdr', ...)` (plus
-  gpui-kit/gpui-base stubs; a mocked `exec` must return a promise).
+- Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
+  `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
+  file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`); `python3 -m unittest
   test.test_x` fails because `test/` is not a package.
 
@@ -68,6 +71,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `pkill -f` on its path (it matches the calling shell).
 - Autopilot wake replay: print `herdr_task.autopilot.message()` (patch `heartbeat_of`/`direction_of`), then
   `claude -p --append-system-prompt templates/assistant.md` in a scratch repo with fake herdr-task/hc on PATH.
+- Web stub screenshots: a Place needs id, name, machine, level, status and chat (key); a stub Message uses
+  `who: 'you'|'agent'`; rebuild web/dist (`cd web && bunx vite build`) after each web edit before re-screenshotting.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
 - Crash recovery for real: a throwaway core, `HC_SESSION=<name> hc ...` with `HC_TERMINAL_SOCKET` and Claude's

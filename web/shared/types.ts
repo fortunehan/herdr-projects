@@ -863,7 +863,7 @@ export interface Chat {
   /** what this CLI lets the + menu change; only what it supports is listed */
   controls?: ChatControls
   /** Recorded launch values, never inferred from Settings. Missing values are CLI defaults, not observed telemetry. */
-  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string; /** how full its context window is (core/agents.js contextUse), once known */ context?: AgentContext }
+  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string; /** how full its context window is (core/agents.js contextUse), once known */ context?: AgentContext; /** the subscription's 5-hour and 7-day windows, as last known (core/agents.js usageUse words them) */ limits?: AgentLimits }
   /** Settings for its role now say something else than what its agent runs on: a calm hint offers a restart */
   restart?: RestartHint
 }
@@ -899,6 +899,13 @@ export interface RestartCli {
 
 /** how full an agent's context window is: "12%" (a pie), the tokens in use ("116k"), tinted past 80% (high) */
 export interface AgentContext { pct: number; high: boolean; words: string; used: string; title: string }
+
+/** the subscription's usage beside the context pie (core/agents.js usageUse): its numbers and reset times (limits), and
+ *  as words: "5h 34% · 7d 61%", when each resets (title), each window tinted past 80% (high) */
+export interface AgentLimits { at?: number; five_hour?: AgentLimit; seven_day?: AgentLimit }
+/** one window: its used share (0-100) and when it resets (unix seconds) */
+export interface AgentLimit { used_percentage: number; resets_at: number }
+export interface AgentUsage { words: string; title: string; high: boolean; windows: { label: string; pct: number; high: boolean; words: string; resets: string }[] }
 
 /** what the restart sheet shows: what its agent runs on now and what Settings say for its role (what it restarts with
  *  unless changed), each a CLI kind with a model id and level (none: the CLI's own) */

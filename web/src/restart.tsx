@@ -6,7 +6,7 @@ import { StarIcon as StarSolid } from '@heroicons/react/16/solid'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
 import { createPortal } from 'react-dom'
 import * as AGc from '@core/agents.js'
-import { taskChatId, type AgentContext, type Chat, type Place, type RestartCli, type RestartInfo } from '@shared/types.ts'
+import { taskChatId, type AgentContext, type AgentLimits, type AgentUsage, type Chat, type Place, type RestartCli, type RestartInfo } from '@shared/types.ts'
 import { act, setUI, taskOf, useSnap, useStore, useUI } from './kernel.ts'
 import { Dialog } from './rowmenu.tsx'
 import { Pick, shown, Switch, TextValue } from './Settings.tsx'
@@ -517,6 +517,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
 export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   const words = useStore((s) => s.chats[chatKey]?.agent?.words)
   const ctx = useStore((s) => s.chats[chatKey]?.agent?.context)
+  const limits = useStore((s) => s.chats[chatKey]?.agent?.limits)
   const open = useMenuOpen()
   const phone = useUI((u) => u.device === 'phone')
   if (!words) return <OldAgentLine chatKey={chatKey} cli={cli} />
@@ -526,6 +527,7 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   return (
     <>
       {ctx ? <ContextUse ctx={ctx} /> : null}
+      {limits ? <UsageUse limits={limits} /> : null}
       <button type="button" data-agent-line aria-haspopup="menu" aria-expanded={open?.chat === chatKey}
         onClick={() => setMenuOpen(open?.chat === chatKey ? null : { chat: chatKey })}
         className={agentPick}>
@@ -552,6 +554,29 @@ function ContextUse({ ctx }: { ctx: AgentContext }) {
       </svg>
       {ctx.used}
     </span>
+  )
+}
+
+/** the subscription's 5-hour and 7-day windows beside the context pie, each share in the theme's working amber past 80%.
+ *  Nothing pops up on hover (SHEP-25): a tap says when each resets instead, for a few seconds (the window's chat too).
+ *  A phone leaves it out: its row has room for the model button only (as a very narrow window chat). */
+function UsageUse({ limits }: { limits: AgentLimits }) {
+  const [resets, setResets] = useState(false)
+  useEffect(() => {
+    if (!resets) return
+    const t = setTimeout(() => setResets(false), 6000)
+    return () => clearTimeout(t)
+  }, [resets])
+  // worded here, in this device's time zone; a window that has reset since drops out at the next render
+  const usage: AgentUsage | null = AGc.usageUse(limits)
+  if (!usage) return null
+  return (
+    <button type="button" data-agent-usage aria-label={`Usage ${usage.words}, ${usage.title}`} onClick={() => setResets(!resets)}
+      className="flex h-[34px] shrink-0 items-center rounded-full px-1.5 text-[0.75rem] font-medium whitespace-nowrap text-fg2 hover:bg-hover phone:hidden">
+      {usage.windows.map((w, i) => (
+        <span key={w.label}>{i ? '\u00a0·\u00a0' : ''}{w.label}{'\u00a0'}{resets ? `resets ${w.resets}` : <span className={clsx(w.high && 'text-work-fg')}>{w.words}</span>}</span>
+      ))}
+    </button>
   )
 }
 

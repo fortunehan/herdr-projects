@@ -1856,7 +1856,7 @@ class FastOffIsSaid(unittest.TestCase):
         self.assertIn('service_tier="default"', off)
         self.assertNotIn('service_tier="fast"', off)
         self.assertIn('service_tier="fast"', argv_for({"agent": "codex", "fast": True}))
-        self.assertIn('{"fastMode": false}', argv_for({"agent": "claude", "fast": False}))
+        self.assertIn('{"fastMode": false, "statusLine": {"type": "command", "command": "\\"$HOME/.local/bin/shepherdr-statusline\\""}}', argv_for({"agent": "claude", "fast": False}))
 
 
 if __name__ == "__main__":

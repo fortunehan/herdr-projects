@@ -10,7 +10,7 @@ core/                    the logic the mods and the service share (plain JS; cop
 service/                 the always-on service (Bun): the web app's API, background work, tailnet sharing (docs/web.md)
 web/                     the web app (React, Vite, Tailwind; 2.1's design): src/, plugins/, shared/
 bin/shepherdr            the installer (install, update, uninstall, doctor); ./install.sh runs it
-bin/                     herdr-secret, herdr-browser, herdr-browser-view, sync-shared (installed to the app's bin/)
+bin/                     herdr-secret, herdr-browser, herdr-browser-view, shepherdr-statusline, sync-shared (installed to the app's bin/)
 mods/tasks/bin/          herdr-task (entry) and its herdr_task package
 mods/artifacts/bin/      herdr-artifact
 templates/               assistant.md, worker.md, reviewer.md (herdr-core templates)

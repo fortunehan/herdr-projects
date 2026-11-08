@@ -29,6 +29,7 @@ from .news import news_send, send_or_hold, typing
 # ---- sync: the same task tools on every machine ---------------------------------------------
 # What a machine needs to run tasks: herdr-task (one zipapp), herdr-artifact (with its guide and
 # markup), herdr-secret (a remote copy: it asks the main machine), herdr-browser once it exists,
+# shepherdr-statusline (the agents' status line),
 # and the role templates. Each goes to the same place under that machine's home as here
 # (~/.local/bin/..., ~/.config/herdr-core/templates/...). A stamp there (~/.herdr/tools.json)
 # records what was installed (each file's sha256 and its source's time), so a machine that is
@@ -125,6 +126,10 @@ def manifest():
     browser = _real(".local/bin/herdr-browser")
     if browser:
         add(".local/bin/herdr-browser", _read(browser), 0o755, [browser])
+    # the status line every agent started there runs (their --settings statusLine): without it, theirs is blank
+    status = _real(".local/bin/shepherdr-statusline")
+    if status:
+        add(".local/bin/shepherdr-statusline", _read(status), 0o755, [status])
     for role in ROLES:
         rel = f".config/herdr-core/templates/{role}.md"
         p = os.path.join(HOME, rel)

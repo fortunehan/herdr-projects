@@ -468,6 +468,24 @@ class Install(unittest.TestCase):
         self.assertEqual(tree(self.root), self.before)
 
 
+    def test_statusline_helper_linked(self):
+        """The agents' status line wrapper lands in the app's bin/ and is linked from .local/bin, where their
+        --settings statusLine runs it; a web-only install links its own copy."""
+        run("install", "--root", self.root, "--yes")
+        real = self.p(APP, "bin/shepherdr-statusline")
+        self.assertTrue(os.access(real, os.X_OK))
+        self.assertEqual(os.path.realpath(self.p(".local/bin/shepherdr-statusline")), os.path.realpath(real))
+        root = tempfile.mkdtemp(prefix="shepherdr-web-")
+        try:
+            run("install", "--web", "--root", root, "--yes", "--force")
+            self.assertEqual(os.path.realpath(os.path.join(root, ".local/bin/shepherdr-statusline")),
+                             os.path.realpath(os.path.join(root, ".local/share/shepherdr/bin/shepherdr-statusline")))
+            run("uninstall", "--root", root)
+            self.assertFalse(os.path.lexists(os.path.join(root, ".local/bin/shepherdr-statusline")))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class AudioTools(unittest.TestCase):
     def test_doctor_names_the_mic_and_speaker_tools_per_platform(self):
         """Linux names pw-record and pw-play; a Mac names Apple's command line tools (swiftc) instead."""
@@ -480,6 +498,85 @@ class AudioTools(unittest.TestCase):
             for name in want:
                 self.assertIn(f"optional: {name} isn't on the PATH", notes)
             self.assertNotIn(not_want, notes)
+
+
+class StatusLine(unittest.TestCase):
+    """bin/shepherdr-statusline: keeps only Claude's usage numbers and passes the person's own status line through."""
+    WRAPPER = os.path.join(ROOT, "bin", "shepherdr-statusline")
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="shepherdr-status-")
+        self.project = os.path.join(self.home, "project")
+        os.makedirs(os.path.join(self.home, ".claude"))
+        os.makedirs(self.project)
+        self.usage = os.path.join(self.home, ".herdr", "usage", "claude.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def settings(self, path, command):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"model": "opus", "statusLine": {"type": "command", "command": command}}, f)
+
+    def line(self, data):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        env["HOME"] = self.home
+        raw = data if isinstance(data, bytes) else json.dumps(data).encode()
+        return subprocess.run([sys.executable, self.WRAPPER], input=raw, capture_output=True, env=env, cwd=self.project)
+
+    def status(self, **more):
+        return {"session_id": "s1", "cwd": self.project, "workspace": {"current_dir": self.project, "project_dir": self.project},
+                "model": {"id": "claude-opus-5-5"}, "transcript_path": "/private/transcript.jsonl", **more}
+
+    def test_passes_stdin_through_and_keeps_only_the_numbers(self):
+        # the person's own command sees the very same stdin, and its output comes through unchanged
+        seen = os.path.join(self.home, "seen.json")
+        self.settings(os.path.join(self.home, ".claude", "settings.json"), f"cat > '{seen}'; printf 'mine \\033[32mok\\033[0m'")
+        data = self.status(rate_limits={"five_hour": {"used_percentage": 34.5, "resets_at": 1781696453},
+                                        "seven_day": {"used_percentage": 61, "resets_at": 1781768638}})
+        p = self.line(data)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, b"mine \x1b[32mok\x1b[0m")
+        self.assertEqual(json.load(open(seen)), data)
+        snap = json.load(open(self.usage))
+        self.assertEqual(sorted(snap), ["at", "five_hour", "seven_day"])
+        self.assertEqual(snap["five_hour"], {"used_percentage": 34.5, "resets_at": 1781696453})
+        self.assertEqual(snap["seven_day"], {"used_percentage": 61, "resets_at": 1781768638})
+        self.assertNotIn("transcript", open(self.usage).read())
+        self.assertEqual([f for f in os.listdir(os.path.dirname(self.usage))], ["claude.json"])
+
+    def test_no_rate_limits_keeps_the_last_snapshot(self):
+        self.line(self.status(rate_limits={"five_hour": {"used_percentage": 10, "resets_at": 1781696453}}))
+        before = open(self.usage).read()
+        p = self.line(self.status())
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, b"")
+        self.assertEqual(open(self.usage).read(), before)
+        # nothing at all before: no file made
+        os.remove(self.usage)
+        self.line(self.status(rate_limits={}))
+        self.assertFalse(os.path.exists(self.usage))
+
+    def test_the_projects_command_wins_and_never_itself(self):
+        self.settings(os.path.join(self.home, ".claude", "settings.json"), "echo user")
+        self.settings(os.path.join(self.project, ".claude", "settings.json"), "echo project")
+        self.assertEqual(self.line(self.status()).stdout, b"project\n")
+        self.settings(os.path.join(self.project, ".claude", "settings.local.json"), "echo local")
+        self.assertEqual(self.line(self.status()).stdout, b"local\n")
+        # ours named in a settings file is skipped (no loop)
+        self.settings(os.path.join(self.project, ".claude", "settings.local.json"), '"$HOME/.local/bin/shepherdr-statusline"')
+        self.assertEqual(self.line(self.status()).stdout, b"project\n")
+
+    def test_never_fails_the_line(self):
+        p = self.line(b"not json")
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+        self.assertFalse(os.path.exists(self.usage))
+        with open(os.path.join(self.home, ".claude", "settings.json"), "w") as f:
+            f.write("{broken")
+        p = self.line(self.status(rate_limits={"seven_day": {"used_percentage": 5, "resets_at": 1781768638}}))
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+        self.assertIn("seven_day", json.load(open(self.usage)))
 
 
 if __name__ == "__main__":

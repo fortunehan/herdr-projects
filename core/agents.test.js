@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { argvFor, claudeWindow, contextUse, current, line, menuFor, modelSections, parseDefaults, parsePicks, pickKey, withPin, withRecent } from "./agents.js";
+import { argvFor, claudeWindow, contextUse, current, line, menuFor, modelSections, parseDefaults, parsePicks, pickKey, withPin, withRecent, usageUse, parseUsage, USAGE_FILE, USAGE_STALE, STATUS_LINE } from "./agents.js";
 
 const codex = { models: Array.from({ length: 250 }, (_, i) => ({ id: `gpt-${i}`, label: `GPT ${i}`, efforts: ["low", "high"] })) };
 const menus = { claude: menuFor("claude", {}), codex: menuFor("codex", codex) };
@@ -107,4 +107,49 @@ test("a resumed conversation's context from before this process isn't shown", ()
 test("Codex: its log's own usage and window, nothing without them", () => {
   expect(contextUse(current("codex", [], { model: "gpt-x", used: 129000, window: 258400, at: 2000 }, {}, 1000))).toMatchObject({ pct: 50, title: "129k of 258k tokens" });
   expect(contextUse(current("codex", [], { model: "gpt-x", used: 129000 }, {}))).toBeNull();
+});
+
+// SHEP-12: the subscription's 5-hour and 7-day windows beside the context pie.
+test("usage: both windows as words, when each resets, amber past 80%", () => {
+  const now = new Date(2026, 10, 8, 14, 0).getTime();
+  const snap = { at: now - 60000, five_hour: { used_percentage: 34.4, resets_at: new Date(2026, 10, 8, 18, 40).getTime() / 1000 },
+    seven_day: { used_percentage: 81, resets_at: new Date(2026, 10, 10, 9, 0).getTime() / 1000 } };
+  const u = usageUse(snap, now);
+  expect(u.words).toBe("5h 34% · 7d 81%");
+  expect(u.title).toBe("5h resets 18:40, 7d resets Tue 09:00");
+  expect(u.high).toBe(true);
+  expect(u.windows.map((w) => w.high)).toEqual([false, true]);
+  expect(usageUse({ ...snap, seven_day: { ...snap.seven_day, used_percentage: 80 } }, now).high).toBe(false);
+  // past 100 or below 0 stays in range
+  expect(usageUse({ five_hour: { used_percentage: 104, resets_at: now / 1000 + 60 } }, now).words).toBe("5h 100%");
+});
+
+test("usage: a window that has reset drops out, an old or missing snapshot shows nothing", () => {
+  const now = new Date(2026, 10, 8, 23, 30).getTime();
+  const five = { used_percentage: 20, resets_at: new Date(2026, 10, 9, 1, 15).getTime() / 1000 };
+  const seven = { used_percentage: 61, resets_at: now / 1000 - 1 };
+  // the 5h window resets after midnight: its day is named
+  expect(usageUse({ at: now, five_hour: five, seven_day: seven }, now)).toMatchObject({ words: "5h 20%", title: "5h resets Mon 01:15" });
+  expect(usageUse({ at: now, five_hour: { ...five, resets_at: now / 1000 }, seven_day: seven }, now)).toBeNull();
+  expect(usageUse({ at: now - USAGE_STALE - 1, five_hour: five }, now)).toBeNull();
+  expect(usageUse({ at: now - USAGE_STALE + 1000, five_hour: five }, now)).not.toBeNull();
+  expect(usageUse(null, now)).toBeNull();
+  expect(usageUse({}, now)).toBeNull();
+  expect(usageUse({ five_hour: { used_percentage: "20", resets_at: five.resets_at } }, now)).toBeNull();
+});
+
+test("usage file: parsed down to its numbers; missing or broken is nothing", () => {
+  expect(parseUsage(JSON.stringify({ at: 5, five_hour: { used_percentage: 1, resets_at: 2, extra: "x" }, cwd: "/secret" })))
+    .toEqual({ at: 5, five_hour: { used_percentage: 1, resets_at: 2 } });
+  expect(parseUsage(null)).toBeNull();
+  expect(parseUsage("{")).toBeNull();
+  expect(parseUsage("{}")).toBeNull();
+  expect(USAGE_FILE).toBe(".herdr/usage/claude.json");
+});
+
+test("a Claude agent Shepherdr starts runs its status line through bin/shepherdr-statusline", () => {
+  const a = argvFor({ agent: "claude", model: "opus", fast: false }, { agent: "claude", argv: ["claude"] }).argv;
+  const s = JSON.parse(a[a.indexOf("--settings") + 1]);
+  expect(s).toEqual({ fastMode: false, statusLine: STATUS_LINE });
+  expect(STATUS_LINE.command).toContain(".local/bin/shepherdr-statusline");
 });

@@ -980,7 +980,9 @@ export class Conversation {
     } else if (p.type === "token_count") {
       const i = p.info ?? {};
       const used = i.last_token_usage?.total_tokens;
-      this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window };
+      // its subscription's 5-hour and 7-day windows, account-wide (core/agents.js usageUse)
+      const limits = codexLimits(p.rate_limits, time(l.timestamp));
+      this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window, ...(limits ? { limits } : {}) };
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
       for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;
       this.open.clear();
@@ -989,6 +991,18 @@ export class Conversation {
       this.doing = null;
     }
   }
+}
+
+// Codex's rate limits from its log (a token_count event's rate_limits: primary/secondary { used_percent,
+// window_minutes, resets_at }) in the snapshot's shape, only its 5-hour and 7-day windows; null without them.
+export function codexLimits(rl, at) {
+  if (!rl || typeof rl !== "object") return null;
+  const out = {};
+  for (const w of [rl.primary, rl.secondary]) {
+    const key = w?.window_minutes === 300 ? "five_hour" : w?.window_minutes === 10080 ? "seven_day" : null;
+    if (key && typeof w.used_percent === "number" && typeof w.resets_at === "number") out[key] = { used_percentage: w.used_percent, resets_at: w.resets_at };
+  }
+  return Object.keys(out).length ? { ...out, at } : null;
 }
 
 // Turns LOG's output into its header line and records.

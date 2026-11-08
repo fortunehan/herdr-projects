@@ -35,7 +35,7 @@
     { "id": "chat", "title": "Chat", "switch": false,
       "about": "Agents as a chat, with cards, attachments, model choice and opened images.",
       "mods": ["chat", "chat-models", "chat-image"], "blocks": ["tasks-thread-chat"],
-      "keys": ["mod:chat ctrl-f"] },
+      "keys": ["mod:chat ctrl-f"], "helpers": ["shepherdr-statusline"] },
     { "id": "needs", "title": "Questions and permissions", "switch": false, "needs": ["chat"],
       "about": "An agent's question or permission prompt comes to the chat as a card (Claude Code and Codex hooks).",
       "hooks": ["mods/chat/ask-hook.sh", "mods/chat/session-note.sh"] },

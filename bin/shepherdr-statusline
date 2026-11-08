@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Claude Code's status line for the agents Shepherdr starts (their --settings statusLine).
+
+Claude Code hands its status-line command a JSON object on stdin at every refresh. This keeps its
+subscription usage (`rate_limits`: the 5-hour and 7-day windows) in ~/.herdr/usage/claude.json for
+the chat's usage beside the model button, then runs the person's own statusLine command with the
+same stdin and passes its output through, so the terminal's status line looks as before.
+
+The file holds only each window's used share and reset time, and when it was written. With no
+`rate_limits` (an API key, before the first reply) it is left as it was. It never fails the line:
+no own command (or a broken one) prints nothing.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+NAME = "shepherdr-statusline"
+WINDOWS = ("five_hour", "seven_day")
+
+
+def usage_file():
+    return os.path.join(os.path.expanduser("~"), ".herdr", "usage", "claude.json")
+
+
+def snapshot(data):
+    """Only the usage numbers from the status-line JSON, or None when it has none."""
+    limits = data.get("rate_limits") if isinstance(data, dict) else None
+    if not isinstance(limits, dict):
+        return None
+    out = {}
+    for w in WINDOWS:
+        v = limits.get(w)
+        if not isinstance(v, dict):
+            continue
+        pct, at = v.get("used_percentage"), v.get("resets_at")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool) and isinstance(at, (int, float)) and not isinstance(at, bool):
+            out[w] = {"used_percentage": pct, "resets_at": at}
+    if not out:
+        return None
+    out["at"] = int(time.time() * 1000)
+    return out
+
+
+def save(snap, path):
+    """Written beside its place and renamed over it, so a reader never sees half a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(snap, f)
+    os.replace(tmp, path)
+
+
+def _status_line(path):
+    try:
+        with open(path) as f:
+            s = json.load(f).get("statusLine")
+    except Exception:
+        return None
+    if not isinstance(s, dict) or s.get("type", "command") != "command":
+        return None
+    cmd = s.get("command")
+    return cmd if isinstance(cmd, str) and cmd.strip() else None
+
+
+def own_command(data):
+    """The person's statusLine command, as Claude Code would pick it without ours: the project's local
+    settings, then the project's, then the user's."""
+    ws = data.get("workspace") if isinstance(data, dict) else None
+    project = (ws or {}).get("project_dir") or (data.get("cwd") if isinstance(data, dict) else None) or os.getcwd()
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    for path in (os.path.join(project, ".claude", "settings.local.json"), os.path.join(project, ".claude", "settings.json"),
+                 os.path.join(config, "settings.json")):
+        cmd = _status_line(path)
+        # never ourselves again
+        if cmd and NAME not in cmd:
+            return cmd
+    return None
+
+
+def main():
+    raw = sys.stdin.buffer.read()
+    try:
+        data = json.loads(raw.decode("utf-8") or "null")
+    except Exception:
+        data = None
+    try:
+        snap = snapshot(data)
+        if snap:
+            save(snap, usage_file())
+    except Exception:
+        pass
+    cmd = own_command(data)
+    if not cmd:
+        return 0
+    # as Claude Code runs it: through a shell, with the same stdin; its output goes straight through
+    shell = shutil.which("bash") or "/bin/sh"
+    try:
+        return subprocess.run([shell, "-c", cmd], input=raw).returncode
+    except Exception:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
