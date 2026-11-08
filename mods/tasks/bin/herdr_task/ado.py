@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .base import Fail, git, HOME, now, STORE
+from .base import Fail, git, HOME, now, proxy_for, STORE
 
 
 PREFIX = "ado:"
@@ -221,11 +221,7 @@ def proxy(repo):
     c = config()
     if "proxy" in c:
         return (str(c["proxy"]).strip() or None), CONFIG
-    ok, out, _ = git(HOME, "config", "--get-urlmatch", "http.proxy", f"https://dev.azure.com/{_q(parts(repo)[0])}/")
-    if ok and out.strip():
-        return out.strip(), "git config"
-    env = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
-    return (env, "HTTPS_PROXY") if env else (None, None)
+    return proxy_for(f"https://dev.azure.com/{_q(parts(repo)[0])}/")
 
 
 def redact(url):
@@ -547,6 +543,15 @@ def pr_open(s, task, repo, summary=None):
         raise Fail("Couldn't open a pull request on Azure DevOps: it answered without one.")
     task["pr"] = {"number": int(n), "url": pr_url(repo, n), "repo": repo}
     return task["pr"]
+
+
+def publish(task):
+    """github.publish on Azure DevOps: the draft pull request published (its reviewers told)."""
+    try:
+        call(task["pr"]["repo"], "PATCH", git_api(task["pr"]["repo"], f"pullrequests/{int(task['pr']['number'])}"), {"isDraft": False})
+    except AdoError as e:
+        return False, f"Azure DevOps: {e}"
+    return True, ""
 
 
 MERGE_WAIT = 12  # seconds a completion is watched before the tick takes over

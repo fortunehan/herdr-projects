@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "mods", "tasks", "bin"))
 sys.dont_write_bytecode = True
 
 import herdr_task.ado as ado  # noqa: E402
+import herdr_task.base as base  # noqa: E402
 import herdr_task.commands as commands  # noqa: E402
 import herdr_task.ghnews as ghnews  # noqa: E402
 import herdr_task.github as github  # noqa: E402
@@ -310,6 +311,76 @@ class Merging(Base):
                    ("PATCH", r"git/repositories/web/pullrequests/7"): {}})
         self.assertEqual(ado.merge(self.task, {"headRefOid": "abc"}), (False, "", "Azure DevOps couldn't complete it: conflict in a.txt"))
 
+    def accept(self):
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None))
+
+    def test_a_failed_completion_says_azure_devops_not_github(self):
+        self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(mergeStatus="rejectedByPolicy", mergeFailureMessage="policies not met"),
+                   ("PATCH", r"git/repositories/web/pullrequests/7"): {},
+                   ("GET", r"policy/evaluations"): {"value": []}, ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        self.assertEqual(commands.merge_now(self.store, self.task),
+                         "The merge didn't go through: Azure DevOps couldn't complete it: policies not met")
+        self.assertEqual(self.task["merge_failed_head"], "abc")
+
+    def test_accept_publishes_a_draft_and_it_merges_once_its_checks_pass(self):
+        views = [pr(isDraft=True)]
+        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): lambda url, b: views[0],
+                       ("PATCH", r"git/repositories/web/pullrequests/7"): lambda url, body: views.__setitem__(0, pr(isDraft=body.get("isDraft", True))) or {},
+                       ("GET", r"policy/evaluations"): {"value": []}, ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        self.accept()
+        self.assertEqual([c[3] for c in f.sent("PATCH", r".*")], [{"isDraft": False}])  # published, not completed
+        self.assertEqual((self.task["state"], self.task["auto_merge"]), ("ready", "checks"))
+        self.assertFalse(views[0]["isDraft"])
+
+    def test_a_merge_policy_never_publishes_a_draft(self):
+        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(isDraft=True),
+                       ("GET", r"policy/evaluations"): {"value": []}, ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        self.assertIn("draft", commands.merge_now(self.store, self.task))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
+
+class MergedInAzureDevOps(Base):
+    """SHEP-4: a pull request someone completes in Azure DevOps makes the task done and brings main
+    here up to date, as Herdr's own merge does. A throwaway repo whose origin is a local bare one."""
+
+    def setUp(self):
+        super().setUp()
+        import herdr_task.tick as tick
+        self.tick = tick
+        git = self.git = lambda *a: subprocess.run(["git", *a], check=True, capture_output=True, text=True).stdout.strip()
+        self.main, bare, other = (os.path.join(self.tmp, x) for x in ("repo", "bare.git", "other"))
+        git("init", "-q", "--bare", "-b", "main", bare)
+        git("init", "-q", "-b", "main", self.main)
+        git("clone", "-q", bare, other)
+        for repo in (self.main, other):
+            for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+                git("-C", repo, "config", k, v)
+        git("-C", self.main, "remote", "add", "origin", bare)
+        git("-C", self.main, "commit", "-q", "--allow-empty", "-m", "base")
+        git("-C", self.main, "push", "-q", "origin", "main")
+        git("-C", other, "pull", "-q", "origin", "main")
+        git("-C", other, "commit", "-q", "--allow-empty", "-m", "Merged PR 7: SHEP-1 Login")
+        git("-C", other, "push", "-q", "origin", "main")
+        self.merged = git("-C", other, "rev-parse", "HEAD")
+        self.task = {"id": 1, "title": "Login", "state": "ready", "mode": "worktree", "worktree": "/w", "branch": "task/1-login",
+                     "base": "main", "pr": {"number": 7, "url": ado.pr_url(REPO, 7), "repo": REPO, "checked": 0}}
+        self.store = Store([self.task], self.main)
+        done = lambda s, t, even_if_busy=False: t.update(state="done")
+        for name, value in (("finish", done), ("live_agents", lambda k: []), ("watch_main", lambda *a: None)):
+            p = mock.patch.object(tick, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_completed_by_someone_else_main_catches_up(self):
+        self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(status="completed", lastMergeCommit={"commitId": self.merged})})
+        report = {"attention": [], "done": []}
+        self.tick.facts(self.store, self.task, report)
+        self.assertEqual((self.task["state"], self.task["merged"], report["done"]), ("done", True, [1]))
+        self.assertEqual(self.git("-C", self.main, "rev-parse", "main"), self.merged)
+
 
 class News(Base):
     def test_comments_and_votes_as_gh_reviews_without_azure_devops_own(self):
@@ -418,7 +489,7 @@ class Transport(Base):
         self.assertEqual(e.exception.kind, "auth")
 
     def test_the_proxy_git_uses_for_dev_azure_com(self):
-        with mock.patch.object(ado, "git", lambda cwd, *a: (True, "http://127.0.0.1:7890", "") if "--get-urlmatch" in a else (False, "", "")):
+        with mock.patch.object(base, "git", lambda cwd, *a: (True, "http://127.0.0.1:7890", "") if "--get-urlmatch" in a else (False, "", "")):
             self.assertEqual(ado.proxy(REPO), ("http://127.0.0.1:7890", "git config"))
         with open(ado.CONFIG, "w") as fh:
             json.dump({"proxy": ""}, fh)
