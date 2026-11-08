@@ -34,6 +34,7 @@
     "ctrl-f": "chat.find"
   },
   "layout:shepherdr": {
+    "cmd-w": "tabs-tasks.close-smart",
     "ctrl-shift-w": "tabs-tasks.close",
     "ctrl-shift-n": "tabs-tasks.newspace",
     "f2": "tabs-tasks.rename-tab",

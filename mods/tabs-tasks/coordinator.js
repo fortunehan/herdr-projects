@@ -487,6 +487,48 @@ export function closeTab(tabId) {
   run("tab.close", { id: tabId });
 }
 
+// What closing a pane ends that the person would miss: an agent (its own, or one parked behind
+// its chat, which ends with it: parked.js) or a terminal busy with something other than its idle
+// shell. -> that program's name, or null when nothing is lost.
+export function endsWithPane(p, all = terminals()) {
+  if (p.terminal) {
+    if (p.status || p.program?.agent || (p.program && !p.program.shell)) return p.program?.name || "The program";
+    return null;
+  }
+  const parked = p.mod === "chat" && all.find((k) => k.state === "live" && [p.pane, split(p.pane)[1]].includes(k.labels?.["herdr.chat"]));
+  return parked ? parked.program?.name || "Its agent" : null;
+}
+
+// Cmd+W in the Shepherdr layout: the smallest thing first. A tab with 2+ panes (or a zoomed one)
+// loses its focused (zoomed) pane, asking only when that ends an agent or a busy command; else the
+// tab, always asked (a coordinator with live workers in its own dialog); a space's last tab closes
+// the space with its one confirm. A focused layout block (no pane) closes the tab or space.
+export function closeFocused() {
+  const space = allSpaces().find((s) => s.active);
+  const tab = space?.tabs.find((t) => t.active);
+  if (!tab) return;
+  const f = focused();
+  const ps = panes().filter((p) => p.tab === tab.id);
+  const pane = f?.pane && ((tab.zoomed && ps.find((p) => p.zoomed)) || ps.find((p) => p.pane === f.pane));
+  if (pane && ps.length > 1) {
+    const ends = endsWithPane(pane);
+    const command = { name: "pane.close", args: { pane: pane.pane } };
+    if (!ends) return run(command.name, command.args);
+    openOverlay({ mod: "confirm-chat", kind: "dialog", width: 400, height: 168, props: {
+      title: "Close this pane?", detail: `${ends} in it ends.`, verb: "Close pane", command } });
+    return;
+  }
+  if (space.tabs.length === 1) return closeSpace(space.id);
+  const c = coordinatorIn(tab.id);
+  if (c && workersOf(c).length) {
+    openOverlay({ mod: "coordinator", kind: "dialog", width: 440, height: 336, props: { view: "close", tab: tab.id } });
+    return;
+  }
+  openOverlay({ mod: "confirm-chat", kind: "dialog", width: 400, height: 168, props: {
+    title: `Close tab “${tab.name}”?`, detail: "Every program in it ends.", verb: "Close tab",
+    command: { name: "tab.close", args: { id: tab.id, confirmed: true } } } });
+}
+
 // Rename a tab: our prompt (mods/prompt-chat, the app's one dialog footer), its field holding the
 // name given (empty when nobody named it: it keeps its number).
 export function renameTab(tab) {
