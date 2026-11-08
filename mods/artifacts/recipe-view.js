@@ -6,10 +6,20 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
 import { image } from "gpui-kit";
-import { theme } from "herdr";
+import { theme, shared, setShared, props } from "herdr";
 import { asset, reply } from "./artifact.js";
 import data from "./recipe-data.js";
 import { chartShapes, choiceReply, formReply, isLink, withIds } from "./recipe.js";
+
+// A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
+// it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
+// whose pane Herdr still counts as focused, takes it back to its own box. In the viewer (an overlay) it's held "over".
+const HOLDER = "keyboard.holder", ME = "artifact.form";
+function holdKeys() {
+  const h = shared(HOLDER), over = Boolean(props()?.overlay);
+  if (h?.who === ME && Boolean(h.over) === over) return;
+  setShared(HOLDER, over ? { who: ME, at: Date.now(), over: true } : { who: ME, at: Date.now() });
+}
 
 const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
 
@@ -25,6 +35,10 @@ export default class RecipeView extends View {
     try { this.recipe = withIds(data); } catch { this.error = "This artifact's recipe can't be read."; }
   }
 
+  async close() {
+    if (shared(HOLDER)?.who === ME) setShared(HOLDER, null);
+  }
+
   md(id, text, t) {
     return div().w_full().min_w(0).text_size(13).text_color(t.foreground).child(TextView.markdown(`md-${id}`, String(text ?? " ")).selectable(true));
   }
@@ -38,7 +52,11 @@ export default class RecipeView extends View {
 
   input(b, f) {
     const k = `${b.id}:${f.name}`;
-    if (!this.inputs.has(k)) this.inputs.set(k, InputState.new({ placeholder: f.label ?? f.name, ...(f.kind === "textarea" ? { multi_line: true } : {}) }));
+    if (!this.inputs.has(k)) {
+      const state = InputState.new({ placeholder: f.label ?? f.name, ...(f.kind === "textarea" ? { multi_line: true } : {}) });
+      state.on("focus", () => holdKeys());
+      this.inputs.set(k, state);
+    }
     return this.inputs.get(k);
   }
 

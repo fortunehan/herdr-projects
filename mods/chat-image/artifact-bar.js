@@ -12,6 +12,7 @@ import { props, closeOverlay, shared, setShared, theme } from "herdr";
 import { showInSidebar, hasSidebarView } from "./artifact-sidebar.js";
 import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
+import { releaseKeys } from "./keyholder.js";
 
 const MARKUP = "artifacts.markup";
 
@@ -137,8 +138,11 @@ export function artifactBar(view, a, handle) {
     .child(iconBtn("close", "mods/chat-image/x.svg", () => closeOverlay(props()?.overlay), t));
 }
 
-// The viewer going away ends its Mark up.
+// The viewer going away ends its Mark up, and gives up the keyboard its note or a form held (keyholder.js), so the
+// chat under it takes it back.
 export function closeArtifactBar(a) {
   const m = shared(MARKUP);
   if (m && m.mod === a.mod && m.where === "viewer") setShared(MARKUP, null);
+  releaseKeys("artifact.markup");
+  releaseKeys("artifact.form");
 }
