@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "mods", "tasks", "bin"))
 sys.dont_write_bytecode = True
 
 import herdr_task.ado as ado  # noqa: E402
+import herdr_task.agents as agents  # noqa: E402
 import herdr_task.base as base  # noqa: E402
 import herdr_task.commands as commands  # noqa: E402
 import herdr_task.ghnews as ghnews  # noqa: E402
@@ -85,7 +86,7 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         for name, value in (("STATE", os.path.join(self.tmp, "state.json")), ("CONFIG", os.path.join(self.tmp, "ado.json")),
-                            ("BACKGROUND", False)):
+                            ("BACKGROUND", False), ("_me", {})):
             p = mock.patch.object(ado, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -312,10 +313,67 @@ class Merging(Base):
         self.assertEqual(ado.merge(self.task, {"headRefOid": "abc"}), (False, "", "Azure DevOps couldn't complete it: conflict in a.txt"))
 
     def accept(self):
+        said = []
         with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
                 mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
-                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None):
+                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), \
+                mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
             commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None))
+        return said[-1]
+
+    ME = "6f1e2d3c-1111-2222-3333-1234567890ab"
+
+    def waiting_on_a_reviewer(self, patch):
+        """Azure DevOps with a reviewer policy still queued; patch answers the PATCH."""
+        return self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": self.ME, "providerDisplayName": "Herdr Bot"}},
+                          ("GET", r"git/repositories/web/pullrequests/7"): pr(),
+                          ("PATCH", r"git/repositories/web/pullrequests/7"): patch,
+                          ("GET", r"policy/evaluations"): {"value": [evaluation("queued", type_id="x", name="Minimum number of reviewers")]},
+                          ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+
+    def test_accept_waiting_on_a_reviewer_turns_on_auto_complete_as_herdrs_account(self):
+        with open(ado.CONFIG, "w") as fh:
+            json.dump({"repos": {"contoso/My Proj/web": {"merge": "noFastForward", "transition_work_items": True}}}, fh)
+        f = self.waiting_on_a_reviewer(lambda url, body: pr(autoCompleteSetBy={"id": self.ME, "displayName": "Herdr Bot"}))
+        data, text = self.accept()
+        self.assertEqual([c[3] for c in f.sent("PATCH", r".*")], [{
+            "autoCompleteSetBy": {"id": self.ME},
+            "completionOptions": {"mergeStrategy": "noFastForward", "deleteSourceBranch": True, "transitionWorkItems": True,
+                                  "mergeCommitMessage": "Merged PR 7: SHEP-1 Login"}}])
+        # Herdr's own merge stays as a backup, and the follow-up here.
+        self.assertEqual((self.task["state"], self.task["auto_merge"], bool(self.task.get("ado_auto_complete"))), ("ready", "checks", True))
+        self.assertEqual((data["accepted"], data["auto_complete"]), ("checks", True))
+        self.assertIn("Azure DevOps completes it once it's approved", text)
+        self.assertEqual(agents.task_status(self.task, [])[2], "Completes in Azure DevOps once approved")
+
+    def test_accept_that_merges_at_once_sets_no_auto_complete(self):
+        seen = []
+
+        def view(url, body):
+            seen.append(1)
+            return pr(status="completed" if len(seen) > 1 else "active", lastMergeCommit={"commitId": "f00"})
+        f = self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": self.ME}},
+                       ("GET", r"git/repositories/web/pullrequests/7"): view, ("PATCH", r"git/repositories/web/pullrequests/7"): {},
+                       ("GET", r"policy/evaluations"): {"value": [evaluation("approved", buildDefinitionName="web-ci")]},
+                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        data, _ = self.accept()
+        self.assertEqual((self.task["state"], data["accepted"]), ("done", "github"))
+        bodies = [c[3] for c in f.sent("PATCH", r".*")]
+        self.assertEqual([b["status"] for b in bodies], ["completed"])
+        self.assertFalse(any("autoCompleteSetBy" in b for b in bodies) or f.sent("GET", r"connectionData") or "auto_complete" in data)
+
+    def test_a_refused_auto_complete_keeps_herdrs_own_merge_and_says_so(self):
+        def refuse(url, body):
+            raise ado.AdoError("http", "HTTP 403: You need the Contribute to pull requests permission")
+        f = self.waiting_on_a_reviewer(refuse)
+        data, text = self.accept()
+        self.assertEqual(len(f.sent("PATCH", r".*")), 1)
+        self.assertEqual((self.task["state"], self.task["auto_merge"], self.task.get("ado_auto_complete"), self.task.get("attention")),
+                         ("ready", "checks", None, None))
+        self.assertEqual((data["accepted"], data["auto_complete"]), ("checks", False))
+        self.assertIn("Contribute to pull requests", data["auto_complete_error"])
+        self.assertIn("it merges once its checks pass. Azure DevOps auto-complete couldn't be set", text)
+        self.assertEqual(agents.task_status(self.task, [])[2], "Merges once its checks pass")
 
     def test_a_failed_completion_says_azure_devops_not_github(self):
         self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(mergeStatus="rejectedByPolicy", mergeFailureMessage="policies not met"),

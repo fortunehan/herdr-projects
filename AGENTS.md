@@ -19,6 +19,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On a dev Mac about 34 `test_herdr_task` tests fail at `git commit` because they inherit the global git config (hooks,
   signing): compare the failure list before and after a change, or set `GIT_CONFIG_GLOBAL=/dev/null` as
   `test/test_local.py` does.
+- One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`); `python3 -m unittest
+  test.test_x` fails because `test/` is not a package.
 
 ## Trying a change
 
