@@ -67,6 +67,8 @@ export interface PlaceTab {
   where?: string
   /** what its pane header calls it: "Claude Code", the program in front ("zsh"), else "Shell" */
   prog?: string
+  /** an agent's pane header: the title it set (Claude Code's conversation summary), else `prog` (core/menus agentTitle) */
+  title?: string
   /** the known agent it runs (the window's knownAgents key: "claude", "opencode", …): it can restart and switch */
   agent?: string
 }

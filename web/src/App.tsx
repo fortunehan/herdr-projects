@@ -304,7 +304,7 @@ function PlaceColumn({ place, pane }: { place: Place; pane?: number }) {
   // status in words, the Autopilot pill and Chat | Terminal (placeHeader, by order). Never the Assistant's role or
   // agent (SHEP-36): the composer's model menu says which agent.
   const tab = term?.startsWith('t:') ? place.tabs?.find((t) => t.term === term) : undefined
-  const name = tab ? (tab.prog ?? 'Shell') : place.name
+  const name = tab ? (tab.title ?? tab.prog ?? 'Shell') : place.name
   const where = tab ? tab.where : placeKind(snap, place)
   // another agent tab switched to Chat shows its own chat (its terminal otherwise: the terminal plugin's chatBody)
   const tabChat = useUI((u) => (tab && u.tabView?.[tab.term] === 'chat' ? tab.term : null))

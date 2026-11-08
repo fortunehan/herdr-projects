@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { spaceMenu, addMenu, machineMenu, sectionMenu, taskMenu, machineLabel, tabMenu, appMenu, assistantRow, agentChoices, agentHint, tabName, endAgent, NEW_MENU, SWITCH_AGENT } from "./menus.js";
+import { spaceMenu, addMenu, machineMenu, sectionMenu, taskMenu, machineLabel, tabMenu, appMenu, assistantRow, agentChoices, agentHint, tabName, agentTitle, endAgent, NEW_MENU, SWITCH_AGENT } from "./menus.js";
 
 const words = (list) => list.map((x) => (x.sep ? "—" : x.label));
 
@@ -47,6 +47,11 @@ test("the + menu's words: the Assistant's row, the agents it offers, and a tab's
   expect(tabName("tb3", "Claude Code")).toBe("Claude Code");
   expect(tabName("", null)).toBe("Terminal");
   expect(tabName("Build")).toBe("Build");
+  expect(agentTitle("✳ Fix the login bug", "Claude Code")).toBe("Fix the login bug");
+  expect(agentTitle("⠂ 修复登录", "Claude Code")).toBe("修复登录");
+  expect(agentTitle("✳ Claude Code", "Claude Code")).toBe("Claude Code");
+  expect(agentTitle("~/Codes/app", "Codex")).toBe("Codex");
+  expect(agentTitle("", "Codex")).toBe("Codex");
   expect(endAgent("Codex")).toEqual({ ask: "End Codex?", tip: "End Codex", cancel: "Cancel", verb: "End agent" });
 });
 

@@ -22,7 +22,7 @@ import { apSpace, apWatch, apPoll, apGroup, apHeartbeatLink, COMPACT_BELOW } fro
 import { button as uiButton, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
-import { endAgent } from "./core/menus.js";
+import { endAgent, agentTitle } from "./core/menus.js";
 
 const CHAT = "chat";
 const LABEL = "herdr.chat";
@@ -221,7 +221,7 @@ export default class Pane extends View {
     // menu says which agent): the space's name, then its folder, quieter.
     const isAssistant = Boolean(lazy) || terminals().find((x) => x.address === (agent ?? self.terminal))?.labels?.["herdr.role"] === "coordinator";
     const space = isAssistant ? spaces().find((s) => s.tabs?.some((x) => x.id === self.tab)) : null;
-    const name = art ?? (isAssistant ? spaceName(space, { home: home() }) : chatMode && p === self ? "Chat" : prog);
+    const name = art ?? (isAssistant ? spaceName(space, { home: home() }) : chatMode && p === self ? "Chat" : p.program?.agent ? agentTitle(p.title, prog) : prog);
     const pic = art !== null ? svg("mods/artifacts/artifacts.svg").size(14).flex_none().text_color(t.dim) : icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = self.pane;

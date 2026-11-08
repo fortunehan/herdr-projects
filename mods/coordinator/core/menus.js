@@ -99,6 +99,14 @@ export const agentHint = (a, i) => (a.installed ? (i < 9 ? String(i + 1) : "") :
 // A tab's name in the tab bar: the name given, else (Herdr's own "tb3", or none) what runs in it, else "Terminal".
 export const tabName = (name, program = null) => (!name || /^tb\d+$/.test(name) ? program || "Terminal" : name);
 
+// An agent's pane header: the title it set on its terminal (Claude Code's is its conversation's summary, after a
+// status glyph like "✳"), else its program's name. A path or the program's own name is no summary.
+export const agentTitle = (title, program) => {
+  const raw = String(title ?? "").trim();
+  const t = raw.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  return !t || /^[~/]/.test(raw) || t.toLowerCase() === String(program ?? "").toLowerCase() ? program : t;
+};
+
 // The pane header's × on an agent's chat asks first, in place of its buttons.
 export const endAgent = (program) => ({ ask: `End ${program}?`, tip: `End ${program}`, cancel: "Cancel", verb: "End agent" });
 

@@ -323,7 +323,7 @@ export class Compat {
           return { id: t.id, name: (MNc as any).tabName(named(t.raw) ? t.raw : "", prog), named: named(t.raw), term: `t:${t.addr}`,
             ...(cli ? { cli } : {}), ...(agent || cli ? { agent: agent?.key ?? cli } : {}), state: stateOf(k), where: shortHome(k?.foreground?.cwd ?? k?.cwd),
             // what its pane header calls it: the agent, else the program in front, else its title
-            prog: prog ?? (k?.foreground?.name || k?.title || "Shell") };
+            prog: prog ?? (k?.foreground?.name || k?.title || "Shell"), ...(prog ? { title: (MNc as any).agentTitle(k?.title, prog) } : {}) };
         });
       // the Assistant's own tab (first in the bar): the tab its terminal or chat is in
       const ak: any = s.assistant ? (this as any).terminalsOf?.(s.assistant) : null;

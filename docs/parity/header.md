@@ -97,7 +97,7 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 
 | Element | Window | Web | State |
 |---|---|---|---|
-| Name | PC:215 "Assistant · Claude Code" (just "Assistant" before it starts); another tab its program | A:301 `place.header`; another tab `prog` | ✓ |
+| Name | PC:215 "Assistant · Claude Code" (just "Assistant" before it starts); another tab's agent the title it set (`agentTitle`: Claude Code's conversation summary, else its program), another program its name | A:307 `place.header`; another tab `title` (the service's `agentTitle`), else `prog` | ✓ |
 | Folder, ~ for home | PC:240 | A:301 `place.where` / the tab's `where` | ✓ |
 | The space's name | (not in the header: the sidebar and the tab) | desktop: same; phone: its top names the space | ◇ phone: no sidebar or tab bar |
 | Autopilot switch | AP:86 knob + "Autopilot" + `headerDetail` ("Next 09:30", "Queued", "Waking" pulsing, "On events", "No schedule") | C:42 Switch + word + `headerDetail` (`place.pilot`), "Waking" pulses | ✓ |
