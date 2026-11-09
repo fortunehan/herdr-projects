@@ -73,6 +73,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `claude -p --append-system-prompt templates/assistant.md` in a scratch repo with fake herdr-task/hc on PATH.
 - Web stub screenshots: a Place needs id, name, machine, level, status and chat (key); a stub Message uses
   `who: 'you'|'agent'`; rebuild web/dist (`cd web && bunx vite build`) after each web edit before re-screenshotting.
+- On the dev Mac there's no PIL either: crop proof screenshots with `sips -c H W --cropOffset Y X file`. `diff` is a
+  shell alias there: use `/usr/bin/diff`.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
 - Crash recovery for real: a throwaway core, `HC_SESSION=<name> hc ...` with `HC_TERMINAL_SOCKET` and Claude's
