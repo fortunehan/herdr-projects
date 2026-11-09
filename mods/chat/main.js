@@ -61,6 +61,7 @@ import { ScreenWatch, screenStrips, openCard, cardsOf, starting, cliOf } from ".
 import { dayLabel, dayOf } from "./days.js";
 import { ListWidth, carry, anchorRow } from "./core/chat-resize.js";
 import { TextPress } from "./core/chat-focus.js";
+import { followed } from "./core/thread-bind.js";
 import { CallScreen } from "./call-screen.js";
 import { on as addonOn } from "./addons.js";
 
@@ -2596,6 +2597,8 @@ export default class Chat extends View {
         if (!ref || !folder) throw new Error("This chat's task wasn't found.");
         const built = agent.argvFor(pick, { agent: this.kind, argv: t.foreground?.argv ?? [] });
         const on = k?.machine ?? this.machine;
+        // The task shown now: the view follows its new agent only while it still shows it (core/thread-bind.js).
+        const before = shared("tasks.thread") ?? null;
         this.swapping = true;
         const r = await exec(`${appHome()}/mods/tasks/bin/herdr-task`, [...(on ? ["--on", on] : []), "switch", ref, "--folder", folder,
           "--argv", JSON.stringify(built.base), "--json"]);
@@ -2603,7 +2606,8 @@ export default class Chat extends View {
         try { out = JSON.parse(r.stdout || "null"); } catch {}
         if (r.code !== 0 || !out?.terminal) throw new Error(out?.error || r.stderr?.trim().split("\n").pop() || "Its agent didn't start.");
         const addr = on && !String(out.terminal).includes("/") ? `${on}/${out.terminal}` : out.terminal;
-        setShared("tasks.thread", { ...(shared("tasks.thread") ?? {}), terminal: addr, log: null, note: null, at: Date.now() });
+        const next = followed(shared("tasks.thread") ?? null, before, addr, Date.now());
+        if (next) setShared("tasks.thread", next);
       } catch (e) {
         this.note = null;
         toast({ title: "The agent didn't restart", body: plainError(e), level: "error" });
@@ -2621,6 +2625,7 @@ export default class Chat extends View {
     const k = this.taskKey;
     if (!k || this.resuming) return;
     this.resuming = true;
+    const before = shared("tasks.thread") ?? null;
     cx.spawn(async (cx) => {
       try {
         const r = await exec(`${appHome()}/mods/tasks/bin/herdr-task`, [...(k.machine ? ["--on", k.machine] : []), "resume", String(k.id), "--json", "--folder", k.folder]);
@@ -2628,7 +2633,8 @@ export default class Chat extends View {
         try { out = JSON.parse(r.stdout || "null"); } catch {}
         if (r.code !== 0 || !out?.terminal) throw new Error(out?.error || r.stderr?.trim().split("\n").pop() || "Its agent didn't start.");
         const addr = k.machine && !String(out.terminal).includes("/") ? `${k.machine}/${out.terminal}` : out.terminal;
-        setShared("tasks.thread", { ...(shared("tasks.thread") ?? {}), terminal: addr, log: null, note: null, at: Date.now() });
+        const next = followed(shared("tasks.thread") ?? null, before, addr, Date.now());
+        if (next) setShared("tasks.thread", next);
       } catch (e) {
         toast({ title: "Couldn't resume the task", body: plainError(e), level: "error" });
       }
