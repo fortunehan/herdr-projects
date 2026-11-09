@@ -30,6 +30,7 @@ import { button, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
+import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
 
 // The task header's shared left edge, and task ids in the Tasks list's monospace (mods/tasks).
 const EDGE = 12, ID_FONT = "JetBrains Mono";
@@ -52,9 +53,6 @@ function find(node, id) {
 
 // The chat shown inside, for its cleanup: a nested view gets no close() of its own.
 export const inner = { chat: null };
-
-// Which task a "tasks.thread" names: its agent's terminal, else its key (one never started).
-const wantId = (w) => (w ? w.terminal ?? (w.key ? `${w.key.machine ?? ""}:${w.key.slug}#${w.key.id}` : null) : null);
 
 // Whether the shown layout has the drill-in view (else callers go to the agent instead).
 export function hasTaskThread(node) {
@@ -111,7 +109,8 @@ export class PanelHost {
     this.busy = false;     // the header's swap to the terminal, under way
     this.cur = null;
     this.entity = null;
-    this.swapping = false;
+    // The body's: which task its Chat was made for (core/thread-bind.js); it draws that Chat for no other.
+    this.bind = new ThreadBinding();
     this.rec = null;       // the shown worker's task record (its list file's entry), or null
     this.accepting = false;
     this.ticks = 0;
@@ -199,22 +198,32 @@ export class PanelHost {
       props: { ref: r.ref, folder: r.folder, machine: r.machine ?? null, title: r.title } });
   }
 
-  // Another worker asked for: the old chat is closed and released, a new one made for it.
-  async swap(want, cx) {
-    const old = this.entity, oldChat = inner.chat;
-    this.entity = null;
-    inner.chat = null;
-    if (old) {
-      try { await oldChat?.close(cx); } catch {}
-      old.release();
+  // Another worker asked for: the old chat is closed and released, a new one made for the task shown once that's done
+  // (read then, not when render asked: the person may have opened another meanwhile).
+  async swap(cx) {
+    const token = this.bind.begin(Date.now());
+    if (token === null) return;
+    let want = null, made = false;
+    try {
+      const old = this.entity, oldChat = inner.chat;
+      this.entity = null;
+      inner.chat = null;
+      if (old) {
+        try { await oldChat?.close(cx); } catch {}
+        try { old.release(); } catch {}
+      }
+      if (!this.bind.current(token)) return;
+      want = shared("tasks.thread") ?? null;
+      this.cur = want;
+      this.rec = null;
+      this.loadTask(want?.terminal, cx);
+      if (want?.terminal) this.entity = cx.new(this.Chat, { inner: true, thread: true, terminal: want.terminal, task: want.task, title: want.title,
+        log: want.log ?? null, key: want.key ?? null });
+      made = true;
+    } finally {
+      this.bind.end(token, want, made, Date.now());
+      cx.notify();
     }
-    this.cur = want;
-    this.rec = null;
-    this.loadTask(want?.terminal, cx);
-    if (want?.terminal) this.entity = cx.new(this.Chat, { inner: true, thread: true, terminal: want.terminal, task: want.task, title: want.title,
-      log: want.log ?? null, key: want.key ?? null });
-    this.swapping = false;
-    cx.notify();
   }
 
   async close(cx) {
@@ -280,9 +289,13 @@ export class PanelHost {
   // The body: the worker's chat (its terminal is the layout's own block beside it).
   renderBody(cx) {
     const want = shared("tasks.thread") ?? null;
-    if (wantId(want) !== wantId(this.cur) && !this.swapping) {
-      this.swapping = true;
-      cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.swap(want, cx)));
+    // Its Chat only while it was made for this task: else "Opening…" until the swap made the right one.
+    const { show, ask } = this.bind.plan(want, Date.now());
+    if (ask) cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.swap(cx)));
+    // A swap asked for before is tried again (core/thread-bind.js RETRY_MS) even with nothing else redrawing.
+    if (!show && !(Date.now() - (this.retryAt ?? 0) < RETRY_MS)) {
+      this.retryAt = Date.now();
+      cx.timer.after(RETRY_MS + 100, (cx) => cx.notify());
     }
     // The model picker's Restart (shared "chat.restartreq"): a nested view isn't drawn again
     // when shared state changes, so the chat is asked to; it checks whether it's for it.
@@ -293,7 +306,7 @@ export class PanelHost {
       cx.timer.after(0, (cx) => cx.notify(e));
     }
     const t = theme();
-    return this.entity
+    return show && this.entity
       ? v_flex().id("task-thread").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13).child(this.entity)
       : v_flex().id("task-thread").size_full().items_center().justify_center().px(18).bg(t.background).text_size(TEXT.label).text_color(t.dim)
         .child(want?.note ?? (want ? "Opening…" : "Pick a task to see its chat."));

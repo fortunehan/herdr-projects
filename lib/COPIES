@@ -59,3 +59,4 @@ core/bg-jobs.js: chat
 core/audio.js: chat
 core/chat-resize.js: chat
 core/chat-focus.js: chat tabs-tasks
+core/thread-bind.js: chat
