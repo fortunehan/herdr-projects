@@ -10,7 +10,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   and never install into the real `~/.config/herdr-app` for a try: use `./install.sh --root <scratch>`. A window or
   scheduler on another home can overwrite every machine's spaces.
 - `herdr-app check <mod folder>` runs a mod's `init()` for real: never for `shepherdr-settings` (its init pushes
-  settings to other machines).
+  settings to other machines), nor for `tabs-tasks` (its init starts the service and bridge for real).
 - GitHub runs the whole check on every pull request to main and after each merge: the Check workflow
   (`.github/workflows/check.yml`). Merging waits for it. A failure's log is `gh run view <run> --log-failed`.
 - Still write tests with your change: the installer's in `test/test_install.py`, the repo's rules in
