@@ -70,13 +70,13 @@ if [ -n "$chat" ]; then
   [ "$role" = coordinator ] && labels+=(--label herdr.role=coordinator)
 fi
 if [ -n "${HERDR_RESTART_RESUME:-}" ] && [ -n "$argv" ]; then
-  mapfile -t cmd < <(jq -r '.[]' <<<"$argv")
+  cmd=(); while IFS= read -r a; do cmd+=("$a"); done < <(jq -r '.[]' <<<"$argv")
   [ ${#cmd[@]} -gt 0 ] || exit 1
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(basename "${cmd[0]}")" -- "${cmd[@]}" | jq -r '.address // empty')
 elif [ -z "$argv" ] && [ "$role" = coordinator ]; then
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address)
 else
-  mapfile -t cmd < <(jq -r '.[]' <<<"$argv")
+  cmd=(); while IFS= read -r a; do cmd+=("$a"); done < <(jq -r '.[]' <<<"$argv")
   [ ${#cmd[@]} -gt 0 ] || exit 1
   key=$(basename "${cmd[0]}")
   # Codex runs its commands outside hc without --no-daemon.

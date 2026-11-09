@@ -89,9 +89,14 @@ export function entryFor(k, known) {
   return known.find((a) => a.key === k.program?.key) ?? known.find((a) => base(a.run?.[0]) === base(k.foreground?.argv?.[0] ?? k.argv?.[0])) ?? null;
 }
 
-// The helper scripts run detached: the menu that starts one closes at once.
-function script(name, args) {
-  return exec("bash", ["-c", 'setsid -f bash "$0" "$@" >/dev/null 2>&1 </dev/null', `${appHome()}/mods/coordinator/${name}.sh`, ...args]);
+// The helper scripts run detached: the menu that starts one closes at once. macOS has no setsid:
+// job control gives the helper its own process group and nohup keeps it past the launcher (as mods/chat's voice helper).
+const DETACH = '[ -f "$0" ] || exit 127; if command -v setsid >/dev/null 2>&1; then setsid -f bash "$0" "$@" >/dev/null 2>&1 </dev/null; '
+  + 'else set -m; nohup bash "$0" "$@" >/dev/null 2>&1 </dev/null & fi';
+async function script(name, args) {
+  const r = await exec("bash", ["-c", DETACH, `${appHome()}/mods/coordinator/${name}.sh`, ...args]).catch((e) => ({ code: -1, stderr: plainError(e) }));
+  if (r.code !== 0) toast({ title: `Couldn't start ${name}`, body: r.stderr?.trim() || `Its helper (mods/coordinator/${name}.sh) didn't start.`, level: "error" });
+  return r;
 }
 
 // Where a space's coordinator works: its focused (else first) terminal's folder.
