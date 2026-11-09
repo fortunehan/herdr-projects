@@ -151,6 +151,35 @@ class Install(unittest.TestCase):
         self.assertEqual(keys["layout:shepherdr"]["f9"], "mine.f9")
         self.assertEqual(keys["global"]["cmd-w"], "tab.close")
 
+    def test_compose_key_over_herdrs_layout_switch(self):
+        """Cmd+Shift+L types in a chat (SHEP-15): it lands in the Shepherdr layout's section of an existing keys.json
+        that has Herdr's global cmd-shift-l (Next layout), which stays as it is; Next layout gets a free Cmd+Alt+L,
+        unless the person uses that key already. Uninstall takes only ours out."""
+        path = self.p(APP, "keys.json")
+        with open(path, "w") as f:
+            json.dump({"global": {"cmd-shift-l": "layout.switch", "cmd-q": "app.quit"},
+                       "layout:shepherdr": {"f9": "mine.f9"}}, f)
+        run("install", "--root", self.root, "--yes")
+        keys = json.load(open(path))
+        self.assertEqual(keys["layout:shepherdr"]["cmd-shift-l"], "tabs-tasks.compose")
+        self.assertEqual(keys["global"]["cmd-shift-l"], "layout.switch")
+        self.assertEqual(keys["global"]["cmd-alt-l"], "layout.switch")
+        self.assertEqual(keys["layout:shepherdr"]["f9"], "mine.f9")
+
+        run("uninstall", "--root", self.root)
+        keys = json.load(open(path))
+        self.assertEqual(keys, {"global": {"cmd-shift-l": "layout.switch", "cmd-q": "app.quit"},
+                                "layout:shepherdr": {"f9": "mine.f9"}})
+
+        # Keys the person set themselves are kept: their own Cmd+Alt+L, their own Cmd+Shift+L in the layout.
+        with open(path, "w") as f:
+            json.dump({"global": {"cmd-alt-l": "mine.l"}, "layout:shepherdr": {"cmd-shift-l": "mine.shift-l"}}, f)
+        out = run("install", "--root", self.root, "--yes").stdout
+        keys = json.load(open(path))
+        self.assertEqual(keys["global"]["cmd-alt-l"], "mine.l")
+        self.assertEqual(keys["layout:shepherdr"]["cmd-shift-l"], "mine.shift-l")
+        self.assertIn("kept your key global cmd-alt-l", out)
+
     def test_service_unit_and_files(self):
         """The service and the shared core land in .local/share/shepherdr; a scratch root gets the unit file only
         (nothing is started), and uninstall takes both away."""

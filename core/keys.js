@@ -38,6 +38,7 @@ export const NAMES = {
   "tabs-tasks.newspace": () => "New space",
   "tabs-tasks.rename-tab": () => "Rename tab",
   "tabs-tasks.rename-space": () => "Rename space",
+  "tabs-tasks.compose": () => "Type in the chat",
   "chat.dictate": () => "Dictate",
   "chat.call": () => "Start a call",
   "chat.find": () => "Find in the chat",

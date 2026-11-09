@@ -16,6 +16,7 @@
       "menu-tasks", "new-menu-tasks", "confirm-chat", "prompt-chat", "newspace", "shepherdr-settings"],
     "blocks": ["spaces", "sidebar-footer", "tabs", "status", "toasts"],
     "keys": ["layout:shepherdr ctrl-shift-w", "layout:shepherdr ctrl-shift-n", "layout:shepherdr f2", "layout:shepherdr shift-f2",
+      "layout:shepherdr cmd-shift-l", "global cmd-alt-l",
       "global alt-1", "global alt-2", "global alt-3", "global alt-4", "global alt-5", "global alt-6", "global alt-7", "global alt-8",
       "global alt-9", "global alt-left", "global alt-right", "global alt-down", "global alt-up", "global alt-enter",
       "global alt-shift-enter", "global alt-escape", "global ctrl-alt-left", "global ctrl-alt-down", "global ctrl-alt-up",

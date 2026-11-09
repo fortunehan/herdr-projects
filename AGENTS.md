@@ -19,6 +19,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On a dev Mac about 34 `test_herdr_task` tests fail at `git commit` because they inherit the global git config (hooks,
   signing): compare the failure list before and after a change, or set `GIT_CONFIG_GLOBAL=/dev/null` as
   `test/test_local.py` does.
+- Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
+  dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
 - `test_local` `AssistantNotes.test_nothing_without_notes_and_a_long_file_is_cut` is flaky: it counts 'x' in text that
   includes a random tempdir path. A lone failure there isn't yours.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
