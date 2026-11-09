@@ -58,3 +58,4 @@ live.js: chat coordinator jump menu-tasks new-menu-tasks newspace pane-chat shep
 core/bg-jobs.js: chat
 core/audio.js: chat
 core/chat-resize.js: chat
+core/chat-focus.js: chat

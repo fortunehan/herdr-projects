@@ -60,6 +60,7 @@ import { notifies } from "./notify.js";
 import { ScreenWatch, screenStrips, openCard, cardsOf, starting, cliOf } from "./screens.js";
 import { dayLabel, dayOf } from "./days.js";
 import { ListWidth, carry, anchorRow } from "./core/chat-resize.js";
+import { TextPress } from "./core/chat-focus.js";
 import { CallScreen } from "./call-screen.js";
 import { on as addonOn } from "./addons.js";
 
@@ -356,6 +357,7 @@ export default class Chat extends View {
     this.argv = null;
     this.call = null;
     this.press = null;
+    this.textPress = new TextPress();
     this.views = {};
     this.myReacts = new Map();
     // Words written in the box while a card asked, which answered it: shown as the person's,
@@ -4044,19 +4046,21 @@ export default class Chat extends View {
     // Herdr settles pane focus a moment later, so ask again after it (as the help mod does).
     // The box also comes back after a notice (opening, restarting): it gets the keyboard then too.
     const showsBox = Boolean(this.addr) && this.phase === "ready";
+    // Neither path while the person selects text in a message, or has just selected some (core/chat-focus.js).
+    if (!paneFocused) this.textPress.leftPane(Date.now());
     // Focus moves only outside render: from a timer callback right after it. Not while a field in an overlay (the
     // artifact viewer's Mark up, a modal) has the keyboard: Herdr can give this pane focus under it (keysOver()).
     if (paneFocused && showsBox && (!this.wasFocused || !this.hadBox)) {
-      const take = () => { if (!keysOver(shared(KEY_HOLDER), this.areaKey())) this.box.focus(); };
+      const take = () => { if (this.textPress.mayTake() && !keysOver(shared(KEY_HOLDER), this.areaKey())) this.box.focus(); };
       cx.timer.after(0, take);
       cx.timer.after(600, take);
     }
     // The pane focused again (a command, a click on its header) can leave the box without the
-    // keyboard: give it back, unless the person just pressed something inside the chat.
+    // keyboard: give it back, unless the person just pressed something inside the chat or selected text there.
     // Not while the keyboard is somewhere else in the window that isn't a pane (#633): a task's chat, the list or its
     // search in the Tasks panel, the Artifacts sidebar, Mark up or a form in an artifact (shared "keyboard.holder",
     // keyholder.js); Herdr still counts this pane as focused then.
-    else if (paneFocused && showsBox && !this.call && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
+    else if (paneFocused && showsBox && !this.call && this.focused === false && this.textPress.mayRefocus(Date.now())
       && !keysElsewhere(shared(KEY_HOLDER), this.areaKey())
       && Date.now() - (this.refocusAt ?? 0) > 1000) {
       this.refocusAt = Date.now();
@@ -4144,7 +4148,8 @@ export default class Chat extends View {
       })
       .on_mouse_move((e) => { if (e.bounds) this.noteArea(e.bounds); })
       // Where a press was, for the action buttons under messages (rows can't take handlers).
-      .on_mouse_down("left", (e) => { this.press = { x: e.local_position?.x, y: e.local_position?.y, at: Date.now() }; holdKeys(this.areaKey()); this.pressWin = e.position; this.keepIcons = null; if (e.bounds) this.noteArea(e.bounds); })
+      .on_mouse_down("left", (e) => { this.press = { x: e.local_position?.x, y: e.local_position?.y, at: Date.now() }; this.textPress.down(e.position, e.click_count, this.press.at); holdKeys(this.areaKey()); this.pressWin = e.position; this.keepIcons = null; if (e.bounds) this.noteArea(e.bounds); })
+      .on_mouse_up("left", (e, cx) => { if (this.textPress.up(e.position)) cx.notify(); })
       // Files dropped anywhere on the chat go with the next message.
       .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); });
 
