@@ -2,9 +2,10 @@
 // heading with its + (New space or section on the shown space's machine), Pinned (while it holds any), then each
 // machine: its header (its emoji, a monitor for this computer or a server; its name; connected: its +, its meter and a
 // red dot when its health couldn't be read; not: "Offline" or "Connecting…", dimmed and folded until tapped open), its
-// spaces in no section, then its sections. A space's row: its # (or emoji), its name (bold while its Assistant has
-// something new, dimmed with a crossed-out bell when muted), after it only what's unusual (its machine in Pinned, its
-// folder where another space there has its name, its repo and branch), and its red and green counts.
+// spaces in no section, then its sections. A space's row: its # (or emoji), its name (bold with a blue dot while its
+// Assistant has something new, a small spinner while it thinks, dimmed with a crossed-out bell when muted), after it only
+// what's unusual (its machine in Pinned, its folder where another space there has its name, its repo and branch), its
+// tasks at work (a dim count) and its red and green counts.
 // Worktree spaces nest under their repo's own. A folded section (Pinned too) still shows the space you're in and its
 // unread ones, and adds up its counts on its heading. Menus are core/menus.js's, the window's too: a right click (or a
 // finger held) opens them, no ⋯ on the rows. Spaces drag among their own, into a section or Pinned, or back to their machine's
@@ -303,9 +304,10 @@ function sharedNames(snap: Snapshot) {
   return (SPc.sharedNames as (rows: object[]) => Set<string>)(snap.places.map((p) => ({ id: p.id, machine: p.machine, name: p.name, linked: p.git === 'linked' })))
 }
 
-/** what every space's row shows, as the window's (mods/spaces-chat main.js row): its name, bold and bright while its
- *  Assistant has something new (unread), bright where it is open; dimmed when muted (Notify: Off), a crossed-out bell
- *  after it, its counts still showing; then what needs you there (red) and its tasks in Ready (green) */
+/** what every space's row shows, as the window's (mods/spaces-chat main.js row): its name, bold and bright with a small
+ *  blue dot while its Assistant has something new (unread), a small spinner after it while its Assistant thinks, bright
+ *  where it is open; dimmed when muted (Notify: Off), a crossed-out bell after it, its counts still showing; then how
+ *  many of its tasks are at work (dim, a turning ring), what needs you there (red) and its tasks in Ready (green) */
 function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: string }) {
   const sel = useUI((u) => u.place === p.id)
   const c = counts(snap, p.id)
@@ -321,12 +323,15 @@ function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: str
   // a voice call in this space (its Assistant's or one of its tasks'): a green mark after the name that goes back to it
   const call = useUI((u) => (u.call && chatPlace(snap, u.call) === p.id ? u.call : null))
   const waking = pilot && !!(p.pilot?.inflight || p.pilot?.pending)
+  // SHEP-17: its Assistant in a turn, and its tasks at work (the service's, with core/spaces.js's rules)
+  const thinking = !!p.thinking && !off
+  const working = off ? 0 : p.working ?? 0
   const label = [where, sharedNames(snap).has(p.id) && p.where ? (SPc.tilde as (x: string) => string)(p.where) : null].filter(Boolean).join(' · ') || null
   const tail = p.git ? (SPc.gitTail as (g: object, o: object) => { where: string })({ name: p.gitName, branch: p.branch }, { name: p.name, tree: !!treeMark.get(p.id), tag: label }) : { where: label ?? '' }
   return {
     sel,
     // what the row says aloud, its count and offline too
-    said: `${p.name}${where ? ` on ${where}` : ''}${p.home ? ', home space' : ''}${p.connecting ? ', connecting' : off ? ", can't reach" : n ? `, ${c.ownNeed} need you, ${c.ownReady} ready here` : ''}${fresh && !off ? ', unread' : ''}${pilot ? (waking ? ', Autopilot waking' : ', on Autopilot') : ''}${quiet ? ', muted' : ''}${call ? ', on a voice call' : ''}`,
+    said: `${p.name}${where ? ` on ${where}` : ''}${p.home ? ', home space' : ''}${p.connecting ? ', connecting' : off ? ", can't reach" : n ? `, ${c.ownNeed} need you, ${c.ownReady} ready here` : ''}${fresh && !off ? ', unread' : ''}${thinking ? ', Assistant thinking' : ''}${working ? `, ${working} ${working === 1 ? 'task' : 'tasks'} working` : ''}${pilot ? (waking ? ', Autopilot waking' : ', on Autopilot') : ''}${quiet ? ', muted' : ''}${call ? ', on a voice call' : ''}`,
     fresh,
     // the Autopilot mark, then the space's # before the name, as Slack's channels have: grey, lit with the name where
     // it is open or something is new
@@ -340,10 +345,16 @@ function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: str
         {treeMark.get(p.id) ? <BranchIcon className={clsx(icon, 'text-fg3')} /> : p.emoji ? <span aria-hidden className={clsx(icon, 'grid place-items-center text-[0.9375rem] leading-none', quiet && 'opacity-50')}>{p.emoji}</span> : <HashIcon className={clsx(icon, fresh ? 'text-fg' : sel && !quiet ? 'text-fg2' : 'text-fg3')} />}
       </>
     ),
+    // a hidden bold copy holds the name's width, so the marks after it don't move when it turns bold
     name: (
-      <RowText className={fresh ? 'font-semibold text-fg' : quiet ? 'text-fg3' : sel ? 'text-fg' : 'text-fg2'}>
-        {p.name}
-      </RowText>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className={clsx('grid min-w-0', fresh ? 'font-semibold text-fg' : quiet ? 'text-fg3' : sel ? 'text-fg' : 'text-fg2')}>
+          <span aria-hidden className="invisible col-start-1 row-start-1 truncate font-semibold">{p.name}</span>
+          <span className="col-start-1 row-start-1 truncate">{p.name}</span>
+        </span>
+        {fresh ? <span aria-hidden data-unread-dot className="size-1.5 shrink-0 rounded-full bg-unread" /> : null}
+        {thinking ? <ThinkingSpin /> : null}
+      </span>
     ),
     end: (
       <>
@@ -352,10 +363,33 @@ function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: str
         ) : null}
         {quiet ? <BellSlashIcon aria-hidden className={clsx(ic, 'text-fg3')} /> : null}
         {call ? <CallMark call={call} snap={snap} /> : null}
+        {working ? <WorkingCount n={working} /> : null}
         <AttentionBadge need={c.ownNeed} ready={c.ownReady} scope="here" />
       </>
     ),
   }
+}
+
+/** SHEP-17: a space's Assistant in a turn: a small dim spinner after its name (the chat's calm writing spinner) */
+function ThinkingSpin() {
+  return (
+    <svg aria-hidden data-thinking viewBox="0 0 16 16" className="size-3 shrink-0 animate-spin text-fg3 motion-reduce:animate-none">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
+      <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** SHEP-17: how many of a space's tasks are at work, dim, with a small turning ring, before its red and green badge */
+function WorkingCount({ n }: { n: number }) {
+  return (
+    <span aria-hidden data-working={n} className="flex shrink-0 items-center gap-0.5 text-[0.75rem] text-fg3 tabular-nums phone:text-[0.8125rem]">
+      <svg viewBox="0 0 16 16" className="size-2.5 shrink-0 animate-spin motion-reduce:animate-none">
+        <path d="M14 8A6 6 0 1 1 8 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+      {n > 9 ? '9+' : n}
+    </span>
+  )
 }
 
 /** SHEP-51: the voice call going on in a space, in its row: a soft green pill with the call's wave and clock. It takes

@@ -102,6 +102,10 @@ export interface Place {
    *  machine's home space, where there are more machines) */
   level: 0 | 1 | 2
   status: Status
+  /** its Assistant is in a turn (core/spaces.js isThinking): a small spinner after its name in the sidebar */
+  thinking?: boolean
+  /** how many of its tasks are at work (core/spaces.js workingIn): a dim count with a turning ring in its row */
+  working?: number
   mode: Mode
   /** chat key of this space's coordinator */
   chat: string

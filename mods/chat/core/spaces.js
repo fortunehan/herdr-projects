@@ -1,6 +1,7 @@
 // Spaces as the person knows them: each machine's spaces (Herdr's own layout document, "herdr-app", per
-// machine), each with its tabs, its Assistant (the live coordinator terminal labelled for it) and whether that
-// Assistant has something new (unread: the core label herdr.chat.read, the same on every device). The window
+// machine), each with its tabs, its Assistant (the live coordinator terminal labelled for it), whether that
+// Assistant has something new (unread: the core label herdr.chat.read, the same on every device) or is thinking,
+// and how many of its tasks are at work (the sidebar row's marks, in the window and on the web). The window
 // gets spaces from Herdr (spaces()); the service and the web app build them here from the same documents.
 // Shared core: the source is core/spaces.js; bin/sync-shared copies it into the mods in lib/COPIES.
 
@@ -26,6 +27,29 @@ export function isUnread(k, seen = {}, asked = 0) {
   if (!k || k.labels?.["herdr.role"] !== "coordinator") return false;
   return (k.turn ?? 0) > Math.max(readTurn(k, seen), asked);
 }
+
+// A terminal's status word: the window's terminals() have it as a string, herdr-core's events (the service) as
+// { state }.
+export const statusOf = (k) => (k?.status && typeof k.status === "object" ? k.status.state ?? null : k?.status ?? null);
+
+// Thinking: a space's Assistant is in a turn (its status working). The sidebar's spinner after the name.
+export function isThinking(k) {
+  return !!k && k.labels?.["herdr.role"] === "coordinator" && statusOf(k) === "working";
+}
+
+// The space a task counts in: the one whose Assistant started it (herdr-task keeps it), else the space in its folder
+// on its machine. t: { space, machine, folder }, space ids as the spaces' ("<machine>/<id>" for another machine's).
+export function taskInSpace(t, s) {
+  if (t?.space) return t.space === s.id;
+  return (t?.machine ?? null) === (s.machine ?? null) && !!t?.folder && t.folder === s.folder;
+}
+
+// A task at work: herdr-task's status (its list's `status`, core/tasks.js place()'s `section`) is working, and it
+// isn't archived. Queued, needs-you, ready and merging ones aren't.
+export const isWorkingTask = (t) => !!t && !t.archived && (t.section ?? t.status) === "working";
+
+// How many of a space's tasks are at work: the dim count with a turning ring before its red and green badge.
+export const workingIn = (s, tasks) => (Array.isArray(tasks) ? tasks : []).filter((t) => isWorkingTask(t) && taskInSpace(t, s)).length;
 
 // Every terminal a layout node shows: a terminal block's, or a chat block's agent.
 function terminalsIn(node, out = []) {
