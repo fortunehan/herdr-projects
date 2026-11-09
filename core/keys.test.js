@@ -21,6 +21,16 @@ test("Shepherdr's keys.json grouped: the layout's own key replaces the global on
   expect(row("App", "Jump to a space, task or artifact").keys).toEqual(["Ctrl+K", "Ctrl+Shift+K"]);
   expect(row("App", "Keybinds").keys).toEqual(["Ctrl+Shift+/", "Ctrl+Shift+?"]);
   expect(row("Chat", "Find in the chat").keys).toEqual(["Ctrl+F"]);
+  expect(row("App", "Type in the chat").keys).toEqual(["Shift+Super+L"]);
+  expect(row("App", "Next layout").keys).toEqual(["Alt+Super+L"]);
+});
+
+test("Cmd+Shift+L in the Shepherdr layout types in the chat over Herdr's global Next layout, which keeps Cmd+Alt+L", () => {
+  const keys = { ...repoKeys, global: { "cmd-shift-l": "layout.switch", ...repoKeys.global } };
+  const g = grouped(flatKeys(keys), { layout: "shepherdr", mac: true });
+  const row = (name) => g.find((x) => x.group === "App")?.rows.find((r) => r.name === name);
+  expect(row("Type in the chat").keys).toEqual(["⇧⌘L"]);
+  expect(row("Next layout").keys).toEqual(["⌥⌘L"]);
 });
 
 test("the web's keys are the window's: each one bound the same in Shepherdr's keys.json or Herdr's defaults, every one named", () => {

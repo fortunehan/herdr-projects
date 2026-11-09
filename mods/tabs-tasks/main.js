@@ -1,8 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, readTextFile, appHome, home } from "herdr";
+import { panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, readTextFile, appHome, home, focused } from "herdr";
 import { spacesWithChats as spaces, sweep } from "./parked.js";
-import { agentIn, isCoordinatorTab, closeTab, closeFocused, watchNewSpaces, newSpace, openCoordinator, renameTab, renameSpace } from "./coordinator.js";
+import { agentIn, isCoordinatorTab, closeTab, closeFocused, watchNewSpaces, newSpace, openCoordinator, renameTab, renameSpace, coordinatorTab, coordinatorIn } from "./coordinator.js";
 import { startTick, tickOnChange } from "./tick.js";
 import { startInbox, count as inboxCount, countsByTab, readyCount, readyByTab, showInbox, toAlert } from "./inbox.js";
 import { serveRemote } from "./secrets.js";
@@ -13,6 +13,7 @@ import { on as addonOn } from "./addons.js";
 // A tab's name (what runs in it while Herdr named it): core/menus.js, as the web app's tab bar names it.
 import { tabName } from "./core/menus.js";
 import { inRender } from "./live.js";
+import { composeTarget } from "./core/chat-focus.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -21,6 +22,44 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
+}
+
+// The space's Assistant pane: its chat's, else its terminal's (one in Terminal mode), else null.
+function assistantPane(space, ps) {
+  const tab = coordinatorTab(space, undefined, ps);
+  if (!tab) return null;
+  const mine = ps.filter((p) => p.tab === tab.id);
+  const coord = coordinatorIn(tab.id, undefined, ps);
+  return (mine.find((p) => p.mod === "chat") ?? mine.find((p) => coord && p.terminal === coord.address) ?? mine[0])?.pane ?? null;
+}
+
+// Cmd+Shift+L (keys.json layout:shepherdr): the keyboard to a chat's message box, which one as composeTarget() says
+// (core/chat-focus.js). The chat takes it from shared "chat.composereq" = { to: its pane or "thread", at } (mods/chat).
+async function compose() {
+  const space = spaces().find((s) => s.active);
+  const ps = panes(), tree = layout();
+  const tab = space?.tabs.find((t) => t.active)?.id ?? focused()?.tab;
+  const panel = find(tree, "panel");
+  const thread = Boolean(panel && !panel.hidden && find(tree, "panel-body")?.active === "tasks"
+    && find(tree, "tasks")?.active === "tasks-thread" && shared("tasks.thread"));
+  let to = composeTarget({
+    holder: shared("keyboard.holder")?.who ?? null, focused: focused()?.pane ?? null, thread,
+    shown: ps.filter((p) => p.mod === "chat" && p.tab === tab).map((p) => p.pane),
+    assistant: space ? assistantPane(space, ps) : null, space: Boolean(space),
+  });
+  if (to === "new") {
+    await openCoordinator(space, true);
+    const now = spaces().find((s) => s.id === space.id);
+    to = now ? assistantPane(now, panes()) : null;
+  }
+  if (!to) return;
+  if (to === "thread") run("layout.select", { stack: "tasks-thread-body", child: "tasks-thread-chat" });
+  else {
+    const p = panes().find((x) => x.pane === to);
+    if (p && p.tab !== tab) run("tab.select", { id: p.tab });
+    run("pane.focus", { pane: to });
+  }
+  setShared("chat.composereq", { to, at: Date.now() });
 }
 
 export default class Tabs extends View {
@@ -86,6 +125,7 @@ export default class Tabs extends View {
         }
         // A toast's "needs you": the Tasks panel, on its Active tab.
         if (c === "inbox") showInbox();
+        if (c === "compose") compose().catch(() => {});
         // An agent's alert (herdr-task alert), clicked: "alert-<terminal>" ("~" for "/"), to that agent (inbox.js).
         if (c.startsWith("alert-")) toAlert({ terminal: c.slice(6).replace(/~/g, "/") });
       }

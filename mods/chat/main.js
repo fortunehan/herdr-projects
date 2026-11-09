@@ -4066,6 +4066,16 @@ export default class Chat extends View {
       this.refocusAt = Date.now();
       cx.timer.after(0, () => this.box.focus());
     }
+    // Cmd+Shift+L named this chat (mods/tabs-tasks compose(), shared "chat.composereq"): its box gets the keyboard,
+    // whatever was keeping it off (a text selection, another holder); again once Herdr has settled the pane's focus.
+    const cr = shared("chat.composereq");
+    if (cr && cr.at !== this.composeAt && cr.to === this.areaKey() && Date.now() - cr.at < 3000) {
+      this.composeAt = cr.at;
+      this.textPress.chosen();
+      const take = () => { holdKeys(this.areaKey()); this.box.focus(); };
+      cx.timer.after(0, take);
+      cx.timer.after(600, take);
+    }
     this.wasFocused = paneFocused;
     this.hadBox = showsBox;
     this.paneFocused = paneFocused;
