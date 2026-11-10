@@ -74,7 +74,7 @@ class AssistantNotes(Base):
         self.write("_everywhere.md", "x" * (local.NOTES_MAX + 50))
         text = local.assistant_notes({"cwd": "/nowhere"})
         self.assertIn("(cut here: the file is longer)", text)
-        self.assertEqual(text.count("x"), local.NOTES_MAX)
+        self.assertTrue(text.endswith(":\n" + "x" * local.NOTES_MAX + "\n(cut here: the file is longer)"))
 
     def test_an_assistants_session_note_ends_with_them_and_a_workers_never_has_them(self):
         self.write("_everywhere.md", "Grill a big ask first.")

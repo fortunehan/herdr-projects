@@ -22,8 +22,6 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   unittest there and diff the FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
-- `test_local` `AssistantNotes.test_nothing_without_notes_and_a_long_file_is_cut` is flaky: it counts 'x' in text that
-  includes a random tempdir path. A lone failure there isn't yours.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
