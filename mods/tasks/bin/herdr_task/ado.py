@@ -3,10 +3,10 @@ rest of herdr-task (tick, proof, merge policies, news) treats them as GitHub's.
 
 A repo on Azure DevOps is "ado:<org>/<project>/<repo>" wherever a GitHub one is "owner/name"
 (github(), a task's pr["repo"]). Its REST API (7.1) is reached with Python's own urllib, through
-the proxy git uses for dev.azure.com (or ~/.herdr/ado.json's), with the first credentials found:
+the proxy git uses for dev.azure.com (or ado.json's), with the first credentials found:
 AZURE_DEVOPS_PAT, ado.json's "pat", or git's own (git credential fill, as git push uses).
 
-~/.herdr/ado.json (all optional): {"proxy": "http://127.0.0.1:7890", "pat": "...", "ca_file": "~/certs.pem",
+ado.json (~/.config/shepherdr/ado.json, ~/.herdr/ado.json before the move; all optional): {"proxy": "http://127.0.0.1:7890", "pat": "...", "ca_file": "~/certs.pem",
 "timeout": 10, "merge": "squash", "repos": {"<org>/<project>/<repo>": {"merge": "noFastForward"}}}. merge is
 the completion's mergeStrategy: squash, noFastForward, rebase or rebaseMerge. ca_file: the certificates a
 proxy that re-signs TLS needs (else git's http.sslCAInfo, else REQUESTS_CA_BUNDLE, else Python's own).
@@ -27,11 +27,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .base import Fail, git, HOME, now, proxy_for, STORE
+from .base import Fail, git, HOME, now, proxy_for, STORE, WHERE
 
 
 PREFIX = "ado:"
-CONFIG = os.environ.get("HERDR_TASK_ADO") or os.path.join(HOME, ".herdr", "ado.json")
+CONFIG = os.environ.get("HERDR_TASK_ADO") or WHERE.path("ado")
 STATE = os.path.join(STORE, ".ado.json")
 API = "7.1"
 TIMEOUT = 10
@@ -284,7 +284,7 @@ def _request(repo, method, url, body, raw):
     for attempt in (0, 1):
         auth, source = credentials(repo, fresh=attempt == 1)
         if not auth:
-            raise AdoError("auth", "no credentials: set AZURE_DEVOPS_PAT, put a \"pat\" in ~/.herdr/ado.json, "
+            raise AdoError("auth", f"no credentials: set AZURE_DEVOPS_PAT, put a \"pat\" in {CONFIG.replace(HOME, '~', 1)}, "
                                    "or sign in once with git (git push) so git credential fill has one")
         headers = {"Authorization": auth, "Accept": "text/plain" if raw else "application/json"}
         data = None
@@ -313,7 +313,7 @@ def _request(repo, method, url, body, raw):
             p, _ = proxy(repo)
             raise AdoError("forbidden", "HTTP 403 " + (f"through proxy {redact(p)}" if p else "without a proxy")
                            + ": Azure DevOps refuses requests from outside its allowed network; set \"proxy\" in "
-                             "~/.herdr/ado.json or git config http.https://dev.azure.com/.proxy")
+                             f"{CONFIG.replace(HOME, '~', 1)} or git config http.https://dev.azure.com/.proxy")
         if status >= 400:
             try:
                 message = json.loads(text).get("message")

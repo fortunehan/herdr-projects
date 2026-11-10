@@ -2,9 +2,10 @@
 """Claude Code's status line for the agents Shepherdr starts (their --settings statusLine).
 
 Claude Code hands its status-line command a JSON object on stdin at every refresh. This keeps its
-subscription usage (`rate_limits`: the 5-hour and 7-day windows) in ~/.herdr/usage/claude.json for
-the chat's usage beside the model button, then runs the person's own statusLine command with the
-same stdin and passes its output through, so the terminal's status line looks as before.
+subscription usage (`rate_limits`: the 5-hour and 7-day windows) in usage/claude.json in Shepherdr's
+state folder (~/.local/state/shepherdr; ~/.herdr/usage before the move) for the chat's usage beside
+the model button, then runs the person's own statusLine command with the same stdin and passes its
+output through, so the terminal's status line looks as before.
 
 The file holds only each window's used share and reset time, and when it was written. With no
 `rate_limits` (an API key, before the first reply) it is left as it was. It never fails the line:
@@ -17,12 +18,33 @@ import subprocess
 import sys
 import time
 
+# ---- SHEP: Shepherdr's own folders (a copy of herdr_task/layout.py's PY; test/test_layout.py checks it) ----
+def SHEP(rel, _t={'.herdr/shepherdr.json': ('config', 'settings.json'), '.herdr/model-picks.json': ('config', 'model-picks.json'), '.herdr/tasks': ('data', 'tasks'), '.herdr/artifacts': ('data', 'artifacts'), '.herdr/vault.json': ('data', 'secrets/vault.json'), '.herdr/secret-remote': ('data', 'secrets/remote'), '.herdr/tools.json': ('data', 'tools.json'), '.herdr/shepherdr': ('state', 'service'), '.herdr/browser': ('state', 'browser'), '.herdr/secret-drop': ('state', 'secret-drop'), '.herdr/secret-served': ('state', 'secret-served'), '.herdr/cli-check.json': ('state', 'cli-check.json'), '.herdr/machine-hold.json': ('state', 'machine-hold.json'), '.herdr/assistant': ('config', 'assistant'), '.herdr/ado.json': ('config', 'ado.json'), '.herdr/usage': ('state', 'usage')}):
+    H, E = os.path.expanduser("~"), os.environ
+    a = lambda v: E.get(v) if (E.get(v) or "").startswith("/") else None
+    one = a("SHEPHERDR_HOME")
+    R = dict((k, os.path.join(one, k)) for k in ("config", "data", "state")) if one else {
+        "config": os.path.join(a("XDG_CONFIG_HOME") or os.path.join(H, ".config"), "shepherdr"),
+        "data": os.path.join(a("XDG_DATA_HOME") or os.path.join(H, ".local", "share"), "shepherdr"),
+        "state": os.path.join(a("XDG_STATE_HOME") or os.path.join(H, ".local", "state"), "shepherdr")}
+    try:
+        with open(os.path.join(R["data"], "LAYOUT")) as f:
+            on = int((f.read().split() or ["0"])[0]) >= 2 and not os.path.lexists(os.path.join(H, ".herdr", ".layout-rollback"))
+    except (OSError, ValueError):
+        on = False
+    if on:
+        for old, (base, new) in _t.items():
+            if rel == old or rel.startswith(old + "/"):
+                return os.path.join(R[base], new + rel[len(old):])
+    return os.path.join(H, rel)
+# ---- end SHEP ----
+
 NAME = "shepherdr-statusline"
 WINDOWS = ("five_hour", "seven_day")
 
 
 def usage_file():
-    return os.path.join(os.path.expanduser("~"), ".herdr", "usage", "claude.json")
+    return SHEP(".herdr/usage/claude.json")
 
 
 def snapshot(data):

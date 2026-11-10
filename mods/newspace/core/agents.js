@@ -176,9 +176,10 @@ export function contextUse(c) {
   return { pct, high: pct > 80, words: `${pct}%`, used: tokens(c.used), title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
 }
 
-// Where bin/shepherdr-statusline keeps Claude's subscription usage, under the home of the machine the agent runs on:
-// { at (ms), five_hour?, seven_day? }, each { used_percentage (0-100), resets_at (unix seconds) }.
-export const USAGE_FILE = ".herdr/usage/claude.json";
+// Where bin/shepherdr-statusline keeps Claude's subscription usage, in the usage folder of the machine the agent runs
+// on (core/paths.js "usage": dirs().usage, $SHEP_USAGE): { at (ms), five_hour?, seven_day? }, each
+// { used_percentage (0-100), resets_at (unix seconds) }.
+export const USAGE_FILE = "claude.json";
 // A snapshot older than one 5-hour window says nothing sure about now: it shows nothing.
 export const USAGE_STALE = 6 * 3600 * 1000;
 const USAGE_WINDOWS = [["five_hour", "5h"], ["seven_day", "7d"]];

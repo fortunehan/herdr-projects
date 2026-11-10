@@ -130,10 +130,12 @@ sync too.
 Shepherdr keeps its own data in its own folders, never under Herdr's name (`shepherdr where` prints every path):
 
 ```text
-~/.config/shepherdr/          settings.json (Shepherdr settings), model-picks.json
+~/.config/shepherdr/          settings.json (Shepherdr settings), model-picks.json, assistant/ (an Assistant's local
+                              notes: _everywhere.md, <folder>.md), ado.json (Azure DevOps: proxy, merge strategy)
 ~/.local/share/shepherdr/     tasks/, artifacts/, secrets/ (the vault, owner-only), worktrees/ (new tasks'), tools.json
 ~/.local/state/shepherdr/     service/ (the web service's token, log, usage insights), browser/ (task browsers'
-                              sign-ins), secret-drop/, cli-check.json, machine-hold.json, migrate.json (the move's journal)
+                              sign-ins), secret-drop/, cli-check.json, machine-hold.json, usage/ (Claude's subscription
+                              usage for the chat), migrate.json (the move's journal)
 ~/.cache/shepherdr/           safe to delete; CACHEDIR.TAG keeps backups out (macOS: ~/Library/Caches/shepherdr)
 ```
 

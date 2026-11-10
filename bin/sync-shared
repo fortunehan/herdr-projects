@@ -16,7 +16,7 @@ hand: it is never overwritten; the run fails and names it (keep its change with 
 the change into lib/<file>). A fresh checkout or worktree has no lib/.last: what git last
 committed of the source stands in for it (a copy equal to that is ours, not hand-edited).
 
-The helpers that go to other machines as one file each (herdr-secret, herdr-artifact) carry a block of
+The helpers that go to other machines as one file each (herdr-secret, herdr-artifact, shepherdr-statusline) carry a block of
 Shepherdr's paths between "# ---- SHEP:" and "# ---- end SHEP ----": the source is
 mods/tasks/bin/herdr_task/layout.py's PY, written in here too.
 """
@@ -64,7 +64,7 @@ def write(path, data):
     os.replace(tmp, path)
 
 
-SHEP_BLOCKS = ["bin/herdr-secret", "mods/artifacts/bin/herdr-artifact"]
+SHEP_BLOCKS = ["bin/herdr-secret", "mods/artifacts/bin/herdr-artifact", "bin/shepherdr-statusline"]
 
 
 def shep_blocks(check):

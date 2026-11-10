@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Hub } from "./hub.ts";
 import { where, writable } from "./paths.ts";
+import { SH } from "../core/paths.js";
 import { sh } from "./model.ts";
 import { layoutScript } from "./layout-scripts.ts";
 import * as AG from "../core/agents.js";
@@ -65,7 +66,7 @@ export class Agents {
     const k = machine ?? "", was = this.usages.get(k);
     if (!was || Date.now() - was.at > 30_000) {
       this.usages.set(k, { at: Date.now(), value: was?.value ?? null });
-      void sh(this.hub, `cat "$HOME/${USAGE_FILE}" 2>/dev/null`, ["usage"], machine)
+      void sh(this.hub, SH + 'cat "$SHEP_USAGE/$1" 2>/dev/null', ["usage", USAGE_FILE], machine)
         .then((r: any) => this.usages.set(k, { at: Date.now(), value: parseUsage(r?.stdout) }), () => undefined);
     }
     return was?.value ?? null;

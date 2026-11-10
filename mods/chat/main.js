@@ -51,7 +51,7 @@ import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
 import { SH } from "./core/paths.js";
-import { dirsReady } from "./dirs.js";
+import { dirs, dirsReady } from "./dirs.js";
 import * as agent from "./agent.js";
 import { cleanCommand } from "./core/clean-env.js";
 import * as choices from "./settings.js";
@@ -4055,8 +4055,8 @@ export default class Chat extends View {
     if (this.kind !== "claude" || Date.now() - (this.usageRead ?? 0) < 30000) return;
     this.usageRead = Date.now();
     const text = this.machine
-      ? (await exec("sh", ["-c", `cat "$HOME/${agent.USAGE_FILE}" 2>/dev/null`], { on: this.machine }).catch(() => null))?.stdout
-      : await readTextFile(`${home()}/${agent.USAGE_FILE}`).catch(() => null);
+      ? (await exec("sh", ["-c", SH + 'cat "$SHEP_USAGE/$1" 2>/dev/null', "usage", agent.USAGE_FILE], { on: this.machine }).catch(() => null))?.stdout
+      : await readTextFile(`${dirs().usage}/${agent.USAGE_FILE}`).catch(() => null);
     const snap = agent.parseUsage(text);
     if (JSON.stringify(snap) !== JSON.stringify(this.usageSnap ?? null)) { this.usageSnap = snap; cx.notify(); }
   }

@@ -3,12 +3,14 @@
 Shepherdr's data lives in its own `shepherdr` folders (XDG, on macOS too; caches in ~/Library/Caches
 there), never under Herdr's name:
 
-  config  ~/.config/shepherdr/          settings.json, model-picks.json
+  config  ~/.config/shepherdr/          settings.json, model-picks.json, assistant/ (an Assistant's local
+                                        notes), ado.json (Azure DevOps)
   data    ~/.local/share/shepherdr/     tasks/, artifacts/, secrets/{vault.json,remote}, worktrees/ (new
                                         tasks' worktrees; a setting picks another root), tools.json, LAYOUT
   state   ~/.local/state/shepherdr/     service/ (the web service's token, socket, log, usage), browser/
                                         (task browsers' sign-ins), secret-drop/, cli-check.json,
-                                        machine-hold.json, migrate.json (the move's journal)
+                                        machine-hold.json, usage/ (Claude's subscription usage), migrate.json
+                                        (the move's journal)
   cache   ~/.cache/shepherdr/ (macOS: ~/Library/Caches/shepherdr/), with CACHEDIR.TAG
 
 SHEPHERDR_HOME=<root> puts all four under <root>/{config,data,state,cache}; else XDG_CONFIG_HOME,
@@ -74,6 +76,10 @@ KINDS = {
     "secret-served": (".herdr/secret-served", "state", "secret-served", "dir", False),
     "cli-check": (".herdr/cli-check.json", "state", "cli-check.json", "file", False),
     "machine-hold": (".herdr/machine-hold.json", "state", "machine-hold.json", "file", False),
+    # This fork's own (local.py, ado.py, bin/shepherdr-statusline)
+    "assistant-notes": (".herdr/assistant", "config", "assistant", "dir", False),
+    "ado": (".herdr/ado.json", "config", "ado.json", "file", False),
+    "usage": (".herdr/usage", "state", "usage", "dir", False),
 }
 PRIVATE = {"vault", "secret-remote", "secret-drop", "secret-served", "service", "browser"}  # 0700 folders
 LEGACY_WORKTREES = ".herdr/worktrees"
