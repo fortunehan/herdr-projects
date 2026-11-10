@@ -1,5 +1,6 @@
 """herdr-task's local additions (herdr_task/local.py): an Assistant's local notes, a repo's own git
 config and its worktree setup command. Throwaway folders and git repos (no global git config); hc and the settings file are never touched."""
+import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
 import os
 import shutil
 import subprocess

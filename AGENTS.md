@@ -6,11 +6,29 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 
 - Quick checks are fine here (seconds): `bin/sync-shared --check`, `python3 -m unittest discover -s test` and the
   `node --check` loop in [docs/develop.md](docs/develop.md). The installer tests use throwaway roots only.
+- Shell checks: plain `bash -n` is the real one. Dash (`sh -n` here) misses bash-only parse errors that macOS's bash 3.2
+  hits, so run `bash -n` on every script.
+- Installer tests run from `test/`: `cd test && python3 -m unittest test_install`. To run an older installer copy for a
+  before-check, export `SHEPHERDR_HANDED_OVER=1` (else it hands over to the source's `bin/shepherdr`), and use a full
+  `git archive` of the tree, since `herdr_task` lives beside `bin/`.
+- herdr-browser's library check: `test/test_herdr_browser_libs.py` fakes ldd and agent-browser; a real missing-library
+  Chrome needs gcc, linking a library built with `-Wl,-soname` and then deleted.
+- herdr-browser's AppArmor case: test with `HERDR_BROWSER_USERNS_SYSCTL` and `HERDR_BROWSER_APPARMOR_D` stand-ins; a real
+  refusal: `sudo sysctl user.max_user_namespaces=0`, then restore the old value.
+- Read-only sandbox check: `chmod 555` a scratch dir, run herdr-task with `HERDR_TASK_STORE=<dir>`; a read must not
+  need the lock file to be writable.
 - Never run herdr-app or herdr-task with a changed `HOME` or `HERDR_APP_HOME`, never start a second herdr-app window,
   and never install into the real `~/.config/herdr-app` for a try: use `./install.sh --root <scratch>`. A window or
   scheduler on another home can overwrite every machine's spaces.
 - `herdr-app check <mod folder>` runs a mod's `init()` for real: never for `shepherdr-settings` (its init pushes
   settings to other machines), nor for `tabs-tasks` (its init starts the service and bridge for real).
+- Window-mod methods (e.g. chat's `refocus()`) can be tested by extracting the method text from `mods/chat/main.js`
+  and running it in node with stubs (see `test/test_chat_refocus.py`).
+- Mark up (`mods/artifacts/markup.js`) imports must be listed in `MARKUP_HELPERS` in `mods/artifacts/bin/herdr-artifact`
+  so each published artifact carries them; `test_every_installed_import_resolves` checks the imports.
+- Header layout checks: the web app keeps its pinned-lists and sidebar state across page loads, so a stub page can
+  start with leftovers; set localStorage then reload, or use a new port. Never `pkill -f` a stub: it matches your own
+  shell.
 - GitHub runs the whole check on every pull request to main and after each merge: the Check workflow
   (`.github/workflows/check.yml`). Merging waits for it. A failure's log is `gh run view <run> --log-failed`.
 - Still write tests with your change: the installer's in `test/test_install.py`, the repo's rules in
@@ -27,8 +45,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
   `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
   file's source with stubs via `new Function` instead.
-- One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`); `python3 -m unittest
-  test.test_x` fails because `test/` is not a package.
+- One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 
 ## Trying a change
 
@@ -62,11 +79,21 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `claude --model haiku`) as the target.
 - Web dictation on the dev VM: agent-browser's fake-mic flags don't apply; override
   `navigator.mediaDevices.getUserMedia` with an oscillator `MediaStreamDestination` via eval.
+- Headless clipboard checks: agent-browser's `clipboard read` is blocked; focus a textarea and `press Control+v` to
+  read what was copied. Phone long-press: CDP `Emulation.setTouchEmulationEnabled` + `Input.dispatchTouchEvent`.
 - Another machine in herdr-task tests: run herdr-task as a subprocess with `HERDR_TASK_STORE=<tmp>` and a fake hc first on
   PATH (see AutomationFromAnotherMachine).
 - On the dev Mac `~/.local/bin/gh` is a wrapper that hard-codes `HTTPS_PROXY=127.0.0.1:10060`: set
   `HERDR_TASK_GH=/opt/homebrew/bin/gh` to test proxy behaviour for real.
+- Python tests: each `test/test_*.py` imports `home_guard` first (a throwaway HOME for the run; touching the real home
+  fails the test). Run them with `discover -s test` or from `test/`; one class from `test/` with
+  `cd test && python3 -m unittest test_herdr_task.ClassName` (from the repo root the module import fails).
+- Tests that run accept or merge with the real `finish()` must stub `github.live_agents` and `live_helpers` (hc is
+  refused under test).
 - Bun.spawn ignores a PATH changed inside a test: point the service at fakes with `SHEPHERDR_HERDR_APP` / `SHEPHERDR_HC`.
+- Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
+  service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
+  service/spaces-sidebar.test.ts.
 - No herdr-app window runs on the dev VM: window-mod UI can only be syntax-checked here, not screenshot. No ImageMagick
   either: crop proof screenshots with python3 PIL. Stop a background stub with `kill $(lsof -t -i:<port>)`, never
   `pkill -f` on its path (it matches the calling shell).
@@ -78,8 +105,15 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   shell alias there: use `/usr/bin/diff`.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
+- Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
+  <files>`, `bun run build`, copy `web/dist`, `git checkout HEAD -- web`) and run one stub per dist on different ports.
 - Crash recovery for real: a throwaway core, `HC_SESSION=<name> hc ...` with `HC_TERMINAL_SOCKET` and Claude's
   `CLAUDE_*` env unset (`CLAUDE_CODE_CHILD_SESSION` turns off transcripts).
+- Service code against a throwaway core (`HC_SESSION=x`): Hub ignores `HC_SESSION`, so pass `new Hub(<wrapper script
+  that exports HC_SESSION and execs hc>)` and set `SHEPHERDR_HC` to it; start that core from `env -i` or its agents
+  inherit `CLAUDE_CODE_CHILD_SESSION` (no transcripts).
+- Web stub: localStorage `shepherdr.lists` = `{pinned:true,chips:[],at:null}` opens `?task=<id>` in the middle column
+  (same width as the Assistant's) instead of the side.
 
 ## Other machines
 

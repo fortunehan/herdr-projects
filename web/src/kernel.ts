@@ -3,14 +3,16 @@ import { actionable, attentionCounts } from './attention.ts'
 import { useSyncExternalStore, type FC, type ReactNode } from 'react'
 import { buildId } from '@shared/build.ts'
 import { expire, loadOutbox, prune, saveOutbox, settle, type Outgoing } from './outbox.ts'
+import { HttpError, wakeAll } from './uploads.ts'
 import { keptOf, mayReload, type Kept } from './reload.ts'
 import { OPEN_WITHIN, PONG_WITHIN, retryIn, SAY_LOST_AFTER } from './link.ts'
-import { groupFor, groupTasks, loadAllDone, loadGroups, loadShut, keepTasks, namesFor, saveAllDone, saveGroups, saveShut, shownSplit, type GroupBy, type Groups, type TaskGroup } from './groups.ts'
+import { groupTasks, loadAllDone, loadGroups, loadShut, keepTasks, namesFor, saveAllDone, saveGroups, saveShut, shownGroup, type GroupBy, type TaskGroup } from './groups.ts'
 import { canDock, CHAT_READ, fit as fitSidebars, focused, loadSidebars, PANEL, RIGHT, saveSidebars, showPanel, toggleFocus as focusTo, type Sidebars } from './sidebars.ts'
 import { hush } from './motion.ts'
 import { closed, loadPanes, MAX_PANES, normal, only, opened, PANE_MIN, replaced, samePane, savePanes, type Pane, type Panes } from './panes.ts'
 import { setupGuarded } from './guard.tsx'
-import { decide, screenOf, screenOfUrl, stepKey, stepsTo, systemSwipe, urlOf, type Entry } from './nav.ts'
+import { followOff, note as noteUsage, noteAct, noteView, startUsage } from './usage.ts'
+import { decide, itemOfUrl, screenOf, screenOfUrl, stepKey, stepsTo, systemSwipe, urlOf, type Entry } from './nav.ts'
 import { machineName, taskChatId, type Action, type Chat, type Message, type Place, type ReplyQuote, type ServerEvent, type Snapshot, type Task, type TermScreen, type UpdateStatus } from '@shared/types.ts'
 
 /* ---------- slots ---------- */
@@ -52,7 +54,7 @@ export interface Views {
 }
 
 /**
- * An item of an open task's side panel (Terminal, Files, Diff, Pull request; Browser): a tab in the panel on a
+ * An item of an open task's side panel (Terminal, Pull request, Artifacts, Browser): a tab in the panel on a
  * desktop, a row of the task header's ⋯ menu opening it as a full-screen sheet on a phone or tablet.
  */
 export interface PanelItem {
@@ -95,8 +97,6 @@ export interface Registry {
   composerLive: { when: (ui: UI, chatKey: string) => boolean; View: FC<{ chatKey: string }> }[]
   /** above the composer box (+ menu, attachments) */
   composerAbove: { order: number; View: FC<{ chatKey: string; cli: string }> }[]
-  /** the right-hand composer button while the box is empty (voice call) */
-  composerIdle: FC<{ chatKey: string }> | null
   /** settings at the top of the + menu's agent section, before the CLI's own (a coordinator's mode); `when` says if one shows */
   composerSettings: { order: number; when: (snap: Snapshot, chatKey: string) => boolean; View: FC<{ chatKey: string }> }[]
   /** the + menu */
@@ -107,6 +107,14 @@ export interface Registry {
   overlays: FC[]
   /** a line under the top of the screen (voice call elsewhere, offline) */
   topBars: FC[]
+  /** rows at the top of the spaces list, under its brand row, above Spaces (the voice call's card, SHEP-105) */
+  sideTop: FC[]
+  /** icon buttons in the sidebar's brand row, before Search (the voice call, SHEP-135) */
+  sideHead: FC[]
+  /** round buttons after Search in the phone's bottom bar (the voice call) */
+  phoneBar: FC[]
+  /** just above the phone's bottom bar (a voice call's Mute and End) */
+  phoneAbove: FC[]
   /** beside Settings at the foot of the spaces list, on a phone in the drawer's: there whatever is open (plan limits) */
   sideFoot: { order: number; View: FC }[]
   /** under the task list: place is its one space, else the place picked; list, what it shows (listView) */
@@ -136,11 +144,14 @@ export const registry: Registry = {
   composerLive: [],
   composerAbove: [],
   composerSettings: [],
-  composerIdle: null,
   composerPlus: null,
   composerMic: null,
   overlays: [],
   topBars: [],
+  sideTop: [],
+  sideHead: [],
+  phoneBar: [],
+  phoneAbove: [],
   tasksFooter: [],
   keys: [],
   settingActions: {},
@@ -239,28 +250,29 @@ export interface UI {
   taskMenu: boolean
   /** what each side panel item has picked, by "task|item" (the file shown) */
   picked: Record<string, string>
-  /** chat key on a voice call */
-  call: string | null
+  /** a voice call with Shepherdr is on (SHEP-105: with all of it, not one chat) */
+  call: boolean
+  /** the chat whose call button started it, if any: the call's "here" while the screen shows no chat */
+  callFrom: string | null
   callStarted: number
   callMuted: boolean
+  /** SHEP-118: the call fills the screen (orb, Mute, End, Minimize); off: minimized into the bar, card or strip */
+  callFull: boolean
   /** why the last voice call stopped, until dismissed */
   callError: string | null
   plus: string | null
   /** the coordinator chat's top-right menu is open */
   menu: boolean
-  /** how All machines and a machine group their tasks, remembered on this device */
-  groups: Groups
+  /** how the Tasks panel groups its tasks (by status or by place), remembered on this device */
+  groups: GroupBy
   /** task groups showing all their Done tasks ("place|group"), remembered on this device */
   allDone: string[]
   /** task headings folded shut, each view its own ("place|group", "place|m:machine"), remembered on this device */
   shut: string[]
   /** the lists (by their key) whose tasks column shows their Archived tasks instead */
   archived: string | null
-  /** the Tasks panel's status filter, as 3.0's chips: all, needs, working, merging, ready, queued, todo, done or
-   *  automations; kept on this device */
-  taskFilter: string
-  /** This space (the filter row's first chip, SHEP-72): the Tasks list shows only the place picked's tasks, automations
-   *  and what its agents ask, whatever status is picked; kept on this device */
+  /** Only this space (the Tasks ⋯ menu, SHEP-72): the Tasks list shows only the place picked's tasks, automations and
+   *  what its agents ask; kept on this device */
   thisSpace: boolean
   /** what each list is filtered by, while typed: "place|tasks", "place|artifacts" (*pinned for the pinned chips) */
   filter: Record<string, string>
@@ -317,33 +329,17 @@ function tabOf(t: string | null): UI['tab'] {
   return t === 'needs' ? 'tasks' : t === 'tasks' || t === 'artifacts' ? t : 'chat'
 }
 
-const TASK_FILTER = 'shepherdr.taskFilter'
-const FILTERS = ['all', 'needs', 'working', 'merging', 'ready', 'queued', 'scheduled', 'todo', 'done', 'automations']
-function loadTaskFilter(): string {
-  try {
-    const v = localStorage.getItem(TASK_FILTER) ?? 'all'
-    return FILTERS.includes(v) ? v : 'all'
-  } catch {
-    return 'all'
-  }
-}
-/** pick the Tasks panel's status filter (3.0's chips and More), remembered on this device */
-export function setTaskFilter(f: string) {
-  try { localStorage.setItem(TASK_FILTER, f) } catch { /* private window: All statuses next time */ }
-  setUI({ taskFilter: f, cur: 0 })
-}
-
 const THIS_SPACE = 'shepherdr.thisSpace'
 function loadThisSpace(): boolean {
   try { return localStorage.getItem(THIS_SPACE) === '1' } catch { return false }
 }
-/** This space on or off (the filter row's first chip), remembered on this device */
+/** Only this space on or off (the Tasks ⋯ menu), remembered on this device */
 export function setThisSpace(on: boolean) {
   try { localStorage.setItem(THIS_SPACE, on ? '1' : '0') } catch { /* private window: off next time */ }
   setUI({ thisSpace: on, cur: 0 })
 }
 
-function deviceFor(w: number): Device {
+export function deviceFor(w: number): Device {
   return w < CHAT_READ + RIGHT.min ? 'phone' : w < 1024 ? 'tablet' : 'desktop'
 }
 
@@ -430,12 +426,14 @@ let state: State = {
     adding: false,
     term: null,
     arts: null,
-    sheet: params.get('task') && deviceFor(innerWidth) !== 'desktop' ? params.get('item') : null,
+    sheet: params.get('task') && deviceFor(innerWidth) !== 'desktop' ? itemOfUrl(params.get('item')) : null,
     taskMenu: false,
     picked: {},
-    call: null,
+    call: false,
+    callFrom: null,
     callStarted: 0,
     callMuted: false,
+    callFull: false,
     callError: null,
     plus: null,
     menu: false,
@@ -443,7 +441,6 @@ let state: State = {
     allDone: loadAllDone(),
     shut: loadShut(),
     archived: null,
-    taskFilter: loadTaskFilter(),
     thisSpace: loadThisSpace(),
     filter: {},
     pick: null,
@@ -521,6 +518,8 @@ export function setUI(patch: Partial<UI> | ((ui: UI) => Partial<UI>)) {
   if ((Object.keys(p) as (keyof UI)[]).every((k) => Object.is(p[k], state.ui[k]))) return
   state = { ...state, ui: { ...state.ui, ...p } }
   if ((Object.keys(p) as (keyof UI)[]).some((k) => STEP_FIELDS.has(k))) syncUrl()
+  // usage insights (usage.ts): the screen shown, and the time on the one before
+  noteView(state.ui)
   if (p.sidebars) saveSidebars(p.sidebars)
   if (p.split) savePanes(p.split)
   if (p.groups) saveGroups(p.groups)
@@ -659,6 +658,8 @@ function startHistory() {
   })
 }
 startHistory()
+noteView(state.ui)
+startUsage(() => state.ui)
 
 /** go where an alert's link points (its place, task and card), as a tap on the alert does with the app open */
 export function openLink(href: string) {
@@ -738,8 +739,13 @@ let ws: WebSocket | null = null
 let watched = ''
 
 export async function act(a: Action, signal?: AbortSignal) {
+  noteAct(a as { type: string; cid?: string; key?: unknown })
   const r = await fetch('api/action', { method: 'POST', headers: { 'content-type': 'application/json', 'x-shepherdr': '1' }, body: JSON.stringify(a), signal })
-  if (!r.ok) throw new Error((await r.text()) || `${r.status}`)
+  // with its status: a proxy's 502 is the network (uploads.ts transient), the server's own no is not
+  if (!r.ok) {
+    noteUsage('error', { type: a.type, status: r.status })
+    throw new HttpError(r.status, (await r.text()) || `${r.status}`)
+  }
   return r.json().catch(() => ({}))
 }
 
@@ -771,6 +777,8 @@ export function connect() {
     if (saying) clearTimeout(saying)
     saying = null
     watched = ''
+    // the link is back: what waits to send goes now
+    wakeAll()
     if (state.ui.offline) setUI({ offline: null })
     watchVisible()
   }
@@ -779,11 +787,14 @@ export function connect() {
     pinging = null
     const msg = JSON.parse(ev.data) as ServerEvent
     if (msg.type === 'pong') return
+    if (msg.type === 'show') return openArtifact(msg.artifact)
     if (msg.type === 'snapshot') {
       // an add-on switched on or off in Settings › Window: the page starts again with its plugins in or out (main.tsx)
       const booted = (window as { shepherdrOff?: string[] }).shepherdrOff
       if (booted && msg.snapshot.off && [...msg.snapshot.off].sort().join() !== [...booted].sort().join()) return location.reload()
       state = { ...state, snap: msg.snapshot }
+      followOff(msg.snapshot.off)
+      noteView(state.ui)
       stayOnShown()
       fromOldPin(msg.snapshot)
       // once loaded, the first snapshot with every machine in reach says which chats are gone (one connecting or out
@@ -1028,9 +1039,15 @@ function awaited(snap: Snapshot, id: string): Place | undefined {
   return { id, name: home ? 'home' : m[2], machine: label, ...(home ? { home: true } : {}), level: home ? 1 : 2, status: 'idle', mode: 'regular', chat: id, connecting: true }
 }
 
-export function placeOf(snap: Snapshot, id: string) {
+export function placeOf(snap: Snapshot, id: string): Place {
   const shown = shownPlaces(snap)
-  return shown.find((p) => p.id === id) ?? awaited(snap, id) ?? shown.find((p) => p.id === placeIdOf(snap, id)) ?? shown.find((p) => p.id === home(snap)) ?? shown[0]
+  return shown.find((p) => p.id === id) ?? awaited(snap, id) ?? shown.find((p) => p.id === placeIdOf(snap, id)) ?? shown.find((p) => p.id === home(snap)) ?? shown[0] ?? noSpace(snap)
+}
+
+/** No space at all (the last one closed, #747): an empty stand-in, so what reads the shown space (its name, chat, tabs)
+ *  doesn't throw; its empty id says so (App.tsx NoSpaces in its place) */
+export function noSpace(snap: Snapshot): Place {
+  return { id: '', name: '', machine: snap.host, level: 2, status: 'idle', mode: 'regular', chat: '', tabs: [] }
 }
 
 export function taskOf(snap: Snapshot, id: string | null) {
@@ -1110,7 +1127,7 @@ export function openNeeds() {
   const { ui, snap } = state
   if (!snap) return
   // 3.0: the Tasks panel, its Needs you
-  setUI(ui.device === 'phone' ? { task: null, tab: 'tasks', taskFilter: 'all', pick: null, plus: null, menu: false } : { task: ui.task && !taskInMiddle(ui, snap) ? null : ui.task, side: 'tasks', taskFilter: 'all' })
+  setUI(ui.device === 'phone' ? { task: null, tab: 'tasks', pick: null, plus: null, menu: false } : { task: ui.task && !taskInMiddle(ui, snap) ? null : ui.task, side: 'tasks' })
 }
 
 /** What waits on you at a place: red counts its whole subtree, own only the place itself (its own coordinator's chat: the sidebar's count). */
@@ -1124,28 +1141,27 @@ export function counts(snap: Snapshot, placeId: string) {
 
 /* ---------- a place's tasks, grouped (groups.ts) ---------- */
 
-export { GROUPS, bySpace, groupChoices, groupFor, keepTasks, namesFor, type GroupBy, type Groups, type SubGroup, type TaskGroup } from './groups.ts'
+export { GROUPS, keepTasks, namesFor, type GroupBy, type TaskGroup } from './groups.ts'
 
-/** a list's tasks in their groups, in the order they show: more machines' under each machine's name; by status, each
- *  status's per space with split (Split by space), the space the person is in (here) first */
-export function taskGroups(snap: Snapshot, list: ListView, by: GroupBy, opts: { split?: boolean; here?: string } = {}): TaskGroup[] {
+/** a list's tasks in their groups, in the order they show (groups.ts groupTasks) */
+export function taskGroups(snap: Snapshot, list: ListView, by: GroupBy): TaskGroup[] {
   const tasks = tasksIn(snap, list)
   if (list.attention) return snap.places.flatMap((p) => (['need', 'ready'] as const).flatMap((status) => {
     const rows = tasks.filter((t) => t.place === p.id && t.status === status)
     return rows.length ? [{ key: `${p.id}|${status}`, label: `${p.name} · ${status === 'need' ? 'Needs you' : 'Ready'}`, note: machineName(snap.machines, p.machine), tasks: rows, names: { machine: false, project: false } }] : []
   }))
-  return groupTasks(snap.places, snap.machines ?? [], tasks, by, list.level, opts)
+  return groupTasks(snap.places, snap.machines ?? [], tasks, by, list.level)
 }
 
-/** how a list's groups split: by space as this device chose (on until switched off), the space open first */
-const splitOf = (ui: Pick<UI, 'groups'> & Partial<Pick<UI, 'place'>>) => ({ split: ui.groups.split !== false, here: ui.place ?? state.ui.place })
+/** Done: shut until opened ("done:open" in shut), its count showing alone */
+export const DONE_OPEN = 'done:open'
 
 /** a list's task groups as this screen shows them: grouped as this device chose, Done cut short until Show all, a
- *  group folded shut (or under a machine folded shut) showing none of its tasks */
+ *  group folded shut showing none of its tasks (Done shut until opened) */
 export function shownGroups(snap: Snapshot, list: ListView, ui: Pick<UI, 'groups' | 'allDone' | 'shut'> = state.ui) {
   const shut = (key: string) => ui.shut.includes(`${list.key}|${key}`)
   const all = (key: string) => ui.allDone.includes(`${list.key}|${key}`)
-  return taskGroups(snap, list, groupFor(ui.groups, list.level), splitOf(ui)).map((g) => shownSplit(g, all, (k) => shut(k) || (k === g.key && !!g.machine && shut(`m:${g.machine.id}`))))
+  return taskGroups(snap, list, ui.groups).map((g) => shownGroup(g, all(g.key), g.key === 'done' ? !shut(DONE_OPEN) : shut(g.key)))
 }
 
 /** fold a heading of a list's tasks shut or open ("group", "m:machine"); with siblings, them too, the same way */
@@ -1164,14 +1180,9 @@ export function toggleAllDone(listKey: string, key: string) {
   setUI((ui) => ({ allDone: ui.allDone.includes(k) ? ui.allDone.filter((x) => x !== k) : [...ui.allDone, k] }))
 }
 
-/** how lists of this level group their tasks (a place's level: 0 more machines', 1 one machine's) */
-export function setGroup(level: number, by: GroupBy) {
-  setUI((ui) => ({ groups: { ...ui.groups, [level === 0 ? 'all' : 'machine']: by }, lists: { ...ui.lists, chips: state.snap ? ownChips(ui, state.snap) : [], at: ui.place }, cur: 0 }))
-}
-
-/** Split by space (the Tasks ⋯): by status, each status's tasks under their machine · space, or not */
-export function setSplit(on: boolean) {
-  setUI((ui) => ({ groups: { ...ui.groups, split: on }, cur: 0 }))
+/** how the lists group their tasks: by status or by place */
+export function setGroup(by: GroupBy) {
+  setUI((ui) => ({ groups: by, lists: { ...ui.lists, chips: state.snap ? ownChips(ui, state.snap) : [], at: ui.place }, cur: 0 }))
 }
 
 /** whether every word typed is in one of these, any case: ⌘K's search and the lists' filters */
@@ -1193,7 +1204,7 @@ export function setFilter(listKey: string, list: 'tasks' | 'artifacts', q: strin
 
 /** A list's tasks filtered: in their groups, every Done one, and then its archived ones; groups with none left out */
 export function filteredGroups(snap: Snapshot, list: ListView, q: string, ui: Pick<UI, 'groups'> = state.ui) {
-  const groups: TaskGroup[] = taskGroups(snap, { ...list, attention: false }, groupFor(ui.groups, list.level), splitOf(ui))
+  const groups: TaskGroup[] = taskGroups(snap, { ...list, attention: false }, ui.groups)
   const archived = archivedIn(snap, list)
   if (archived.length) groups.push({ key: 'archived', label: 'Archived', tasks: archived, names: namesFor(list.level) })
   return groups.map((g) => keepTasks(g, (t) => taskMatches(t, q))).filter((g) => g.tasks.length)
@@ -1588,7 +1599,7 @@ function closing(ui: UI, i: number): Partial<UI> {
   return { ...splitTo(v), ...(last?.kind === 'place' ? { place: last.id } : {}) }
 }
 
-/** a task's pane gives way to the task opened on the right, with its side panel at `item` (its Terminal, Files, …) */
+/** a task's pane gives way to the task opened on the right, with its side panel at `item` (its Terminal, Artifacts, …) */
 export function paneToPanel(i: number, item: string) {
   setUI((ui) => {
     const p = ui.split.panes[i]

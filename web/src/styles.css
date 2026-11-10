@@ -6,6 +6,8 @@
 
 /* Device shapes: the root carries data-device (phone, tablet, desktop) */
 @custom-variant phone (&:where([data-device=phone], [data-device=phone] *));
+/* SHEP-126: a phone held sideways (or any window this short and wide): too short for a stacked layout */
+@custom-variant short (@media (orientation: landscape) and (max-height: 32rem));
 @custom-variant tablet (&:where([data-device=tablet], [data-device=tablet] *));
 @custom-variant desktop (&:where([data-device=desktop], [data-device=desktop] *));
 /* light or dark: the root carries data-theme, the appearance picked on this device or its own mode (theme.ts) */
@@ -111,7 +113,9 @@
   --box-focus-shadow: inset 0 0 0 1px rgb(9 9 11 / 0.22), 0 1px 3px rgb(0 0 0 / 0.06);
 }
 
-:root[data-theme=dark] {
+:root[data-theme=dark],
+/* SHEP-118: the full-screen call is always dark, whatever the app's appearance */
+[data-theme=dark] {
   color-scheme: dark;
   --canvas: #000;
   --bg: #0b0b0d;
@@ -876,6 +880,15 @@
   .wv i:nth-child(4) {
     animation-delay: 0.45s;
   }
+  /* SHEP-113: a call's wave stands still while it listens (it moves only while the voice speaks) */
+  .wv.wv-still i {
+    animation: none;
+    height: 6px;
+  }
+  .wv.wv-still i:nth-child(2),
+  .wv.wv-still i:nth-child(3) {
+    height: 10px;
+  }
   @media (prefers-reduced-motion: reduce) {
     .wv i {
       animation: none;
@@ -923,6 +936,31 @@
     }
     .typing i {
       opacity: 0.6;
+    }
+  }
+  /* SHEP-126, SHEP-137: held sideways, the Crook sits left of the controls and takes its height from the screen's:
+     all of it but the state label under it. Its rings stay inside its own box, so nothing reaches the edges */
+  [data-call-screen] {
+    --crook-short: min(
+      calc(100dvh - max(env(safe-area-inset-top), 1.5rem) - max(env(safe-area-inset-bottom), 1.5rem) - 2.25rem),
+      50vw,
+      400px
+    );
+  }
+  /* the full-screen call comes up from below, as a phone's call screen does */
+  .call-screen-in {
+    animation: call-screen-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  @keyframes call-screen-in {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .call-screen-in {
+      animation: none !important;
+      transition: none;
     }
   }
   /* something runs: a small dot that slowly breathes, never flashes */

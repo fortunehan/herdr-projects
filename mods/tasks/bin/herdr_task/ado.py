@@ -96,6 +96,11 @@ def owns(repo):
     return isinstance(repo, str) and repo.startswith(PREFIX)
 
 
+def forge(repo):
+    """The forge a pull request's repo is on, in words: "Azure DevOps" or "GitHub"."""
+    return "Azure DevOps" if owns(repo) else "GitHub"
+
+
 def parts(repo):
     org, project, name = repo[len(PREFIX):].split("/", 2)
     return org, project, name

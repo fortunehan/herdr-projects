@@ -1,5 +1,320 @@
 # Changelog
 
+## 3.1.31
+
+A patch release of fixes from the GitHub triage: the agent suggests your next message, the phone's Enter key stops
+lagging, Codex tasks stop saying Working after they finish, and the Tasks rows show where each task is.
+
+### Tasks
+
+- Each Tasks row's second line is its reference, machine and space. What the agent is doing sits on a third line when
+  there is one.
+- A row shows the task's real status: a task accepted as Done no longer keeps an old Needs-you icon (GitHub #871).
+- A task's folder stays while its agent is still working or asking after it said ready, so an auto-merge no longer
+  pulls it out from under the agent (GitHub #919).
+- A resumed agent gets a carry-on message instead of sitting idle, and an agent that stops is logged (GitHub #872).
+- A Codex task whose commands finish no longer stays Working (Codex 0.163 and later).
+- `herdr-task ready` titles the pull request with the task's title, in the repo's convention, and its body is the
+  summary and proof, not the whole brief (GitHub #924).
+- Resume and revive type the agent's command into a plain shell as it is, so zsh and bash run it (GitHub #925).
+- `herdr-task list`, `show`, `where` and `autopilot list` work in a read-only sandbox such as a Codex reviewer's
+  (GitHub #900).
+- On a Mac, the memory check that holds new tasks reads macOS's own free memory, so a Mac with plenty free is no longer
+  held at 80% (GitHub #922).
+
+### Chat
+
+- The agent suggests your next message, one line, and it shows as grey ghost text in the box. Enter or Send sends it,
+  Tab fills it in to edit, and typing or a new reply replaces it. Settings → Agents → Suggested next message turns it
+  off (built from the idea in GitHub #907).
+- On a phone, Enter and the key row go down the same stream as your typing, so they land right after the text, not
+  3 seconds later (GitHub #892).
+- Ctrl+C copies highlighted chat text: a drag over messages keeps its selection (GitHub #916).
+- Chat pictures show their thumbnails again, without ImageMagick, on ffprobe 8 (GitHub #914).
+- A task's chat no longer cuts off its last row and message box at some zoom levels (GitHub #915).
+- A task's chat header and the Assistant's line up: Back is a chevron on the title's line, in the same place in both.
+- A published proof opens in the desktop app (GitHub #870).
+- A link from another site, such as Slack, opens the web app instead of an error (GitHub #913).
+
+### Spaces
+
+- The # list shows the spaces each reachable machine has, named as Herdr names them, not as locked or as raw ids.
+- New Space no longer crashes when its icon reply is missing (GitHub #917).
+
+### Install and the task browser
+
+- An update removes mods and helper files Shepherdr no longer ships, backs up what it changed and says so. An install
+  that leaves a problem says NOT DONE (GitHub #895, #905).
+- A Linux machine missing a system library for Chrome gets the library names and the install command, before the task
+  browser starts Chrome (GitHub #918).
+- On Ubuntu, when Chrome refuses to start because of AppArmor, the task browser says the exact fix (GitHub #920).
+- The task browser's script runs under macOS's bash, so an update no longer skips agent-browser (GitHub #908).
+
+## 3.1.30
+
+A small release: a task whose checks GitHub won't show stops waiting forever, the model and effort switch without a
+restart, and the Tasks panel is simpler.
+
+### Tasks
+
+- A pull request whose checks GitHub won't show no longer leaves its task stuck: a Ready task waits at most 20 minutes
+  while GitHub blocks the merge, then shows Ready, and its Accept card says the checks can't be read. Accept still
+  merges, and GitHub still refuses what its checks block.
+- `shepherdr doctor` warns per repo that has tasks when its token can't read checks, and names the permission to add.
+- The Tasks panel has one toggle under its search box: group by status (the default: Needs you and Ready first, Done
+  at the end) or by place (each machine with its spaces). The status chips and the folder headers are gone.
+
+### Chat
+
+- Switch the model, reasoning level and Fast of a running Claude Code or Codex agent without restarting it, for an
+  Assistant and for a worker task. The chat shows the switch at once. Only a change of agent or permission mode still
+  restarts.
+- The Assistant's and a task's chat headers line up: the title sits in the same place in both, with Back and the
+  task's status in the margin on the left.
+- On a web-only install, the Assistant's restart no longer fails with a window layout error.
+
+## 3.1.29
+
+A big batch of fixes: tasks say where they really are, calls stay calm and end only when you say so, Codex works
+unattended, and many small window, web and Mac bugs are gone.
+
+### Tasks
+
+- A task stays Working while its pull request's checks run or it waits for GitHub ("Checks running", "Waiting for
+  GitHub"), and shows Ready only once it can merge. A failing check, a conflict or a stale base goes straight back to
+  its agent, and the same red checks are told once, not after every ready (GitHub #796).
+- Merging works with GitHub's merge queue: the task stays Merging until GitHub says it merged. A base that needs an
+  approval waits for it instead of asking you.
+- A Done task's worktree goes once its agent has ended, leftovers from before included.
+- Claude Code's "trust this folder?" prompt shows as Needs you, and an agent under a fish login shell counts as running
+  (GitHub #755, #780).
+- Running out of review rounds shows Needs you at once, not a stall 20 minutes later (GitHub #784).
+- A running task keeps the Review its brief gave; a clean merge from the base after review costs no new round; a folder
+  task that changed nothing needs no review; automations can turn Review off (GitHub #741, #744, #750).
+- `herdr-task ready` keeps the pull request a task continues, skips a push the remote already has, and closes a branch
+  rebased onto the base as nothing to merge (GitHub #737, #795, #828).
+- `herdr-task reviewed --commit` names the commit a round reviewed, `--reviewer-model` and `--reviewer-effort` work,
+  and `switch --space` moves the task to the space you give (GitHub #797, #803, #837).
+- Settings → Machines start limits are no longer overridden by an old saved hold (GitHub #768).
+
+### Codex
+
+- A Codex worker publishes its proof, commits, reviews and says ready without anyone at the keyboard, and asks show one
+  card, not two (GitHub #866).
+- A Codex reviewer never stops on its trust or hooks screens, runs on its own sign-in, and a signed-out one hands the
+  review to the task's own agent (GitHub #745, #753, #798).
+- `herdr-task show`, `list` and `herdr-artifact show` work inside a read-only reviewer, and its brief says which checks
+  it can't run there (GitHub #840, #841).
+
+### Voice calls
+
+- The agent can't hang up on its own: a call ends only when you say so, and an update waits for calls to finish
+  before restarting. A chime plays when a call ends; one that ended by itself says why, with Call again.
+- One calm, even voice for the whole call. Calls last up to 2 hours and 30 minutes of silence.
+- Long replies are said whole, and the call says so when one is cut (GitHub #785).
+- On a Mac, you can talk over the agent in a window call to interrupt it, as on the web (GitHub #790).
+
+### Chat and window
+
+- The sidebar draws again on herdr-app 0.1.13 and 0.1.14 (it went blank with the voice row hidden), and never scrolls
+  sideways (GitHub #869).
+- A second Herdr window no longer ends another machine's Assistants (GitHub #761).
+- Drag a machine's heading, or use Move up / Move down in its menu, to reorder machines everywhere.
+- Every copy button really copies, on every device; when it can't, it shows the words to copy.
+- At Herdr's zoom, the chat keeps its spacing and its buttons and emoji pickers take the right press; long replies no
+  longer overlap the next message (GitHub #751, #759, #775).
+- The New space dialog keeps the keyboard and its folder list scrolls past the 8th folder (GitHub #752, #842).
+- A task opens on its chat from the Tasks panel; an ended task's chat shows its messages; Permissions options no longer
+  click the Fast switch under them (GitHub #740, #767, #779).
+- The task header is one tidy row: Back, status and title on the left, Chat, Terminal, Artifacts and Browser on the
+  right.
+- Switching the worker's agent keeps its permission mode: auto stays auto (GitHub #758).
+
+### Web app
+
+- No bottom status bar: its machine, branch and Needs you already show in the sidebar and Tasks.
+- No blank page after closing the last space; a tab on another machine opens instead of Reconnecting for ever; a Claude
+  Code or Codex tab in Chat shows its chat and keeps your typing (GitHub #747, #786, #787, #818).
+- Fork or Rewind from a held message no longer freezes the chat; a landscape iPad can type into a terminal; the web
+  chat finds local agents' conversations (GitHub #748, #788, #862).
+- The web app is shared again on tailnets whose user ids are very large (GitHub #845).
+
+### Mac
+
+- Dictation and window calls work with Swift 6.4 (GitHub #789).
+- The agent menu's restart, switch agent and close work, and so do the chat's attach button and image paste
+  (GitHub #736, #774).
+- When the web app refuses every request on a Mac, it now says why; the fix itself needs a Mac to find (GitHub #777,
+  still open).
+
+### Setup, machines and sharing
+
+- `shepherdr web https-port 8443` (or `./install.sh --https-port 8443`) shares the web app on another port; every link
+  follows. Installs that never set one stay on 443. When tailscale won't share it, doctor, the installer and Settings →
+  Web say tailscale's own reason, naming a port held by another app (GitHub #754, #778).
+- The task browser works out of the box: Shepherdr installs agent-browser itself (no npm, no sudo), and when it can't,
+  the Browser tab, `herdr-browser` and doctor show the whole message with its one fix, `herdr-browser --install`
+  (GitHub #739, #799). Long task folders get short browser session names.
+- An update replaces a mod file Shepherdr changed too, keeping your copy in the backup, so the new mod always loads
+  (GitHub #766).
+- An Assistant on another machine finds claude, and one that fails to start says why and keeps your message
+  (GitHub #839).
+- Secrets no longer deadlock when every machine is marked remote (GitHub #800).
+- `herdr-artifact publish` works from a read-only install, never hangs silently, and survives Herdr's checker not
+  connecting; `herdr-artifact guide` works on a web-only install (GitHub #735, #749, #843, #847).
+
+Fixes GitHub #735, #736, #737, #739, #740, #741, #744, #745, #747, #748, #749, #750, #751, #752, #753, #754, #755,
+#758, #759, #761, #766, #767, #768, #774, #775, #778, #779, #780, #784, #785, #786, #787, #788, #789, #790, #795, #796,
+#797, #798, #799, #800, #803, #818, #828, #837, #839, #840, #841, #842, #843, #845, #847, #862, #866 and #869.
+
+## 3.1.28
+
+Tasks say Ready only when they are truly done, and every machine can open its own artifacts.
+
+- A task stays Working while its agent still runs anything: a background command, a helper or a subagent. It shows
+  Ready, with its news and alert, only once the agent is at rest.
+- A question in an agent's last words while its own work still runs waits: the task shows Needs you once nothing
+  runs. A question card or a permission still needs you at once.
+- `herdr-artifact preview <id>` opens a machine's own artifact on that machine, even one that can't reach the
+  machine serving the web app. It starts when asked and stops after 30 minutes unused.
+- Shepherdr's own tests can no longer touch the real home's settings or hooks.
+
+## 3.1.27
+
+Shepherdr keeps your tasks, settings and secrets in folders of its own now, and moves them there for you. Chats show
+pictures and artifact previews, and you can answer task agents' questions right in the chat.
+
+- Updating moves Shepherdr's data out of `~/.herdr` into its own folders, once per machine: `~/.config/shepherdr`
+  (settings), `~/.local/share/shepherdr` (tasks, artifacts, secrets, new tasks' worktrees) and
+  `~/.local/state/shepherdr` (task browsers, the web service's files). Nothing to do: it says so in one line, and
+  `shepherdr where` shows every path. `SHEPHERDR_HOME` or the `XDG_*` folders move them elsewhere.
+- Nothing stops working: the old paths link to the new ones, so a machine not updated yet, an older helper or a path
+  in an old brief still finds everything. Running tasks keep their worktrees where they are; new ones go to the new
+  folder (or the one `tasks.worktree_root` names).
+- Safe to stop halfway and run again; it doesn't move by itself on a network disk. To roll back:
+  `shepherdr migrate --rollback` puts everything back in `~/.herdr`. Once every machine is updated,
+  `shepherdr migrate --cleanup-legacy --yes` removes the old links.
+- A repo's tasks now follow it when you rename or move its folder.
+- Agents' pictures and videos show in the chat, and an artifact's card shows a preview that opens in place.
+- A task agent's question shows as a card in the chat on every machine, with each option's preview and room for a
+  note.
+- The Accept card shows the task's proof inside it.
+- Voice call is a small button beside Search; on a call it turns into Mute and End. The call screen shows the crook
+  instead of the orb.
+- A task's tabs are Chat, Terminal, Artifacts and Browser. Files and Changes stay in the space's side panels.
+- Enter sends on a computer and makes a new line on a phone, in every chat box.
+- Fewer false "Needs you": a quiet agent needs you only after 20 seconds, and a long command still counts as work.
+- The task view's Back link lines up with the tabs.
+
+## 3.1.26
+
+The order you drag your spaces into now stays put.
+
+- In the web app, a space you drag to a new spot in the sidebar stays there, even one that used to snap back to the bottom. The Herdr window shows the same order.
+
+## 3.1.25
+
+Calls are easier on a phone held sideways, and you can see how much voice you have left.
+
+- In the web app, a full-screen call on a phone held sideways puts the orb on the left and the buttons on the right.
+- End hangs up at once, with no "Are you sure" step.
+- Settings → Plan usage shows your ElevenLabs credits. If your key can't read them, it says which permission to add.
+
+## 3.1.24
+
+You can ask the voice call to go full screen or step aside.
+
+- On a call, say "go full screen" or "minimize" and the voice does it itself. When it opens the full screen for you, it
+  no longer shrinks it again right after.
+
+## 3.1.23
+
+A minimized call on a phone keeps out of the way.
+
+- In the web app on a phone, a minimized voice call no longer shows a green Listening pill above the bottom bar.
+  Mute and End stay in the bar.
+
+## 3.1.22
+
+The voice call's orb is a clean circle on iPhone.
+
+- In the web app on an iPhone or iPad, the full-screen call's orb shows only its circle, with no grey square around
+  it.
+
+## 3.1.21
+
+A voice call opens full screen, and research tasks leave your code alone.
+
+- In the web app a call opens full screen: a calm orb that moves with who's talking, plus Minimize, Mute and End.
+  Minimized, the call's card and bar show Full screen where Mute was.
+- A task that only looks things up (reading, research, comparing) works in the folder itself, with no branch or pull
+  request, and hands you its answer as an artifact.
+
+## 3.1.20
+
+A voice call can see everything you can, and lets you know when it's busy.
+
+- A call can read every panel the app shows: tasks, changes, pull requests, files, artifacts, usage insights and each
+  machine's health and plan limits. Secrets stay hidden from it.
+- While it looks something up, a call says a word or two ("On it.") and plays a soft typing sound.
+- The call shows Listening, Thinking, Working (and on what, like "Checking tasks…") or Speaking: on the sidebar card,
+  the top strip and a slim pill above a phone's bottom bar.
+- A call answers what you asked first, before any news from your tasks.
+
+## 3.1.19
+
+On a phone, the voice call lives in the bottom bar, and a chat's round button only sends.
+
+- A phone's voice button sits at the end of its bottom bar; search is in the ☰ menu's magnifier.
+- A chat's round button is always Send: grey until there is something to send. Calls start from Talk to Shepherdr.
+- During a call, a phone's bottom bar has Mute and a red hang-up that asks before it ends the call.
+- The call card is one tidy row: who, what it is doing and how long, with Mute and hang-up.
+
+## 3.1.18
+
+One voice call now talks to all of Shepherdr, and model choice works on every machine.
+
+- A voice call is with Shepherdr itself, not one chat: start it from Talk to Shepherdr at the top of the sidebar or a
+  phone's voice button. It hears every chat it sent to, the one on screen and anything new that needs you, and says it
+  when you're both quiet.
+- What a call opens for you shows an Opened by voice tag for a few seconds.
+- Changing an Assistant's model, reasoning or permissions works for a space on another machine too, and says so if
+  that machine is offline.
+
+## 3.1.17
+
+Voice calls go on with the phone locked, and agents can show you an artifact wherever you are.
+
+- A voice call keeps going with the phone locked, shows on the lock screen, and picks up again after a dropped
+  connection.
+- Voice calls switch to the language you speak, by themselves.
+- An agent can open an artifact for you on the screen you used last, and gives you its link.
+- The Tasks list shows what needs you first, then each space's tasks.
+- A task that changed no code (research, a report) waits for your Accept instead of finishing on its own, and its
+  Accept card links its artifacts.
+- Usage insights, a new add-on you can switch off: a private log on your own machine of how you use Shepherdr, that
+  your agents can read.
+
+## 3.1.16
+
+Every agent question can be answered from the chat, and web messages never get lost.
+
+- Every question or permission an agent asks shows as a card in the chat, on the web and phone too, for Claude Code
+  and Codex.
+- Messages sent from the web go again by themselves after a dropped connection, show how they are going, and are
+  never sent twice.
+- Background processes and subagents each show as one row over the chat box, which opens to the list.
+- A task's chat follows its agent when it restarts in a new terminal, instead of "Can't find this conversation".
+
+## 3.1.15
+
+Agents keep their chat history, a stuck web chat recovers on its own, and the session note works on Macs.
+
+- Agents started from inside Claude Code keep their chat history and folder-trust prompt again.
+- The web chat follows an Assistant that was restarted, instead of showing "not a chat agent" until the service
+  restarts.
+- Macs: the note Shepherdr adds when a Claude Code session starts no longer breaks it (#731).
+
 ## 3.1.14
 
 Shorter voice replies when you ask a call to open something.

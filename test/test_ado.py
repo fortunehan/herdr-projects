@@ -1,6 +1,7 @@
 """herdr-task on Azure DevOps (herdr_task/ado.py): a repo whose origin is on Azure DevOps gets the
 pull request flow GitHub's do. Throwaway git repos (origin's fetch URL on dev.azure.com, its push URL
 a local bare repo) and a fake transport answering Azure DevOps' REST calls: no network, hc or gh."""
+import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
 import argparse
 import contextlib
 import io

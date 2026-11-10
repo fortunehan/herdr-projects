@@ -97,6 +97,8 @@ function loadPanel(state) {
     "gpui-kit": { div: mk, svg: mk }, "gpui-base": { h_flex: mk, v_flex: mk }, herdr,
     "./live.js": { terminals: () => [], agents: () => [] },
     "./core/thread-bind.js": bind,
+    "./dirs.js": { dirs: () => ({ tasks: "/h/tasks" }) },
+    "./core/paths.js": { SH: "" },
   };
   const names = [], values = [];
   const src = readFileSync(PANEL, "utf8").replace(/^import \{([^}]*)\} from "([^"]+)";$/gm, (_m, list, from) => {
