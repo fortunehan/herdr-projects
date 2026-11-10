@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inputLine, sendBody, steerNow } from "./send.js";
+import { inputLine, sendBody, steerNow, MentionCache } from "./send.js";
 import { LOG, Conversation, records } from "./chat-log.js";
 
 // A Claude Code terminal as hc sees it: what its screen shows after each call.
@@ -104,4 +104,27 @@ test("Send now on a queued message presses Ctrl+Enter only while Claude Code off
   const idle = fake(false, "idle");
   expect(await steerNow(idle.io, "t1")).toBe(false);
   expect(idle.calls.length).toBe(1);
+});
+
+// SHEP-18: a finished task's chat (its worktree gone) never loads its task list; its messages rendered a crash.
+test("MentionCache: no tasks loaded yet mentions nothing", () => {
+  const c = new MentionCache();
+  expect(c.get("see HAT-1", undefined)).toEqual([]);
+  expect(c.get("see HAT-1", undefined)).toEqual([]);
+});
+
+test("MentionCache: tasks that failed to load (null) mention nothing", () => {
+  const c = new MentionCache();
+  expect(c.get("see HAT-1", null)).toEqual([]);
+  expect(c.get(undefined, null)).toEqual([]);
+});
+
+test("MentionCache: tasks loaded later reset the cache", () => {
+  const c = new MentionCache();
+  expect(c.get("see HAT-1", undefined)).toEqual([]);
+  const tasks = [{ ref: "HAT-1", id: 1 }, { ref: "HAT-2", id: 2 }];
+  expect(c.get("see HAT-1", tasks).map((x) => x.ref)).toEqual(["HAT-1"]);
+  const again = c.get("see HAT-1", tasks);
+  expect(again).toBe(c.get("see HAT-1", tasks));
+  expect(c.get("see HAT-1", [{ ref: "HAT-2", id: 2 }])).toEqual([]);
 });

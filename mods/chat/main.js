@@ -34,7 +34,7 @@ import { words, howAnswered } from "./core/asks.js";
 // The rows' words and rules the web app's chat draws by too (core/chat-view.js).
 import { WORDS, clock, subagentsOf, subagentWord, senderName, briefLabel, firstUser, firstKeys, literal, fromName, sentTo, selfName, initialOf, newsWords, resolveArtifacts, unsigned, ownWords, fitThumbs, bandActs, bandOrder, imagesLine, questionsBelow, notSent, published, artifactLine, elapsed, reportMsg, doingWords, LOST, lostMessage, shellWord, sessionStarted, sessionFailed } from "./core/chat-view.js";
 // Sending the person's words, as the web app does (core/send.js).
-import { refusal, taskTag, messageBody, replyInstead, steerNow, reactionLine, mentionedIn, sendTyped } from "./core/send.js";
+import { refusal, taskTag, messageBody, replyInstead, steerNow, reactionLine, MentionCache, sendTyped } from "./core/send.js";
 // hc whose send goes as the person, with no caller: never "Another agent" on another machine (SHEP-3, core/person.js).
 import { asPerson } from "./core/person.js";
 import { AskCards, linkCtl } from "./cards.js";
@@ -1833,17 +1833,10 @@ export default class Chat extends View {
   }
 
   // The tasks a message mentions: by their id (HAT-1, from herdr-task's `ref`) or as #4.
+  // core/send.js: the same matching as the web app's, cached per text until the task list changes.
   mentioned(text) {
-    const t = String(text ?? "");
-    // Every message asks on every render: kept per text until the task list changes (HERD-94).
-    if (this.mentionsOf !== this.tasks) { this.mentionsOf = this.tasks; this.mentions = new Map(); }
-    const known = this.mentions.get(t);
-    if (known) return known;
-    // core/send.js: the same matching as the web app's
-    const found = mentionedIn(t, this.tasks);
-    if (this.mentions.size > 1000) this.mentions.clear();
-    this.mentions.set(t, found);
-    return found;
+    this.mentions ??= new MentionCache();
+    return this.mentions.get(text, this.tasks);
   }
 
   // One tag line per task the message mentions, for the agent: what it is and where.
