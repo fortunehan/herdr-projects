@@ -389,7 +389,7 @@ UNKNOWN_CHECKS_MS = 20 * 60000
 CHECKS_RUNNING, GITHUB_LOOKS, BACK_TO_AGENT = "Checks running", "Waiting for GitHub", "Back to its agent to fix"
 
 
-def pr_wait(v, since):
+def pr_wait(v, since, forge="GitHub"):
     """SHEP-175: what a Ready task's pull request (v: pr_view's answer) still waits on before the
     person has anything to do, in a few words, or None once its checks are done and GitHub knows it
     can merge. A problem (pr_problem()) goes back to its agent: Working still, never Ready first."""
@@ -400,7 +400,7 @@ def pr_wait(v, since):
     if pr_pending(v):
         return CHECKS_RUNNING
     if (v.get("mergeable") or "").upper() not in ("MERGEABLE",):
-        return GITHUB_LOOKS
+        return GITHUB_LOOKS if forge == "GitHub" else f"Waiting for {forge}"
     if not v.get("statusCheckRollup") and now() - (since or 0) < NO_CHECKS_MS:
         return CHECKS_RUNNING
     if v.get("checks_unknown") and v.get("mergeStateStatus") == "BLOCKED" and not needs_approval(v) \

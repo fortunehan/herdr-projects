@@ -16,6 +16,7 @@ from .agents import (
 )
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
+from . import ado
 from .github import (already_merged, BEHIND, drop_branch, finish, github, merged_here, needs_approval, note_checks, pr_merged, pr_pending, pr_problem,
                      pr_view, pr_wait, queue_entry, tidy_done, tidy_due, update_main, watch_main)
 from .launch import default_space
@@ -105,9 +106,9 @@ def facts(s, t, report):
             pr.pop("needs_approval", None)
         # A draft merges only through the person's Accept, which publishes it first.
         t["_pr_fresh"] = not problem and not pr_pending(v) and not needs_approval(v) and not v.get("isDraft")
-        # Ready only once its checks are done and GitHub knows it can merge (SHEP-175): Working till then.
+        # Ready only once its checks are done and its forge knows it can merge (SHEP-175): Working till then.
         if t["state"] == "ready":
-            wait = pr_wait(v, t.get("ready_at"))
+            wait = pr_wait(v, t.get("ready_at"), ado.forge(pr["repo"]))
             if wait != pr.get("wait"):
                 if wait:
                     pr["wait"] = wait

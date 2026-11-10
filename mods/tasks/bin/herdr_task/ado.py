@@ -37,6 +37,9 @@ API = "7.1"
 TIMEOUT = 10
 DESCRIPTION_MAX = 4000
 BUILD_POLICY = "0609b952-1397-4640-95ec-e00a01b2c241"
+# Minimum number of reviewers, Required reviewers: one still to be met is an approval the pull request waits for
+# (gh's reviewDecision REVIEW_REQUIRED), not a check running: Ready meanwhile, as GitHub's (SHEP-175, #743).
+REVIEWER_POLICIES = {"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", "fd2167ab-b0be-447a-8ec8-39368250530e"}
 NOTE = "Azure DevOps: "
 # Only the scheduler's passes wait out a failing Azure DevOps (backoff); a person's command always asks.
 BACKGROUND = sys.argv[1:2] in (["scheduler"], ["tick"])
@@ -364,10 +367,11 @@ def build_url(repo, build_id):
     return f"https://dev.azure.com/{_q(org)}/{_q(project)}/_build/results?buildId={int(build_id)}"
 
 
-def checks_of(repo, d):
+def checks_of(repo, d, waits=None):
     """A pull request's checks in gh's statusCheckRollup shape: its blocking policies (builds by
     their name; reviewers, work items, comments by the policy's), its latest status per context, and
-    a reviewer's "waiting for the author" or "rejected" vote as a failing one."""
+    a reviewer's "waiting for the author" or "rejected" vote as a failing one. waits: a list that
+    takes the reviewer policies still to be met instead (an approval waited for, not a check)."""
     n = d["pullRequestId"]
     project_id = ((d.get("repository") or {}).get("project") or {}).get("id") or ""
     out = []
@@ -383,6 +387,10 @@ def checks_of(repo, d):
             if build and ctx.get("isExpired"):
                 name += " (expired: queue it again)"
             url = build_url(repo, ctx["buildId"]) if build and str(ctx.get("buildId") or "").isdigit() else None
+            reviewers = str(kind.get("id") or "").lower() in REVIEWER_POLICIES or "reviewer" in str(kind.get("displayName") or "").lower()
+            if waits is not None and not build and reviewers and e["status"] in ("queued", "running"):
+                waits.append(name)
+                continue
             out.append(check(name, *EVALUATION[e["status"]], url))
     latest = {}
     for st in call(repo, "GET", git_api(repo, f"pullRequests/{n}/statuses")).get("value") or []:
@@ -428,10 +436,15 @@ def shape(repo, d, checks, files=0):
 
 def view(repo, n, full=False):
     """Pull request n as gh pr view --json shows it (full: its checks and files whatever its state,
-    for the Pull request views). Raises AdoError."""
+    for the Pull request views, its reviewer policies among them). Else a reviewer policy still to be
+    met is reviewDecision REVIEW_REQUIRED, as GitHub says a required review. Raises AdoError."""
     d = call(repo, "GET", git_api(repo, f"pullrequests/{int(n)}"))
     open_ = d.get("status") == "active"
-    return shape(repo, d, checks_of(repo, d) if open_ or full else [], files_of(repo, n) if full else 0)
+    waits = None if full else []
+    v = shape(repo, d, checks_of(repo, d, waits) if open_ or full else [], files_of(repo, n) if full else 0)
+    if waits:
+        v["reviewDecision"] = "REVIEW_REQUIRED"
+    return v
 
 
 def pr_view(task):
