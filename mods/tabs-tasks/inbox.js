@@ -240,7 +240,8 @@ async function readTasksNow() {
     const list = await json(CLI(), [...on, "list", "--all", "--json"]);
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
-      if (x.state === "running") running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
+      // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
+      if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
       // Ready: herdr-task's own status, the same as Tasks' Ready group and Shepherdr's green
       // counts (not Merging, nor one whose agent asks: that agent is a "blocked" item).
       // "asks": its agent waits (a live blocked terminal, an item of its own): kept for its reason.

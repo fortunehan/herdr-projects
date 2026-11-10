@@ -467,6 +467,12 @@ class MergedInAzureDevOps(Base):
         wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci")])
         self.assertEqual((wait, status), ("Checks running", "working"))
 
+    def test_a_draft_waiting_on_a_validation_is_ready_for_the_accept_that_publishes_it(self):
+        # Azure DevOps runs no build validation on a draft: its queued build must not keep it Working before Accept.
+        wait, status = self.ready_wait(pr(isDraft=True), [evaluation("queued", buildDefinitionName="web-ci")])
+        self.assertEqual((wait, status), (None, "ready"))
+        self.assertFalse(self.task["_pr_fresh"])  # still never merged by itself
+
     def test_a_merge_azure_devops_still_works_out_says_azure_devops(self):
         wait, _ = self.ready_wait(pr(mergeStatus="queued"), [])
         self.assertEqual(wait, "Waiting for Azure DevOps")

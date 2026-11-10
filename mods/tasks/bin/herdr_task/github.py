@@ -397,6 +397,9 @@ def pr_wait(v, since, forge="GitHub"):
         return None
     if pr_problem(v):
         return BACK_TO_AGENT
+    # A draft: the person's Accept publishes it, and Azure DevOps runs no build validation on a draft before that.
+    if v.get("isDraft"):
+        return None
     if pr_pending(v):
         return CHECKS_RUNNING
     if (v.get("mergeable") or "").upper() not in ("MERGEABLE",):
