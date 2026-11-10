@@ -34,6 +34,26 @@ export function mentionedIn(text, tasks) {
   });
 }
 
+// mentionedIn() per text, kept until the task list changes (every message asks on every render, HERD-94). A chat whose
+// tasks never loaded (a finished task's worktree is gone, SHEP-18) has none: its messages mention nothing.
+export class MentionCache {
+  constructor() {
+    this.of = undefined;
+    this.byText = new Map();
+  }
+
+  get(text, tasks) {
+    const t = String(text ?? "");
+    if (this.of !== tasks) { this.of = tasks; this.byText = new Map(); }
+    const known = this.byText.get(t);
+    if (known) return known;
+    const found = mentionedIn(t, tasks);
+    if (this.byText.size > 1000) this.byText.clear();
+    this.byText.set(t, found);
+    return found;
+  }
+}
+
 // The words as the agent gets them: the reply tag, the task tags, then the person's text.
 export function messageBody({ text, quote = null, tags = "" }) {
   const reply = quote ? `<hc reply-to="${excerpt(quote, 80)}"/>\n` : "";
