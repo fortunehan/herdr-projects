@@ -13,7 +13,7 @@ import { isHelper, subagentsOf } from "../core/chat-view.js";
 // The core is plain JavaScript; its defaults read as narrow types to TypeScript.
 const { place, refOf, taskKey, autoPrefix, reportOf, secondLine, leftOf, queueReason, machineOf } = T as any;
 import * as S from "../core/spaces.js";
-const { spacesFromDoc, sidebarOf, assistantOf, isUnread } = S as any;
+const { spacesFromDoc, sidebarOf, assistantOf, isUnread, isThinking, workingIn } = S as any;
 import * as N from "../core/notify.js";
 const { spaceLevel } = N as any;
 import * as AP from "../core/autopilot.js";
@@ -292,6 +292,8 @@ export class Model {
         unread: isUnread(k, seen) && spaceLevel(this.value("notify") ?? {}, s.id) !== "Off",
         red: here.filter((r) => r.section === "needs").length + ((k as any)?.status?.state === "blocked" ? 1 : 0),
         green: here.filter((r) => r.section === "ready").length,
+        // the sidebar row's marks (SHEP-17, core/spaces.js): its Assistant in a turn, its tasks at work
+        thinking: isThinking(k), working: workingIn(s, rows),
       };
     });
     this.spaces = spaces;

@@ -21,7 +21,8 @@
 // the hook's request; a waiting agent's from its own status report (OSC 7501 kind).
 //
 // The engine (startInbox) runs in the tab bar, which is always loaded. It shares what takes a
-// program to find out: shared "inbox.asks" (waiting requests), "inbox.tasks", "inbox.autos".
+// program to find out: shared "inbox.asks" (waiting requests), "inbox.tasks", "inbox.running" (running tasks, for
+// the sidebar's working counts), "inbox.autos".
 // Live agents are read where the items are made (items()).
 //
 // Claude's hook only asks the chat while someone touches data/chat-asks/open/<terminal>: the
@@ -225,11 +226,13 @@ function readTasks() {
 async function readTasksNow() {
   const r = await exec("sh", ["-c", 'ls "$HOME/.herdr/tasks/.remote" 2>/dev/null; true']).catch(() => null);
   const where = [null, ...(r?.stdout ?? "").split("\n").filter(Boolean)];
-  const tasks = [], autos = [];
+  const tasks = [], autos = [], running = [];
   for (const machine of where) {
     const on = machine ? ["--on", machine] : [];
     const list = await json(CLI(), [...on, "list", "--all", "--json"]);
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
+      // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
+      if (x.state === "running") running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
       // Ready: herdr-task's own status, the same as Tasks' Ready group and Shepherdr's green
       // counts (not Merging, nor one whose agent asks: that agent is a "blocked" item).
       // "asks": its agent waits (a live blocked terminal, an item of its own): kept for its reason.
@@ -249,6 +252,7 @@ async function readTasksNow() {
       autos.push({ machine, id: a.id, ref: a.ref ?? null, title: a.title, folder: a.folder, error: a.last_error, last_task: a.last_task ?? null });
   }
   put("inbox.tasks", tasks);
+  put("inbox.running", running);
   put("inbox.autos", autos);
   await readRetries();
 }

@@ -28,7 +28,7 @@
         ]
       },
       "forms": {
-        "herdr": "Sidebar: machines, Pinned, sections, unread, red/green counts, icons, drag between sections",
+        "herdr": "Sidebar: machines, Pinned, sections, unread (bold, blue dot), Assistant thinking, tasks working, red/green counts, icons, drag between sections",
         "desktop": "Left sidebar, resizable, drag to move",
         "tablet": "Drawer from the left (menu or edge swipe)",
         "phone": "Drawer (edge swipe); long-press then drag to move"

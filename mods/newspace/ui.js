@@ -23,6 +23,8 @@ const dark = () => settings()?.dark !== false;
 export const red = () => (dark() ? "#ff6369" : "#e5484d");
 export const green = () => (dark() ? "#3dd68c" : "#30a46c");
 export const amber = () => (dark() ? "#f5b544" : "#e2a336");
+// Unread (the sidebar's dot beside a bold space): the web app's --unread.
+export const blue = () => (dark() ? "#3b9eff" : "#0090ff");
 // Text on a red, green or amber fill: white on light's deep fills, black on dark's bright ones
 // (Shepherdr's AttentionBadge).
 export const onStatus = () => (dark() ? "#000000" : "#ffffff");

@@ -48,6 +48,7 @@
   --need: #e5484d;
   --ready: #30a46c;
   --work: #e2a336;
+  --unread: #0090ff;
   --muted: #a1a1aa;
   /* the status colours as small words on the page: a shade deeper in light mode, so they read */
   --ready-fg: #18794e;
@@ -130,6 +131,7 @@
   --need: #ff6369;
   --ready: #3dd68c;
   --work: #f5b544;
+  --unread: #3b9eff;
   --muted: #71717a;
   --ready-fg: #3dd68c;
   --work-fg: #f5b544;
@@ -178,6 +180,7 @@
   --color-reply: var(--reply);
   --color-seg-on: var(--seg-on);
   --color-need: var(--need);
+  --color-unread: var(--unread);
   --color-ready: var(--ready);
   --color-work: var(--work);
   --color-ready-fg: var(--ready-fg);

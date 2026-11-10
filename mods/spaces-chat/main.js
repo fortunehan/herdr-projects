@@ -1,6 +1,9 @@
 // Workspace spaces: stable colored avatars, worktrees under their checkout,
-// grouped by machine when more than one is known. After a space's name, the repo
-// its first terminal is in now, only where unusual: its branch. Agent state lives in the agents list, not here. Click to
+// grouped by machine when more than one is known. After a space's name: a small blue dot while
+// its Assistant has something new (the name bold too), a small dim spinner while its Assistant
+// thinks, and the repo its first terminal is in now, only where unusual: its branch. At the row's
+// end, how many of its tasks are at work (a dim count with a turning ring) before its red and
+// green counts (SHEP-17; the rules are core/spaces.js's, the web's rows show the same). Click to
 // switch, right-click for its menu, drag to reorder. Under each machine, its sections
 // (sections.js): the + on its header makes one, spaces drag in and out of them (only by
 // dragging; a folded one opens while a space is dragged over it). Above the machines, Pinned
@@ -21,12 +24,12 @@ import { sectionsOf, sectionOf, iconOf, placeSpace, foldSection, prune, data, pi
 import { Menu, openMenu, rectOf } from "./popups.js";
 import { IconPicker } from "./icon.js";
 import { Rename } from "./rename.js";
-import { unreadSpaces, readShown } from "./unread.js";
+import { unreadSpaces, readShown, assistantOf } from "./unread.js";
 import { muted } from "./notify.js";
 import { MachinePopup, openMachine, openMachineSettings } from "./machine-popup.js";
 import { startPolling, allStats, healthMeters, bars } from "./machines.js";
-import { countBadge, red, green, H, TEXT, RADIUS } from "./ui.js";
-import { spaceName, gitTail, tilde, sharedNames } from "./core/spaces.js";
+import { countBadge, red, green, blue, H, TEXT, RADIUS } from "./ui.js";
+import { spaceName, gitTail, tilde, sharedNames, isThinking, workingIn } from "./core/spaces.js";
 import { coordinatorTab } from "./coordinator.js";
 
 const POPUPS = { add: Menu, space: Menu, section: Menu, icon: IconPicker, rename: Rename, machine: MachinePopup };
@@ -653,6 +656,16 @@ export default class Spaces extends View {
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)));
   }
 
+  // How many of a space's tasks are at work (the tab bar's engine reads them: shared "inbox.running"), dim with a
+  // small turning ring, before its red and green counts.
+  workingMark(w, t) {
+    const n = workingIn(w, shared("inbox.running"));
+    if (!n) return null;
+    return h_flex().id(`working-${w.id}`).flex_none().gap(3).items_center().text_size(TEXT.label).text_color(t.dim)
+      .child(svg("mods/tasks/merging.svg").size(10).flex_none().spin(1400))
+      .child(div().child(n > 9 ? "9+" : String(n)));
+  }
+
   // `pinned`: in Pinned, `tag` its machine there; `end`: the drag key (a section's, Pinned) a
   // drop under this last row goes to.
   row({ w, i, g, tree, end, pinned, tag, at, name }, t) {
@@ -660,6 +673,8 @@ export default class Spaces extends View {
     // Another space here has its name: its folder, dim, says which.
     const label = [tag, this.dup?.has(w.id) && at ? tilde(at) : null].filter(Boolean).join(" \u00b7 ") || null;
     const fresh = this.unread.has(w.id);
+    const thinking = this.thinking?.has(w.id);
+    const working = this.workingMark(w, t);
     // Notify Off (notify.js): muted, as Slack's muted channels: dimmed, a crossed-out bell; its
     // counts still show.
     const quiet = muted(w.id);
@@ -695,12 +710,17 @@ export default class Spaces extends View {
           // Or the emoji picked for it (Change icon), in the same slot so names stay aligned.
           .when(!tree, el => el.child(div().w(18).flex_none().text_center().text_size(iconOf(w.id) ? 14 : 15).text_color(fresh ? t.foreground : w.active && !quiet ? t.muted : t.dim)
             .when(quiet && Boolean(iconOf(w.id)), (el) => el.opacity(0.5)).child(iconOf(w.id) ?? "#")))
-          .child(nameText(name, fresh, quiet ? t.dim : w.active ? t.foreground : t.muted, t))
+          // the name, then its unread dot and its Assistant's spinner, close to it
+          .child(h_flex().min_w(0).gap(5).items_center()
+            .child(nameText(name, fresh, quiet ? t.dim : w.active ? t.foreground : t.muted, t))
+            .when(fresh, (el) => el.child(div().size(6).flex_none().rounded(3).bg(blue())))
+            .when(Boolean(thinking), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.dim).spin(900))))
           .when(Boolean(this.pilotMark(w, t)), (el) => el.child(this.pilotMark(w, t)))
           .when(Boolean(this.callOf(w)), (el) => el.child(this.callMark(w, t)))
           .child(g ? this.gitTail(g, tree, name, t, label) : h_flex().flex_1().min_w(0).justify_end().text_size(TEXT.label).text_color(t.dim)
             .when(Boolean(label), (el) => el.child(div().min_w(0).truncate().child(label))))
           .when(quiet, (el) => el.child(svg("mods/spaces-chat/bell-off.svg").size(13).flex_none().text_color(t.dim)))
+          .when(Boolean(working), (el) => el.child(working))
           // What needs the person in this space (the Inbox's items in its tabs), red, and its
           // tasks in Ready, green.
           .when(this.needs(w) > 0 || this.readyIn(w) > 0, el => el.child(countBadge(this.needs(w), this.readyIn(w), on ? t.selected : t.chrome))),
@@ -754,6 +774,8 @@ export default class Spaces extends View {
     readShown();
     // Shepherdr settings' "Bold unread spaces" off (shared "sidebar.unread" false): none.
     this.unread = shared("sidebar.unread") === false ? new Set() : unreadSpaces(sp);
+    // Assistants in a turn (core/spaces.js isThinking): a spinner after their space's name.
+    this.thinking = new Set(sp.filter((s) => isThinking(assistantOf(s))).map((s) => s.id));
     const ids = new Set(sp.map(p => p.id));
     const kept = Object.fromEntries(Object.entries(shared("space.colors") ?? {}).filter(([id]) => ids.has(id)));
     let changed = Object.keys(kept).length !== Object.keys(shared("space.colors") ?? {}).length;
