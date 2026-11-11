@@ -24,7 +24,7 @@
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay } from "herdr";
+import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces } from "herdr";
 import { terminals, agents } from "./live.js";
 import { taskDot, ownProgress, estimated } from "./dot.js";
 import { busyAgain, onIt, readyWait } from "./core/tasks.js";
@@ -35,6 +35,7 @@ import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
 import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
 import { cantOpen, folderOf, vscodeCommand, vscodeProblem } from "./core/open-editor.js";
 import { SH } from "./core/paths.js";
+import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
 
 // The task header's shared left edge, and task ids in the Tasks list's monospace (mods/tasks).
@@ -362,6 +363,9 @@ export class PanelHost {
   }
 
   renderHead(cx) {
+    // Another space picked: its own open task, else the list, never this space's task (core/thread-space.js, SHEP-28).
+    const hosts = { spaces, layout, shared, setShared, run };
+    if (switched(hosts)) cx.timer.after(0, () => followSpace(hosts));
     const want = shared("tasks.thread") ?? null;
     if (wantId(want) !== wantId(this.cur)) {
       this.cur = want;
