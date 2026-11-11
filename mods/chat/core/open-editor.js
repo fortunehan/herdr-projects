@@ -30,11 +30,11 @@ export function cantOpen(rec) {
 }
 
 /** The command: [program, args]. */
-export const command = (dir) => ["sh", ["-c", OPEN, "open-vscode", dir]];
+export const vscodeCommand = (dir) => ["sh", ["-c", OPEN, "open-vscode", dir]];
 
 /** What the button says after running: null when it worked, else { title, body }. r: the exec result, null when it
  *  couldn't start. done: the task is Done (its worktree removed). */
-export function problem(r, done) {
+export function vscodeProblem(r, done) {
   if (r && r.code === 0) return null;
   if (!r) return { title: TITLE, body: "sh couldn't start." };
   if (r.code === 3) return { title: TITLE, body: done ? "Its folder is gone (a finished task's worktree is removed)." : "Its folder is gone." };

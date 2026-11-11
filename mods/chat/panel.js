@@ -33,7 +33,7 @@ import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
 import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
-import * as editor from "./core/open-editor.js";
+import { cantOpen, folderOf, vscodeCommand, vscodeProblem } from "./core/open-editor.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
 
@@ -207,14 +207,14 @@ export class PanelHost {
 
   // Open in VS Code (core/open-editor.js): the task's folder, on this machine only. Every failure says why in a toast.
   openInEditor(cx) {
-    const r = this.rec, no = editor.cantOpen(r);
+    const r = this.rec, no = cantOpen(r);
     if (no) { toast({ ...no, level: "error" }); return; }
     if (this.opening) return;
     this.opening = true;
     cx.spawn(async (cx) => {
-      const [cmd, args] = editor.command(editor.folderOf(r));
+      const [cmd, args] = vscodeCommand(folderOf(r));
       const res = await exec(cmd, args).catch(() => null);
-      const p = editor.problem(res, r.state === "done");
+      const p = vscodeProblem(res, r.state === "done");
       if (p) toast({ ...p, level: "error" });
       this.opening = false;
       cx.notify();

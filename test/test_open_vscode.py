@@ -19,7 +19,7 @@ CORE = re.sub(r"^export ", "", open(os.path.join(ROOT, "core", "open-editor.js")
 
 HARNESS = r"""
 const input = %(input)s;
-const editor = (() => { %(core)s; return { OPEN, TITLE, folderOf, cantOpen, command, problem }; })();
+%(core)s
 const calls = [], toasts = [];
 const exec = async (cmd, args, opts) => { calls.push([cmd, ...args, opts ?? null]); if (input.result === null) throw new Error("ENOENT"); return input.result; };
 const toast = (n) => toasts.push(n);

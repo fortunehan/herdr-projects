@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OPEN, TITLE, cantOpen, command, folderOf, problem } from "./open-editor.js";
+import { OPEN, TITLE, cantOpen, folderOf, vscodeCommand as command, vscodeProblem as problem } from "./open-editor.js";
 
 const WT = "/h/.local/share/shepherdr/worktrees/shop/task-3-x";
 const WORKTREE = { mode: "worktree", worktree: WT, folder: "/h/dev/shop", machine: null, state: "running" };
