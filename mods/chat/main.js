@@ -79,6 +79,8 @@ const KEEP = 2000;
 const COLUMN = 1100;
 // A message bubble's width at most, as a share of the column.
 const BUBBLE = 0.9;
+// A press held longer than this (ms) no longer keeps the keyboard off the box: its release may have gone elsewhere.
+const HOLD_MS = 10000;
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 // The role templates' folder on the machine a command runs on (sh -c prefix: $dir).
@@ -4342,40 +4344,56 @@ export default class Chat extends View {
   // The message box gets the keyboard back when its pane does (opened, clicked, gone to), or after a notice; from
   // render, the focus itself from a timer right after.
   refocus(paneFocused, showsBox, cx) {
-    // A selection made a while ago no longer keeps the keyboard once the person went to another pane (SHEP-14).
-    if (!paneFocused && !this.pressing && Date.now() - (this.press?.at ?? 0) > 1000) this.pressMoved = false;
+    // A press counts as held until its release, a press elsewhere, leaving the pane, or HOLD_MS: a release outside the
+    // chat never reaches its mouse-up handler (SHEP-14).
+    const held = () => Boolean(this.pressing) && Date.now() - (this.press?.at ?? 0) < HOLD_MS;
+    if (!paneFocused) {
+      // A selection made a while ago no longer keeps the keyboard once the person went to another pane.
+      if (!held() && Date.now() - (this.press?.at ?? 0) > 1000) this.pressMoved = false;
+      this.pressing = false;
+      this.entryPending = false;
+    }
     // Focus moves only outside render: from a timer callback right after it.
     // Never while a dialog over it holds the keyboard (New space's field, #752): Herdr counts this pane focused under it.
     // Nor while a field in an overlay (the artifact viewer's Mark up, a modal) has it (keysOver(), SHEP-9).
     // Never over a text selection (GitHub #916, SHEP-192): a drag over the messages selects them, and the box taking the
-    // keyboard then made Ctrl+C copy nothing. Nor while a press is still held (SHEP-14): it may become a drag. The timers
-    // check again when they fire: a drag can start after they're set.
-    const kept = () => this.pressing || this.pressMoved || dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
-    if (paneFocused && showsBox && !kept() && (!this.wasFocused || !this.hadBox)) {
-      cx.timer.after(0, () => { if (!kept()) this.box.focus(); });
-      cx.timer.after(600, () => { if (!kept()) this.box.focus(); });
+    // keyboard then made Ctrl+C copy nothing. Nor while a press is still held: it may become a drag. The timers check
+    // again when they fire: a drag can start after they're set.
+    const blocked = () => this.pressMoved || dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
+    const kept = () => held() || blocked();
+    if (this.pressMoved) this.entryPending = false;
+    // The pane just got focus: the box takes the keyboard. A press that is still held keeps the request pending until
+    // its release (mouse-up redraws), so a plain click still ends in the box.
+    if (paneFocused && showsBox && !blocked() && (!this.wasFocused || !this.hadBox || this.entryPending)) {
+      this.entryPending = held();
+      const take = () => { if (!kept()) { this.entryPending = false; this.box.focus(); } };
+      cx.timer.after(0, take);
+      cx.timer.after(600, take);
     }
     // The pane focused again (a command, a click on its header) can leave the box without the
     // keyboard: give it back, unless the person just pressed something inside the chat.
     // Not while the keyboard is somewhere else in the window that isn't a pane (#633): a task's chat, the list or its
     // search in the Tasks panel (shared "keyboard.holder", keyHolder()); Herdr still counts this pane as focused then.
-    else if (paneFocused && showsBox && !this.call && !this.pressing && !this.pressMoved && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
+    else if (paneFocused && showsBox && !this.call && !kept() && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
       && !keysElsewhere(liveHolder(shared(KEY_HOLDER)), this.areaKey())
       && Date.now() - (this.refocusAt ?? 0) > 1000) {
       this.refocusAt = Date.now();
-      cx.timer.after(0, () => this.box.focus());
+      cx.timer.after(0, () => { if (!kept()) this.box.focus(); });
     }
     // Cmd+Shift+L named this chat (mods/tabs-tasks compose(), shared "chat.composereq"): its box gets the keyboard,
-    // whatever was keeping it off (a text selection, another holder); again once Herdr has settled the pane's focus.
+    // whatever was keeping it off (a text selection, a held press, another holder); again once Herdr has settled the
+    // pane's focus.
     const cr = shared("chat.composereq");
     if (cr && cr.at !== this.composeAt && cr.to === this.areaKey() && Date.now() - cr.at < 3000) {
       this.composeAt = cr.at;
       this.pressMoved = false;
+      this.pressing = false;
       const take = () => { holdKeys(this.areaKey()); this.box.focus(); };
       cx.timer.after(0, take);
       cx.timer.after(600, take);
     }
   }
+
 
   render(cx) {
     return inRender(() => this.draw(cx));
@@ -4474,7 +4492,9 @@ export default class Chat extends View {
       // Where a press was, for the action buttons under messages (rows can't take handlers). A new press ends any selection.
       // A double or triple click selects a word or a line, as a drag does (SHEP-14).
       .on_mouse_down("left", (e) => { this.notePress(e); holdKeys(this.areaKey()); this.pressWin = e.position; this.keepIcons = null; this.pressing = true; this.pressMoved = (e.click_count ?? 1) >= 2; if (e.bounds) this.noteArea(e.bounds); })
-      .on_mouse_up("left", () => { this.pressing = false; })
+      // The release redraws: a pane-entry request held back by the press is taken then (refocus()).
+      .on_mouse_up("left", (_e, cx) => { this.pressing = false; cx.notify(); })
+      .on_mouse_down_out(() => { this.pressing = false; })
       // Files dropped anywhere on the chat go with the next message.
       .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); });
 
