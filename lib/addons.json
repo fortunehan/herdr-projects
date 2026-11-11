@@ -22,12 +22,12 @@
       "global alt-shift-enter", "global alt-escape", "global ctrl-alt-left", "global ctrl-alt-down", "global ctrl-alt-up",
       "global ctrl-alt-right", "terminal ctrl-v"],
     "helpers": ["shepherdr"],
-    "uses_shipped": ["changes", "files", "workspace-chrome"]
+    "uses_shipped": ["files", "workspace-chrome"]
   },
   "addons": [
     { "id": "tasks", "title": "Tasks", "switch": false,
       "about": "The Tasks panel, the Accept card and herdr-task: every task with its own agent, worktree, review and merge.",
-      "mods": ["tasks", "tasks-menu", "accept-card", "task-pr"],
+      "mods": ["tasks", "tasks-menu", "accept-card", "task-pr", "my-changes"],
       "blocks": ["tasks", "tasks-list", "tasks-thread"],
       "helpers": ["herdr-task"], "templates": ["worker", "reviewer"] },
     { "id": "assistants", "title": "Assistants", "switch": false, "needs": ["tasks"],

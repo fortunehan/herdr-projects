@@ -2,7 +2,7 @@
 // (mods/task-pr) and Browser (mods/task-browser), each a child
 // of the view's body stack beside the worker's chat and terminal, picked in its header.
 // Which task: shared "tasks.thread.where", published by the header from the task's record =
-// { terminal, ref, folder (its worktree, else its list's folder), machine (null: here), branch,
+// { terminal, ref, folder (its worktree, else its list's folder), machine (null: here), repo (its list's folder), branch,
 //   base, start (the commit it started from), pr ({ number, url, repo } once herdr-task made one) }.
 import { shared, layout } from "herdr";
 

@@ -131,7 +131,7 @@
                       "id": "changes",
                       "type": "block",
                       "content": {
-                        "mod": "changes"
+                        "mod": "my-changes"
                       }
                     },
                     {

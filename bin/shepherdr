@@ -138,6 +138,9 @@ LINKS = {"herdr-task": "mods/tasks/bin/herdr-task", "herdr-artifact": "mods/arti
          "shepherdr-statusline": "bin/shepherdr-statusline"}
 # Written by Herdr into each mod (editor types): never ours, never touched.
 GENERATED = {"gpui-kit.d.ts", "jsconfig.json"}
+# Mods that began as a person's own copy in their app home and became Shepherdr's (SHEP-21: my-changes, cloned from
+# Herdr's changes): a hand-made copy is taken over without --adopt, kept in the backup and put back by uninstall.
+TAKE_OVER = {"my-changes"}
 SKIP = {"__pycache__", ".DS_Store"}
 # Layout blocks Herdr's mods point at whatever is shown now (a task's terminal, an opened artifact):
 # compared without them, so a layout in use still counts as unchanged.
@@ -695,7 +698,7 @@ def plan_files(r, rec, items, adopt):
             how = "update"
         elif rel in files or group == "template":
             how = "keep"
-        elif adopt:
+        elif adopt or group in TAKE_OVER:
             how = "adopt"
         else:
             how = "clash"
@@ -802,7 +805,9 @@ def apply_mod(r, mod, acts, rec, gone):
             pass
     if exists:
         if adopted:
-            rec.setdefault("replaced", {}).setdefault(f"{APP}/mods/{mod}", r.backup(f"{APP}/mods/{mod}"))
+            kept = rec.setdefault("replaced", {}).setdefault(f"{APP}/mods/{mod}", r.backup(f"{APP}/mods/{mod}"))
+            if mod in TAKE_OVER:
+                r.notes.append(f"{APP}/mods/{mod} is Shepherdr's now: your own copy is kept in {kept}")
         exchange(stage, target)
         shutil.rmtree(stage)
     else:
