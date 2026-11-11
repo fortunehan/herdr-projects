@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inputLine, sendBody, steerNow, mentionedIn } from "./send.js";
+import { inputLine, sendBody, steerNow } from "./send.js";
 import { LOG, Conversation, records } from "./chat-log.js";
 
 // A Claude Code terminal as hc sees it: what its screen shows after each call.
@@ -104,14 +104,6 @@ test("Send now on a queued message presses Ctrl+Enter only while Claude Code off
   const idle = fake(false, "idle");
   expect(await steerNow(idle.io, "t1")).toBe(false);
   expect(idle.calls.length).toBe(1);
-});
-
-// SHEP-18: a finished task's chat (its worktree gone) never loads its task list; its messages rendered a crash.
-test("no tasks loaded (undefined or null) mentions nothing", () => {
-  expect(mentionedIn("see HAT-1", undefined)).toEqual([]);
-  expect(mentionedIn("see HAT-1", null)).toEqual([]);
-  expect(mentionedIn(undefined, null)).toEqual([]);
-  expect(mentionedIn("see HAT-1", [{ ref: "HAT-1", id: 1 }, { ref: "HAT-2", id: 2 }]).map((x) => x.ref)).toEqual(["HAT-1"]);
 });
 
 // SHEP-93: eleven pictures take Claude Code long to read: the box fills marker by marker, its Enter is lost

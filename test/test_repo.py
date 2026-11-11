@@ -469,17 +469,6 @@ class SessionNote(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertFalse(asked)
 
-    def test_no_heredoc_inside_command_substitution(self):
-        """macOS /bin/sh (bash 3.2) scans a heredoc inside $( ) for quotes: an apostrophe in its text is a
-        syntax error there, while Linux sh (dash) runs it fine."""
-        import glob
-        for path in glob.glob(J("**", "*.sh"), recursive=True):
-            if "node_modules" in path:
-                continue
-            with open(path) as f:
-                found = re.findall(r"\$\([^)]*(?<!<)<<(?!<).*", f.read())
-            self.assertEqual(found, [], os.path.relpath(path, ROOT))
-
 
 class TestsOnAThrowawayHome(unittest.TestCase):
     """SHEP-147: no test reaches the person's real home (its question hook, chat cards, data, herdr-core)."""

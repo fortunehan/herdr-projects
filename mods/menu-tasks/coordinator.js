@@ -93,12 +93,10 @@ export function entryFor(k, known) {
 }
 
 // The helper scripts run detached: the menu that starts one closes at once. macOS has no setsid (#736): there the
-// script runs in a job of its own (set -m) under nohup, so it outlives the menu all the same. A missing helper exits 127.
-export const DETACH = '[ -f "$0" ] || exit 127; if command -v setsid >/dev/null 2>&1; then setsid -f bash "$0" "$@"; else set -m; nohup bash "$0" "$@" & fi >/dev/null 2>&1 </dev/null';
-async function script(name, args) {
-  const r = await exec("bash", ["-c", DETACH, `${appHome()}/mods/coordinator/${name}.sh`, ...args]).catch((e) => ({ code: -1, stderr: plainError(e) }));
-  if (r.code !== 0) toast({ title: `Couldn't start ${name}`, body: r.stderr?.trim() || `Its helper (mods/coordinator/${name}.sh) didn't start.`, level: "error" });
-  return r;
+// script runs in a job of its own (set -m) under nohup, so it outlives the menu all the same.
+export const DETACH = 'if command -v setsid >/dev/null 2>&1; then setsid -f bash "$0" "$@"; else set -m; nohup bash "$0" "$@" & fi >/dev/null 2>&1 </dev/null';
+function script(name, args) {
+  return exec("bash", ["-c", DETACH, `${appHome()}/mods/coordinator/${name}.sh`, ...args]);
 }
 
 // Where a space's coordinator works: its focused (else first) terminal's folder.
