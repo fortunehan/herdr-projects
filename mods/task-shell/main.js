@@ -89,7 +89,8 @@ export default class TaskShell extends View {
         this.state = "idle";
         this.why = tg.why;
         this.key = null;
-        if (this.addr) { this.addr = null; this.repoint(null, cx); }
+        // Also one left pointed at from before this copy (a reload): a Done task's ended shell isn't shown.
+        if (this.addr || find(layout(), VIEW)) { this.addr = null; this.repoint(null, cx); }
         cx.notify();
       }
       return;
@@ -140,7 +141,7 @@ export default class TaskShell extends View {
     this.key = tg.key;
     this.state = "starting";
     this.why = "";
-    const old = this.addr;
+    const old = this.addr || find(layout(), VIEW);
     this.addr = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -163,6 +164,7 @@ export default class TaskShell extends View {
         this.state = "error";
         this.why = String(e?.message ?? e);
         this.failedAt = Date.now();
+        await pointView(null, cx).catch(() => {});
       } finally {
         this.busy = false;
         cx.notify();

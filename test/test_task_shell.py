@@ -72,9 +72,13 @@ console.log(JSON.stringify({ out, calls, focus, terms: st.terms }));
 TASK = {"terminal": "t1", "ref": "SHEP-25", "folder": "/work/wt-25", "machine": None, "key": "shepherdr#25", "state": "running"}
 
 
-def run_mod(steps, where=TASK, terms=None, folder_there=True):
+def run_mod(steps, where=TASK, terms=None, folder_there=True, view=None):
     with open(LAYOUT) as f:
         tree = json.load(f)
+    if view:  # left pointed at from before (a reload of the mod)
+        col = find(tree, "tasks-thread-shell")
+        col["children"][0]["hidden"] = True
+        col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": view}})
     inp = {"layout": tree, "where": where, "terms": terms or [], "steps": steps, "folderThere": folder_there}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "shell.mjs")
@@ -84,6 +88,17 @@ def run_mod(steps, where=TASK, terms=None, folder_there=True):
     if p.returncode != 0:
         raise AssertionError(p.stderr)
     return json.loads(p.stdout)
+
+
+def find(n, i):
+    if isinstance(n, dict):
+        if n.get("id") == i:
+            return n
+        for c in n.get("children") or []:
+            hit = find(c, i)
+            if hit:
+                return hit
+    return None
 
 
 def runs(calls):
@@ -139,6 +154,14 @@ class ShellView(unittest.TestCase):
         r = run_mod([{}], where=dict(TASK, state="done"))
         self.assertEqual(runs(r["calls"]), [])
         self.assertIn("done", r["out"][-1]["why"])
+
+    def test_a_done_tasks_ended_shell_left_in_the_layout_is_not_shown(self):
+        r = run_mod([{}], where=dict(TASK, state="done"), view="t40")
+        self.assertEqual((r["out"][-1]["view"], r["out"][-1]["hostHidden"]), (None, False))
+
+    def test_another_tasks_shell_left_in_the_layout_is_not_shown_while_starting(self):
+        r = run_mod([{}], view="t40")
+        self.assertEqual(r["out"][-1]["view"], "t90")
 
     def test_none_when_its_folder_is_gone(self):
         r = run_mod([{}], folder_there=False)
@@ -242,16 +265,6 @@ class InstallerComparesWithoutTheShell(unittest.TestCase):
         sh = SourceFileLoader("shepherdr_cli", os.path.join(ROOT, "bin", "shepherdr")).load_module()
         shipped = open(LAYOUT, "rb").read()
         d = json.loads(shipped)
-
-        def find(n, i):
-            if isinstance(n, dict):
-                if n.get("id") == i:
-                    return n
-                for c in n.get("children") or []:
-                    hit = find(c, i)
-                    if hit:
-                        return hit
-            return None
         col = find(d, "tasks-thread-shell")
         col["children"][0]["hidden"] = True
         col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": "t42"}})
