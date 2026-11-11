@@ -35,6 +35,8 @@ export class AskCards {
     this.open = new Set();
     // The questions card the keys go to (the last one pressed).
     this.keyed = null;
+    // Told of each "Other" box made: (box, shown), so the chat leaves the keyboard in it (main.js keepField()).
+    this.onField = null;
   }
 
   // The strips of one ask's card. opts: { who (whose ask: "Claude", "HERD-12"), links (more
@@ -192,7 +194,11 @@ export class AskCards {
     const q = this.state(ask);
     q.other[i] = q.other[i] ?? "";
     if (!ask.words.questions[i].multi) q.picks[i] = new Set();
-    if (!q.boxes[i]) { q.boxes[i] = InputState.new({ placeholder: "Your answer" }); q.boxes[i].on("change", (_e, cx) => cx.notify()); }
+    if (!q.boxes[i]) {
+      const box = q.boxes[i] = InputState.new({ placeholder: "Your answer" });
+      box.on("change", (_e, cx) => cx.notify());
+      this.onField?.(box, () => this.states.get(ask.id) === q && q.boxes[i] === box && q.other[i] !== null && q.step === i);
+    }
     const box = q.boxes[i];
     cx.timer.after(0, () => box.focus());
   }

@@ -44,6 +44,7 @@ import * as strips from "./strips.js";
 import { button, red, green, amber, H, RADIUS, TEXT, toast, toastWho, plainError } from "./ui.js";
 import { openViewer, noteChatArea } from "./artview.js";
 import { KEY_HOLDER, holdKeys, keysElsewhere, keysOver, dialogHolds, liveHolder } from "./keyholder.js";
+import { boxRefocus } from "./core/chat-focus.js";
 import { SecretCards } from "./secret-card.js";
 import * as secrets from "./secrets.js";
 import { taskDot, ownProgress, pie } from "./dot.js";
@@ -427,6 +428,7 @@ export default class Chat extends View {
     this.secretCards = new SecretCards();
     // Kept or declined here: its quiet line, where its card was.
     this.secretCards.onEnd = (ask, how) => this.secretEnded(ask, how);
+    for (const c of [this.cards, this.workerCards, this.codexCards, this.secretCards]) c.onField = (box, shown) => this.keepField(box, shown);
     // Cards' controls by id: their drawn widths, for which one a press was on (strips.js hit()).
     this.cardW = new Map();
     this.readingAsks = new Set();
@@ -447,6 +449,7 @@ export default class Chat extends View {
     this.findIdx = 0;
     this.findBox = InputState.new({ placeholder: WORDS.find });
     this.findBox.on("change", (_e, cx) => { this.findIdx = 0; this.findJump = true; cx.notify(); });
+    this.keepField(this.findBox, () => this.finding);
     // "Show thinking" is gone: so is its stored setting.
     if (shared("chat.showThinking") != null) cx.timer.after(0, () => setShared("chat.showThinking", null));
     this.uses = {};
@@ -4346,21 +4349,26 @@ export default class Chat extends View {
     // Never while a dialog over it holds the keyboard (New space's field, #752): Herdr counts this pane focused under it.
     // Never over a text selection (GitHub #916, SHEP-192): a drag over the messages selects them, and the box taking the
     // keyboard then made Ctrl+C copy nothing. The timers check again when they fire: a drag can start after they're set.
-    // Nor while a field in an overlay holds it (the artifact viewer's Mark up, a recipe's form: keysOver(), SHEP-9).
+    // Nor while a field in an overlay holds it (the artifact viewer's Mark up, a recipe's form: keysOver(), SHEP-9), nor
+    // one in this chat (a card's Other..., find, a secret's box: keepField(), SHEP-23).
     const dialog = () => dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
-    if (paneFocused && showsBox && !dialog() && !this.pressMoved && (!this.wasFocused || !this.hadBox)) {
-      cx.timer.after(0, () => { if (!this.pressMoved && !dialog()) this.box.focus(); });
-      cx.timer.after(600, () => { if (!this.pressMoved && !dialog()) this.box.focus(); });
-    }
+    const free = () => !this.pressMoved && !dialog() && !this.fieldHolds();
     // The pane focused again (a command, a click on its header) can leave the box without the
     // keyboard: give it back, unless the person just pressed something inside the chat.
     // Not while the keyboard is somewhere else in the window that isn't a pane (#633): a task's chat, the list or its
     // search in the Tasks panel (shared "keyboard.holder", keyHolder()); Herdr still counts this pane as focused then.
-    else if (paneFocused && showsBox && !this.call && !this.pressMoved && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
-      && !keysElsewhere(liveHolder(shared(KEY_HOLDER)), this.areaKey())
-      && Date.now() - (this.refocusAt ?? 0) > 1000) {
+    const how = boxRefocus({
+      paneFocused, showsBox, entered: !this.wasFocused || !this.hadBox, dialog: dialog(), pressMoved: this.pressMoved,
+      field: this.fieldHolds(), call: Boolean(this.call), boxFocused: this.focused ?? null,
+      elsewhere: keysElsewhere(liveHolder(shared(KEY_HOLDER)), this.areaKey()),
+      pressAt: this.press?.at ?? 0, refocusAt: this.refocusAt ?? 0,
+    });
+    if (how === "enter") {
+      cx.timer.after(0, () => { if (free()) this.box.focus(); });
+      cx.timer.after(600, () => { if (free()) this.box.focus(); });
+    } else if (how === "back") {
       this.refocusAt = Date.now();
-      cx.timer.after(0, () => this.box.focus());
+      cx.timer.after(0, () => { if (!this.fieldHolds()) this.box.focus(); });
     }
     // Cmd+Shift+L named this chat (mods/tabs-tasks compose(), shared "chat.composereq", SHEP-15): its box gets the
     // keyboard, whatever was keeping it off (a text selection, another holder); again once Herdr has settled the pane's
@@ -4377,6 +4385,18 @@ export default class Chat extends View {
 
 
 
+
+  // A text field in the chat besides its box (find, a card's Other..., a secret's box): while it has the keyboard,
+  // refocus() leaves it there (SHEP-23). shown: whether it is still on screen (one taken away keeps no blur to say so).
+  keepField(state, shown = () => true) {
+    state.on("focus", () => { this.field = { state, shown }; });
+    state.on("blur", () => { if (this.field?.state === state) this.field = null; });
+  }
+
+  fieldHolds() {
+    if (this.field && !this.field.shown()) this.field = null;
+    return Boolean(this.field);
+  }
 
   render(cx) {
     return inRender(() => this.draw(cx));

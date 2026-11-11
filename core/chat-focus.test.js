@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { composeTarget } from "./chat-focus.js";
+import { boxRefocus, composeTarget } from "./chat-focus.js";
 
 describe("Cmd+Shift+L: which chat's box gets the keyboard (SHEP-15)", () => {
   test("the chat last used, while it is on screen", () => {
@@ -21,5 +21,32 @@ describe("Cmd+Shift+L: which chat's box gets the keyboard (SHEP-15)", () => {
   test("a space without an Assistant gets one; no space, nothing", () => {
     expect(composeTarget({ focused: "t1", shown: [] })).toBe("new");
     expect(composeTarget({ shown: [], space: false })).toBe(null);
+  });
+});
+
+describe("the chat's box takes the keyboard back (mods/chat refocus())", () => {
+  const blurred = { paneFocused: true, showsBox: true, boxFocused: false, pressAt: 0, refocusAt: 0, now: 10_000 };
+
+  test("the box blurred with nothing else holding the keyboard: back to the box, as before", () => {
+    expect(boxRefocus(blurred)).toBe("back");
+    expect(boxRefocus({ paneFocused: true, showsBox: true, entered: true })).toBe("enter");
+  });
+
+  test("a text field in the chat has the keyboard (a card's Other..., find, a secret's box, SHEP-23): it stays there", () => {
+    expect(boxRefocus({ ...blurred, field: true })).toBeNull();
+    expect(boxRefocus({ paneFocused: true, showsBox: true, entered: true, field: true })).toBeNull();
+  });
+
+  test("kept as before: a press just now, a refocus a moment ago, a drag, a call, another holder, a dialog", () => {
+    expect(boxRefocus({ ...blurred, pressAt: 9_000 })).toBeNull();
+    expect(boxRefocus({ ...blurred, refocusAt: 9_500 })).toBeNull();
+    expect(boxRefocus({ ...blurred, pressMoved: true })).toBeNull();
+    expect(boxRefocus({ ...blurred, call: true })).toBeNull();
+    expect(boxRefocus({ ...blurred, elsewhere: true })).toBeNull();
+    expect(boxRefocus({ ...blurred, boxFocused: null })).toBeNull();
+    expect(boxRefocus({ ...blurred, boxFocused: true })).toBeNull();
+    expect(boxRefocus({ paneFocused: true, showsBox: true, entered: true, dialog: true })).toBeNull();
+    expect(boxRefocus({ ...blurred, paneFocused: false })).toBeNull();
+    expect(boxRefocus({ ...blurred, showsBox: false })).toBeNull();
   });
 });
