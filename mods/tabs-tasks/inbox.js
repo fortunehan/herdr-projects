@@ -25,19 +25,22 @@
 // the sidebar's working counts), "inbox.autos".
 // Live agents are read where the items are made (items()).
 //
-// Claude's hook only asks the chat while someone touches data/chat-asks/open/<terminal>: the
-// chat does while it shows the agent; the engine does for every Claude agent here that isn't
-// on screen as a terminal, so their asks wait for its chat. When one comes on screen as a
-// terminal, its waiting asks are released and Claude asks in the terminal as usual.
+// The hook (mods/chat/ask-hook.sh) asks the chat every time, whoever reads it (the web app, a
+// phone); the flag the engine touches (data/chat-asks/open/<terminal>) matters only where hc or jq
+// is missing. Claude shows its own prompt in its terminal meanwhile; Codex waits on the hook, so
+// a Codex agent's ask is released once its terminal comes on screen, and Codex asks there.
 //
 // Shared: the source is lib/inbox.js; bin/sync-shared copies it into each mod in lib/COPIES.
 // Edit lib/inbox.js, never a mod's copy, then run bin/sync-shared.
 
 import { LINE_MAX, REASONS, fit, reqReason, reportReason } from "./core/needs.js";
+import { SH } from "./core/paths.js";
+import { dirsReady } from "./dirs.js";
 import { notifies, spaceOfTerminal } from "./notify.js";
 import { toast, toastWho as whoOf } from "./ui.js";
 import { exec, appHome, home, focused, shared, setShared, watchFolder, readTextFile, writeTextFile, playSound, settings, run, layout } from "herdr";
 import { terminals, agents, panes, spaces } from "./live.js";
+import { chatPane } from "./core/spaces.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 export const ASKS = () => `${appHome()}/data/chat-asks`;
@@ -51,7 +54,7 @@ const claudeHere = (k) => k.state === "live" && !String(k.address).includes("/")
 
 // The chat pane showing a terminal, if one is open.
 export function chatOf(address) {
-  const c = terminals().find((k) => k.address === address)?.labels?.["herdr.chat"];
+  const c = chatPane(terminals().find((k) => k.address === address));
   return c && panes().some((p) => p.pane === c && p.mod === "chat") ? c : null;
 }
 
@@ -115,8 +118,13 @@ async function readAsks() {
   const r = await exec("sh", ["-c", 'cd "$1/req" 2>/dev/null || exit 0; for f in *.json; do [ -f "$f" ] || continue; p=${f%.json}; p=${p##*.}; if kill -0 "$p" 2>/dev/null; then echo "$f"; else rm -f "$f"; fi; done; true', "x", ASKS()]);
   const ids = r.stdout.split("\n").filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)).sort();
   const asks = ids.map((id) => ({ id, terminal: id.split(".")[0] }));
-  // One that came on screen as a terminal goes back to it.
-  for (const a of asks) if (onScreen(a.terminal)) await release(a.id);
+  // Codex's (it waits on the hook) that came on screen as a terminal goes back to it; Claude's
+  // terminal shows its prompt anyway, and releasing it would close its card on the web too.
+  const shown = asks.filter((a) => onScreen(a.terminal));
+  if (shown.length) {
+    const r = await exec("sh", ["-c", 'cd "$1/req" && shift && for i; do grep -q \'"turn_id"\' "$i.json" 2>/dev/null && echo "$i"; done; true', "x", ASKS(), ...shown.map((a) => a.id)]).catch(() => null);
+    for (const id of (r?.stdout ?? "").split("\n").filter(Boolean)) await release(id);
+  }
   const left = asks.filter((a) => !onScreen(a.terminal));
   // A few seconds in, an ask Herdr shows no agent waiting for gets its own alert.
   const now = Date.now();
@@ -224,7 +232,7 @@ function readTasks() {
 }
 
 async function readTasksNow() {
-  const r = await exec("sh", ["-c", 'ls "$HOME/.herdr/tasks/.remote" 2>/dev/null; true']).catch(() => null);
+  const r = await exec("sh", ["-c", SH + 'ls "$SHEP_TASKS/.remote" 2>/dev/null; true']).catch(() => null);
   const where = [null, ...(r?.stdout ?? "").split("\n").filter(Boolean)];
   const tasks = [], autos = [], running = [];
   for (const machine of where) {
@@ -232,7 +240,8 @@ async function readTasksNow() {
     const list = await json(CLI(), [...on, "list", "--all", "--json"]);
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
-      if (x.state === "running") running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
+      // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
+      if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
       // Ready: herdr-task's own status, the same as Tasks' Ready group and Shepherdr's green
       // counts (not Merging, nor one whose agent asks: that agent is a "blocked" item).
       // "asks": its agent waits (a live blocked terminal, an item of its own): kept for its reason.
@@ -262,7 +271,7 @@ async function readTasksNow() {
 const told = new Set();
 async function readRetries() {
   let rows = {};
-  try { rows = JSON.parse(await readTextFile(`${home()}/.herdr/tasks/.retries.json`) ?? "{}") ?? {}; } catch {}
+  try { rows = JSON.parse(await readTextFile(`${(await dirsReady()).tasks}/.retries.json`) ?? "{}") ?? {}; } catch {}
   const over = Object.values(rows).filter((r) => r?.role === "coordinator" && r.over && r.reason && !r.stale
     && terminals().some((k) => k.address === r.address && k.state === "live"))
     .map((r) => ({ terminal: r.address, why: r.reason, cut: r.cut, at: r.at ?? 0 }));

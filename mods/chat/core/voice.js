@@ -1,16 +1,19 @@
 // A voice call, as the same on both sides: the window's call (mods/chat/voice.ts, the machine's microphone and
 // speaker) and the web app's (service/voice.ts, the phone's). An ElevenLabs voice agent talks with the person and
-// reads, opens and changes Shepherdr for them through four client tools (look, open, send, act), which the service
+// reads, opens and changes Shepherdr for them through four client tools (look, open, send, act) and call_view (the web call's full screen or minimized), which the service
 // answers, and, for whatever those can't do, a fifth: screen, which reads and acts on the very screen the call runs on
-// (core/screen.js; the page or the window does it) (service/voice-tools.ts; the window's call asks its machine's service). It is told the called agent's
-// replies and status as [Update] lines. Plain data and words: each side does its own audio, files and sockets.
+// (core/screen.js; the page or the window does it) (service/voice-tools.ts; the window's call asks its machine's service).
+// SHEP-105: a call is with Shepherdr itself, not one chat: it is told, as [Update] lines, the replies and status of the
+// chats it sent to and the one on screen, and anything anywhere that needs the person (service/voice-hear.ts).
+// Plain data and words: each side does its own audio, files and sockets.
 // Shared core: the source is core/voice.js.
 
 import { DOS } from "./screen.js";
+import { PY } from "./paths.js";
 
 export const API = "https://api.elevenlabs.io/v1";
 
-export const prompt = (who, where = "") => `You are Shepherdr's voice: the person's hands-free assistant for Shepherdr, an app where AI coding agents work on tasks across their machines. You are on a call that started in ${who}'s chat.
+export const prompt = (where = "") => `You are Shepherdr's voice: the person's hands-free assistant for Shepherdr, an app where AI coding agents work on tasks across their machines. The person called Shepherdr itself, not one agent: you are the one voice for all of it. You take their requests to any space's Assistant or any task's agent, tell them when those reply or need them, and open things on their screen. You never hand the call over to another voice, and you never speak as an Assistant or agent: you pass things on and report back.
 
 How Shepherdr works:
 - A machine (this computer, a Mac mini, a VM) has spaces. A space is a project folder with its own Assistant: an AI agent the person talks to in the space's chat, which plans, writes task briefs, starts and checks tasks.
@@ -21,25 +24,32 @@ How Shepherdr works:
 - Artifacts are pages agents publish (proofs, reports). Secrets are kept by name: never read a value out, never ask for one by voice.
 
 Your tools:
-- look: read anything: where the call is and what is on screen, a chat (latest messages or a search), spaces, machines, tasks, one task, Needs you, news, Autopilot, automations, settings, secret names, artifacts.
-- open: show something in the person's app (the one the call runs in): a space, a task and its tab, the Tasks panel (filtered by state or words), Needs you, the Artifacts, Files or Changes panel, the space's terminal, an artifact, a Settings page, or back to the call's chat.
-- send: write in a chat as the person: the call's chat, any space's Assistant or a task's agent.
+- look: read anything: where the call is and what is on screen, a chat (latest messages or a search), spaces, machines (with their health and Claude Code / Codex plan limits), tasks, one task, Needs you, news, Autopilot, automations, settings, secret names, artifacts.
+- look data sees everything the app shows, every panel, dialog, number and list: the app's live data and what panels read as they open (usage insights, a task's changes, pull request and checks, an artifact's content, model menus...). With no path it lists them all; a path drills into any item; query searches every value. If the other looks don't have it, look data does: never say you can't see something the app shows before you tried it.
+- open: show something in the person's app (the one the call runs in): a space, a task and its tab, the Tasks panel (filtered by state or words), Needs you, the Artifacts, Files or Changes panel, the space's terminal, an artifact, a Settings page, or a chat.
+- send: write in a chat as the person: any space's Assistant or a task's agent (by its name or id), or "here": the chat on screen.
 - act: change things directly (accept, start, schedule, stop, rename, Autopilot, settings...).
 - screen: the person's screen itself, for anything the tools above can't do: look lists what is on it as numbered things (e12 button "Close"), then click, type, select, scroll, a key, back or close act on one, and its answer is the screen again.
+- call_view: the call's own view in the web app: full (the call fills the screen) or minimized (the app shows, the call in its bar). "Back to the call", "maximize the call", "full screen": call_view full. "Minimize the call", "hide the call": call_view minimized. Never screen for this.
 
 How you speak (a voice call: this matters most):
 - One or two short sentences a turn, never more, then stop. Answer only what was asked: the gist, not every detail a tool gave (leave out numbers like percentages and pull requests unless asked).
 - No preambles, no recaps, no lists read out, no "I can also..." offers. More detail only when asked.
 - Numbers and names plainly ("SHEP 45", "three tasks"). Never read out code, paths, links or ids letter by letter.
+- Before a tool that takes a moment (look, send, act, screen), first say one or two words in the call's language ("On it.", "Checking."), never a sentence about what you will do. Then the tool, then the answer.
+- One calm, even tone all call long, whatever the news: never audio tags or stage directions in brackets ("[happy]", "[whispers]").
 - Silence is fine. If the person says nothing, say nothing: never ask if they're there or want something. Just wait.
+- Speak the language the person speaks: English at first, theirs as soon as they speak another (switch with language_detection), back when they go back, any number of times. The exact words below are English: say them in the call's language.
 
-Moving around (switch to a space or chat, open a task, tab, panel, artifact or Settings, go back, close, scroll):
+Moving around (switch to a space or chat, open a task, tab, panel, artifact or Settings, go back, close, scroll, the call's view):
+- Opening or moving around minimizes a full-screen call by itself, so the person sees it: no call_view first.
 - Once the tool's answer says ok, reply with one word: "Opened.", "Switched.", "Closed." or "Done." Nothing else: no sentence, nothing about what is on screen, no offer.
 - Only if it failed or more than one thing fits, say so in a few words, without listing the rest: "No banana space.", or for two spaces called Home, "Two Home spaces: <machine> or <machine>?" with the machines' real names.
 - Say what is on screen only when the person asks what it shows.
 
 Ending the call:
-- When the person wants to end the call, ask exactly "Are you sure you want to end the call?" After a clear yes, say "Bye." and use end_call. No yes, no end.
+- When the person wants to end the call, ask exactly "Are you sure you want to end the call?" After a clear yes, say "Bye." and use hang_up. No yes, no end.
+- Never end the call for any other reason: not after a send, not when a task is done, not when it's quiet. The person keeps the call as long as they want.
 - Never talk about clicking or buttons to end it, and never use screen to hang up.
 
 Rules:
@@ -47,38 +57,51 @@ Rules:
 - Prefer look, open, send and act: quicker and surer. Use screen only when none of them fits (scroll, close, go back, a button or field they don't cover, exactly what the screen shows).
 - With screen: look before you act, use only refs from its latest answer, and read the new screen in each answer.
 - Before any act, or a screen click that deletes, merges, accepts, stops or can't be undone: say in a few words what it will do and ask. Set confirmed true only after a clear yes on this call; without one, use confirmed false (it changes nothing and says what to ask). Never type a secret or a password.
-- "Here", "this task", "that one": what the call's context says (look with what "here" when unsure), or what you just talked about.
-- Making or planning things (a new task or space, a brief, an automation, Autopilot's direction, anything that takes judgment): send it to that space's Assistant in the person's words with every detail, then say you passed it on.
+- "Here", "this task", "this space": what the screen shows now (look with what "here" when unsure). "That one": what you just talked about.
+- Who to send to: the space or task the person names; else the one on screen; else the one you last sent to. If none fits or several do, ask which in a few words.
+- Making or planning things (a new task or space, a brief, an automation, Autopilot's direction, anything that takes judgment): send it to that space's Assistant in the person's words with every detail.
+- Never wait on an agent: they take minutes. After a send, say only "Passed it to <name>." (the space's or task's name) and stop. Their reply comes later as an [Update].
 - Send without asking only when the person clearly asked you to. Never send greetings, chit-chat or talk about the call. Unsure if it's meant for an agent? Ask.
-- Lines starting [Update] come from Shepherdr, not the person: never send them on. Say what matters in one short sentence; always say when an agent needs the person. Where the app is now is for you only: say nothing about it.
+- The person's ask comes first: when they just asked or told you something, answer that first. [Update]s that came in meanwhile wait until it is dealt with, then come briefly after. Never start a reply with an [Update].
+- Lines starting [Update] come from Shepherdr, not the person: never send them on. They are replies and status from the chats you sent to or the one on screen, and anything anywhere that needs the person. Say what matters in one short sentence, naming who ("The shop Assistant says the build is fixed."). Always say when someone needs the person. Several at once: one or two short sentences for all ("Two things: ..."). Where the app is now is for you only: say nothing about it.
 - open and screen act on the screen the call runs on. Say something is on screen only when the tool's answer says so; else say it didn't open and why. If several spaces or machines fit, ask which.${where ? `\n\nWhere the call is now: ${where}` : ""}`;
 
-const PLACE = { type: "string", description: "Which one: a space's name, a task's id (SHEP-45), a machine's or artifact's name, or \"here\" (the call's or what is on screen). Leave out for all." };
-const tool = (name, description, props, required = []) =>
-  ({ type: "client", name, description, expects_response: true, response_timeout_secs: 30, parameters: { type: "object", properties: props, required } });
+const PLACE = { type: "string", description: "Which one: a space's name, a task's id (SHEP-45), a machine's or artifact's name, or \"here\" (what is on screen). Leave out for all." };
+// SHEP-113: the person always knows the call heard them. pre_tool_speech "force": the agent says a word or two
+// ("On it.") before the tool runs, "auto" where ElevenLabs decides from how long the tool takes (open and screen are
+// quick, and say one word after: SHEP-83); tool_call_sound "typing" plays while a tool it spoke before runs long (the
+// call's "still working"). https://elevenlabs.io/docs/agents-platform/api-reference/agents/create (pre_tool_speech,
+// tool_call_sound, tool_call_sound_behavior on a client tool) and
+// https://elevenlabs.io/docs/eleven-agents/customization/tools/tool-configuration/tool-call-sounds
+const tool = (name, description, props, required = [], speech = "force") =>
+  ({ type: "client", name, description, expects_response: true, response_timeout_secs: 30, pre_tool_speech: speech,
+    tool_call_sound: "typing", tool_call_sound_behavior: "auto", parameters: { type: "object", properties: props, required } });
 
 /** What a look can read, an open can show and an act can do (service/voice-tools.ts answers each). */
-export const LOOKS = ["here", "chat", "spaces", "machines", "tasks", "task", "needs", "news", "autopilot", "automations", "settings", "secrets", "artifacts"];
+export const LOOKS = ["here", "chat", "spaces", "machines", "tasks", "task", "needs", "news", "autopilot", "automations", "settings", "secrets", "artifacts", "data"];
 export const OPENS = ["space", "task", "tasks", "needs", "artifacts", "files", "changes", "terminal", "artifact", "settings", "chat"];
-export const TABS = ["chat", "terminal", "files", "changes", "pr", "browser", "review"];
+export const TABS = ["chat", "terminal", "pr", "browser", "review"];
+/** the call's own view (call_view): full screen or minimized */
+export const VIEWS = ["full", "minimized"];
 export const ACTS = ["accept", "start", "schedule", "unschedule", "stop", "resume", "done", "reopen", "delete", "pin", "unpin",
   "autopilot_on", "autopilot_off", "autopilot_run", "rename_space", "remove_space", "setting", "forget_secret", "delete_artifact"];
 
 export const TOOLS = [
-  tool("look", "Read Shepherdr: where the call is, a chat, spaces, machines, tasks, a task's details, what needs the person, news, Autopilot, automations, settings, secret names, artifacts. Answers in short sentences.", {
-    what: { type: "string", enum: LOOKS, description: "What to read. here: the call's context and what is on screen. chat: a chat's latest messages (or a search with query). tasks: a list (filter with id and query). task: one task's details, summary, proof and pull request." },
+  tool("look", "Read Shepherdr: where the call is, a chat, spaces, machines (health, plan limits), tasks, a task's details, what needs the person, news, Autopilot, automations, settings, secret names, artifacts, and data: everything else the app shows anywhere. Answers in short sentences.", {
+    what: { type: "string", enum: LOOKS, description: "What to read. here: the call's context and what is on screen. chat: a chat's latest messages (or a search with query). tasks: a list (filter with id and query). task: one task's details, summary, proof and pull request. data: everything the app shows: no path lists every part; path drills in; query searches values." },
     id: PLACE,
+    path: { type: "string", description: "data: where to read, a part then keys, ids or names, like \"machines/mini/stats/limits/codex\", \"insights\", \"changes\" (id: the task), \"file/README.md\" (id: the task or space)." },
     query: { type: "string", description: "Words to search for (a chat, tasks, settings, artifacts), or a task state to filter tasks (working, ready, needs, queued, scheduled, todo, done)." },
     count: { type: "integer", description: "How many chat messages or items (default 6, at most 30)." },
   }, ["what"]),
-  tool("open", "Show something in the person's app, the one the call runs in: a space, a task (on a tab), the Tasks panel, Needs you, the shown space's Artifacts, Files or Changes panel or its Assistant's terminal, an artifact, a Settings page, or the call's chat.", {
+  tool("open", "Show something in the person's app, the one the call runs in: a space, a task (on a tab), the Tasks panel, Needs you, the shown space's Artifacts, Files or Changes panel or its Assistant's terminal, an artifact, a Settings page, or a chat (a space's Assistant or a task's agent).", {
     what: { type: "string", enum: OPENS, description: "What to show. artifacts, files, changes, terminal: the shown space's panel (id a space's name to switch first). settings: id is the page (Secrets, Window, Voice...)." },
     id: PLACE,
-    tab: { type: "string", enum: TABS, description: "A task's tab: chat, terminal, files, changes, pr (pull request), browser, or review (a Ready task's Accept card)." },
+    tab: { type: "string", enum: TABS, description: "A task's tab: chat, terminal, pr (pull request: its changes), browser, or review (a Ready task's Accept card)." },
     query: { type: "string", description: "tasks: a state to filter by (working, ready, needs, queued, scheduled, todo, done) and/or words to type in its filter box." },
-  }, ["what"]),
-  tool("send", "Write a message as the person: to the call's chat (default), a space's Assistant (by the space's name) or a task's agent (by its id). Also how to ask an Assistant to make, plan or change things.", {
-    to: { type: "string", description: "A space's name (its Assistant), a task's id (its agent), or \"here\" (the call's chat, the default)." },
+  }, ["what"], "auto"),
+  tool("send", "Write a message as the person: to a space's Assistant (by the space's name) or a task's agent (by its id), or the chat on screen (\"here\"). Also how to ask an Assistant to make, plan or change things.", {
+    to: { type: "string", description: "A space's name (its Assistant), a task's id (its agent), or \"here\" (the chat on screen)." },
     text: { type: "string", description: "The message, in the person's words, tidied, with every detail." },
   }, ["text"]),
   tool("screen", "The person's screen itself, as numbered things (refs): read it, then act on one. Only for what look, open, send and act can't do: scroll, close, go back, press a button, fill or pick in a field, expand or collapse. Its answer is always the screen as it is now.", {
@@ -89,7 +112,7 @@ export const TOOLS = [
     submit: { type: "boolean", description: "type: press Enter after." },
     find: { type: "string", description: "Words to list only matching things (a long screen)." },
     confirmed: { type: "boolean", description: "click: true only after the person said yes to a click that deletes, merges, stops or can't be undone." },
-  }, ["do"]),
+  }, ["do"], "auto"),
   tool("act", "Change something directly. Ask the person first and set confirmed true only after a clear yes; with confirmed false nothing changes and it says what to ask.", {
     action: { type: "string", enum: ACTS, description: "accept: a Ready task (merges it). start: a task now. schedule: a task later (value: when, \"in 2h\", \"tomorrow 9:00\"). unschedule. stop: a working task's agent. resume: an ended task's agent. done: mark a task done without merging. reopen: a done or ready task. delete: a task. pin, unpin: a task. autopilot_on, autopilot_off, autopilot_run (wake now): a space's. rename_space (value: the new name). remove_space: forget a space (its folder stays). setting: change a setting (key: its name, value, id: a space or leave out for everywhere). forget_secret: delete a secret by name (key). delete_artifact." },
     id: PLACE,
@@ -97,6 +120,12 @@ export const TOOLS = [
     value: { type: "string", description: "The new value: a time for schedule, a name for rename_space, a setting's value." },
     confirmed: { type: "boolean", description: "True only after the person said yes to exactly this on the call." },
   }, ["action", "confirmed"]),
+  // SHEP-124: the call's own view, never by screen clicks (the web app's full-screen call, SHEP-118)
+  tool("call_view", "Show the call full screen (full: the call fills the person's screen) or minimize it (minimized: the app shows, the call in its bar). The web app's call only. Opening things minimizes it by itself.", {
+    view: { type: "string", enum: VIEWS, description: "full: the full-screen call. minimized: the app, with the call in its bar." },
+  }, ["view"], "auto"),
+  // SHEP-173: Shepherdr ends the call (hangUpGuard), only right after the person said yes to ending it
+  tool("hang_up", "End the call. Only right after the person said yes to \"Are you sure you want to end the call?\" on this call: never after a send, a task or a quiet moment.", {}, [], "auto"),
 ];
 
 /** What the agent says first: short, then it listens. */
@@ -105,15 +134,40 @@ export const FIRST = "Hi, go ahead.";
 // ElevenLabs' own system tools, listed with ours (a built_in_tools field beside inline tools is dropped): end_call hangs
 // up (only after the person's yes, the prompt says), skip_turn stays quiet.
 const system = (name, description, params = {}) => ({ type: "system", name, description, params: { system_tool_type: name, ...params } });
+// SHEP-173: no end_call system tool. The model used it on its own, right after "Passed it to <name>." (ElevenLabs'
+// records: four of the person's calls ended so, with no yes asked); hang_up is ours, and Shepherdr ends the call only
+// when the person just said yes (hangUpGuard).
 export const SYSTEM_TOOLS = [
-  system("end_call", "End the call. Only after the person said yes to ending it on this call."),
   system("skip_turn", "Say nothing this turn: when the person says to wait or hold on, or is clearly talking to someone else.", { wait_timeout_secs: -1 }),
+  // switches the call's language (voice and words) all call long, not only at its start (SHEP-104)
+  system("language_detection", "Switch the call's language: as soon as the person speaks another language than the call's, or asks for one. Again each time they change, back to English too.", { only_at_conversation_start: false }),
 ];
 
+// Every language a call can switch to: all ElevenLabs takes as a language preset (its create API lists them when given
+// another), English being the call's own. The speech model speaks them all (eleven_v4_turbo, GET /v1/models). None has
+// a first message of its own: a call always starts in English (language_presets).
+export const TTS_MODEL = "eleven_v4_turbo";
+
+// SHEP-162: one even voice all call long. With eleven_v4_turbo ElevenLabs turns on expressive mode by default: the LLM
+// writes audio tags ("[happy]", "[whispering]") that the voice acts out, so it swung from dark to light within a call.
+// Off, with the voice pinned (ElevenLabs' default agent voice, Eric) and its stability up from 0.5 (ElevenLabs:
+// 0.60-0.85 keeps delivery consistent), the same voice says every turn in every language.
+export const VOICE_ID = "cjVigY5qzO86Huf0OWal";
+export const TTS = { model_id: TTS_MODEL, voice_id: VOICE_ID, expressive_mode: false, stability: 0.75, similarity_boost: 0.75, speed: 1, agent_output_audio_format: "pcm_16000" };
+export const LANGUAGES = ("zh es hi pt pt-br fr de ja ar ko id it nl tr pl ru sv tl fil ms ro uk el cs da fi bg hr sk ta vi no hu af hy " +
+  "as ast az be bn bs ca yue et gl ka gu ha he is ga jv kn kk ky lv lt lb mk ml mt mi mr my mn ne oc or ps fa pa " +
+  "sr sd sl so sw tg te th ur uz yo cy am lo lg sn ckb wo zu").trim().split(" ");
+
 // Silence: the agent never prompts a quiet person (turn_timeout -1: no "are you there?"), and only a call silent for
-// 15 minutes ends (a forgotten call stops costing); any call ends after an hour (ElevenLabs' default is 10 minutes).
-export const SILENT_END_SECS = 900;
-export const MAX_CALL_SECS = 3600;
+// 30 minutes ends (a forgotten call stops costing); any call ends after two hours, the most ElevenLabs allows
+// (SHEP-173: it refuses more than 7200; its default is 10 minutes).
+export const SILENT_END_SECS = 1800;
+export const MAX_CALL_SECS = 7200;
+
+// SHEP-113: the model slow to start a reply: after 3 s a short filler of its own words (in the call's language), the
+// fixed one only if it can't. turn.soft_timeout_config, timeout_seconds 0.5..8 (-1 off):
+// https://elevenlabs.io/docs/eleven-agents/customization/conversation-flow
+export const SOFT_TIMEOUT = { timeout_seconds: 3, message: "One moment.", use_llm_generated_message: true };
 
 // The dedicated "Herdr chat" voice agent, made with the person's key (its id kept in <app home>/secrets) and brought
 // up to this spec whenever it changes (SPEC, ensureAgent).
@@ -124,12 +178,14 @@ export const agentSpec = () => ({
       first_message: FIRST,
       language: "en",
       // a model that is good with tools (ElevenLabs' advice), quick enough to talk
-      prompt: { prompt: prompt("an agent"), llm: "claude-sonnet-5-5", tools: [...TOOLS, ...SYSTEM_TOOLS] },
+      prompt: { prompt: prompt(), llm: "claude-sonnet-5-5", tools: [...TOOLS, ...SYSTEM_TOOLS] },
     },
-    turn: { turn_timeout: -1, silence_end_call_timeout: SILENT_END_SECS },
+    turn: { turn_timeout: -1, silence_end_call_timeout: SILENT_END_SECS, soft_timeout_config: SOFT_TIMEOUT },
     conversation: { max_duration_seconds: MAX_CALL_SECS },
+    // Scribe hears any language; the speech model speaks them all, in the same voice
     asr: { user_input_audio_format: "pcm_16000" },
-    tts: { agent_output_audio_format: "pcm_16000" },
+    tts: TTS,
+    language_presets: Object.fromEntries(LANGUAGES.map((l) => [l, { overrides: {} }])),
   },
   platform_settings: {
     auth: { enable_auth: true },
@@ -192,14 +248,133 @@ export const agentFile = (id, tag, spec) =>
   `# The "Herdr chat" voice agent, made by Shepherdr with ELEVENLABS_API_KEY.\nELEVENLABS_AGENT_ID=${id}\nELEVENLABS_KEY_TAG=${tag}\nELEVENLABS_SPEC=${spec}\n`;
 
 // What starts the conversation, once its socket is open: the prompt with where the call is.
-export const opening = (who, where = "") => ({ type: "conversation_initiation_client_data",
-  conversation_config_override: { agent: { prompt: { prompt: prompt(who, where) }, first_message: FIRST } } });
+export const opening = (where = "") => ({ type: "conversation_initiation_client_data",
+  conversation_config_override: { agent: { prompt: { prompt: prompt(where) }, first_message: FIRST } } });
 
 /** The person moved in the app during the call: a quiet note of where they are now. */
 export const whereLine = (where) => ({ type: "contextual_update", text: `[Update] The person's app now shows: ${String(where).slice(0, 600)}` });
 
-// The coding agent replied in the chat: the voice agent says it.
-export const replyLine = (who, text) => ({ type: "user_message", text: `[Update] ${who} replied in the chat: """${String(text).slice(0, 3000)}""" Tell the person what it says, briefly.` });
+// An agent the call follows replied in its chat: the voice agent says it. A long reply goes whole; one past REPLY_MAX
+// is cut and says so, so the voice agent knows the rest is in the chat (#785).
+export const REPLY_MAX = 40000;
+export function replyLine(who, text) {
+  const t = String(text);
+  const body = t.length > REPLY_MAX ? `${t.slice(0, REPLY_MAX)}""" (cut short here; the rest is in the chat: look at the chat to read it.)` : `${t}"""`;
+  return { type: "user_message", text: `[Update] ${who} replied: """${body} Tell the person what it says, briefly.` };
+}
+
+/**
+ * Several [Update]s that came together, as one (SHEP-105): quiet notes stay quiet notes; what is said out loud goes as
+ * one message the agent says in a sentence or two ("Two things: ..."), held while the person talks (the caller's job).
+ * null: nothing.
+ */
+export function batchLines(lines) {
+  const loud = lines.filter((l) => l?.type === "user_message").map((l) => String(l.text).replace(/^\[Update\]\s*/, ""));
+  const quiet = lines.filter((l) => l?.type === "contextual_update");
+  const out = [...quiet];
+  if (loud.length === 1) out.push({ type: "user_message", text: `[Update] ${loud[0]}` });
+  else if (loud.length > 1) out.push({ type: "user_message", text: `[Update] ${loud.length} things came in together:\n${loud.map((t, i) => `${i + 1}. ${t}`).join("\n")}\nTell the person all of them in one or two short sentences.` });
+  return out;
+}
+
+// ---- what the call is doing (SHEP-113) -------------------------------------------------------
+
+const LOOK_WORDS = { here: "looking at the screen", chat: "reading the chat", spaces: "checking spaces", machines: "checking machines",
+  tasks: "checking tasks", task: "reading the task", needs: "checking what needs you", news: "reading the news", autopilot: "checking Autopilot",
+  automations: "checking automations", settings: "reading settings", secrets: "checking secret names", artifacts: "checking artifacts", data: "looking it up" };
+const ACT_WORDS = { accept: "accepting the task", start: "starting the task", schedule: "scheduling the task", unschedule: "unscheduling the task",
+  stop: "stopping the agent", resume: "resuming the agent", done: "marking it done", reopen: "reopening the task", delete: "deleting the task",
+  pin: "pinning the task", unpin: "unpinning the task", autopilot_on: "turning Autopilot on", autopilot_off: "turning Autopilot off",
+  autopilot_run: "waking Autopilot", rename_space: "renaming the space", remove_space: "removing the space", setting: "changing a setting",
+  forget_secret: "forgetting a secret", delete_artifact: "deleting the artifact" };
+
+/** What a tool call is doing, in a few plain words for the call's status ("checking tasks", "sending to shop"). */
+export function toolWords(name, params = {}) {
+  const p = params && typeof params === "object" ? params : {};
+  const s = (v) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, 40) : "");
+  if (name === "look") return LOOK_WORDS[p.what] ?? "looking";
+  if (name === "open") return "opening it";
+  if (name === "send") { const to = s(p.to); return !to || to === "here" ? "sending to this chat" : `sending to ${to}`; }
+  if (name === "act") return p.confirmed === true ? ACT_WORDS[p.action] ?? "making the change" : "checking";
+  if (name === "screen") return p.do === "look" ? "reading the screen" : "using the screen";
+  if (name === "call_view") return p.view === "full" ? "showing the call" : "minimizing the call";
+  if (name === "hang_up") return "ending the call";
+  return "working";
+}
+
+/**
+ * SHEP-113: the person's ask comes first. Fed the voice agent's events as they come (seen), holding() says whether
+ * the call still owes the person an answer: from their words (user_transcript) until the agent replied
+ * (agent_response) with no tool running, and again after each tool's result (its answer follows). [Update]s wait
+ * while it holds (the caller's job), so a reply never starts with them. A model that never answers holds no longer
+ * than maxMs.
+ */
+export function turnGate(maxMs = 30000) {
+  let owed = false, at = 0, tools = 0;
+  return {
+    seen(type, now = Date.now()) {
+      if (type === "user_transcript") { owed = true; at = now; }
+      else if (type === "client_tool_call") { tools++; at = now; }
+      else if (type === "client_tool_result") { tools = Math.max(0, tools - 1); owed = true; at = now; }
+      else if (type === "agent_response") { owed = false; at = now; }
+    },
+    // a tool that never came back holds four times as long at most
+    holding: (now = Date.now()) => (tools > 0 && now - at < maxMs * 4) || (owed && now - at < maxMs),
+  };
+}
+
+/**
+ * SHEP-173: whether hang_up may end the call now. Fed the voice agent's events as they come (seen): the call ends only
+ * when the agent's last words before the person's latest were a question ("Are you sure you want to end the call?", in
+ * any language) and no other tool ran since the person spoke. A hang_up right after a send ("Passed it to ...") is
+ * refused, with what to do instead (REFUSED).
+ */
+export function hangUpGuard() {
+  let lastSaid = "", asked = false, spoke = false, toolsSince = 0;
+  return {
+    seen(type, text = "") {
+      if (type === "agent_response") lastSaid = String(text ?? "");
+      else if (type === "user_transcript") { spoke = true; asked = /[?？؟]\s*$/.test(lastSaid.trim()) || /[?？؟]/.test(lastSaid); toolsSince = 0; }
+      else if (type === "client_tool_call" && text !== "hang_up") toolsSince++;
+    },
+    may: () => spoke && asked && toolsSince === 0,
+  };
+}
+export const HUNG_UP = JSON.stringify({ ok: true, result: "The call ends once you've said Bye." });
+export const REFUSED = JSON.stringify({ ok: false, result: "Not ended: the person didn't just say yes to ending the call. Never end it on your own. If they asked to end it, ask exactly \"Are you sure you want to end the call?\" and use hang_up only after their yes; else carry on, say nothing about it." });
+
+/** Why the voice agent's socket closed, in a few plain words for "Call ended: ..." (null: the agent hung up after the
+ *  person's yes, nothing to say). ElevenLabs closes with 1000 at its limits and says which in the reason. */
+export function closeWords(code, reason = "") {
+  const r = String(reason ?? "");
+  if (/max(imum)? duration|duration/i.test(r)) return `it reached the ${Math.round(MAX_CALL_SECS / 3600)}-hour limit`;
+  if (/silen|inactiv|no user message/i.test(r)) return "it was quiet for a long time";
+  if (code === 1000) return "the voice service ended it";
+  if (code !== 1006 && r.trim()) return `the voice service closed it (${r.trim().slice(0, 120)})`;
+  return "the connection to the voice service was lost";
+}
+
+/** SHEP-173: the end chime, two soft notes going down (E5, then C5, about half a second), as 16-bit mono PCM at rate:
+ *  played whenever a call ends, at the system's volume. */
+export function chimePcm(rate = 16000) {
+  const notes = [[659.25, 0, 0.22], [523.25, 0.16, 0.34]];
+  const len = Math.ceil(rate * 0.52);
+  const out = new Int16Array(len);
+  for (const [f, start, dur] of notes) {
+    const a = Math.floor(start * rate), n = Math.floor(dur * rate);
+    for (let i = 0; i < n && a + i < len; i++) {
+      const t = i / rate;
+      // a quick soft attack, then a bell-like fade
+      const env = Math.min(1, t / 0.012) * Math.exp(-t * 7);
+      const v = 0.22 * env * (Math.sin(2 * Math.PI * f * t) + 0.25 * Math.sin(4 * Math.PI * f * t));
+      out[a + i] = Math.max(-32767, Math.min(32767, out[a + i] + v * 32767));
+    }
+  }
+  return out;
+}
+
+/** Something anywhere needs the person (a question, a secret, a task Ready): one short line, said out loud. */
+export const needLine = (what) => ({ type: "user_message", text: `[Update] ${String(what).slice(0, 600)}. Tell the person in one short line.` });
 
 // Its status changed: a quiet note, or (it needs the person) said out loud. null: nothing to say.
 export function statusLine(who, status, asking) {
@@ -237,6 +412,7 @@ export const unreachable = (name) => `Can't reach ${name}, which keeps your secr
 // key). Reads the vault's Everywhere entry, else the old secrets/elevenlabs.env there.
 export const KEY_SCRIPT = `
 import hashlib, json, os
+${PY}
 H = os.path.expanduser("~")
 app = os.environ.get("HERDR_APP_HOME") or os.path.join(H, ".config", "herdr-app")
 def env(p):
@@ -255,7 +431,7 @@ def env(p):
     return out
 key = ""
 try:
-    with open(os.path.join(H, ".herdr", "vault.json")) as f:
+    with open(SHEP(".herdr/vault.json")) as f:
         v = json.load(f)
     key = next((e["value"] for e in v.get("secrets", []) if e.get("name") == "${KEY_NAME}" and e.get("scope") == "everywhere" and isinstance(e.get("value"), str)), "")
 except Exception:
@@ -317,6 +493,50 @@ async function askKey(io, name) {
   try { r = JSON.parse(String(out ?? "").trim().split("\n").pop()); } catch {}
   if (!r || typeof r.key !== "string") return null;
   return { key: r.key, agent: r.key && typeof r.agent === "string" && /^[\w-]{1,200}$/.test(r.agent) ? r.agent : "", from: name };
+}
+
+// ---- usage -------------------------------------------------------------------------------
+// SHEP-128: what is left of the person's ElevenLabs plan, under Plan usage beside Claude Code's and Codex's (the web's
+// Settings › Machines, the serving machine's block), read with the voice key: GET <API>/user/subscription. Its
+// character_count / character_limit are the plan's credits, refilled at next_character_count_reset_unix (seconds).
+// A key restricted without "User → Read" gets 401 missing_permissions: a plain hint, never an error wall.
+
+export const USAGE_PATH = "/user/subscription";
+export const USAGE_NO_ACCESS = "Give your ElevenLabs key 'User → Read' access to see usage here: elevenlabs.io › Developers › API Keys, edit the key, set User to Read.";
+
+/** ElevenLabs' answer as a plan read (core/machines.js planRows' shape): { state: "ok", plan, account, windows: [Credits] },
+ *  { state: "no-access", why: the hint }, or { state: "unknown", why }. at: when it was read (ms). */
+export function usageRead(status, body, at = Date.now()) {
+  let d = null;
+  try { d = JSON.parse(body); } catch {}
+  if (status === 401 || status === 403) {
+    const det = d?.detail;
+    if (det?.status === "missing_permissions" || /missing.{0,20}permission|user_read/i.test(String(det?.message ?? det ?? ""))) {
+      return { state: "no-access", why: USAGE_NO_ACCESS, at };
+    }
+  }
+  if (status < 200 || status >= 300) return { state: "unknown", why: sttError(status, body), at };
+  const used = Number(d?.character_count), limit = Number(d?.character_limit);
+  if (!Number.isFinite(used) || !Number.isFinite(limit)) return { state: "unknown", why: "ElevenLabs gave no usage numbers.", at };
+  const reset = Number(d?.next_character_count_reset_unix);
+  const n = (x) => Math.round(x).toLocaleString("en-US");
+  const tier = typeof d?.tier === "string" ? d.tier.replace(/_/g, " ").trim().slice(0, 40) : "";
+  return {
+    state: "ok", at,
+    ...(tier ? { plan: tier } : {}),
+    account: limit > 0 ? `${n(used)} of ${n(limit)} credits used` : `${n(used)} credits used`,
+    windows: limit > 0 ? [{ name: "Credits", used: Math.max(0, Math.min(100, (used / limit) * 100)), ...(reset > 0 ? { resets_at: reset * 1000 } : {}) }] : [],
+  };
+}
+
+/** Reads it: the plan read, or null when there is no key (voice isn't set up: nothing shows). key(): voiceKey's answer. */
+export async function readUsage(key, fetchFn = fetch, now = () => Date.now()) {
+  const k = await key();
+  if ("error" in k) return k.why === "none" ? null : { state: "unknown", why: k.error, at: now() };
+  let r;
+  try { r = await fetchFn(`${API}${USAGE_PATH}`, { redirect: "error", headers: { "xi-api-key": k.key }, signal: AbortSignal.timeout(15000) }); }
+  catch { return { state: "unknown", why: "Can't reach ElevenLabs from this machine.", at: now() }; }
+  return usageRead(r.status, await r.text().catch(() => ""), now());
 }
 
 // ---- dictation ----------------------------------------------------------------------------

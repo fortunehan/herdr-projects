@@ -1,7 +1,7 @@
 # Tasks panel and task view
 
-Window: `mods/tasks/main.js` (T), `mods/tasks-menu/main.js` (TM), `mods/chat/panel.js` (P), `mods/task-files/main.js`
-(F), `mods/task-changes/main.js` (C), `mods/task-pr/main.js` (PR), `mods/task-browser/main.js` (B). Web:
+Window: `mods/tasks/main.js` (T), `mods/tasks-menu/main.js` (TM), `mods/chat/panel.js` (P), `mods/task-pr/main.js`
+(PR), `mods/task-browser/main.js` (B). Web:
 `web/plugins/tasks/client.tsx` (W), `web/src/groups.ts` (G), `web/src/App.tsx` TaskPage (A), `web/src/Panel.tsx`
 (TaskTabs, TabBody) (N), `web/plugins/worktree/client.tsx` (K), `web/plugins/browser/client.tsx` (BR), and the data
 from `service/compat.ts`, `service/worktree.ts`.
@@ -9,8 +9,7 @@ from `service/compat.ts`, `service/worktree.ts`.
 Shared, so the two can't drift: `core/tasks.js` (status words, `capital`, `day`, the second line and minutes left,
 already the service's), `core/needs.js` (`fit` to 40 characters, `REASONS`), `core/menus.js` (`taskMenu`),
 `core/worktree.js` (new: `VIEW_WORDS`, `CHANGE_WORDS`, `CHECK_WORDS`, `PR_STATES`, `LIST_DIR`, `dirEntries`,
-`markOf`). `core/worktree.test.js` checks every one of those words is still in the window's mods, word for word, and
-that Files lists a folder with the window's own script; `test/test_repo.py` `test_task_views_from_one_core` checks the
+`markOf`). `core/worktree.test.js` checks the Pull request words are still in mods/task-pr, word for word; `test/test_repo.py` `test_task_views_from_one_core` checks the
 web and the service read them from core.
 
 State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
@@ -21,8 +20,7 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 |---|---|---|---|
 | Title | T:370 "Tasks", semibold | A SideList `Tasks` (beside Artifacts as tabs) | ◇ the window's Artifacts is its own panel; the web's narrow screens put the two side panels under one head (artifacts and header pages) |
 | ⋯ Group by | T:372-375 icon button, tooltip "Group by" | W TasksMenu, label "Group by" | ✓ |
-| Group by menu | TM:20-39 heading "Group by"; Status, Space, Machine, Machine › Space (the machine ones only while more than one machine has tasks); check on the current | W TasksMenu + `multiMachine`, `grouping` | ✓ |
-| One machine with tasks | T:274 Machine shows as Status, Machine › Space as Space | W `grouping` | ✓ |
+| Group by menu | TM heading "Group by"; For you, Space, Status (shared "tasks.group"; props().current from the panel); check on the current | W TasksMenu, G `groupChoices` | ✓ (SHEP-98) |
 | Search field | T:86,489-503 "Filter tasks", magnifier, F key hint while empty and unfocused, X "Clear" | W TaskFilter (FilterBox) | ✓ |
 | F to the field, Esc clears | T:384, T:505-510 | keyboard plugin, FilterBox | ✓ |
 | What search finds | T:472-475 id, title, status line, summary, #PR, space, list, machine | W `found` | ✓ (summary isn't in the snapshot; the status line and report are) |
@@ -41,14 +39,12 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 
 | Element | Window | Web | State |
 |---|---|---|---|
-| Pinned first | T:324 "Pinned", status order, every one | G groupTasks | ✓ |
+| For you (default) | T `groupNow`, `spaceGroup`, `doneLine`: For you (everything that needs you, then Ready, each row saying its space), Pinned, each space's other work in status order under its name (emoji or #, count; machine quiet only when two machines have a space of that name; a click opens the space), Done as "N done today" until opened; old "tasks.groupby" Status with Split by space on becomes For you | G groupTasks `you`, W YouHeading/SpaceHeading/DoneLine (sticky headings), kernel `DONE_OPEN`, groups.ts loadGroups (same migration) | ✓ (SHEP-98) |
+| Pinned | T: first by space or status; For you: after For you, without its Needs you and Ready ones | G groupTasks | ✓ (SHEP-98) |
 | Needs you next | T:325-326 inbox items and tasks Herdr saw go wrong | W + G | ✓ |
 | By status | T:328-334 Ready, Merging, Working, Queued, Scheduled, To do, Done; only groups holding something | G | ✓ |
 | Scheduled group | core ORDER after Queued, the next to start first (core `order`) | G `GROUPS` | ✓ (SHEP-38) |
-| By space | T:339-345 one group per task list, named by the space in its folder (else the list's name), sidebar order; machine quiet after it with more machines | G projectGroups by `listName` and machine | ✓ fixed (grouped by the space that started the task) |
-| By machine | T:350-351 machine heading, brighter, hairline above all but the first | W MachineHeading | ✓ |
-| Machine › Space | T:353-354 machine heading with count over its spaces' groups; folding it hides them | W | ✓ |
-| Split by space | T `bySpace`, `subGroup`: by status, each status's tasks (not Pinned's or Needs you's) and the automations under a light heading per machine · space while in more than one (emoji or #, name, machine quieter, count; the open space first, then latest news, then sidebar order); rows under it drop where; each folds and cuts its Done on its own; shared "tasks.split", a check in the ⋯ | W SubHeading, G `bySpace`/`shownSplit`, kernel `setSplit` (kept on this device) | ✓ (SHEP-65) |
+| By space | T:339-345 one group per task list, named by the space in its folder (else the list's name), sidebar order; machine quiet after it only when two machines have a space of that name | G projectGroups by `listName` and machine | ✓ fixed (grouped by the space that started the task) |
 | Heading | T group(): chevron in the icon column, label small, its count right by it ("Ready 2"), room above each group; the whole heading folds | W GroupHeading/FoldHeading | ✓ (SHEP-34) |
 | Folded headings remembered | T:551-554 | kernel `toggleShut`, groups.ts saveShut | ✓ |
 | Alt-click folds siblings | (none) | W FoldHeading | ◇ a keyboard nicety for wide screens; does nothing unless Alt is held |
@@ -78,9 +74,9 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 | Queued | "After HERD-3", "Waits: …", "Starts soon" | compat `sub` (core queueReason) | ✓ |
 | Scheduled | a grey calendar (mods/tasks/scheduled.svg), its time until it starts under it ("6h", core `leftOf`), "Starts Today 18:00" (core `startsLine`) | ui.tsx `.dot.scheduled` (the same drawing), TaskDot `until` (core `untilShort`, live), compat `sub` | ✓ (SHEP-38) |
 | Ready | "Ready 5m ago" + Review (opens the Accept card) | compat `sub` + W `accept` | ✓ |
-| Merging | "Merges once its checks pass" | compat `sub` | ✓ |
+| Merging | "Merges once its checks pass", "Merges once it's approved", "In GitHub's merge queue" (#743, #802) | compat `sub` | ✓ |
 | To do, Done | one line, place at the end | W Line one-line | ✓ |
-| Where it is | T:700-706 machine (not this computer) · space, only what the grouping doesn't say; Settings "Where on task rows" off: none | W whereOf / autoWhere, `names` | ✓ |
+| Where it is | T whereOf: the space, only where the grouping doesn't say it; never the machine (SHEP-98); Settings "Where on task rows" off: none | W whereOf / autoWhere, `names` | ✓ |
 | Place gives way | T line(): after the words, it takes only the room left and shrinks first | W Line: whole or not at all (wraps out of sight) | ✓ |
 | Place, phone | — | whole or not at all (it wraps out of sight), never a cut `m3 · shep…` | ◇ phone: a few letters of a place say nothing |
 | Accept | T:796-800 compact solid button at line 2's end, "Accepting…" while the Accept card's accept runs | W TaskRow `accept`, `useAccepting` + compat `accepting` (shared "tasks.accepting") | ✓ fixed |
@@ -125,38 +121,19 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 
 | Element | Window | Web | State |
 |---|---|---|---|
-| Tabs | P:340-348 Chat, Terminal, Files, Changes, Pull request (once it has one), Browser (add-on on) | N TaskTabs (registry order 10-50, itemsFor) | ✓ |
+| Tabs | P:363-372 Chat, Terminal, Pull request (once it has one), Artifacts, Browser (add-ons on); no Files or Changes (SHEP-143: the space's side panels) | N TaskTabs (registry order 10-50, itemsFor): on a desktop the header's own row, a segmented control right of the title as the Assistant's Chat · Terminal, wrapping under the title without room (SHEP-176); a phone's row under its header | ◇ one header row on the web's wider task view; the window's thread head is a narrow side block (3 rows, layouts/shepherdr.json 127) with no room beside its title |
+| Old Files/Changes links | voice nav: the service sends a task's files/changes as pr, else chat | `?item=files`/`diff` opens Pull request, else Chat (nav itemOfUrl); a saved panel item falls back to Terminal | ✓ |
 | Tabs without an agent | P:340-348 always | A TaskTabs always | ✓ fixed (hidden until an agent started) |
 | Switch in place | P:336 body stack | N TabBody | ✓ |
 | Terminal dead | P:342 dim, disabled, tooltip "Not running" | N `termRunning`, aria-disabled, title "Not running" | ✓ fixed (opened onto nothing) |
 | Ended while shown | P:327 back to its chat | N TabBody/TaskTabs | ✓ fixed |
-| Files, Changes never dim | (window) | K no useOff | ✓ fixed (dimmed "is done: its worktree was put away") |
 | PR once found by gh | P:337 also when gh found one the record lacks | N itemsFor: the record's PR only | ◇ the service fills `pr` from herdr-task's record; a PR an agent opened itself shows once herdr-task records it |
 | Never started | P:273, T:746 "This task hasn't started." / its queue reason | A `body` | ✓ fixed (2.1's "is starting…" words) |
 
-### Files
+### Files and Changes
 
-| Element | Window | Web | State |
-|---|---|---|---|
-| Bar | F:166-171 the folder ("~/…", "vm:/…"); with a file: back, tooltip "All files", the file's path | K FilesView/FileView Bar, service `dir` root | ✓ fixed |
-| Listing | F:17-32 one folder at a time as opened, .git left out, folders first, 500 a folder | K Entries/Folder, service `dir` (core LIST_DIR, dirEntries) | ✓ fixed (was git ls-files, a search box) |
-| Row | F:150-155 chevron, folder/file icon, name, change letter A/M/D/U colored | K Entries, service `marks` (core markOf) | ✓ fixed |
-| Empty | F:173 error "This task's folder can't be read. It may have been removed after the task finished.", "Loading files…", "No files", "No folder for this task" | K, core VIEW_WORDS | ✓ fixed |
-| Limited | F:174 "File list limited to 500 entries per folder and 5,000 total" | K | ✓ |
-| File | F:133-140,175 "Loading file…", "This file is no longer available.", "Binary file · No text preview", "… (file truncated)" | K FileView | ✓ fixed |
-| Refresh button, find box, two panes | (none) | removed | ✓ fixed |
-| Read again | F:39 every 10 s and on change | K every 10 s | ✓ |
-
-### Changes
-
-| Element | Window | Web | State |
-|---|---|---|---|
-| Bar | C:159-166 "N files" +a −d, then "Against main" / "Uncommitted" with the compare icon | K DiffView Bar (core filesCount, againstLine) | ✓ fixed |
-| List | C:167-175 at most 200 high; colored dot (word on hover: Added, Changed, Deleted, Conflict), folder dim + name, +a −d | K | ✓ fixed (a tree with letters) |
-| First file open | C:89-90 its diff shows until you pick another; a second tap closes it | K `open` | ✓ fixed |
-| Diff | C:138-143,177-181 hunk rows, one number column, + green, − red tint | K PatchView | ✓ fixed (two number columns) |
-| Words | C:73,76,93,106-116,148-150,176,182 "This task's folder isn't a git repository.", "This repository has no commits.", "Loading changes…", "No changes against main", "No uncommitted changes", "Select a file to see its changes.", "Can't preview this diff. It's too large or unreadable.", "Binary file changed", "No text diff available", "Showing the first 1,000 changed files" | K + service/worktree.ts, core VIEW_WORDS | ✓ fixed |
-| Two panes, Refresh | (none) | removed | ✓ fixed |
+No longer a task's tabs (SHEP-143). The web's FilesView and DiffView (K) show only in the space's Files and Changes
+side panels (web/plugins/coordinators SpacePanel), the window's are Herdr's own `files` and `changes` panels.
 
 ### Pull request
 

@@ -7,14 +7,16 @@ const { typing: slashTyping, match: slashMatch } = SL as any
 import { openAccept } from '@client/screens/Accept.tsx'
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ComponentType, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from 'react'
 import { act, chatName, definePlugin, getDraft, getState, goChat, has, holdReload, openArtifact, openItem, openNeeds, openTask, registry, setDraft, setOutbox, setUI, taskOf, useDraft, useSnap, useStore, useUI, type UI } from '@client/kernel.ts'
-import { keyOf, partsOf, priorOf, reasonOf, SEND_TIMEOUT, type Outgoing } from '@client/outbox.ts'
+import { anchorOf, keyOf, partsOf, placesOf, priorOf, reasonOf, SEND_TIMEOUT, type Outgoing } from '@client/outbox.ts'
+import { dropFiles, keepFile, keptFile, postFile, retrying, sweepFiles } from '@client/uploads.ts'
 import { AlertIcon, BackIcon, CameraIcon, CheckIcon, CopyIcon, Count, DeleteIcon, dimmed, Dot, DownIcon, DownloadIcon, Empty, field, FileIcon, ic, IconButton, KeyIcon, LinkButton, LiveWave, MachineIcon, Menu, MenuItem, MenuSeparator, MenuSetting, MicIcon, ModeIcon, MoreIcon, NextIcon, PageIcon, PlanIcon, PlusIcon, Primary, QuestionIcon, ReplyIcon, RestartIcon, roundBtn, SearchIcon, SecretField, Sent, SmileIcon, Tab, Tabs, TextBox, UpIcon, useElapsed, XIcon } from '@client/ui.tsx'
 import { canDictate, dictate, dictSample, type Dictation } from '@client/dictation.ts'
-import { extOf, isImage } from '@shared/files.ts'
-import { modelCommand, modeName, taskChatId, type CardAsk, type Chat, type MergeEvidence, type Message, type Place, type Question, type ReplyQuote, type SecretAsk, type UpdateCard } from '@shared/types.ts'
+import { extOf, isImage, isVideo } from '@shared/files.ts'
+import { modelCommand, modeName, taskChatId, type CardAsk, type Chat, type Choice, type MergeEvidence, type Message, type Place, type Question, type ReplyQuote, type SecretAsk, type UpdateCard } from '@shared/types.ts'
 import { sendsOnTap } from '@shared/alerts.ts'
 import { buzz, ForkIcon, mine, openBar, openPicker, quick, react, RewindIcon } from '@plugins/reactions/client.tsx'
 import { EDGE } from '@client/gestures.ts'
+import { enterHint, sendsNow } from '@client/enter.ts'
 import { still, useArrive } from '@client/motion.ts'
 import { draggingFiles, dropped, named, pasted } from './paste.ts'
 import { dayLabel } from './days.ts'
@@ -23,6 +25,7 @@ import { Fold } from './fold.tsx'
 import { Markdown } from './markdown.tsx'
 import { answeredBy, cancelReply, canReply, isArtifact, jumpTo, startReply } from './reply.ts'
 import { typing, working } from './typing.ts'
+import { suggestionOf, suggestionsOn } from './suggest.ts'
 import { JobsSheet, JobsTag, NeedsYou, openSubagent, TurnLine, useSubagent, WorkingLine } from './activity.tsx'
 import { ClockIcon } from '@heroicons/react/16/solid'
 import { AskedRow, Band, BriefRow, Chips, EndedRow, ErrorRow, NoteRow, Notice, HeadRow, ImagesLine, NewsRow, onTerminal, PilotRow, PublishingRow, questionsBelow, ReplyLine, Thumbs, WORDS } from './rows.tsx'
@@ -97,7 +100,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
   const [width, setWidth] = useState(0)
   const shots = pics?.length ? (
     <Thumbs
-      files={pics.map((m) => ({ name: m.file!.name, path: m.file!.path, url: fileUrl(chat.key, m.file!.path) }))}
+      files={pics.map((m) => ({ name: m.file!.alt || m.file!.name, path: m.file!.path, url: fileUrl(chat.key, m.file!.path, false, 'thumb'), caption: caption(m) }))}
       chat={chat.key} you={you} faded={!!out && out.state === 'sending'} width={width}
       open={(i) => setUI({ photo: out ? { chat: chat.key, file: pics[i].file } : { chat: chat.key, msg: pics[i].id } })}
     />
@@ -204,7 +207,9 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
         {msg.file
           ? unit(
               <div data-anchor {...hold} className={clsx('relative max-w-full select-none [-webkit-touch-callout:none]', (canReact || pending) && pressable, touchFor(replies), you ? 'self-end' : 'self-start')}>
-                <FileTile name={msg.file.name} chat={chat.key} path={msg.file.path} tucked={!body && !!quote} />
+                {isVideo(msg.file.name)
+                  ? <VideoTile name={msg.file.name} alt={msg.file.alt} chat={chat.key} path={msg.file.path} tucked={!body && !!quote} />
+                  : <FileTile name={msg.file.name} chat={chat.key} path={msg.file.path} tucked={!body && !!quote} />}
               </div>,
               !body,
             )
@@ -223,7 +228,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
           : null}
         {!body && !msg.file && !art && reacted ? <div className="mt-1.5 flex gap-1">{edge}</div> : null}
         {art ? null : parts}
-        {out?.state === 'failed' && last ? <NotSent out={out} /> : null}
+        {out?.state === 'failed' && last ? <NotSent out={out} /> : out?.state === 'sending' && last ? <Sending out={out} /> : null}
       </div>
     </>
   )
@@ -316,8 +321,36 @@ function NotSent({ out, className }: { out: Outgoing; className?: string }) {
   )
 }
 
+/** under one still on its way: how it goes, in a quiet line (it isn't in the conversation until the agent has it):
+ *  its pictures going up, the message going in, or the network gone, and it goes by itself once it's back */
+function Sending({ out, className }: { out: Outgoing; className?: string }) {
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine !== false)
+  useEffect(() => {
+    const on = () => setOnline(navigator.onLine !== false)
+    addEventListener('online', on)
+    addEventListener('offline', on)
+    return () => {
+      removeEventListener('online', on)
+      removeEventListener('offline', on)
+    }
+  }, [])
+  const n = out.files.length
+  const pictures = out.files.every((f) => isImage(f.name)) ? (n === 1 ? 'picture' : 'pictures') : n === 1 ? 'file' : 'files'
+  const words = out.offline || !online ? 'Waiting for a connection. It sends by itself.' : out.up !== undefined && n ? `Uploading ${Math.min(out.up + 1, n)} of ${n} ${pictures}…` : 'Sending…'
+  return (
+    <div role="status" data-sending className={clsx('mt-1 flex items-center justify-end gap-1.5 text-[0.75rem] text-fg3 tabular-nums phone:text-[0.8125rem]', className)}>
+      <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-[currentColor] motion-safe:animate-pulse" />
+      {words}
+    </div>
+  )
+}
+
 /** take one you sent out of the chat, its words and files with it */
-const removeOut = (cid: string) => setOutbox((all) => all.filter((o) => o.cid !== cid))
+const removeOut = (cid: string) => setOutbox((all) => {
+  const o = all.find((x) => x.cid === cid)
+  if (o) void dropFiles(o.files.map((f) => f.path).filter(isStandIn))
+  return all.filter((x) => x.cid !== cid)
+})
 
 /** a hold on one still on its way (or ⋯ beside it, with a mouse): Remove takes it out, should it never come back. It
  *  opens above it: what is on its way is always at the end of the chat, over the box */
@@ -575,11 +608,42 @@ const tucks = 'shadow-[0_0_0_2px_var(--bg)]'
 const previews = new Map<string, string>()
 const baseName = (path: string) => path.split('/').pop() ?? path
 
-export const fileUrl = (chat: string, path: string, download = false) =>
-  (!download && previews.get(baseName(path))) || `api/file?chat=${encodeURIComponent(chat)}&path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`
+/** a file a chat shows, from the service; `small`: a big picture's thumbnail or a video's still (the service makes
+ *  them once, service/media.ts; a picture small enough comes as it is) */
+export const fileUrl = (chat: string, path: string, download = false, small?: 'thumb' | 'poster') =>
+  (!download && small !== 'poster' && previews.get(baseName(path))) ||
+  `api/file?chat=${encodeURIComponent(chat)}&path=${encodeURIComponent(path)}${download ? '&download=1' : ''}${small ? `&${small}=1` : ''}`
+
+/** an agent's words for its picture ("Before"), shown under it: none when they only repeat its file's name */
+const caption = (m: Message) => {
+  const alt = m.file?.alt?.trim()
+  return alt && m.who === 'agent' && alt !== m.file!.name && alt !== m.file!.name.replace(/\.[^.]+$/, '') ? alt : undefined
+}
 
 /** a picture on its own, with no words: it shows as a tile, and the viewer pages through every one in the chat */
 export const isPicture = (m: Message) => !!m.file && !m.text && !m.answered && isImage(m.file.name)
+
+/** a video an agent showed: a player in place, its still first, only what it plays loaded (a part at a time); one
+ *  that can't play here (another machine's too big to bring, a kind the browser lacks) is a file tile to download */
+function VideoTile({ name, alt, chat, path, tucked }: { name: string; alt?: string; chat: string; path: string; tucked?: boolean }) {
+  const [broken, setBroken] = useState(false)
+  if (broken) return <FileTile name={name} chat={chat} path={path} tucked={tucked} />
+  return (
+    <figure className={clsx('flex w-[min(100%,420px)] flex-col gap-1', tucked && tucks)}>
+      <video
+        controls
+        playsInline
+        preload="metadata"
+        poster={fileUrl(chat, path, false, 'poster')}
+        src={fileUrl(chat, path)}
+        aria-label={alt || name}
+        onError={() => setBroken(true)}
+        className="block max-h-[360px] w-full rounded-[8px] bg-black outline-1 -outline-offset-1 outline-fg/10"
+      />
+      <figcaption className="truncate px-0.5 text-[0.75rem] text-fg3 phone:text-[0.8125rem]">{alt || name}</figcaption>
+    </figure>
+  )
+}
 
 function FileTile({ name, chat, path, tucked }: { name: string; chat: string; path: string; tucked?: boolean }) {
   const ext = extOf(name)
@@ -626,11 +690,11 @@ function Album({ msgs, chat, from, out, last: lastPart }: { msgs: Message[]; cha
       {msgs[0].newSession ? <SessionLine /> : null}
       {msgs[0].reply ? <ReplyLine q={msgs[0].reply} chat={chat.key} you={you} /> : null}
       <Thumbs
-        files={msgs.map((m) => ({ name: m.file!.name, path: m.file!.path, url: fileUrl(chat.key, m.file!.path) }))}
+        files={msgs.map((m) => ({ name: m.file!.alt || m.file!.name, path: m.file!.path, url: fileUrl(chat.key, m.file!.path, false, 'thumb'), caption: caption(m) }))}
         chat={chat.key} you={you} width={width}
         open={(i) => setUI({ photo: out ? { chat: chat.key, file: msgs[i].file } : { chat: chat.key, msg: msgs[i].id } })}
       />
-      {out?.state === 'failed' && lastPart ? <NotSent out={out} className="self-end" /> : null}
+      {out?.state === 'failed' && lastPart ? <NotSent out={out} className="self-end" /> : out?.state === 'sending' && lastPart ? <Sending out={out} className="self-end" /> : null}
     </div>
   )
 }
@@ -1099,7 +1163,8 @@ export function ReplyOnCard({ ask, reply, task, source }: { ask: CardAsk; reply:
         </Sent>
       ) : ask.open ? (
         <>
-          <TextBox name="reply" data-kept label={`Reply to ${task}`} className={noteBox} placeholder="Type something…" value={text} onChange={setText} />
+          <TextBox name="reply" data-kept label={`Reply to ${task}`} className={noteBox} placeholder="Type something…" value={text} onChange={setText} enterKeyHint={enterHint()}
+            onKeyDown={(e) => { if (sendsNow(e, getState().ui.keyboard)) { e.preventDefault(); if (!busy && text.trim()) void send() } }} />
           <div className="flex items-center justify-end gap-2">
             {err ? <span role="alert" className="mr-auto text-[0.75rem] text-need phone:text-[0.8125rem]">{err}</span> : null}
             <Primary soft disabled={busy || !text.trim()} onClick={send}>
@@ -1140,14 +1205,24 @@ const Messages = memo(function Messages({ chat, from }: { chat: Chat; from: stri
   const outbox = useStore((s) => s.outbox)
   type Item = { at: number; msg: Message; out?: Outgoing; last?: boolean } | { at: number; album: Message[]; out?: Outgoing; last?: boolean }
   // held messages aren't in the conversation yet: they are rows over the box (Held), as the window's
-  const items: Item[] = chat.messages.filter((m) => !isHeld(m)).map((msg) => ({ at: msg.at ?? 0, msg }))
-  items.sort((a, b) => a.at - b.at)
-  // what you just sent comes last, in one list with the rest: when it comes back it keeps its place in the list, so
-  // nothing is drawn again (a picture doesn't load twice)
-  for (const out of outbox) {
-    if (out.chat !== chat.key || heldOut(out)) continue
+  const shown: Item[] = chat.messages.filter((m) => !isHeld(m)).map((msg) => ({ at: msg.at ?? 0, msg }))
+  shown.sort((a, b) => a.at - b.at)
+  // what you just sent, in one list with the rest: right after what was last when you sent it, so newer messages come
+  // under it and the chat keeps the order things were sent in (SHEP-93: one stuck at the bottom under everything
+  // newer). When it comes back it keeps its place in the list, so nothing is drawn again (a picture doesn't load twice)
+  const mine = outbox.filter((o) => o.chat === chat.key && !heldOut(o))
+  const places = placesOf(shown.map((it) => ('msg' in it ? { id: it.msg.id, cid: it.msg.cid } : { id: '' })), mine)
+  const extra = new Map<number, Item[]>()
+  for (const out of mine) {
     const parts = partsOf(out, chat)
-    parts.forEach((msg, i) => items.push({ at: out.at, msg, out, last: i === parts.length - 1 }))
+    const at = places.get(out.cid)!
+    const list = extra.get(at) ?? extra.set(at, []).get(at)!
+    parts.forEach((msg, i) => list.push({ at: out.at, msg, out, last: i === parts.length - 1 }))
+  }
+  const items: Item[] = []
+  for (let i = 0; i <= shown.length; i++) {
+    items.push(...(extra.get(i) ?? []))
+    if (i < shown.length) items.push(shown[i])
   }
   // as the window's rows: images sent with words go under them (an album of their own when they came alone); the
   // quiet lines (tools, a brief or another agent's message, task news, a publish on its way) sit tight together, one
@@ -1166,10 +1241,13 @@ const Messages = memo(function Messages({ chat, from }: { chat: Chat; from: stri
     }
     const words = last && 'msg' in last && last.msg.text && !last.msg.card ? last.msg : null
     const together = (m: Message) => !!words && words.who === m.who && words.at === m.at && words.cid === m.cid
-    if ('msg' in it && it.msg.images && together(it.msg)) { imgLines.set(words!, it.msg.images); continue }
+    // what goes under the words takes over their row's end: one on its way says how it goes under the last of it
+    // (SHEP-93: words with pictures that didn't go showed no Retry)
+    const under = () => { if (it.last) (last as Extract<Item, { msg: Message }>).last = true }
+    if ('msg' in it && it.msg.images && together(it.msg)) { imgLines.set(words!, it.msg.images); under(); continue }
     if (!('msg' in it) || !isPicture(it.msg)) { rows.push(it); continue }
     const m = it.msg
-    if (together(m)) { pics.set(words!, [...(pics.get(words!) ?? []), m]); continue }
+    if (together(m)) { pics.set(words!, [...(pics.get(words!) ?? []), m]); under(); continue }
     const prev = last && 'album' in last ? last.album.at(-1)! : null
     if (prev && prev.who === m.who && !m.newSession && !!prev.waiting === !!m.waiting && m.at === prev.at && prev.cid === m.cid) {
       const album = last as Extract<Item, { album: Message[] }>
@@ -1367,6 +1445,19 @@ const optionLook = 'group press relative flex min-h-10 w-full items-center gap-2
 
 /** several questions on one card, as 3.0's: a step for each (its header), its options, Other…, then a step to check
  *  the answers, each opening its question again, and one Submit */
+/** the preview of the option picked (else the first that has one), as Claude's prompt shows the one in focus: a
+ *  mockup or code in its own fixed-width well, scrolling inside itself (SHEP-139) */
+function OptionPreview({ choices, picked }: { choices: Choice[]; picked: number[] }) {
+  const at = picked.length === 1 && choices[picked[0]]?.preview ? picked[0] : choices.findIndex((c) => c.preview)
+  if (at < 0) return null
+  return (
+    <figure className="flex min-w-0 flex-col gap-1">
+      <figcaption className="text-[0.75rem] text-fg2 phone:text-[0.8125rem]">Preview · {choices[at].label}</figcaption>
+      <pre className="max-h-72 overflow-auto rounded-row bg-well p-3 font-mono text-[0.75rem]/5 text-fg shadow-[inset_0_0_0_1px_var(--line2)] phone:text-[0.8125rem]/5">{choices[at].preview}</pre>
+    </figure>
+  )
+}
+
 function StepsCard({ q, chat, source, steady }: { q: Question & { parts: NonNullable<Question['parts']> }; chat: Chat; source?: CardSource; steady?: boolean }) {
   const n = q.parts.length
   const [step, setStep] = useState(0)
@@ -1388,8 +1479,8 @@ function StepsCard({ q, chat, source, steady }: { q: Question & { parts: NonNull
     setPicks((p) => p.map((x, j) => (j !== i ? x : multi ? (x.includes(k) ? x.filter((y) => y !== k) : [...x, k].sort((a, b) => a - b)) : [k])))
     if (!multi) {
       setOthers((o) => o.map((x, j) => (j === i ? null : x)))
-      // one pick moves on: to the next question, or to the answers
-      setStep(i < n - 1 ? i + 1 : n)
+      // one pick moves on: to the next question, or to the answers; with previews it stays to show the one picked
+      if (!q.parts[i].choices.some((c) => c.preview)) setStep(i < n - 1 ? i + 1 : n)
     }
   }
   const submit = async () => {
@@ -1424,6 +1515,7 @@ function StepsCard({ q, chat, source, steady }: { q: Question & { parts: NonNull
               </span>
             </button>
           ))}
+          {part.multi ? null : <OptionPreview choices={part.choices} picked={picks[step]} />}
           <button type="button" aria-pressed={others[step] !== null} disabled={busy} className={optionLook}
             onClick={() => { setOthers((o) => o.map((x, j) => (j === step ? (x === null ? '' : null) : x))); if (!part.multi) setPicks((p) => p.map((x, j) => (j === step ? [] : x))) }}>
             <span aria-hidden="true" className={clsx('size-4 shrink-0 shadow-[inset_0_0_0_1.5px_var(--fg3)] group-aria-pressed:shadow-[inset_0_0_0_5px_var(--fg)]', part.multi ? 'rounded-[4px]' : 'rounded-full')} />
@@ -1432,9 +1524,9 @@ function StepsCard({ q, chat, source, steady }: { q: Question & { parts: NonNull
           {others[step] !== null ? (
             <input autoFocus aria-label="Your answer" placeholder="Your answer" className={noteBox} value={others[step]!}
               onChange={(e) => setOthers((o) => o.map((x, j) => (j === step ? e.target.value : x)))}
-              onKeyDown={(e) => e.key === 'Enter' && others[step]!.trim() && setStep(step + 1)} />
+              enterKeyHint="next" onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229 && others[step]!.trim() && setStep(step + 1)} />
           ) : null}
-          {step < n - 1 || part.multi || others[step] !== null ? (
+          {step < n - 1 || part.multi || others[step] !== null || part.choices.some((c) => c.preview) ? (
             <div className="flex justify-end"><button type="button" className="min-h-9 px-2 text-accent" onClick={() => setStep(step + 1)}>Next</button></div>
           ) : null}
         </>
@@ -1568,6 +1660,7 @@ function OneQuestionCard({ q, chat, msg, from, source, steady }: { q: Question; 
           </button>
         )
       })}
+      {sent || q.multi ? null : <OptionPreview choices={q.choices} picked={sel} />}
       {q.other && !sent ? (
         <input
           name="other"
@@ -1602,7 +1695,7 @@ function OneQuestionCard({ q, chat, msg, from, source, steady }: { q: Question; 
           {immediate && !q.noNote ? (
             <button type="button" disabled={busy} className="min-h-11 text-left text-accent" onClick={() => setComposing(true)}>Add a note</button>
           ) : null}
-          {(!q.other || tap) && !q.noNote && !immediate ? (
+          {(!q.other || tap || q.choices.some((c) => c.preview)) && !q.noNote && !immediate ? (
             <TextBox
               ref={noteRef}
               name="note"
@@ -1613,6 +1706,8 @@ function OneQuestionCard({ q, chat, msg, from, source, steady }: { q: Question; 
               placeholder={needNote ? 'Your note for the agent (needed to send it back)' : 'Add a note (optional)'}
               value={note}
               onChange={setNote}
+              enterKeyHint={enterHint()}
+              onKeyDown={(e) => { if (sendsNow(e, getState().ui.keyboard)) { e.preventDefault(); if (!busy && picked) void send() } }}
             />
           ) : null}
           {/* in Needs you, its room is kept: Sending… must not push the cards below under a thumb */}
@@ -1693,26 +1788,65 @@ export function SecretCard({ ask, chat, source }: { ask: SecretAsk; chat: Chat; 
 
 /* ---------- sending: it shows at once, and settles once it is in ---------- */
 
-async function deliver(o: Outgoing) {
-  const patch = (p: (x: Outgoing) => Partial<Outgoing>) => setOutbox((all) => all.map((x) => (x.cid === o.cid ? { ...x, ...p(x) } : x)))
-  // a reload now would cut it off on its way
-  const release = holdReload()
+/** being sent from this page now, by cid: each once */
+const delivering = new Set<string>()
+/** by cid: done once its send is over (in or failed), for the ones sent after it in its chat */
+const gates = new Map<string, Promise<void>>()
+
+/** send one on its way: its files up first (each once, again by itself when the network cut it off), then the message,
+ *  asked again with the same id while the network is the trouble (the server never sends it twice). It is "sent" only
+ *  once the server says the agent has it; else it fails, its words and files kept for Retry (SHEP-93) */
+async function deliver(cid: string) {
+  if (delivering.has(cid)) return
+  const first = getState().outbox.find((x) => x.cid === cid)
+  if (!first || first.state !== 'sending') return
+  delivering.add(cid)
+  // the agent gets them in the order they were sent: this one's message waits for the ones sent before it in this
+  // chat (words sent while earlier pictures still go up never overtake them); their files go up meanwhile
+  let opened!: () => void
+  const mine = new Promise<void>((r) => (opened = r))
+  const before = getState().outbox.filter((x) => x.chat === first.chat && x.cid !== cid && x.state === 'sending' && x.at <= first.at).map((x) => gates.get(x.cid)).filter(Boolean)
+  gates.set(cid, mine)
+  const patch = (p: (x: Outgoing) => Partial<Outgoing>) => setOutbox((all) => all.map((x) => (x.cid === cid && x.state === 'sending' ? { ...x, ...p(x) } : x)))
+  const since = first.at
+  const onWait = (offline: boolean) => patch((x) => (!!x.offline === offline ? {} : { offline: offline || undefined }))
+  const standIns = first.files.filter((f) => isStandIn(f.path)).map((f) => f.path)
   try {
-    // a file still uploading goes once it is up
-    const files = o.files.some((f) => uploads.has(f.path)) ? await uploaded(o.files) : o.files
-    if (files !== o.files) patch(() => ({ files }))
-    const r = (await act({ type: 'send', chat: o.chat, text: o.text, attachments: files.map((f) => f.path), cid: o.cid, reply: o.reply?.id, human: true, ...(o.hold ? { hold: true } : {}) } as never, AbortSignal.timeout(SEND_TIMEOUT))) as {
-      waiting?: boolean
-      waitsFor?: Outgoing['waitsFor']
-      at?: number
+    let up = 0
+    if (standIns.length) patch(() => ({ up: 0 }))
+    const files = await Promise.all(first.files.map(async (f) => {
+      if (!isStandIn(f.path)) return f
+      const path = await startUpload(first.chat, f.path, since)
+      up++
+      patch(() => ({ up }))
+      return { ...f, path }
+    }))
+    await Promise.all(before)
+    const o = getState().outbox.find((x) => x.cid === cid)
+    if (!o || o.state !== 'sending') return
+    if (standIns.length) patch(() => ({ files, up: undefined }))
+    // a reload now would cut it off on its way
+    const release = holdReload()
+    let r: { waiting?: boolean; waitsFor?: Outgoing['waitsFor']; at?: number }
+    try {
+      r = (await retrying(
+        () => act({ type: 'send', chat: o.chat, text: o.text, attachments: files.map((f) => f.path), cid, reply: o.reply?.id, human: true, ...(o.hold ? { hold: true } : {}) } as never, AbortSignal.timeout(SEND_TIMEOUT)),
+        since,
+        { onWait },
+      )) as typeof r
+    } finally {
+      release()
     }
     // the chat may already show it waiting (queued) or gone in: that knows better than the answer
     const serverAt = typeof r?.at === 'number' ? r.at : undefined
-    patch((x) => ({ state: 'sent', error: undefined, serverAt, ...(x.queued || x.wentAt ? {} : { waiting: r?.waiting || undefined, waitsFor: (r?.waiting && r.waitsFor) || undefined }) }))
+    patch((x) => ({ state: 'sent', error: undefined, offline: undefined, up: undefined, serverAt, ...(x.queued || x.wentAt ? {} : { waiting: r?.waiting || undefined, waitsFor: (r?.waiting && r.waitsFor) || undefined }) }))
+    void dropFiles(standIns)
   } catch (e) {
-    patch((x) => (x.state === 'sending' ? { state: 'failed', error: reasonOf(e) } : {}))
+    patch(() => ({ state: 'failed', error: reasonOf(e), offline: undefined, up: undefined }))
   } finally {
-    release()
+    delivering.delete(cid)
+    gates.delete(cid)
+    opened()
   }
 }
 
@@ -1725,9 +1859,9 @@ function retry(cid: string) {
   const s = getState()
   const o = s.outbox.find((x) => x.cid === cid)
   if (!o) return
-  const again: Outgoing = { ...o, cid: o.lost ? newCid() : o.cid, state: 'sending', error: undefined, lost: undefined, waiting: undefined, waitsFor: undefined, queued: undefined, serverAt: undefined, wentAt: undefined, busyAt: undefined, pastAt: undefined, at: Date.now(), prior: priorOf(s.chats[o.chat]) }
+  const again: Outgoing = { ...o, cid: o.lost ? newCid() : o.cid, state: 'sending', error: undefined, lost: undefined, waiting: undefined, waitsFor: undefined, queued: undefined, serverAt: undefined, wentAt: undefined, busyAt: undefined, pastAt: undefined, offline: undefined, up: undefined, at: Date.now(), prior: priorOf(s.chats[o.chat]), after: anchorOf(s.chats[o.chat]), before: s.outbox.filter((x) => x.chat === o.chat && x.cid !== cid).map((x) => x.cid) }
   setOutbox((all) => all.map((x) => (x.cid === cid ? again : x)))
-  deliver(again)
+  void deliver(again.cid)
 }
 
 /* ---------- composer ---------- */
@@ -1765,8 +1899,12 @@ function SlashList({ chatKey, text, pick }: { chatKey: string; text: string; pic
   )
 }
 
-function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder: string; cli: string }) {
+function Composer({ chatKey, placeholder, cli, suggest = null }: { chatKey: string; placeholder: string; cli: string; suggest?: { id: string; text: string } | null }) {
   const [text, setText] = useDraft(chatKey)
+  // the suggestion the person has used or typed over (by its message): it doesn't come back for that message
+  const [spent, setSpent] = useState<string | null>(null)
+  // the ghost text shows only in an empty box, while the suggestion is still the one waiting
+  const ghost = suggest && spent !== suggest.id && !text ? suggest : null
   const files = useUI((u) => u.files[chatKey]) ?? noFiles
   const device = useUI((u) => u.device)
   const focused = useUI((u) => u.focus === chatKey)
@@ -1774,7 +1912,7 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
   const plus = useUI((u) => u.plus === chatKey)
   const ref = useRef<HTMLTextAreaElement>(null)
   const live = useUI((u) => registry.composerLive.find((l) => l.when(u, chatKey)))
-  const Idle = registry.composerIdle
+  const sendable = !!(text.trim() || files.length || ghost)
   const Mic = registry.composerMic
   useEffect(() => {
     if (focused && device === 'desktop') ref.current?.focus()
@@ -1859,8 +1997,8 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
   const [msel, setMsel] = useState(0)
   useEffect(() => setMsel(0), [word, (MNc as any).typingTask(text) === null])
   const takeMention = (i: Item) => { setText(takeItem(chatKey, text, i)); ref.current?.focus() }
-  const send = (hold = false) => {
-    const t = expandPicked(chatKey, text.trim())
+  const send = (hold = false, words = text) => {
+    const t = expandPicked(chatKey, words.trim())
     if (!t && !files.length) return
     recall.current = -1
     const reply = getState().ui.reply[chatKey]
@@ -1888,10 +2026,18 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
       at: Date.now(),
       state: 'sending',
       prior: priorOf(getState().chats[chatKey]),
+      after: anchorOf(getState().chats[chatKey]),
+      before: getState().outbox.filter((o) => o.chat === chatKey).map((o) => o.cid),
       ...(hold ? { hold: true } : {}),
     }
     setOutbox((all) => [...all, out])
-    deliver(out)
+    void deliver(out.cid)
+  }
+  // Enter or Send with nothing typed sends the suggestion; Tab fills it in for editing (below)
+  const accept = (hold = false) => {
+    if (!ghost) return
+    setSpent(ghost.id)
+    send(hold, ghost.text)
   }
   return (
     // what goes with the box (send, +, a file's x, its menu) leaves the box the focus: a phone's keyboard stays up. What
@@ -1901,9 +2047,9 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
       <SlashList chatKey={chatKey} text={text} pick={(name) => { setText(`/${name} `); ref.current?.focus() }} />
       <MentionList items={mentions} sel={msel} from={reach?.from ?? null} pick={takeMention} />
       {/* the window's box: the words across its full width, then a row in it of attach on the left and on the right
-          what the agent runs on (the model menu), the mic and Send (or Call); nothing under it. Its corners are half a
+          what the agent runs on (the model menu), the mic and Send; nothing under it. Its corners are half a
           round button and the padding, so the buttons sit in the bottom ones with the same curve round them */}
-      <div data-composer className="relative round-box bg-bg p-1.5 shadow-box has-[textarea:focus]:shadow-box-focus">
+      <div data-composer data-suggest={ghost ? '' : undefined} className="relative round-box bg-bg p-1.5 shadow-box has-[textarea:focus]:shadow-box-focus">
         {/* what it replies to: one quiet line inside the box, over the words (like WhatsApp and Telegram) */}
         <ReplyStrip chatKey={chatKey} />
         {live ? (
@@ -1923,7 +2069,11 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
                 rows={1}
                 value={text}
                 placeholder=""
-                onChange={(e) => setText(e.target.value)}
+                enterKeyHint={enterHint()}
+                onChange={(e) => {
+                  if (e.target.value && suggest) setSpent(suggest.id)
+                  setText(e.target.value)
+                }}
                 onPaste={(e) => {
                   // a screenshot or a copied file attaches, as + does; text pastes as text
                   const list = pasted(e.clipboardData)
@@ -1941,10 +2091,17 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
                 onFocus={() => setUI({ focus: chatKey })}
                 onBlur={() => getState().ui.focus === chatKey && setUI({ focus: null })}
                 onKeyDown={(e) => {
+                  // the suggested next message: Tab fills it in for editing (Shift+Tab goes on as usual), Enter sends it
+                  if (ghost && e.key === 'Tab' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    setSpent(ghost.id)
+                    setText(ghost.text)
+                    return
+                  }
                   if (choosable.length && !e.nativeEvent.isComposing) {
                     const n = choosable.length, at = Math.min(msel, n - 1)
                     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); return setMsel((at + (e.key === 'ArrowDown' ? 1 : n - 1)) % n) }
-                    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && device === 'desktop')) { e.preventDefault(); return takeMention(choosable[at]) }
+                    if (e.key === 'Tab' || sendsNow(e, getState().ui.keyboard)) { e.preventDefault(); return takeMention(choosable[at]) }
                     if (e.key === 'Escape') { e.preventDefault(); return setMclosed(text) }
                   }
                   // as the window's: Up in an empty box (or one showing a recalled message) brings back your earlier
@@ -1963,10 +2120,11 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
                       }
                     }
                   }
-                  if (e.key === 'Enter' && !e.shiftKey && device === 'desktop' && !e.nativeEvent.isComposing) {
+                  if (sendsNow(e, getState().ui.keyboard)) {
                     e.preventDefault()
                     // Shepherdr 3: Ctrl+Enter holds it until the agent is free
-                    send(e.ctrlKey || e.metaKey)
+                    if (!text && ghost) accept(e.ctrlKey || e.metaKey)
+                    else send(e.ctrlKey || e.metaKey)
                   }
                   if (e.key === 'Escape') {
                     e.preventDefault()
@@ -1988,7 +2146,8 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
               />
               {!text ? (
                 <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-2.5 left-2.5 flex items-center text-fg3 phone:right-3.5 phone:left-3.5">
-                  <span className="truncate">{placeholder}</span>
+                  {/* the suggested next message (SHEP-186): greyed out where the placeholder is; Tab fills it in, Enter sends it */}
+                  <span data-ghost={ghost ? '' : undefined} className={clsx('truncate', ghost && 'italic opacity-70')}>{ghost ? ghost.text : placeholder}</span>
                 </span>
               ) : null}
             </div>
@@ -2007,28 +2166,29 @@ function Composer({ chatKey, placeholder, cli }: { chatKey: string; placeholder:
               <div className="flex-1" />
               <AgentLineKept chatKey={chatKey} cli={cli} />
               {Mic ? <MicKept chatKey={chatKey} /> : null}
-              {text.trim() || files.length || !Idle ? (
-                <button
+              {/* always Send (SHEP-108): quiet while there is nothing to send, filled once there is. A call is with
+                  Shepherdr itself (the sidebar's top, a phone's bottom bar), never from a chat's box */}
+              <button
                   type="button"
-                  aria-label="Send"
-                  // Shepherdr 3 on a phone: a long press on Send holds it until the agent is free (the phone's Ctrl+Enter)
-                  onPointerDown={() => { held.current = false; holdTimer.current = setTimeout(() => { held.current = true; buzz(); send(true) }, 500) }}
-                  onPointerUp={() => clearTimeout(holdTimer.current)}
-                  onPointerLeave={() => clearTimeout(holdTimer.current)}
-                  onContextMenu={(e) => e.preventDefault()}
-                  onClick={() => {
-                    if (held.current) return
-                    // a light tap from the phone as it goes, like ChatGPT's
-                    if (matchMedia('(pointer: coarse)').matches) buzz()
-                    send()
-                  }}
-                  className="press-dim relative grid size-[34px] shrink-0 place-items-center rounded-full bg-fg text-bg after:absolute after:-inset-1.5 phone:size-11"
-                >
-                  <UpIcon className={ic} />
-                </button>
-              ) : (
-                <Idle chatKey={chatKey} />
-              )}
+                aria-label="Send"
+                disabled={!sendable}
+                // Shepherdr 3 on a phone: a long press on Send holds it until the agent is free (the phone's Ctrl+Enter)
+                onPointerDown={() => { held.current = false; holdTimer.current = setTimeout(() => { held.current = true; buzz(); if (ghost && !text) accept(true); else send(true) }, 500) }}
+                onPointerUp={() => clearTimeout(holdTimer.current)}
+                onPointerLeave={() => clearTimeout(holdTimer.current)}
+                onContextMenu={(e) => e.preventDefault()}
+                onClick={() => {
+                  if (held.current) return
+                  // a light tap from the phone as it goes, like ChatGPT's
+                  if (matchMedia('(pointer: coarse)').matches) buzz()
+                  // with nothing typed, Send sends the suggested next message
+                  if (ghost && !text) accept()
+                  else send()
+                }}
+                className="press-dim relative grid size-[34px] shrink-0 place-items-center rounded-full bg-fg text-bg after:absolute after:-inset-1.5 disabled:bg-bubble disabled:text-fg3 phone:size-11"
+              >
+                <UpIcon className={ic} />
+              </button>
             </div>
           </>
         )}
@@ -2203,47 +2363,72 @@ function Pending({ f, chatKey, onRemove }: { f: { name: string; path?: string };
   )
 }
 
-/** a file still uploading, by the stand-in path it waits in the box with: its path once uploaded (none: it failed) */
-const uploads = new Map<string, Promise<string | undefined>>()
+/** a file picked waits in the box (and in a message on its way) by a stand-in path until it is uploaded */
+const isStandIn = (path: string) => path.startsWith('upload:')
+/** a file's upload, by its stand-in path: its path on Shepherdr's machine once up */
+const uploads = new Map<string, Promise<string>>()
+/** the files picked on this page, by stand-in path (the device keeps them too, for after a reload: keepFile) */
+const picked = new Map<string, File>()
 
-/** the paths a message's files went up to, once each has (Send can come before an upload is done) */
-async function uploaded(files: Outgoing['files']) {
-  const paths = await Promise.all(files.map((f) => uploads.get(f.path) ?? f.path))
-  if (paths.some((p) => !p)) throw new Error("A file didn't upload.")
-  return files.map((f, i) => ({ ...f, path: paths[i]! }))
+/** a picked file's upload, once: again by itself while the network is the trouble (from since); one that failed for
+ *  good starts over when asked again (Send, Retry) */
+function startUpload(chatKey: string, id: string, since = Date.now()): Promise<string> {
+  const was = uploads.get(id)
+  if (was) return was
+  const up = (async () => {
+    const f = picked.get(id) ?? (await keptFile(id))
+    if (!f) throw new Error('A picture was lost when the page reloaded: take it out and add it again.')
+    picked.set(id, f)
+    const release = holdReload()
+    try {
+      // the message it goes with says it waits for the network
+      const onWait = (w: boolean) => setOutbox((all) => (all.some((o) => o.state === 'sending' && !!o.offline !== w && o.files.some((x) => x.path === id)) ? all.map((o) => (o.state === 'sending' && o.files.some((x) => x.path === id) ? { ...o, offline: w || undefined } : o)) : all))
+      return await retrying(() => postFile(chatKey, f), since, { onWait })
+    } finally {
+      release()
+    }
+  })()
+  uploads.set(id, up)
+  up.then(
+    (path) => {
+      const url = previews.get(id)
+      if (url) previews.set(baseName(path), url)
+    },
+    () => uploads.delete(id),
+  )
+  return up
 }
 
 /** files from +, a paste or a drop: each shows in the message box at once (a picture as itself, from the device) while
- *  it uploads to Shepherdr, and waits there until it is sent */
+ *  it uploads to Shepherdr, and waits there until it is sent. One whose upload fails keeps its place: Send tries again */
 async function attach(chatKey: string, list: File[]) {
   if (!list.length) return
-  const release = holdReload()
   const added = list.map((f) => {
     const id = `upload:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    const url = isImage(f.name) ? URL.createObjectURL(f) : null
-    if (url) previews.set(id, url)
-    const up = fetch('api/upload', { method: 'POST', body: form(chatKey, f), headers: { 'x-shepherdr': '1' } })
-      .then((x) => x.json())
-      .then((r) => r?.path as string | undefined, () => undefined)
-      .then((path) => {
-        if (path && url) previews.set(baseName(path), url)
-        // in the box still: its real path (none: it shows as a file that didn't go up)
-        setUI((u) => ({ files: { ...u.files, [chatKey]: (u.files[chatKey] ?? []).map((x) => (x.path === id ? { name: x.name, path } : x)) } }))
-        return path
-      })
-    uploads.set(id, up)
+    if (isImage(f.name)) previews.set(id, URL.createObjectURL(f))
+    picked.set(id, f)
+    void keepFile(id, f)
     return { name: f.name, path: id }
   })
   setUI((u) => ({ plus: null, files: { ...u.files, [chatKey]: [...(u.files[chatKey] ?? []), ...added] } }))
-  await Promise.all(added.map((a) => uploads.get(a.path))).finally(release)
+  await Promise.allSettled(added.map((a) => startUpload(chatKey, a.path)))
 }
 
-function form(chatKey: string, f: File) {
-  const body = new FormData()
-  body.append('chat', chatKey)
-  body.append('file', f)
-  return body
+/** a page opened again: what was still sending goes on (its pictures from the device), and the device lets go of
+ *  files kept over a day */
+async function resume() {
+  void sweepFiles()
+  for (const o of getState().outbox) {
+    for (const f of o.files) {
+      if (!isStandIn(f.path) || previews.has(f.path) || !isImage(f.name)) continue
+      const kept = await keptFile(f.path)
+      if (kept) previews.set(f.path, URL.createObjectURL(kept))
+    }
+    if (o.state === 'sending') void deliver(o.cid)
+  }
 }
+if (typeof window !== 'undefined') setTimeout(() => void resume(), 0)
+
 
 /** the + menu, and the device's file pickers it opens: they stay once the menu has closed, to hear what was picked */
 function PlusMenu({ chatKey }: { chatKey: string }) {
@@ -2726,6 +2911,7 @@ function Ended({ chatKey }: { chatKey: string }) {
 function ChatView({ chatKey, placeholder, unreachable }: { chatKey: string; placeholder: string; unreachable?: string }) {
   const from = useStore((s) => chatName(s.snap!, chatKey))
   const chat = useChat(chatKey)
+  const snap = useSnap()
   const override = useUI((u) => registry.chatBody.find((b) => b.when(u, chatKey)))
   if (override) return <override.View chatKey={chatKey} />
   // the window's notice instead of the conversation (opening, not a chat agent, not found, ended); a chat not heard
@@ -2745,7 +2931,7 @@ function ChatView({ chatKey, placeholder, unreachable }: { chatKey: string; plac
         ) : null}
         <Messages chat={chat ?? { key: chatKey, cli: 'Claude Code', messages: [] }} from={from} />
       </StickToBottom>
-      {chat?.finished && taskChatId(chatKey) ? <Ended chatKey={chatKey} /> : <Composer chatKey={chatKey} placeholder={placeholderOf(chatKey, chat, placeholder)} cli={chat?.cli ?? 'Claude Code'} />}
+      {chat?.finished && taskChatId(chatKey) ? <Ended chatKey={chatKey} /> : <Composer chatKey={chatKey} placeholder={placeholderOf(chatKey, chat, placeholder)} cli={chat?.cli ?? 'Claude Code'} suggest={suggestionOf(chat, suggestionsOn(snap?.settings))} />}
     </DropFiles>
   )
 }

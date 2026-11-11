@@ -21,6 +21,7 @@ from .base import HOME, hc_json, now, run, SHELLS
 from .agents import agent_running, status_word
 from .sessions import session_of
 from .settings import ASSISTANT_TEMPLATES
+from .launch import CLEAN_ENV
 
 LABEL = "herdr.resume"
 # Claude Code: "No conversation found with session ID: …". Codex: "ERROR: No saved session found with ID …"
@@ -109,6 +110,13 @@ def lost_message(ref=None, template=None):
     return msg
 
 
+def without_caller():
+    """The environment for hc send into a shell: no HC_TERMINAL_ID, so hc names no caller. A caller that is an
+    agent makes hc wrap the text in <hc from=…> when the shell reports its status too (herdr-core's tagged()),
+    and bash or zsh then fails to run the line (SHEP-202, GitHub #925). The line is the person's, not an agent's."""
+    return {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
+
+
 def shell_line(shell, cwd, env, argv, direct=False):
     """The line typed into the recovered shell: into the agent's folder, then the agent. POSIX shells
     and fish (3.1+) take `&&` and VAR=value before a command; others get the agent alone. `direct`:
@@ -121,7 +129,10 @@ def shell_line(shell, cwd, env, argv, direct=False):
         words = f"command {words}"
     pre = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in sorted((env or {}).items()))
     cmd = f"{pre} {words}" if pre else words
-    return f"cd {shlex.quote(cwd)} && {cmd}" if cwd else cmd
+    line = f"cd {shlex.quote(cwd)} && {cmd}" if cwd else cmd
+    # The recovered shell has the holder's environment: clear a parent Claude Code session's markers
+    # first (SHEP-86, launch.CLEAN_ENV; POSIX shells: fish has no for-in-do).
+    return line if os.path.basename(shell or "") == "fish" else f"{CLEAN_ENV} {line}"
 
 
 def read_record(k):
@@ -196,7 +207,7 @@ def task_record(k, t):
     if not kind:
         return None
     if (k.get("labels") or {}).get("herdr.role") != "reviewer":
-        argv = own_argv(argv)
+        argv = own_argv(argv, k.get("cwd"))
     return {"kind": kind, "session": a.get("session"), "log": a.get("log"), "argv": argv, "cwd": k.get("cwd"),
             "pid": None, "working": t.get("state") == "running", "shell": True}
 
@@ -287,7 +298,8 @@ def revive_pass(report):
         rec = dict(rec or {}, pid=k.get("pid"), how=how, sent=now())
         if argv:
             shell = (k.get("argv") or [""])[0]
-            r = run(["hc", "send", k["address"], shell_line(shell, rec.get("cwd") or k.get("cwd"), env_of(k), argv, direct)])
+            r = run(["hc", "send", k["address"], shell_line(shell, rec.get("cwd") or k.get("cwd"), env_of(k), argv, direct)],
+                    env=without_caller())
             if r.returncode != 0:
                 report.setdefault("revive_failed", []).append({"terminal": k["address"], "why": (r.stderr or r.stdout).strip()})
                 continue

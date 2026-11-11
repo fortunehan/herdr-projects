@@ -9,7 +9,7 @@
 // row some spaces set their own of says so in one dim line that lists them. Pages that are one for
 // every space (Machines, Window, Web) say so. Machine-only settings are rows under Machines; values
 // a machine set for everything before (the old machine scope) still apply and show there, with Reset.
-// Writes ~/.herdr/shepherdr.json at once, no Save step (coordinator.js documents the shape;
+// Writes ~/.config/shepherdr/settings.json at once, no Save step (coordinator.js documents the shape;
 // herdr-task reads it too). Other machines get their share pushed (pushRemotes) for their
 // herdr-task. Agents use the chat's own model button (settings.js and agent.js from lib/).
 // The window draws its own frame (frame: "none"), most of Herdr's height, at most 900.
@@ -22,6 +22,7 @@ import { SHEPHERDR_FILE, SHEPHERDR_DEFAULTS, LOCAL_MACHINE, shepherdrFor, shephe
 import * as models from "./settings.js";
 import { layoutSection } from "./layout.js";
 import { manifest } from "./addons.js";
+import { note } from "./usage.js";
 import { secretsInit, secretsSection } from "./secrets-section.js";
 import { baseInit, baseRow } from "./base-branch.js";
 import { branchInit, branchRow } from "./branch-names.js";
@@ -33,6 +34,8 @@ import { NOTIFY, NOTIFY_DEFAULT, notifyMachine, notifyMachineOwn, notifyOf, noti
 import { machinesSection } from "./machines-section.js";
 import { TEXT, RADIUS, H, button, link, toggleSwitch, segmented, menuRow } from "./ui.js";
 import { webSection } from "./web-section.js";
+import { SH } from "./core/paths.js";
+import { dirs } from "./dirs.js";
 // Every page's, row's and button's words, and the rows' choices: core/settings.js, shared with the web app.
 // herdr-task's merge policy (MERGE): "ask" waits for the person's Accept (which merges), the others merge without it.
 // NOTES: what a task's agent is told to do first and last (tasks.start_notes / finish_notes): herdr-task puts them
@@ -48,7 +51,7 @@ const rowTitle = (key) => TASK_ROWS.find(([s, f]) => `${s}.${f}` === key)[2];
 // Pages that moved: older openers still name them.
 const MOVED = { layout: "window", instructions: "agents", automations: "tasks" };
 const TEMPLATES = () => `${home()}/.config/herdr-core/templates`;
-const CLI_CHECK = () => `${home()}/.herdr/cli-check.json`;
+const CLI_CHECK = () => dirs()["cli-check"];
 const tilde = (p) => (p && p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p ?? "");
 const machineKeys = () => [LOCAL_MACHINE, ...machines().filter((m) => m.name && !m.temporary).map((m) => m.name)];
 const spaceById = (id) => spaces().find((s) => s.id === id);
@@ -58,7 +61,8 @@ const withValue = (opts, v, words) => (opts.some(([k]) => k === v) ? opts : [...
 const daysWord = (d) => plural(d, "day", "days");
 const roundsWord = (n) => plural(n, "round", "rounds");
 // A pushed copy's mark: a machine whose file lacks it keeps its own settings, and is left alone.
-const PUSH = `f="$HOME/.herdr/shepherdr.json"; mkdir -p "$HOME/.herdr" || exit 1
+// Its settings file wherever that machine keeps it (its Shepherdr folders, or ~/.herdr on an older one: core/paths.js SH).
+const PUSH = `${SH}f="$SHEP_SETTINGS"; mkdir -p "$(dirname "$f")" || exit 1
 if [ -f "$f" ] && ! grep -q '"pushed_from"' "$f"; then echo own; exit 0; fi
 if [ -f "$f" ] && [ "$(cat "$f")" = "$1" ]; then exit 0; fi
 umask 077; printf '%s\n' "$1" > "$f.tmp" && mv "$f.tmp" "$f"`;
@@ -70,6 +74,8 @@ export default class ShepherdrSettings extends View {
     this.scope = p.space && spaceById(p.space) ? p.space : null;
     const want = MOVED[p.section] ?? p.section;
     this.section = this.shows(want) ? want : "agents";
+    // Usage insights (lib/usage.js): Settings opened, and each page shown.
+    note("view", { view: "settings", section: this.section, ...(this.scope ? { space: this.scope } : {}) });
     this.listOpen = null; // the row whose "N spaces set their own" list is open
     // The level switch's picker: open or not, and its Find box (shown once there are many spaces).
     this.levelOpen = false;
@@ -145,7 +151,7 @@ export default class ShepherdrSettings extends View {
     cx.spawn(async (cx) => { await this.apply(edit); cx.notify(); });
   }
 
-  // Other machines' herdr-task read their own ~/.herdr/shepherdr.json: each gets Everywhere, its
+  // Other machines' herdr-task read their own ~/.config/shepherdr/settings.json: each gets Everywhere, its
   // machine's and its spaces' (by their ids there), marked so it knows which machine it is.
   // A file there without the mark is that machine's own (its own Herdr window): left alone.
   // Unreachable machines are skipped; the next change or opening catches them up.
@@ -685,6 +691,7 @@ export default class ShepherdrSettings extends View {
         .child(this.scope ? SPACE_TITLE : TITLE))
       .children(SECTIONS.filter((s) => this.shows(s.id)).map((s) => navRow(s.id, s.title, I(s.icon), s.id === this.section, (_e, cx) => {
         this.section = s.id;
+        note("view", { view: "settings", section: s.id });
         this.listOpen = null;
         this.levelOpen = false;
         this.handle.focus();

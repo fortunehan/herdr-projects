@@ -1,5 +1,5 @@
 """This machine's own additions, kept out of Shepherdr's settings and templates: an Assistant's local
-notes (~/.herdr/assistant), and a repo's own git config (herdr.base, herdr.branch, herdr.wid, herdr.setup).
+notes (~/.config/shepherdr/assistant, ~/.herdr/assistant before the move), and a repo's own git config (herdr.base, herdr.branch, herdr.wid, herdr.setup).
 
 git config herdr.*: the repo's (its main checkout's .git/config, shared by its worktrees) over the
 global one (git config --global), both over Shepherdr's space settings; a task's own --base, --branch
@@ -9,10 +9,10 @@ import os
 import re
 
 from . import ado
-from .base import Fail, git, HOME
+from .base import Fail, git, HOME, WHERE
 
 
-NOTES = os.path.join(HOME, ".herdr", "assistant")
+NOTES = WHERE.path("assistant-notes")
 EVERYWHERE = "_everywhere.md"
 NOTES_MAX = 8000  # characters of each file an Assistant is told
 

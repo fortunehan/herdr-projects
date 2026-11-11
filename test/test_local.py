@@ -1,5 +1,6 @@
 """herdr-task's local additions (herdr_task/local.py): an Assistant's local notes, a repo's own git
 config and its worktree setup command. Throwaway folders and git repos (no global git config); hc and the settings file are never touched."""
+import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
 import os
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ sys.dont_write_bytecode = True
 import herdr_task.assistant_settings as assistant_settings  # noqa: E402
 import herdr_task.commands as commands  # noqa: E402
 import herdr_task.launch as launch  # noqa: E402
+import herdr_task.layout as layout  # noqa: E402
 import herdr_task.local as local  # noqa: E402
 import herdr_task.store as store  # noqa: E402
 
@@ -42,8 +44,44 @@ class Base(unittest.TestCase):
         return main
 
 
+class OwnDataMoves(Base):
+    """SHEP-141's move takes this fork's own data too: the Assistant's notes, ado.json and Claude's usage go to
+    Shepherdr's own folders, a link left at each old path; a rollback brings them back."""
+
+    def test_moved_linked_and_read_there(self):
+        home = os.path.join(self.tmp, "home")
+        old = os.path.join(home, ".herdr")
+        os.makedirs(os.path.join(old, "assistant"))
+        os.makedirs(os.path.join(old, "usage"))
+        for rel, text in (("assistant/_everywhere.md", "Reply in English."), ("ado.json", '{"merge": "rebase"}'),
+                          ("usage/claude.json", '{"at": 1}')):
+            with open(os.path.join(old, rel), "w") as f:
+                f.write(text)
+        self.assertEqual(layout.migrate(home=home, env={}, mac=False)["state"], "migrated")
+        w = layout.Where(home, {}, False)
+        self.assertEqual(w.path("assistant-notes"), os.path.join(home, ".config", "shepherdr", "assistant"))
+        self.assertEqual(w.path("ado"), os.path.join(home, ".config", "shepherdr", "ado.json"))
+        self.assertEqual(w.path("usage"), os.path.join(home, ".local", "state", "shepherdr", "usage"))
+        for kind, rel in (("assistant-notes", "assistant"), ("ado", "ado.json"), ("usage", "usage")):
+            self.assertTrue(os.path.islink(os.path.join(old, rel)), rel)
+            self.assertTrue(os.path.exists(w.path(kind)) and not os.path.islink(w.path(kind)), kind)
+        with open(os.path.join(w.path("assistant-notes"), "_everywhere.md")) as f:
+            self.assertEqual(f.read(), "Reply in English.")
+        layout.rollback(home=home, env={}, mac=False)
+        self.assertEqual(w.path("assistant-notes"), os.path.join(old, "assistant"))
+        self.assertFalse(os.path.islink(os.path.join(old, "assistant")))
+        with open(os.path.join(old, "ado.json")) as f:
+            self.assertEqual(f.read(), '{"merge": "rebase"}')
+
+    def test_the_status_line_helper_knows_the_usage_folder(self):
+        with open(os.path.join(ROOT, "bin", "shepherdr-statusline")) as f:
+            src = f.read()
+        self.assertIn('return SHEP(".herdr/usage/claude.json")', src)
+        self.assertIn("'.herdr/usage': ('state', 'usage')", src)
+
+
 class AssistantNotes(Base):
-    """P1: ~/.herdr/assistant/_everywhere.md and <slug>.md reach an Assistant's new session, Claude's or Codex's."""
+    """P1: ~/.config/shepherdr/assistant/_everywhere.md and <slug>.md reach an Assistant's new session, Claude's or Codex's."""
 
     def setUp(self):
         super().setUp()

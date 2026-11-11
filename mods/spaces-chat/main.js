@@ -28,9 +28,12 @@ import { unreadSpaces, readShown, assistantOf } from "./unread.js";
 import { muted } from "./notify.js";
 import { MachinePopup, openMachine, openMachineSettings } from "./machine-popup.js";
 import { startPolling, allStats, healthMeters, bars } from "./machines.js";
-import { countBadge, red, green, blue, H, TEXT, RADIUS } from "./ui.js";
-import { spaceName, gitTail, tilde, sharedNames, isThinking, workingIn } from "./core/spaces.js";
+import { countBadge, red, green, blue, H, TEXT, RADIUS, toast } from "./ui.js";
+import { on as addonOn } from "./addons.js";
+import { spaceName, gitTail, tilde, sharedNames, inOrder, withOrder, machinesInOrder, machineOrderOf, withMachineOrder, isThinking, workingIn } from "./core/spaces.js";
 import { coordinatorTab } from "./coordinator.js";
+import { WORKTREE_RE } from "./core/paths.js";
+import { dirsReady } from "./dirs.js";
 
 const POPUPS = { add: Menu, space: Menu, section: Menu, icon: IconPicker, rename: Rename, machine: MachinePopup };
 
@@ -51,7 +54,7 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
 // Checkouts made for work (~/.herdr/worktrees/<repo>/<branch>, on any machine): a coordinator's
 // task workers run in them, and a worktree space is made in one.
-const WORKTREES = /\/\.herdr\/worktrees\//;
+const WORKTREES = WORKTREE_RE;   // ~/.herdr/worktrees (Herdr's dialog, older tasks) or Shepherdr's data/worktrees
 const inside = (path, folder) => path === folder || path.startsWith(`${folder.replace(/\/+$/, "")}/`);
 
 // Where a space is now: its first terminal's live folder, else where it was made. A task
@@ -118,6 +121,8 @@ export default class Spaces extends View {
     this.shown = new Set(spaces().map((s) => s.id));
     this.born = {};
     this.pressed = null; // the space being dragged (its id)
+    this.movingMachine = undefined; // the machine whose header is being dragged (null: this computer; undefined: none)
+    this.machineOver = undefined; // the machine header it is over
     this.over = null; // where it would land: "space:<id>", "section:<id>" (its end) or "top:<machine>"
     this.peek = null; // a folded section opened while a space is dragged over it
     this.unread = new Set(); // spaces whose Assistant has something new (unread.js)
@@ -127,13 +132,20 @@ export default class Spaces extends View {
     this.machinesRead = false; // hc machine ls answered once: a machine missing from it is offline
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    // Each of this computer's spaces on Autopilot (herdr-task's ~/.herdr/tasks/.autopilot.json): "on", or "waking"
+    // Each of this computer's spaces on Autopilot (herdr-task's ~/.local/share/shepherdr/tasks/.autopilot.json): "on", or "waking"
     // while a wake runs or waits for its Assistant; its row shows a mark (row()). Read every 5 s.
     this.pilots = new Map();
     this.readPilots(cx);
     cx.timer.every(5000, (cx) => this.readPilots(cx));
-    // A voice call's clock on its space's row (callMark): once a second, only while a call is on.
-    cx.timer.every(1000, (cx) => { if (this.calling) cx.notify(); });
+    // SHEP-135: the brand row's voice button (mods/workspace-chrome-shepherdr) asks for a call through shared
+    // "voice.startreq" = { at }: started here, where the spaces and chats are read. One from before this ran is old.
+    this.voiceReqAt = shared("voice.startreq")?.at ?? null;
+    cx.timer.every(250, () => {
+      const req = shared("voice.startreq");
+      if (!req || req.at === this.voiceReqAt) return;
+      this.voiceReqAt = req.at;
+      if (Date.now() - req.at < 5000 && addonOn("voice") && !this.liveCall()) this.startCall();
+    });
     // Each machine's health and plan limits (machines.js): read every 45 s / 10 min, not per render.
     startPolling(cx);
     // spaces-chat.machine (a key, or `herdr-app do`): the details of the shown space's machine.
@@ -157,7 +169,7 @@ export default class Spaces extends View {
   readPilots(cx) {
     cx.spawn(async (cx) => {
       let d = null;
-      try { d = JSON.parse((await readTextFile(`${home()}/.herdr/tasks/.autopilot.json`)) ?? "{}"); } catch { return; }
+      try { d = JSON.parse((await readTextFile(`${(await dirsReady()).tasks}/.autopilot.json`)) ?? "{}"); } catch { return; }
       const next = new Map(Object.entries(d?.spaces ?? {}).filter(([, a]) => a?.on).map(([id, a]) => [id, a.inflight || a.pending ? "waking" : "on"]));
       if (JSON.stringify([...next]) === JSON.stringify([...this.pilots])) return;
       this.pilots = next;
@@ -176,36 +188,42 @@ export default class Spaces extends View {
       .child(svg("mods/spaces-chat/rocket.svg").size(12).flex_none());
   }
 
-  // SHEP-51: a voice call going on in this space (mods/chat's shared "chat.calls": its chat's pane is in one of this
-  // space's tabs), in its row: a soft green pill with the call's wave and clock, which goes back to the call's chat
-  // (its box is the call: Mute, End). No bar over the window.
-  callOf(w) {
-    const calls = shared("chat.calls") ?? {};
-    for (const [pane, c] of Object.entries(calls)) {
-      if (Date.now() - (c.beat ?? 0) > 45000) continue;
-      const tab = c.tab ?? panes().find((p) => p.pane === pane)?.tab;
-      if (tab && (w.tabs ?? []).some((t) => t.id === tab)) return { pane, ...c, tab };
-    }
+  // SHEP-105, SHEP-135: a voice call with Shepherdr itself, not one chat, started from the voice button in the brand row
+  // beside Search (mods/workspace-chrome-shepherdr, through shared "voice.startreq"). The window runs it in the shown
+  // space's Assistant chat (mods/chat voice.ts: shared "chat.callreq" { pane, at, action: "start" | "mute" | "end" }),
+  // but the call hears and reaches every space. On a call the brand row's button is its Mute and End, nothing shows
+  // here; on the narrow rail (no brand row buttons), a green wave that ends it, and off a call a quiet wave that starts one.
+  liveCall() {
+    for (const [pane, c] of Object.entries(shared("chat.calls") ?? {})) if (Date.now() - (c.beat ?? 0) < 45000) return { pane, ...c };
     return null;
   }
 
-  callMark(w, t) {
-    const call = this.callOf(w);
-    if (!call) return null;
-    this.calling = true;
-    const secs = Math.max(0, Math.floor((Date.now() - (call.started ?? Date.now())) / 1000));
-    const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-    const back = () => {
-      run("space.select", { id: w.id });
-      run("tab.select", { id: call.tab });
-      run("pane.focus", { pane: call.pane });
-    };
-    return h_flex().id(`call-${w.id}`).h(18).pl(5).pr(7).gap(4).flex_none().items_center().rounded(9).cursor_pointer()
-      .bg(`${green()}26`).text_color(green()).text_size(TEXT.label).hover((s) => s.opacity(0.8))
+  // the chat a new call runs in: the shown space's Assistant's, its tab shown so the chat can take the request
+  startCall() {
+    const ps = panes();
+    const sp = spaces().find((s) => s.active);
+    const tab = sp ? coordinatorTab(sp, undefined, ps) : null;
+    const chatIn = (id) => ps.find((p) => p.mod === "chat" && p.tab === id)?.pane ?? null;
+    const at = tab && chatIn(tab.id) ? tab.id : (sp?.tabs ?? []).map((t) => t.id).find((id) => chatIn(id)) ?? null;
+    if (!at) return toast({ title: "Voice call", body: "This space has no chat to run the call from: open its Assistant first.", level: "info" });
+    if (!sp.tabs.some((t) => t.id === at && t.active)) run("tab.select", { id: at });
+    setShared("chat.callreq", { pane: chatIn(at), at: Date.now(), action: "start" });
+  }
+
+  voiceRow(t, collapsed) {
+    if (!addonOn("voice")) return null;
+    const call = this.liveCall();
+    const req = (action) => setShared("chat.callreq", { pane: call.pane, at: Date.now(), action });
+    const round = (id, size, bg, fg, icon, f) => div().id(id).size(size).flex_none().flex().items_center().justify_center().rounded(size / 2).cursor_pointer()
+      .bg(bg).text_color(fg).hover((s) => s.opacity(0.85))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); back(); })
-      .child(svg("mods/chat/audio-lines.svg").size(12).flex_none().loop("opacity", { from: 0.45, to: 1, period: 1400 }))
-      .child(div().child(clock));
+      .on_click((_e, cx) => { cx.stop_propagation(); f(); })
+      .child(svg(icon).size(13));
+    if (collapsed) return h_flex().h(36).flex_none().justify_center().items_center()
+      .child(call ? round("voice-end", 26, `${green()}26`, green(), "mods/chat/audio-lines.svg", () => req("end"))
+        : round("voice-start", 26, "#00000000", t.muted, "mods/chat/audio-lines.svg", () => this.startCall()).hover((s) => s.bg(t.hover).text_color(t.foreground)));
+    // SHEP-135: no card on a call: the brand row's Mute and End are the call's (mods/workspace-chrome-shepherdr)
+    return null;
   }
 
   checkNew(cx) {
@@ -341,14 +359,21 @@ export default class Spaces extends View {
     return spaceName(w, { at, repo: g?.name ?? null, home: home(), named: Boolean(w.named) });
   }
 
-  // The spaces shown, in Herdr's order, each with its git, where it is and its name: { w, i, g, at, name }.
+  // Every space, each machine's in the order the person dragged them into (shared "spaces-chat".order, the web's
+  // too: core/spaces.js inOrder), Herdr's for the rest.
+  sorted() {
+    return inOrder(spaces(), data().order);
+  }
+
+  // The spaces shown, in the sidebar's order, each with its git, where it is and its name: { w, i (Herdr's index), g,
+  // at, name }.
   visible() {
-    const sp = spaces(), ps = panes();
+    const sp = this.sorted(), ps = panes(), herdr = spaces();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     return sp.filter((w) => this.shown.has(w.id)).map((w) => {
       const g = this.git[where(w, ps)] ?? null, at = place(w, ps);
-      return { w, i: sp.indexOf(w), g, at, name: this.nameOf(w, g, at) };
+      return { w, i: herdr.indexOf(w), g, at, name: this.nameOf(w, g, at) };
     });
   }
 
@@ -385,7 +410,8 @@ export default class Spaces extends View {
     const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
     // A machine's spaces: those in no section first, then its sections (the rail has none).
     const body = (m, mine) => (collapsed ? mine.map(draw) : this.sectioned(m, all.filter((r) => (r.w.machine ?? null) === m), t));
-    const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name)])].sort();
+    // the other machines as hc lists them (as the web app's), then any only a space names
+    const remote = [...new Set([...this.machines.map(m => m.name), ...rows.map(r => r.w.machine).filter(Boolean)])];
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
@@ -394,7 +420,9 @@ export default class Spaces extends View {
     const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).flex().items_center().text_size(TEXT.label).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const pinned = this.pinned(visible, pins, Boolean(remote.length), t);
     if (!remote.length) return [...pinned, ...(loading(null) && !rows.length && !pinned.length ? [loadingRow(null)] : body(null, rows))];
-    const machineNames = [null, ...remote];
+    // in the order the person dragged them into, the same on every device and in the web app (SHEP-153)
+    const machineNames = machinesInOrder([null, ...remote], machineOrderOf(data())).map((k) => k || null);
+    this.machineOrder = machineNames;
     return [...pinned, ...machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
       const machine = this.machines.find(k => k.name === m);
@@ -421,9 +449,14 @@ export default class Spaces extends View {
           }
           cx.notify();
         })
-        .on_mouse_move((_e, cx) => this.drag(`top:${m}`, m, cx))
-        .on_mouse_down("right", (e) => openMenu("machine", { machine: m, row: rectOf(e) }))
+        .on_mouse_move((_e, cx) => { this.drag(`top:${m}`, m, cx); this.dragMachine(m, cx); })
+        // its header drags it among the machines, its spaces along; a press without a move folds it (on_click)
+        .on_mouse_down("left", () => { this.movingMachine = m; this.machineOver = m; })
+        .on_mouse_down("right", (e) => openMenu("machine", { machine: m, row: rectOf(e), order: machineNames }))
         .when(out, el => el.child(this.line(t, "bottom")))
+        .when(this.movingMachine === m && this.machineOver !== m, el => el.opacity(0.5))
+        .when(this.movingMachine !== undefined && this.movingMachine !== m && this.machineOver === m,
+          el => el.child(this.line(t, machineNames.indexOf(this.movingMachine) < machineNames.indexOf(m) ? "bottom" : "top")))
         // Its emoji, or the server / monitor; and the name it was given (Rename), else its own.
         .child(machineLook(m).icon
           ? div().w(14).flex_none().flex().justify_center().text_size(12).when(offline, el => el.opacity(0.5)).child(machineLook(m).icon)
@@ -567,8 +600,23 @@ export default class Spaces extends View {
     }
   }
 
-  // Released: a press without a move selects the space; else it goes where the line shows.
+  // A machine's header dragged over another's: that one's line shows where it lands.
+  dragMachine(m, cx) {
+    if (this.movingMachine === undefined || this.machineOver === m) return;
+    this.machineOver = m;
+    cx.notify();
+  }
+
+  // Released: a press without a move selects the space; else it goes where the line shows. A machine takes the place of
+  // the one it was dropped on (shared "spaces-chat".machineOrder, core/spaces.js withMachineOrder).
   release(cx) {
+    const mm = this.movingMachine, mo = this.machineOver;
+    this.movingMachine = this.machineOver = undefined;
+    if (mm !== undefined && mo !== undefined && mm !== mo && this.machineOrder) {
+      const order = this.machineOrder.filter((k) => k !== mm);
+      order.splice(this.machineOrder.indexOf(mo), 0, mm);
+      setShared("spaces-chat", withMachineOrder(data(), order));
+    }
     const from = this.pressed, over = this.over;
     this.pressed = null;
     this.over = null;
@@ -591,8 +639,8 @@ export default class Spaces extends View {
       const a = sec.spaces.indexOf(from);
       return a >= 0 && a < sec.spaces.indexOf(to) ? "bottom" : "top";
     }
-    // At the top, Herdr's order decides (space.move).
-    const sp = spaces();
+    // At the top, the sidebar's order (sorted()).
+    const sp = this.sorted();
     return sp.findIndex((s) => s.id === from) < sp.findIndex((s) => s.id === to) ? "bottom" : "top";
   }
 
@@ -616,8 +664,18 @@ export default class Spaces extends View {
         const at = sec.spaces.filter((x) => x !== from).indexOf(id);
         placeSpace(from, sec.id, this.edge(from, id) === "bottom" ? at + 1 : at);
       } else {
+        const edge = this.edge(from, id);
         if (sectionOf(from)) placeSpace(from, null);
-        // space.move takes the target's place, counted from 1: the rest shift toward where it was.
+        // The new order, kept in the sidebar's data so the web and every device show it (SHEP-130): the machine's
+        // spaces as they show, this one beside the one it was dropped on.
+        const w = spaces().find((s) => s.id === from);
+        const shown = this.sorted().filter((s) => (s.machine ?? null) === (w?.machine ?? null)).map((s) => s.id);
+        const rest = shown.filter((x) => x !== from), at = rest.indexOf(id);
+        if (w && at >= 0) {
+          rest.splice(edge === "bottom" ? at + 1 : at, 0, from);
+          setShared("spaces-chat", withOrder(data(), w.machine ?? null, rest, shown));
+        }
+        // And Herdr's own order: space.move takes the target's place, counted from 1: the rest shift toward where it was.
         const i = spaces().findIndex((s) => s.id === id);
         if (i >= 0) run("space.move", { id: from, index: i + 1 });
       }
@@ -716,7 +774,6 @@ export default class Spaces extends View {
             .when(fresh, (el) => el.child(div().size(6).flex_none().rounded(3).bg(blue())))
             .when(Boolean(thinking), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.dim).spin(900))))
           .when(Boolean(this.pilotMark(w, t)), (el) => el.child(this.pilotMark(w, t)))
-          .when(Boolean(this.callOf(w)), (el) => el.child(this.callMark(w, t)))
           .child(g ? this.gitTail(g, tree, name, t, label) : h_flex().flex_1().min_w(0).justify_end().text_size(TEXT.label).text_color(t.dim)
             .when(Boolean(label), (el) => el.child(div().min_w(0).truncate().child(label))))
           .when(quiet, (el) => el.child(svg("mods/spaces-chat/bell-off.svg").size(13).flex_none().text_color(t.dim)))
@@ -727,10 +784,8 @@ export default class Spaces extends View {
       );
   }
 
-  // The rail's row: its number and status; a voice call's space shows the call's green wave instead, and goes back to
-  // the call (SHEP-66: the rail has no room for callMark's clock, and the wave was nowhere on it).
+  // The rail's row: its number and status (a voice call shows at the rail's top, voiceRow).
   compact({ w, i }, t) {
-    const call = this.callOf(w);
     return h_flex()
       .id(`space-${w.id}`)
       .h(26)
@@ -741,24 +796,16 @@ export default class Spaces extends View {
       .rounded(RADIUS.card)
       .cursor_pointer()
       .when(w.active, (el) => el.bg(t.raised))
-      .when(Boolean(call), (el) => el.bg(`${green()}26`))
       .hover((s) => s.bg(t.hover))
-      .on_click(() => {
-        run("space.select", { id: w.id });
-        if (call) { run("tab.select", { id: call.tab }); run("pane.focus", { pane: call.pane }); }
-      })
+      .on_click(() => run("space.select", { id: w.id }))
       .child(nameText(String(i + 1), this.unread.has(w.id), muted(w.id) ? t.dim : w.active ? t.foreground : t.muted, t))
-      .child(call
-        ? svg("mods/chat/audio-lines.svg").size(12).flex_none().text_color(green()).loop("opacity", { from: 0.45, to: 1, period: 1400 })
-        : div().text_color(tone(t, w.status)).child(glyph(w.status)));
+      .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));
   }
 
   close() { this.popup?.close?.(); }
 
   // One copy of Herdr's live lists for the whole render (live.js): past ~50 ms Herdr stops it.
   render(cx) {
-    // a voice call's row sets it again (callMark): its clock ticks only while one shows
-    this.calling = false;
     return inRender(() => this.draw(cx));
   }
 
@@ -786,7 +833,10 @@ export default class Spaces extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    // null on a wide sidebar (SHEP-135) or with voice off: child(null) throws (GitHub #869)
+    const voice = this.voiceRow(t, collapsed);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+      .when(Boolean(voice), (el) => el.child(voice))
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(TEXT.label).font_medium().text_color(t.dim)
         .when(!collapsed, el => el.child("Spaces"))
         // As a machine's +: New space, New section, on the shown space's machine.

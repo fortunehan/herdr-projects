@@ -91,6 +91,10 @@ describe("rows", () => {
     const out = newsTimeline(items, tasks, { start: 0 });
     expect(out.map((e) => [e.event, e.made ?? false, e.accept])).toEqual([["started", true, false], ["ready", false, true]]);
   });
+  test("no ready line while its checks still run (SHEP-175)", () => {
+    const tasks = new Map([["H-1", { title: "A", status: "working", started: 100, ready_at: 300 }]]);
+    expect(newsTimeline([{ kind: "agent", at: 50 }], tasks, { start: 0 }).map((e) => e.event)).toEqual(["started"]);
+  });
   test("which artifact a publish made", () => {
     const arts = [{ id: "a", title: "Plan", version: 2, versions: [{ v: 1, at: 1000, publisher: "t7" }, { v: 2, at: 9000, publisher: "t7" }] }];
     const r = resolveArtifacts([{ kind: "artifact", id: "x1", at: 900 }, { kind: "artifact", id: "x2", at: 8000 }], arts, "t7");
@@ -236,4 +240,20 @@ describe("the person's words and the session's first message", () => {
     expect(firstKeys({ slot: "coord-abc", labels: {}, origin: "slot:coord-abc" })).toEqual(["coord-abc", "slot:coord-abc"]);
     expect(firstKeys({})).toEqual([]);
   });
+});
+
+// SHEP-92: at most one row over the box for each kind of background work
+import { bgGroups } from "./chat-view.js";
+test("bgGroups: one row per kind, subagents first, the newest and their shared state", () => {
+  expect(bgGroups([])).toEqual([]);
+  const one = bgGroups([{ id: "s1", kind: "shell", at: 5, title: "Build" }]);
+  expect(one.map((g) => [g.kind, g.words, g.newest.id])).toEqual([["proc", null, "s1"]]);
+  const many = bgGroups([
+    { id: "s1", kind: "shell", at: 5 }, { id: "m1", kind: "monitor", at: 9 }, { id: "s2", kind: "shell", at: 7 },
+    { id: "c1", kind: "child", at: 3, status: "done" }, { id: "a1", kind: "agent", at: 4 },
+  ]);
+  expect(many.map((g) => [g.kind, g.words, g.newest.id, g.status, g.items.length])).toEqual([
+    ["sub", "2 subagents", "a1", "working", 2], ["proc", "3 background processes", "m1", "working", 3]]);
+  expect(bgGroups([{ kind: "child", at: 1, status: "done" }, { kind: "child", at: 2, status: "needs" }, { kind: "child", at: 3, status: "working" }])[0].status).toBe("needs");
+  expect(bgGroups([{ kind: "child", at: 1, status: "done" }, { kind: "child", at: 2, status: "done" }])[0].status).toBe("done");
 });

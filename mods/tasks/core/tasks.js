@@ -13,8 +13,18 @@ export const RANK_OF = Object.fromEntries(["needs", "ready", "merging", "working
 // Scheduled (SHEP-38, herdr-task --at/--in): a task that starts by itself at a time, after Queued (it waits longer).
 export const ORDER = ["needs", "ready", "merging", "working", "queued", "scheduled", "todo", "done", "automations"];
 // How the list can be grouped (the ⋯ menu's Group by; Shepherdr's GROUP_WORDS). "folder" was Space's old key.
-export const GROUP_BY = ["status", "space", "machine", "machine-space"];
-export const groupBy = (v) => (v === "folder" ? "space" : GROUP_BY.includes(v) ? v : "status");
+export const GROUP_BY = ["you", "space", "status"];
+// A grouping's key: "folder" was Space's; Machine and Machine › Space are gone (SHEP-98): For you.
+export const groupBy = (v) => (v === "folder" ? "space" : GROUP_BY.includes(v) ? v : "you");
+// The window's grouping now (shared "tasks.group", from its ⋯), For you until chosen. Before SHEP-98
+// it was "tasks.groupby", Status split by space by default: Status with Split by space off stays
+// Status, Space stays Space, the rest is For you. shared: the window's shared(key).
+export const groupNow = (shared) => {
+  const v = shared("tasks.group");
+  if (v) return groupBy(v);
+  const old = shared("tasks.groupby");
+  return old === "space" || old === "folder" ? "space" : old === "status" && shared("tasks.split") === false ? "status" : "you";
+};
 
 export const machineOf = (address) => (address?.includes("/") ? address.split("/")[0] : null);
 // A machine as people read it (the Spaces sidebar's words): its name, or This computer.
@@ -91,24 +101,52 @@ export function onIt(task, live, now = Date.now()) {
   return now - said < Math.max(ON_IT_MS, typeof p.left === "number" ? p.left : 0);
 }
 
+// A short grace before Needs you (SHEP-133), as herdr-task's GRACE_MS: a task often flips to Needs you for a few
+// seconds and moves on by itself (its agent ends a turn a moment before it says ready, a background job's notice wakes
+// it, a problem is found just before its agent is handed it). So a quiet agent (reply) and a problem Herdr found
+// (attention) need the person only once they've lasted GRACE_MS: the agent's own status change (a.since: hc's
+// status_ms) or the problem's attention_at says since when. What really asks (a question, a permission: blocked) needs
+// the person at once.
+export const GRACE_MS = 20000;
+export const quietSince = (live) => Math.max(0, ...live.map((a) => (typeof a.since === "number" ? a.since : 0)));
+
 // A provider retry's line (herdr-task's retry_line): "Provider overloaded · Retry in 2m".
 export function retryLine(r, now = Date.now()) {
   return r.due ? `${r.reason} · Retry in ${Math.max(1, Math.ceil((r.due - now) / 60000))}m` : `${r.reason} · Retrying`;
 }
 
+// Ready only when the person must act (SHEP-175), as herdr-task's ready_wait(): a task said ready is Ready (and its
+// news and alerts) only once the person's Accept is what's left. Not while its pull request's checks still run or
+// GitHub works out whether it can merge (task.pr.wait, kept by herdr-task's tick), nor while it merges by itself:
+// then it is Working, with what it waits for in a few words. Null when it's the person's.
+export function readyWait(task, live = []) {
+  if (task.merge_requested && live.length) return "Merging";
+  if (task.merge_queued && task.pr) return "In GitHub's merge queue";
+  // #743: waits calmly for a review GitHub requires.
+  // An Azure DevOps pull request completes itself (auto-complete, set on Accept), as herdr-task's.
+  if (task.auto_merge && task.pr && !task.merged && task.ado_auto_complete) return "Completes in Azure DevOps once approved";
+  if (task.auto_merge && task.pr && !task.merged) return task.pr.needs_approval ? "Merges once it's approved" : "Merges once its checks pass";
+  return task.pr?.wait || null;
+}
+
 // A task's status (its section), why it needs the person, and its live agents. live: its agents now
 // ([{ address, status, ... }], only while it runs or is ready); loaded: false while its machine's agents
-// aren't known yet; each { address, status, turn, role }. The same rules as herdr-task's task_status(): its record,
+// aren't known yet; each { address, status, turn, role, since (hc's status_ms: GRACE_MS) }. The same rules as herdr-task's task_status(): its record,
 // then its agents' own status.
 // helpers: its worker's own helper agents (SHEP-54: a reviewer it started as its hc child), never among live: one at
 // work or asking keeps the task Working (its worker waits on it; the worker answers what it asks), else they count not.
 export function place(list, task, { live = [], helpers = [], loaded = true, now = Date.now() } = {}) {
+  // A problem Herdr just found: the task reads as it would without it until GRACE_MS have passed (settles: when then).
+  if (task.attention && ["running", "ready"].includes(task.state) && now - (task.attention_at ?? 0) < GRACE_MS) {
+    const p = place(list, { ...task, attention: null }, { live, helpers, loaded, now });
+    return { ...p, task, settles: (task.attention_at ?? 0) + GRACE_MS };
+  }
   const st = task.state;
   if (!(st === "running" || st === "ready")) live = [];
   const status = live.reduce((s, a) => ((RANK[a.status] ?? 0) > (RANK[s] ?? 0) ? a.status : s), null);
   const busy = live.length && helpers.some((a) => a.status === "working" || a.status === "blocked");
   const states = [...live.map((a) => a.status), ...(busy ? ["working"] : [])];
-  let section = ["todo", "queued", "scheduled", "done"].includes(st) ? st : null, needs = null, why = null;
+  let section = ["todo", "queued", "scheduled", "done"].includes(st) ? st : null, needs = null, why = null, settles = 0;
   const need = (kind, text) => { section = "needs"; needs = kind; why = text; };
   if (section) return { list, task, live, status, section, needs, why };
   // Cut off by its model's provider (herdr-task tick): Working while Herdr waits to tell it to
@@ -123,15 +161,21 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
   // Why it waits: herdr-task's words (its agent's own status line, its question or last words),
   // kept on the task by its scheduler (task.waits), else the standard reason.
   else if (states.includes("blocked")) need("asks", task.waits ?? REASONS.question);
+  // Claude Code's folder-trust dialog (#755): its agent reports no status while it shows; herdr-task's scheduler read
+  // it off the screen (task.trust_ask: that agent's address).
+  else if (task.trust_ask && live.some((a) => a.address === task.trust_ask && !a.status)) need("asks", task.waits ?? REASONS.trust);
   // Back at work after it said ready: no Accept until it says ready again.
   else if (busyAgain(task, live, now)) { section = "working"; why = WORKING_AGAIN; }
   else if (fixing) { section = "working"; why = st === "ready" ? WORKING_AGAIN : null; }
   else if (st === "ready") {
-    section = (task.merge_requested && live.length) || (task.auto_merge && task.pr && !task.merged) ? "merging" : "ready";
-    // As herdr-task's: a pull request that merges by itself once its checks pass, or that Azure
-    // DevOps completes itself (auto-complete, set on Accept).
-    if (section === "merging" && !(task.merge_requested && live.length))
-      why = task.ado_auto_complete ? "Completes in Azure DevOps once approved" : "Merges once its checks pass";
+    // Nothing for the person yet (SHEP-175, readyWait()): Working, with what it waits for.
+    const wait = readyWait(task, live);
+    section = wait ? "working" : "ready";
+    if (wait) why = wait;
+    // Said ready but not at rest yet (SHEP-148, herdr-task's not_at_rest()): still at work in the turn it said ready
+    // in, or its own work still running (a background job, a Monitor, a helper: task.own_work, kept by its scheduler).
+    // Working until it is, and only then Ready.
+    if (section === "ready" && live.length && (busy || task.own_work || live.some((a) => a.status === "working" && a.role !== "reviewer"))) section = "working";
   }
   // Its agents' terminals aren't known yet (the machine is loading): no verdict yet.
   else if (states.some((x) => x !== "idle" && x !== "done") || (!live.length && !loaded)) section = "working";
@@ -142,11 +186,27 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
   // Monitor still running, or its fresh status line says it waits on CI or a review. Kept on the task
   // by its scheduler (task.own_work); Working, with its own status line.
   else if (live.length && task.own_work && st === "running") section = "working";
+  // Just gone quiet: still Working for GRACE_MS (settles: when it would need the person).
+  else if (live.length && quietSince(live) && now - quietSince(live) < GRACE_MS) { section = "working"; settles = quietSince(live) + GRACE_MS; }
   // Quiet without saying ready (herdr-task ready): alive, it ended its turn (on what: task.waits);
   // its process gone, the agent stopped.
   else if (live.length) need("reply", task.waits ?? REASONS.reply);
   else need("stopped", REASONS.stopped);
-  return { list, task, live, status, section, needs, why };
+  return { list, task, live, status, section, needs, why, ...(settles ? { settles } : {}) };
+}
+
+// Needs-you items about a task (check, stopped, waiting) that the task's own status has moved past. The
+// inbox is read from herdr-task every 20 s, the lists as they change: when a task reads otherwise now (Done,
+// Working, Queued, ...), its item is stale and its row shows the task's real status. truth: Map of
+// "<machine>:<folder>:<ref>" (the key an item has) -> its place() result, every task, archived ones too.
+// An item with no list read for its task (another machine not loaded) is kept.
+const TASK_ITEMS = new Set(["check", "stopped", "waiting"]);
+export function holdingItems(items, truth) {
+  return items.filter((x) => {
+    if (!TASK_ITEMS.has(x.kind) || !x.ref || !x.folder) return true;
+    const p = truth.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`);
+    return !p || p.section === "needs";
+  });
 }
 
 // Why a queued task waits: the tasks it comes after that aren't done, else the folder is full.

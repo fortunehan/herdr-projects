@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { spaceName, tilde, sharedNames, gitTail, assistantOf, isThinking, statusOf, taskInSpace, isWorkingTask, workingIn } from "./spaces.js";
+import { spacesFromDoc, spaceName, tilde, sharedNames, gitTail, inOrder, withOrder, keptOrder, machinesInOrder, byMachineOrder, withMachineOrder, machineOrderOf, assistantOf, isThinking, statusOf, taskInSpace, isWorkingTask, workingIn } from "./spaces.js";
 
 test("two spaces with one name on a machine each show their folder, from ~ (the sidebar's rows, both sides)", () => {
   // built, so the repo's no-home-paths rule has nothing to find
@@ -60,4 +60,58 @@ test("a space counts its tasks at work: started there, else in its folder; never
   ];
   expect(workingIn(s, tasks)).toBe(3);
   expect(workingIn(s, null)).toBe(0);
+});
+
+// SHEP-130: a dragged order holds, whatever Herdr's own order is
+const sp = (id, machine = null) => ({ id, machine });
+const ids = (l) => l.map((s) => s.id);
+
+test("each machine's spaces show in the dragged order; the machines keep their slots", () => {
+  // Herdr's order: this computer's, then vm's from its document, then a space the service made on vm (always last)
+  const list = [sp("a"), sp("b"), sp("vm/t"), sp("vm/s"), sp("vm/home", "vm")].map((s) => ({ ...s, machine: s.id.startsWith("vm/") ? "vm" : null }));
+  expect(ids(inOrder(list, undefined))).toEqual(["a", "b", "vm/t", "vm/s", "vm/home"]);
+  const order = { vm: ["vm/home", "vm/t", "vm/s"], "": ["b", "a"] };
+  expect(ids(inOrder(list, order))).toEqual(["b", "a", "vm/home", "vm/t", "vm/s"]);
+});
+
+test("a space the order doesn't name keeps its place after the one before it in Herdr's; a gone one is skipped", () => {
+  const list = [sp("a"), sp("new"), sp("b"), sp("c")];
+  expect(ids(inOrder(list, { "": ["c", "a", "gone", "b"] }))).toEqual(["c", "a", "new", "b"]);
+  expect(ids(inOrder([sp("first"), sp("a"), sp("b")], { "": ["b", "a"] }))).toEqual(["first", "b", "a"]);
+});
+
+test("a drag keeps the spaces it didn't show (in a section, hidden) where they were, and the other machines' orders", () => {
+  const d = withOrder({ pinned: ["x"], order: { vm: ["vm/2", "vm/1"] } }, null, ["c", "a"], ["a", "s", "b", "c"]);
+  expect(d.order).toEqual({ vm: ["vm/2", "vm/1"], "": ["c", "a", "s", "b"] });
+  expect(d.pinned).toEqual(["x"]);
+  expect(withOrder({}, "vm", ["vm/home", "vm/t"]).order).toEqual({ vm: ["vm/home", "vm/t"] });
+  expect(keptOrder(["a", "b", "c"], ["c", "a"])).toEqual(["c", "a", "b"]);
+});
+
+// SHEP-153: the machines in the order the person dragged them into
+test("machines show in the saved order; a new one goes last, a gone one leaves no gap", () => {
+  expect(machinesInOrder([null, "vm", "mini"], undefined)).toEqual(["", "vm", "mini"]);
+  expect(machinesInOrder([null, "vm", "mini", "new"], ["mini", "gone", "", "vm"])).toEqual(["mini", "", "vm", "new"]);
+  const list = [sp("a"), sp("vm/1", "vm"), sp("b"), sp("mini/1", "mini"), sp("vm/2", "vm")];
+  expect(ids(byMachineOrder(list, ["mini", "vm"]))).toEqual(["mini/1", "vm/1", "vm/2", "a", "b"]);
+  expect(ids(byMachineOrder(list, []))).toEqual(ids(list));
+});
+
+test("a machine drag keeps the ones it didn't show where they were, and the rest of the sidebar's data", () => {
+  const d = withMachineOrder({ pinned: ["x"], machineOrder: ["", "far", "vm"] }, ["vm", null]);
+  expect(d.machineOrder).toEqual(["vm", "", "far"]);
+  expect(d.pinned).toEqual(["x"]);
+  expect(machineOrderOf({ machineOrder: ["a", 3, "b"] })).toEqual(["a", "b"]);
+});
+
+// #818: another machine's herdr-app document already names its terminals with that machine ("box/t6"): its tab's
+// chat key read "t:box/box/t6", no such terminal, Reconnecting… for ever
+test("another machine's tab keeps one machine on its terminals, as written or not", () => {
+  const doc = { spaces: [{ id: "s1", name: "docs", folder: "/srv/docs", tabs: [{ id: "tab2", name: "Claude Code", root: { children: [{ content: { props: { terminal: "box/t6" } } }, { content: { terminal: "t7" } }] } }] }] };
+  const [s] = spacesFromDoc(doc, "box");
+  expect(s.id).toBe("box/s1");
+  expect(s.tabs[0].id).toBe("box/tab2");
+  expect(s.tabs[0].terminals).toEqual(["box/t6", "box/t7"]);
+  // this machine's own: as written
+  expect(spacesFromDoc(doc, null)[0].tabs[0].terminals).toEqual(["box/t6", "t7"]);
 });

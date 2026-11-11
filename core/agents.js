@@ -21,6 +21,16 @@ const PERMS = {
     { id: "plan", label: "Plan" }, { id: "bypassPermissions", label: "Full access" }],
   codex: [{ id: "read-only", label: "Read only" }, { id: "auto", label: "Auto" }, { id: "full", label: "Full access" }],
 };
+// A permission mode carried to the other agent when the agent is switched: its nearest mode there (auto stays auto,
+// full access stays full access, Claude's accept edits is Codex's auto, plan and read only swap), else that agent's
+// default (Claude's ask has no Codex match). Never silently drops auto to ask on a round trip (#758).
+const PERM_ACROSS = {
+  claude: { "read-only": "plan", auto: "auto", full: "bypassPermissions" },
+  codex: { plan: "read-only", auto: "auto", acceptEdits: "auto", bypassPermissions: "full" },
+};
+export function permAcross(perm, agent, permDefault) {
+  return PERM_ACROSS[agent]?.[perm] ?? (PERMS[agent]?.some((p) => p.id === perm) ? perm : null) ?? permDefault?.[agent] ?? null;
+}
 
 // What a model id says, in words: "claude-opus-5-5" → "Opus 5.5", "opus[1m]" → "Opus 1M".
 export function modelName(id) {
@@ -116,7 +126,8 @@ export function current(kind, argv, meta, dflt, born = null) {
   dflt = dflt ?? {};
   if (born && meta.at && meta.at < born) meta = { window: meta.window };
   if (kind === "claude") {
-    const alias = flag(argv, "--model") ?? dflt.model;
+    // a /model in place (SHEP-181) names the row it switched to, its 1M too, which the log's turns don't say
+    const alias = meta.alias ?? flag(argv, "--model") ?? dflt.model;
     let fast = dflt.fast;
     const s = flag(argv, "--settings");
     if (s && /"fastMode"\s*:\s*(true|false)/.test(s)) fast = /"fastMode"\s*:\s*true/.test(s);
@@ -136,7 +147,7 @@ export function current(kind, argv, meta, dflt, born = null) {
     : sandbox === "read-only" ? "read-only" : "auto";
   return { agent: "codex", model, label: dflt.models?.find((m) => m.id === model)?.label ?? null, perm,
     effort: meta.effort ?? o.model_reasoning_effort ?? dflt.effort,
-    fast: tier ? ["fast", "priority"].includes(tier) : Boolean(dflt.fast), used: meta.used ?? null, window: meta.window ?? null };
+    fast: meta.speed ? meta.speed === "fast" : tier ? ["fast", "priority"].includes(tier) : Boolean(dflt.fast), used: meta.used ?? null, window: meta.window ?? null };
 }
 
 // An effort level as the person reads it: "xhigh" -> "Extra high". The CLIs still get the raw value.
@@ -165,9 +176,10 @@ export function contextUse(c) {
   return { pct, high: pct > 80, words: `${pct}%`, used: tokens(c.used), title: `${tokens(c.used)} of ${tokens(c.window)} tokens` };
 }
 
-// Where bin/shepherdr-statusline keeps Claude's subscription usage, under the home of the machine the agent runs on:
-// { at (ms), five_hour?, seven_day? }, each { used_percentage (0-100), resets_at (unix seconds) }.
-export const USAGE_FILE = ".herdr/usage/claude.json";
+// Where bin/shepherdr-statusline keeps Claude's subscription usage, in the usage folder of the machine the agent runs
+// on (core/paths.js "usage": dirs().usage, $SHEP_USAGE): { at (ms), five_hour?, seven_day? }, each
+// { used_percentage (0-100), resets_at (unix seconds) }.
+export const USAGE_FILE = "claude.json";
 // A snapshot older than one 5-hour window says nothing sure about now: it shows nothing.
 export const USAGE_STALE = 6 * 3600 * 1000;
 const USAGE_WINDOWS = [["five_hour", "5h"], ["seven_day", "7d"]];

@@ -144,7 +144,7 @@ test("usage file: parsed down to its numbers; missing or broken is nothing", () 
   expect(parseUsage(null)).toBeNull();
   expect(parseUsage("{")).toBeNull();
   expect(parseUsage("{}")).toBeNull();
-  expect(USAGE_FILE).toBe(".herdr/usage/claude.json");
+  expect(USAGE_FILE).toBe("claude.json");
 });
 
 test("a Claude agent Shepherdr starts runs its status line through bin/shepherdr-statusline", () => {

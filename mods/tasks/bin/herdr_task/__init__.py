@@ -3,9 +3,9 @@ before it:
 
   base         Shared ground: paths, Fail, the clock, this herdr-task's own files, and running
                programs (hc, herdr-app, git) only in the real environment.
-  local        This machine's own additions: an Assistant's local notes (~/.herdr/assistant) and a
+  local        This machine's own additions: an Assistant's local notes (~/.config/shepherdr/assistant) and a
                repo's own git config (herdr.base, herdr.branch, herdr.wid, herdr.setup).
-  settings     The person's settings (~/.herdr/shepherdr.json and per-folder), the agent each task
+  settings     The person's settings (~/.config/shepherdr/settings.json and per-folder), the agent each task
                runs, and the Settings block a task's brief ends with.
   templates    The instructions agents start with: ~/.config/herdr-core/templates, and the built-in
                ones.
