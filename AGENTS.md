@@ -74,7 +74,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   place in the snapshot needs a `chat` field (else a blank crash); open a viewer with `?artifact=<id>`, a task with
   `?task=<id>`. Answer the client's `watch` message with `{type:'chat',chat}` per key; `sections: []` lists places
   under their machine in the sidebar. A stub chat message can carry any Message field (brief, activity, news) to
-  screenshot quiet rows without a real log.
+  screenshot quiet rows without a real log. For a before/after of task rows without rebuilding twice, import main's
+  `core/tasks.js` (`git show main:core/tasks.js`, plus `needs.js` and `asks.js`) in the stub and compute each row's
+  sub line with `place()` and `secondLine()`.
 - A cross-machine send without ssh: two throwaway cores (`HC_SESSION=a`/`b`, clean `env -i`) and
   `hc machine add --via 'sh -c' --name vmb --session b` on a; the wrap only shows with a real agent (e.g.
   `claude --model haiku`) as the target.
