@@ -47,7 +47,20 @@ describe("a task's status (as herdr-task's task_status)", () => {
     expect(at({ id: 1, state: "ready", merge_requested: true }, [{ address: "t1", status: "working" }])).toMatchObject({ section: "working", why: "Merging" });
     expect(at({ id: 1, state: "ready", auto_merge: true, pr: { number: 3 } })).toMatchObject({ section: "working", why: "Merges once its checks pass" });
     expect(at({ id: 1, state: "ready", auto_merge: true, ado_auto_complete: 1, pr: { number: 3 } }))
-      .toMatchObject({ section: "working", why: "Completes in Azure DevOps once approved" });
+      .toMatchObject({ section: "working", why: "Completes in Azure DevOps" });
+  });
+  test("an Azure DevOps pull request left only to its reviewers is Ready, Accepted or not (SHEP-26)", () => {
+    const ado = { number: 3, repo: "ado:contoso/web/web", needs_approval: true };
+    const accepted = { id: 1, state: "ready", auto_merge: "checks", ado_auto_complete: 1 };
+    expect(at({ id: 1, state: "ready", pr: ado })).toMatchObject({ section: "ready", why: "Waiting on reviewers in Azure DevOps" });
+    expect(at({ ...accepted, pr: ado })).toMatchObject({ section: "ready", needs: null, why: "Waiting on reviewers in Azure DevOps" });
+    expect(at({ ...accepted, pr: { ...ado, wait: "Checks running" } })).toMatchObject({ section: "working", why: "Checks running" });
+    expect(at({ ...accepted, pr: ado, attention: "Checks failing: web-ci.", attention_at: 0 })).toMatchObject({ section: "needs", needs: "attention" });
+    expect(at({ ...accepted, state: "done", pr: ado }).section).toBe("done");
+    // GitHub's: unchanged.
+    expect(at({ id: 1, state: "ready", pr: { number: 3, repo: "o/r", needs_approval: true } })).toMatchObject({ section: "ready", why: null });
+    expect(at({ id: 1, state: "ready", auto_merge: "checks", pr: { number: 3, repo: "o/r", needs_approval: true } }))
+      .toMatchObject({ section: "working", why: "Merges once it's approved" });
   });
   test("a pull request whose checks still run is Working, then Ready (SHEP-175)", () => {
     const idle = [{ address: "t1", status: "idle", since: NOW - 600_000 }];
