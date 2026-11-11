@@ -37,7 +37,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On a dev Mac about 34 `test_herdr_task` tests fail at `git commit` because they inherit the global git config (hooks,
   signing): compare the failure list before and after a change, or set `GIT_CONFIG_GLOBAL=/dev/null` as
   `test/test_local.py` does. Main's list without a second worktree: `git archive main` into a fresh `mktemp -d` folder (the
-  dev Mac's command guard refuses recursive deletes of a fixed /tmp one), run unittest there and diff the FAIL lines.
+  dev Mac's command guard refuses recursive deletes of a fixed /tmp one), run unittest with that folder as the cwd (os.chdir, e.g. runpy: home_guard
+  resolves relative paths against the cwd, and a cwd under ~/.herdr fails 200+ tests) and diff the FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
@@ -128,7 +129,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   reference is `~/.config/herdr-app/AGENTS.md` and `~/.config/herdr-app/herdr.d.ts` (written by the app on each start;
   read the parts you need, never edit them).
 - `lib/addons.json` lists every mod by add-on; a new mod goes in one (the tests check). Shared modules have one
-  source in `lib/`: edit it, run `bin/sync-shared`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
+  source in `lib/`: edit it, run `bin/sync-shared`. A worktree's `lib/.last` can be stale (copied from the main checkout): if
+  sync-shared calls a copy hand-edited though it equals HEAD's lib file, refresh `lib/.last/<file>` from `git show HEAD:lib/<file>`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
 - Mod names, the layout's node ids and `keys.json` contexts are what people's state and keys hang on: change them
   with care and say so in your done summary.
 
