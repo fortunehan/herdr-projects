@@ -530,8 +530,8 @@ export default class Tasks extends View {
   }
 
   // A row's second line (row()): Needs you and Merging, why; Working, what its agent says it's
-  // doing (or a provider retry's line); Queued, what it waits for; Ready, when it got there (its
-  // summary is the Accept card's, never this line's).
+  // doing (or a provider retry's line); Queued, what it waits for; Ready, when it got there, or its
+  // reviewers in Azure DevOps (SHEP-26) (its summary is the Accept card's, never this line's).
   statusLine(p, w = reportOf(p.task, p.section, p.live)) {
     return secondLine(p, w, p.section === "queued" ? this.queueReason(p.list, p.task) : null);
   }

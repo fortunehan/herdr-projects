@@ -294,13 +294,14 @@ export const capital = (s) => (/^[a-z](?![A-Z])/.test(String(s)) ? s[0].toUpperC
 export const short = (n) => (n < 1 ? "<1m" : n < 60 ? `${n}m` : `${Math.round(n / 60)}h`);
 
 // A row's second line, as Shepherdr's: Needs you and Merging, why; Working, why or what its agent says it's
-// doing (w: reportOf); Queued, what it waits for (queued: queueReason's words); Ready, since when.
+// doing (w: reportOf); Queued, what it waits for (queued: queueReason's words); Ready, since when, or what it still
+// waits on that is no one's to do here (SHEP-26: its reviewers in Azure DevOps).
 export function secondLine(p, w, queued = null, now = Date.now()) {
   const { section } = p;
   return section === "needs" || section === "merging" ? p.why : section === "working" ? p.why ?? w?.text ?? null
     : section === "queued" ? queued
     : section === "scheduled" ? startsLine(p.task.scheduled_for, now)
-    : section === "ready" ? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : "Ready to accept") : null;
+    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : "Ready to accept") : null;
 }
 
 // The minutes left under a working row's dot ("6m"), once its agent gave them; a scheduled one's time until it starts

@@ -57,7 +57,10 @@ describe("a task's status (as herdr-task's task_status)", () => {
     expect(at({ ...accepted, pr: { ...ado, wait: "Checks running" } })).toMatchObject({ section: "working", why: "Checks running" });
     expect(at({ ...accepted, pr: ado, attention: "Checks failing: web-ci.", attention_at: 0 })).toMatchObject({ section: "needs", needs: "attention" });
     expect(at({ ...accepted, state: "done", pr: ado }).section).toBe("done");
+    expect(secondLine(at({ ...accepted, ready_at: NOW - 60_000, pr: ado }), null, null, NOW)).toBe("Waiting on reviewers in Azure DevOps");
     // GitHub's: unchanged.
+    expect(secondLine(at({ id: 1, state: "ready", ready_at: NOW - 60_000, pr: { number: 3, repo: "o/r", needs_approval: true } }), null, null, NOW))
+      .toBe("Ready 1m ago");
     expect(at({ id: 1, state: "ready", pr: { number: 3, repo: "o/r", needs_approval: true } })).toMatchObject({ section: "ready", why: null });
     expect(at({ id: 1, state: "ready", auto_merge: "checks", pr: { number: 3, repo: "o/r", needs_approval: true } }))
       .toMatchObject({ section: "working", why: "Merges once it's approved" });
