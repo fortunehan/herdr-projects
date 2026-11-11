@@ -263,7 +263,8 @@ class InstallerComparesWithoutTheShell(unittest.TestCase):
     def test_a_shown_shell_leaves_the_layout_unchanged(self):
         from importlib.machinery import SourceFileLoader
         sh = SourceFileLoader("shepherdr_cli", os.path.join(ROOT, "bin", "shepherdr")).load_module()
-        shipped = open(LAYOUT, "rb").read()
+        with open(LAYOUT, "rb") as f:
+            shipped = f.read()
         d = json.loads(shipped)
         col = find(d, "tasks-thread-shell")
         col["children"][0]["hidden"] = True
