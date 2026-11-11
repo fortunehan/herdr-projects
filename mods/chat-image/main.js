@@ -16,7 +16,9 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, props, closeOverlay, readTextFile, settings, exec, appHome, window as win } from "herdr";
 import { initArtifactBar, artifactBar, closeArtifactBar } from "./artifact-bar.js";
-import { toast, TEXT, RADIUS } from "./ui.js";
+import { toast, red, TEXT, RADIUS } from "./ui.js";
+import { target, command, failed, problem } from "./core/image-actions.js";
+import * as fs from "fs/promises";
 
 const BAR = 48;                      // the toolbar's height
 const MARGIN = 24;                   // room around a fitted image
@@ -131,44 +133,36 @@ export default class ImageViewer extends View {
 
   // ---- actions on the file ---------------------------------------------------------------
 
-  file() {
+  // Copy, open or show in its folder (core/image-actions.js): the original file, or the viewer's own copy once the
+  // original is gone (a finished task's worktree). A failure says so in a toast and on the toolbar: the viewer covers
+  // the chat, and the toast can sit under it.
+  act(action, cx) {
     const img = this.img();
-    return img?.path ?? (img ? `${appHome()}/${img.rel}` : null);
+    if (!img) return;
+    const os = win()?.platform;
+    cx.spawn(async (cx) => {
+      const t = await target(img, appHome(), (p) => fs.stat(p).then(() => true, () => false));
+      let r;
+      if (t.path && !(action === "reveal" && t.gone)) {
+        const [cmd, args] = command(action, os, t.path);
+        r = await exec(cmd, args).catch(() => null);
+        if (!failed(action, os, r)) {
+          if (action === "copy") this.say("Copied", false, cx);
+          return;
+        }
+      }
+      const p = problem(action, t, r);
+      toast({ title: p.title, ...(p.body ? { body: p.body } : {}), level: "error" });
+      this.say(p.body ? `${p.title}: ${p.body}` : p.title, true, cx);
+    });
   }
 
-  copy(cx) {
-    const p = this.file();
-    if (!p) return;
-    const os = win()?.platform;
-    const run = os === "macos"
-      ? exec("osascript", ["-e", `set the clipboard to (read (POSIX file "${p.replace(/"/g, '\\"')}") as «class PNGf»)`])
-      : os === "windows"
-        ? exec("powershell", ["-NoProfile", "-Command", `Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetImage([Drawing.Image]::FromFile($args[0]))`, p])
-        // wl-copy stays behind to serve the clipboard: its output must not hold exec open.
-        : exec("sh", ["-c", 'if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null; then wl-copy < "$1" >/dev/null 2>&1; else xclip -selection clipboard -t "$(file -b --mime-type "$1")" -i "$1" >/dev/null 2>&1; fi', "copy", p]);
-    run.then((r) => {
-      if (r?.code && r.code !== 0) throw new Error(r.stderr || "copy failed");
-      this.copied = true;
-      cx.notify();
-      cx.timer.after(1400, (cx) => { this.copied = false; cx.notify(); });
-    }).catch(() => toast({ title: "Couldn't copy the image", level: "error" }));
-  }
-
-  openFile() {
-    const p = this.file();
-    if (!p) return;
-    const os = win()?.platform;
-    (os === "macos" ? exec("open", [p]) : os === "windows" ? exec("cmd", ["/c", "start", "", p]) : exec("xdg-open", [p])).catch(() => {});
-  }
-
-  // The file's folder in the file manager, the file selected where the system can.
-  reveal() {
-    const p = this.file();
-    if (!p) return;
-    const os = win()?.platform;
-    if (os === "macos") return exec("open", ["-R", p]).catch(() => {});
-    if (os === "windows") return exec("explorer", [`/select,${p}`]).catch(() => {});
-    exec("sh", ["-c", 'dbus-send --session --print-reply --dest=org.freedesktop.FileManager1 /org/freedesktop/FileManager1 org.freedesktop.FileManager1.ShowItems array:string:"file://$1" string:"" >/dev/null 2>&1 || xdg-open "$(dirname "$1")"', "reveal", p]).catch(() => {});
+  // A few seconds' word on the toolbar, after an action.
+  say(text, error, cx) {
+    const note = { text, error };
+    this.note = note;
+    cx.notify();
+    cx.timer.after(error ? 6000 : 1400, (cx) => { if (this.note === note) { this.note = null; cx.notify(); } });
   }
 
   // ---- input -----------------------------------------------------------------------------
@@ -181,7 +175,7 @@ export default class ImageViewer extends View {
     else if (k === "-") this.zoomBy(1 / STEP);
     else if (k === "0") this.reset();
     else if (k === "1") this.zoomTo(1);
-    else if (k === "c" && mod) return this.copy(cx);
+    else if (k === "c" && mod) return this.act("copy", cx);
     else return;
     cx.stop_propagation();
     cx.notify();
@@ -258,6 +252,8 @@ export default class ImageViewer extends View {
       .child(h_flex().flex_1().min_w(0).gap(8).items_baseline().text_size(TEXT.body)
         .child(div().min_w(0).truncate().font_medium().text_color(t.foreground).child(img?.name ?? "Image"))
         .when(Boolean(img), (el) => el.child(div().flex_none().text_size(TEXT.label).text_color(t.muted).child(`${img.w} × ${img.h}`))))
+      .when(Boolean(this.note), (el) => el.child(div().flex_shrink_1().min_w(0).max_w(420).truncate().mr(6).text_size(TEXT.label)
+        .text_color(this.note.error ? red() : t.foreground).child(this.note.text)))
       .when(Boolean(img), (el) => el
         .child(this.btn("zoom-out", "zoom-out", () => this.zoomBy(1 / STEP), t))
         // The zoom, and the one fit / actual size switch.
@@ -268,9 +264,9 @@ export default class ImageViewer extends View {
           .child(pct))
         .child(this.btn("zoom-in", "zoom-in", () => this.zoomBy(STEP), t))
         .child(this.rule(t))
-        .child(this.btn("copy", this.copied ? "check" : "copy", (cx) => this.copy(cx), t))
-        .child(this.btn("open", "external-link", () => this.openFile(), t))
-        .child(this.btn("reveal", "folder-open", () => this.reveal(), t))
+        .child(this.btn("copy", this.note?.text === "Copied" ? "check" : "copy", (cx) => this.act("copy", cx), t))
+        .child(this.btn("open", "external-link", (cx) => this.act("open", cx), t))
+        .child(this.btn("reveal", "folder-open", (cx) => this.act("reveal", cx), t))
         .child(this.rule(t)))
       .child(this.btn("close", "x", () => closeOverlay(props()?.overlay), t));
   }

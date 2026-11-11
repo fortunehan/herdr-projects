@@ -699,7 +699,8 @@
       "addon": "chat",
       "title": "Attachments and images",
       "core": [
-        "send"
+        "send",
+        "image-actions"
       ],
       "herdr": {
         "mods": [
