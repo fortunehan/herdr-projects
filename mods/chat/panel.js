@@ -14,8 +14,9 @@
 // the person's one action on tasks (herdr-task accept: merges first when there's something to
 // merge, else done). The task's record is read from its list file (its herdr.task label).
 // Beside the chat and terminal the body stack holds the task's Pull request (mods/task-pr), its
-// Artifacts (mods/task-artifacts) and its Browser (mods/task-browser: a live viewer in a terminal
-// block of its own), picked in the header's second row, as Shepherdr's
+// Artifacts (mods/task-artifacts), its Browser (mods/task-browser: a live viewer in a terminal
+// block of its own) and its Shell (mods/task-shell: the person's own shell in its worktree, SHEP-25),
+// picked in the header's second row, as Shepherdr's
 // task side panel. All are one switcher (only one shows at a time), the main chat's header switch
 // (ui.js segmented); Pull request only once the task has one. They show the task the header
 // publishes (shared "tasks.thread.where", from its record: lib/taskwhere.js).
@@ -41,6 +42,7 @@ export const STACK = "tasks", LIST = "tasks-list", THREAD = "tasks-thread";
 export const BODY = "tasks-thread-body", CHAT = "tasks-thread-chat", TERM = "tasks-thread-term";
 export const PR = "tasks-thread-pr";
 export const BROWSER = "tasks-thread-browser";
+export const SHELL = "tasks-thread-shell";
 // The task's Artifacts (mods/task-artifacts, SHEP-60): what its agent and its helpers made.
 export const ARTIFACTS = "tasks-thread-artifacts";
 // How often its artifacts are looked for again while it shows (a python start and a grep of its logs).
@@ -145,7 +147,8 @@ export class PanelHost {
     // Where the task's side views look (taskwhere.js): its worktree, else its list's folder.
     if (this.head) {
       const w = rec ? { terminal: addr, ref: rec.ref, folder: rec.worktree || rec.folder || null, machine: rec.machine ?? null,
-        repo: rec.folder ?? null, branch: rec.branch ?? null, base: rec.base ?? null, start: rec.start ?? null, pr: rec.pr ?? null } : null;
+        repo: rec.folder ?? null, branch: rec.branch ?? null, base: rec.base ?? null, start: rec.start ?? null, pr: rec.pr ?? null,
+        key: `${k.slug}#${k.id}`, state: rec.state ?? null } : null;
       if (JSON.stringify(w) !== JSON.stringify(shared("tasks.thread.where") ?? null)) setShared("tasks.thread.where", w);
     }
     if (JSON.stringify(rec) !== JSON.stringify(this.rec)) { this.rec = rec; cx.notify(); }
@@ -277,7 +280,7 @@ export class PanelHost {
     });
   }
 
-  // Chat | Terminal | Pull request | Artifacts | Browser: the main chat's header switch
+  // Chat | Terminal | Shell | Pull request | Artifacts | Browser: the main chat's header switch
   // (ui.js segmented, as mods/pane-chat). segs: { key, label, on, dead (can't open now), fn }.
   switcher(t, segs) {
     return segmented("thread-mode", segs.map((x) => [x.key, x.label, { disabled: x.dead }]),
@@ -381,6 +384,8 @@ export class PanelHost {
     const segs = [
       { key: "chat", label: "Chat", on: shownNow === CHAT, fn: () => showWorkerChat() },
       { key: "term", label: "Terminal", on: shownNow === TERM, dead: !live, fn: (cx) => this.toTerminal(addr, cx) },
+      // The person's own shell in the task's folder (mods/task-shell), started the first time it shows.
+      ...(find(layout(), SHELL) ? [{ key: "shell", label: "Shell", on: shownNow === SHELL, fn: pick(SHELL) }] : []),
       // No Files or Changes (SHEP-143): the space's side panels show those; a task's changes are its pull request's.
       ...(hasPr ? [{ key: "pr", label: "Pull request", on: shownNow === PR, fn: pick(PR) }] : []),
       // What its agent made (mods/task-artifacts): always there, counted once it has some.

@@ -24,6 +24,7 @@ from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
 from .archive import archive_pass
 from .browsers import browser_pass
+from .shells import end_shells, shell_pass
 from .output import progress_clock, say
 from .commands import back_to_work, begin, merge_now, MERGE_FAILED
 from .news import news_pass, typing
@@ -313,6 +314,8 @@ def end_done(s, t, report, pressed=False):
     once it's idle (or working past DONE_WORKING_MS); under memory pressure (pressed) every idle
     one at once. Returns the addresses it ended."""
     done_at = t.get("done_at") or 0
+    if end_shells(s.key(t)):
+        report.setdefault("shells_ended", []).append(s.ref(t))
     if not pressed and now() - done_at < DONE_GRACE_MS:
         return []
     me = os.environ.get("HC_TERMINAL_ID")
@@ -591,4 +594,8 @@ def cmd_tick(args):
         browser_pass(report)
     except Exception as e:  # never stops the queue
         report["browser_error"] = str(e)
+    try:
+        shell_pass(report)
+    except Exception as e:  # never stops the queue
+        report["shell_error"] = str(e)
     say(args, report, "; ".join(f"{k}: {v}" for k, v in report.items() if v) or "Nothing to do.")

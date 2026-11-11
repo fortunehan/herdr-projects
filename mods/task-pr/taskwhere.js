@@ -1,14 +1,16 @@
 // A task's side views inside the Tasks panel's task view (mods/chat/panel.js): Pull request
-// (mods/task-pr) and Browser (mods/task-browser), each a child
+// (mods/task-pr), Browser (mods/task-browser) and Shell (mods/task-shell), each a child
 // of the view's body stack beside the worker's chat and terminal, picked in its header.
 // Which task: shared "tasks.thread.where", published by the header from the task's record =
 // { terminal, ref, folder (its worktree, else its list's folder), machine (null: here), repo (its list's folder), branch,
-//   base, start (the commit it started from), pr ({ number, url, repo } once herdr-task made one) }.
+//   base, start (the commit it started from), pr ({ number, url, repo } once herdr-task made one),
+//   key (its herdr.task key, "<slug>#<id>"), state (its record's: running, ready, done...) }.
 import { shared, layout } from "herdr";
 
 export const BODY = "tasks-thread-body";
 export const PR = "tasks-thread-pr";
 export const BROWSER = "tasks-thread-browser";
+export const SHELL = "tasks-thread-shell";
 
 // Only the shown task's: while another opens, its place isn't read yet (null).
 export function where() {

@@ -185,6 +185,23 @@
                                   }
                                 },
                                 {
+                                  "id": "tasks-thread-shell",
+                                  "type": "column",
+                                  "children": [
+                                    {
+                                      "id": "tasks-thread-shell-host",
+                                      "type": "block",
+                                      "size": {
+                                        "weight": 1
+                                      },
+                                      "content": {
+                                        "mod": "task-shell"
+                                      }
+                                    }
+                                  ],
+                                  "resizable": false
+                                },
+                                {
                                   "id": "tasks-thread-pr",
                                   "type": "block",
                                   "content": {
