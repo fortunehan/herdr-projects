@@ -45,6 +45,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   mise node shim slow. Not a hang.
 - On the dev Mac a node/python call with a whole task record (its long prompt) in argv can be SIGKILLed (exit 137) by
   the command guard: pass a trimmed record or a file.
+- herdr-task as a real subprocess in tests (fake hc and `HERDR_TASK_GH` on PATH): boot it with `-c` and set
+  `base.not_real = lambda: None`, as `SlowCallsOutsideTheLock` does.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
