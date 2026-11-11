@@ -20,7 +20,7 @@ The helpers that go to other machines as one file each (herdr-secret, herdr-arti
 Shepherdr's paths between "# ---- SHEP:" and "# ---- end SHEP ----": the source is
 mods/tasks/bin/herdr_task/layout.py's PY, written in here too.
 """
-import hashlib, os, shutil, subprocess, sys
+import hashlib, json, os, shutil, subprocess, sys
 
 HOME = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LIB, MODS = os.path.join(HOME, "lib"), os.path.join(HOME, "mods")
@@ -55,6 +55,15 @@ def copies():
                 name, mods = line.split(":", 1)
                 out[name.strip()] = mods.split()
     return out
+
+
+def own_mods():
+    """Shepherdr's own mods, as lib/addons.json lists them. Other folders in mods/ (the art-<id> viewers
+    herdr-artifact writes for published artifacts, the person's own mods) may carry a copy of a shared
+    module (Mark up's helpers) that isn't ours to keep in sync."""
+    with open(os.path.join(LIB, "addons.json")) as f:
+        manifest = json.load(f)
+    return set(manifest["core"]["mods"]) | {m for a in manifest["addons"] for m in a.get("mods", [])}
 
 
 def write(path, data):
@@ -104,6 +113,7 @@ def shep_blocks(check):
 def main(argv):
     check = "--check" in argv
     table = copies()
+    own = own_mods()
     if "--from" in argv:
         src = os.path.realpath(argv[argv.index("--from") + 1])
         name = os.path.basename(src)
@@ -144,9 +154,9 @@ def main(argv):
         if not check:
             os.makedirs(os.path.dirname(os.path.join(LAST, name)), exist_ok=True)
             write(os.path.join(LAST, name), lib)
-        # A copy made by hand in a mod lib/COPIES doesn't list (same name, same start).
+        # A copy made by hand in one of Shepherdr's mods lib/COPIES doesn't list (same name, same start).
         head = lib.split(b"\n", 1)[0]
-        for mod in sorted(os.listdir(MODS)):
+        for mod in sorted(own & set(os.listdir(MODS))):
             path = os.path.join(MODS, mod, name)
             if mod not in mods and (read(path) or b"").split(b"\n", 1)[0] == head:
                 bad.append(f"mods/{mod}/{name} looks like a copy of lib/{name}: add {mod} to lib/COPIES")
