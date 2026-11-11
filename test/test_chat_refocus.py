@@ -71,6 +71,12 @@ class RefocusKeepsSelection(unittest.TestCase):
         state = {"wasFocused": True, "hadBox": True, "focused": False, "pressMoved": False, "press": {"at": 0}}
         self.assertEqual(run(state), 1)
 
+    def test_a_press_still_held_keeps_the_keyboard_off_the_box(self):
+        # SHEP-14: the press that focuses the pane may become a drag: neither path takes the keyboard while it is held.
+        self.assertEqual(run({"pressing": True, "pressMoved": False, "press": {"at": 0}}), 0)
+        state = {"wasFocused": True, "hadBox": True, "focused": False, "pressing": True, "pressMoved": False, "press": {"at": 0}}
+        self.assertEqual(run(state), 0)
+
     def test_a_field_in_an_overlay_keeps_the_keyboard(self):
         # SHEP-9: Mark up's note in the artifact viewer holds it "over" the panes; the pane getting focus under it takes nothing.
         over = {"keyboard.holder": {"who": "artifact.markup", "at": 1, "over": True}}

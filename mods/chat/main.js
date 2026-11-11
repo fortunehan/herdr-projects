@@ -4348,8 +4348,9 @@ export default class Chat extends View {
     // Never while a dialog over it holds the keyboard (New space's field, #752): Herdr counts this pane focused under it.
     // Nor while a field in an overlay (the artifact viewer's Mark up, a modal) has it (keysOver(), SHEP-9).
     // Never over a text selection (GitHub #916, SHEP-192): a drag over the messages selects them, and the box taking the
-    // keyboard then made Ctrl+C copy nothing. The timers check again when they fire: a drag can start after they're set.
-    const kept = () => this.pressMoved || dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
+    // keyboard then made Ctrl+C copy nothing. Nor while a press is still held (SHEP-14): it may become a drag. The timers
+    // check again when they fire: a drag can start after they're set.
+    const kept = () => this.pressing || this.pressMoved || dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
     if (paneFocused && showsBox && !kept() && (!this.wasFocused || !this.hadBox)) {
       cx.timer.after(0, () => { if (!kept()) this.box.focus(); });
       cx.timer.after(600, () => { if (!kept()) this.box.focus(); });
@@ -4358,7 +4359,7 @@ export default class Chat extends View {
     // keyboard: give it back, unless the person just pressed something inside the chat.
     // Not while the keyboard is somewhere else in the window that isn't a pane (#633): a task's chat, the list or its
     // search in the Tasks panel (shared "keyboard.holder", keyHolder()); Herdr still counts this pane as focused then.
-    else if (paneFocused && showsBox && !this.call && !this.pressMoved && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
+    else if (paneFocused && showsBox && !this.call && !this.pressing && !this.pressMoved && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
       && !keysElsewhere(liveHolder(shared(KEY_HOLDER)), this.areaKey())
       && Date.now() - (this.refocusAt ?? 0) > 1000) {
       this.refocusAt = Date.now();
