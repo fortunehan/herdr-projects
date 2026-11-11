@@ -6,8 +6,9 @@ import hashlib
 import json
 import os
 import re
+import time
 
-from .base import Fail, git, hc_json, HOME, LEGACY, MAX_RUNNING, now, run, STORE
+from .base import Fail, git, hc_json, HELD, HOME, LEGACY, MAX_RUNNING, now, run, STORE
 from .settings import settings_for
 from .agents import agent_running
 from .sessions import session_of
@@ -144,10 +145,90 @@ def open_lock(path):
         return None, False
 
 
+# SHEP-29: a read never waits long on the lock. Every list is saved whole (os.replace), so one read
+# without it is still a whole list: show and list wait this long (s), then read without saving.
+READ_WAIT = 2.0
+
+
+def take(lock, mode, wait=None):
+    """flock(lock, mode), waiting at most `wait` seconds (None: as long as it takes). False: timed out."""
+    if wait is None:
+        fcntl.flock(lock, mode)
+        return True
+    end = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(lock, mode | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+
+
+def stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_ino, st.st_mtime_ns, st.st_size
+
+
+_GONE = object()
+
+
+def merge(ours, base, theirs):
+    """Three-way, in place: ours becomes theirs plus what ours changed since base (ours wins where
+    both changed one value). Dicts merge key by key, keeping ours' objects (callers hold them); a
+    list's tasks by id; any other list is one value."""
+    for k in set(ours) | set(base) | set(theirs):
+        o, b, t = ours.get(k, _GONE), base.get(k, _GONE), theirs.get(k, _GONE)
+        if k == "tasks" and isinstance(o, list) and isinstance(t, list):
+            merge_tasks(o, b if isinstance(b, list) else [], t)
+        elif isinstance(o, dict) and isinstance(t, dict):
+            merge(o, b if isinstance(b, dict) else {}, t)
+        elif o == b:
+            if t is _GONE:
+                ours.pop(k, None)
+            else:
+                ours[k] = t
+    if isinstance(ours.get("tasks"), list) and "next" in ours:
+        ours["next"] = max([ours["next"], theirs.get("next") or 0] + [x["id"] + 1 for x in ours["tasks"] if isinstance(x.get("id"), int)])
+
+
+def merge_tasks(ours, base, theirs):
+    """Tasks by id: theirs' order, each merged into ours' own dict; ours' new ones after. One either
+    side removed stays removed; one both sides added under the same id: ours gets the next id."""
+    by_o = {x.get("id"): x for x in ours}
+    by_b = {x.get("id"): x for x in base}
+    out = []
+    for x in theirs:
+        i = x.get("id")
+        if i not in by_o:
+            if i not in by_b:
+                out.append(x)
+            continue
+        if i not in by_b:
+            out.append(x)  # both added one with this id: ours is renumbered below
+            continue
+        merge(by_o[i], by_b[i], x)
+        out.append(by_o[i])
+    taken = {x.get("id") for x in theirs}
+    for x in ours:
+        i = x.get("id")
+        if i in by_b:
+            continue
+        if i in taken:
+            x["id"] = max(int(y.get("id") or 0) for y in [*ours, *theirs]) + 1
+        out.append(x)
+    ours[:] = out
+
+
 class Store:
     """One folder's tasks, locked while open. `with Store(loc) as s: s.data[...]; s.dirty = True`.
     write: True (refused where nothing can be written), False (read only), or "try" (a read that
-    saves what it learns when it can: show, list)."""
+    saves what it learns when it can: show, list). A read lets go of the lock once it has read; a
+    change lets go of it around slow calls (base.unlocked()) and merges what others saved then."""
 
     def __init__(self, loc, write=True):
         self.loc, self.write, self.best_effort = loc, bool(write), write == "try"
@@ -166,15 +247,25 @@ class Store:
                     self.lock.close()
                 raise Fail(f"Can't change the task list here: {STORE} is read-only (a sandbox?). Run this outside it.")
             self.write, self.read_only = False, True
+        self.locked = False
         if self.lock:
-            fcntl.flock(self.lock, fcntl.LOCK_EX if self.write else fcntl.LOCK_SH)
+            reading = not self.write or self.best_effort
+            if take(self.lock, fcntl.LOCK_EX if self.write else fcntl.LOCK_SH, READ_WAIT if reading else None):
+                self.locked = True
+            else:
+                # A change holds it: the last saved list, read without it; nothing saved.
+                self.lock.close()
+                self.lock = None
+                self.write, self.read_only = False, True
         try:
-            with open(self.path) as f:
-                self.data = json.load(f)
-        except FileNotFoundError:
-            self.data = {}
-        except ValueError:
-            raise Fail(f"{self.path} isn't valid JSON. Fix it first.")
+            self.data, self.base, self.seen = self.load()
+        except BaseException:
+            self.unlock()
+            raise
+        if not self.write:
+            self.unlock()
+        else:
+            HELD.append(self)
         d = self.data
         d.setdefault("version", 1)
         if self.write and d.get("folder") not in (None, self.loc["folder"]) and os.path.exists(self.path):
@@ -204,6 +295,43 @@ class Store:
                 self.dirty = self.new_prefix = bool(d["tasks"]) or os.path.exists(self.path)
         return self
 
+    def load(self):
+        """(data, base: the same as read, its file's stamp)."""
+        seen = stamp(self.path)
+        try:
+            with open(self.path) as f:
+                text = f.read()
+        except FileNotFoundError:
+            return {}, {}, None
+        try:
+            return json.loads(text), json.loads(text), seen
+        except ValueError:
+            raise Fail(f"{self.path} isn't valid JSON. Fix it first.")
+
+    def release(self):
+        """Lets go of the lock for a slow call (base.unlocked()); what's changed stays in memory."""
+        fcntl.flock(self.lock, fcntl.LOCK_UN)
+        self.locked = False
+
+    def reacquire(self):
+        """Takes the lock again and merges in what others saved meanwhile (merge())."""
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        self.locked = True
+        if stamp(self.path) == self.seen:
+            return
+        theirs, base, self.seen = self.load()
+        merge(self.data, self.base, theirs)
+        self.base = base
+
+    def unlock(self):
+        if self in HELD:
+            HELD.remove(self)
+        if self.lock:
+            if self.locked:
+                fcntl.flock(self.lock, fcntl.LOCK_UN)
+            self.lock.close()
+            self.lock, self.locked = None, False
+
     def __exit__(self, kind, *_):
         try:
             if kind is None and self.write and self.dirty:
@@ -213,9 +341,7 @@ class Store:
                     f.write("\n")
                 os.replace(tmp, self.path)
         finally:
-            if self.lock:
-                fcntl.flock(self.lock, fcntl.LOCK_UN)
-                self.lock.close()
+            self.unlock()
         if kind is None and self.new_prefix:
             # A list that just got its prefix: its running tasks' tabs say it too.
             retag_tabs(self)

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, WORKTREES
+from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, unlocked, WORKTREES
 from . import local
 from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for
 from .templates import instructions
@@ -557,8 +557,9 @@ def git_quick(cwd, *args, timeout=15):
     after `timeout` seconds, so an offline or slow remote costs a moment, not a hang."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": os.environ.get("GIT_SSH_COMMAND") or "ssh -o BatchMode=yes"}
     try:
-        r = subprocess.run(["git", "-C", cwd, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True, env=env, timeout=timeout)
+        with unlocked():
+            r = subprocess.run(["git", "-C", cwd, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True, env=env, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return False, "", "timed out"
     return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
