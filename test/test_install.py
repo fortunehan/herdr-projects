@@ -397,6 +397,23 @@ class Install(unittest.TestCase):
         self.assertNotIn("  done. Next:", up)
         run("doctor", "--root", self.root, ok=False)
 
+    def test_doctor_leaves_mods_that_are_not_shepherdrs_alone(self):
+        """SHEP-22: an artifact viewer (art-<id>, carrying Mark up's helpers) or the person's own mod with a copy of a
+        shared module is not a stray copy; a hand-made copy in one of Shepherdr's mods still fails doctor."""
+        run("install", "--root", self.root, "--yes")
+        for mod in ("art-some-proof-1a2b", "art-pc-some-proof-3c4d--v2", "mine"):
+            os.makedirs(self.p(APP, "mods", mod, "core"))
+            shutil.copyfile(os.path.join(ROOT, "lib", "dirs.js"), self.p(APP, "mods", mod, "dirs.js"))
+            shutil.copyfile(os.path.join(ROOT, "core", "paths.js"), self.p(APP, "mods", mod, "core", "paths.js"))
+        d = run("doctor", "--root", self.root).stdout
+        self.assertNotIn("✗", d)
+        os.makedirs(self.p(APP, "mods", "keybinds", "core"), exist_ok=True)
+        shutil.copyfile(os.path.join(ROOT, "core", "paths.js"), self.p(APP, "mods", "keybinds", "core", "paths.js"))
+        d = run("doctor", "--root", self.root, ok=False).stdout
+        self.assertIn("mods/keybinds/core/paths.js looks like a copy of lib/core/paths.js", d)
+        self.assertNotIn("art-", d)
+        self.assertNotIn("mods/mine/", d)
+
     def test_doctor_says_why_not_shared(self):
         """doctor (GitHub #754): when tailscale serve refused the share, it's broken (not a note), in tailscale's own
         words with another port to use; a custom port is named."""
