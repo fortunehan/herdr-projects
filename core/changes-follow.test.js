@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { goneLine, modeFor, target, taskKey, taskOpen, whereOf } from "./changes-follow.js";
 
-const SPACE = { cwd: "/Users/me/Codes/shepherdr", on: null };
+const SPACE = { cwd: "/src/shop", on: null };
 const THREAD = { terminal: "t2p", task: "SHEP-21", title: "Changes panel follows the open task",
-  key: { machine: null, folder: "/Users/me/Codes/shepherdr", slug: "shepherdr", id: 21 } };
-const WHERE = { terminal: "t2p", ref: "SHEP-21", folder: "/wt/task-21", machine: null, repo: "/Users/me/Codes/shepherdr",
+  key: { machine: null, folder: "/src/shop", slug: "shepherdr", id: 21 } };
+const WHERE = { terminal: "t2p", ref: "SHEP-21", folder: "/wt/task-21", machine: null, repo: "/src/shop",
   branch: "task/21-changes", base: "main", start: "abc1234", pr: null };
 
 const tree = (active) => ({ id: "root", children: [{ id: "panel", hidden: true, children: [{ id: "panel-body", active: "changes",
@@ -27,12 +27,12 @@ describe("target", () => {
 
   test("a worktree task: its worktree, its own base, labelled with its ref", () => {
     expect(target({ open: true, thread: THREAD, where: WHERE, space: SPACE })).toEqual({ follow: true, task: "SHEP-21", terminal: "t2p",
-      cwd: "/wt/task-21", on: null, base: "main", branch: "task/21-changes", repo: "/Users/me/Codes/shepherdr", pending: false });
+      cwd: "/wt/task-21", on: null, base: "main", branch: "task/21-changes", repo: "/src/shop", pending: false });
   });
 
   test("a task working here (no worktree): its folder", () => {
-    const where = { ...WHERE, folder: "/Users/me/Codes/shepherdr", branch: null };
-    expect(target({ open: true, thread: THREAD, where, space: { cwd: "/elsewhere", on: null } })).toMatchObject({ follow: true, cwd: "/Users/me/Codes/shepherdr" });
+    const where = { ...WHERE, folder: "/src/shop", branch: null };
+    expect(target({ open: true, thread: THREAD, where, space: { cwd: "/elsewhere", on: null } })).toMatchObject({ follow: true, cwd: "/src/shop" });
   });
 
   test("another machine's task: read on that machine", () => {
@@ -57,8 +57,8 @@ describe("target", () => {
   });
 
   test("a task never started: its list's folder; a stale place of another unstarted task is not taken", () => {
-    const thread = { terminal: null, task: "SHEP-30", key: { machine: null, folder: "/Users/me/Codes/shepherdr", slug: "s", id: 30 } };
-    expect(target({ open: true, thread, where: null, space: SPACE })).toMatchObject({ follow: true, task: "SHEP-30", cwd: "/Users/me/Codes/shepherdr", pending: false });
+    const thread = { terminal: null, task: "SHEP-30", key: { machine: null, folder: "/src/shop", slug: "s", id: 30 } };
+    expect(target({ open: true, thread, where: null, space: SPACE })).toMatchObject({ follow: true, task: "SHEP-30", cwd: "/src/shop", pending: false });
     expect(whereOf(thread, { ref: "SHEP-31", folder: "/x" })).toBe(null);
     expect(whereOf(thread, { ref: "SHEP-30", folder: "/x" })).toMatchObject({ folder: "/x" });
   });

@@ -449,10 +449,13 @@
       "addon": "tasks",
       "title": "Changes side panel",
       "core": [
-        "worktree"
+        "worktree",
+        "changes-follow"
       ],
       "herdr": {
-        "builtin": "Herdr's Changes side panel"
+        "mods": [
+          "my-changes"
+        ]
       },
       "web": {
         "files": [
