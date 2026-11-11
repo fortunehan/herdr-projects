@@ -41,6 +41,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   resolves relative paths against the cwd, and a cwd under ~/.herdr fails 200+ tests) and diff the FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
+- Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
+  mise node shim slow. Not a hang.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
