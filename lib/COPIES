@@ -68,3 +68,4 @@ dirs.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-
 core/paths.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat
 core/image-actions.js: chat-image
 core/open-editor.js: chat
+core/thread-space.js: chat tasks

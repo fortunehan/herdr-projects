@@ -34,6 +34,7 @@ import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
 import { TEXT, H, RADIUS, red, amber } from "./ui.js";
+import { followSpace, switched } from "./core/thread-space.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 const DONE_SHOWN = 5; // Done rows a group shows before "Show N more"
@@ -268,6 +269,9 @@ export default class Tasks extends View {
   draw(cx) {
     spaceAt = null;
     const t = theme();
+    // Another space picked: the panel shows its open task, else this list (core/thread-space.js, SHEP-28).
+    const hosts = { spaces, layout, shared, setShared, run };
+    if (switched(hosts)) cx.timer.after(0, () => followSpace(hosts));
     // A toast's "needs you" (inbox.js showInbox): Needs you opens.
     const show = shared("tasks.show");
     if (show?.at && show.at !== this.shownAt) { this.shownAt = show.at; this.fold("needs", false); }
