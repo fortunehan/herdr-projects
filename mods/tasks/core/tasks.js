@@ -115,6 +115,11 @@ export function retryLine(r, now = Date.now()) {
   return r.due ? `${r.reason} · Retry in ${Math.max(1, Math.ceil((r.due - now) / 60000))}m` : `${r.reason} · Retrying`;
 }
 
+// SHEP-26: an Azure DevOps pull request whose checks all passed and that waits only on its reviewer policies is the
+// person's (Ready), Accepted or not: its Accept turns on (or keeps) auto-complete. As herdr-task's ado_reviewers().
+export const ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps";
+const adoReviewers = (task) => !!(String(task.pr?.repo ?? "").startsWith("ado:") && task.pr.needs_approval && !task.pr.wait);
+
 // Ready only when the person must act (SHEP-175), as herdr-task's ready_wait(): a task said ready is Ready (and its
 // news and alerts) only once the person's Accept is what's left. Not while its pull request's checks still run or
 // GitHub works out whether it can merge (task.pr.wait, kept by herdr-task's tick), nor while it merges by itself:
@@ -123,8 +128,9 @@ export function readyWait(task, live = []) {
   if (task.merge_requested && live.length) return "Merging";
   if (task.merge_queued && task.pr) return "In GitHub's merge queue";
   // #743: waits calmly for a review GitHub requires.
-  // An Azure DevOps pull request completes itself (auto-complete, set on Accept), as herdr-task's.
-  if (task.auto_merge && task.pr && !task.merged && task.ado_auto_complete) return "Completes in Azure DevOps once approved";
+  // An Azure DevOps pull request completes itself (auto-complete, set on Accept), as herdr-task's: Working while its
+  // checks run, Ready while only its reviewers are left (SHEP-26).
+  if (task.auto_merge && task.pr && !task.merged && task.ado_auto_complete) return adoReviewers(task) ? null : task.pr.wait || "Completes in Azure DevOps";
   if (task.auto_merge && task.pr && !task.merged) return task.pr.needs_approval ? "Merges once it's approved" : "Merges once its checks pass";
   return task.pr?.wait || null;
 }
@@ -172,6 +178,7 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
     const wait = readyWait(task, live);
     section = wait ? "working" : "ready";
     if (wait) why = wait;
+    else if (adoReviewers(task)) why = ADO_REVIEWERS;
     // Said ready but not at rest yet (SHEP-148, herdr-task's not_at_rest()): still at work in the turn it said ready
     // in, or its own work still running (a background job, a Monitor, a helper: task.own_work, kept by its scheduler).
     // Working until it is, and only then Ready.
@@ -287,13 +294,14 @@ export const capital = (s) => (/^[a-z](?![A-Z])/.test(String(s)) ? s[0].toUpperC
 export const short = (n) => (n < 1 ? "<1m" : n < 60 ? `${n}m` : `${Math.round(n / 60)}h`);
 
 // A row's second line, as Shepherdr's: Needs you and Merging, why; Working, why or what its agent says it's
-// doing (w: reportOf); Queued, what it waits for (queued: queueReason's words); Ready, since when.
+// doing (w: reportOf); Queued, what it waits for (queued: queueReason's words); Ready, since when, or what it still
+// waits on that is no one's to do here (SHEP-26: its reviewers in Azure DevOps).
 export function secondLine(p, w, queued = null, now = Date.now()) {
   const { section } = p;
   return section === "needs" || section === "merging" ? p.why : section === "working" ? p.why ?? w?.text ?? null
     : section === "queued" ? queued
     : section === "scheduled" ? startsLine(p.task.scheduled_for, now)
-    : section === "ready" ? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : "Ready to accept") : null;
+    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : "Ready to accept") : null;
 }
 
 // The minutes left under a working row's dot ("6m"), once its agent gave them; a scheduled one's time until it starts

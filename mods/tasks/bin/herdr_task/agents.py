@@ -146,7 +146,7 @@ def task_status(task, live):
         # Said ready but not at rest yet (SHEP-148): Working until it is, and only then Ready.
         if live and not_at_rest(task, live):
             return "working", None, None
-        return "ready", None, None
+        return "ready", None, ADO_REVIEWERS if ado_reviewers(task) else None
     # An agent that hasn't reported yet is starting: working.
     if any(x not in ("idle", "done", "blocked") for x in states):
         return "working", None, None
@@ -179,7 +179,16 @@ STOPPED = "Agent stopped"
 # (pr["wait"], kept by the tick), nor while it merges by itself. Then it is Working, its row saying
 # in small words what it waits for. As core/tasks.js readyWait().
 MERGING, MERGES_ITSELF = "Merging", "Merges once its checks pass"
-ADO_COMPLETES = "Completes in Azure DevOps once approved"
+ADO_COMPLETES = "Completes in Azure DevOps"
+# SHEP-26: an Azure DevOps pull request whose checks all passed and that waits only on its reviewer
+# policies is the person's (Ready), Accepted or not: its Accept turns on (or keeps) auto-complete.
+ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps"
+
+
+def ado_reviewers(task):
+    """SHEP-26: an Azure DevOps pull request waiting only on its reviewers (its checks done)."""
+    pr = task.get("pr") or {}
+    return str(pr.get("repo") or "").startswith("ado:") and bool(pr.get("needs_approval")) and not pr.get("wait")
 
 
 def ready_wait(task, live):
@@ -189,9 +198,12 @@ def ready_wait(task, live):
     if task.get("merge_queued") and task.get("pr"):
         return IN_QUEUE_LINE
     if task.get("auto_merge") and task.get("pr") and not task.get("merged"):
-        # an Azure DevOps pull request completes itself (auto-complete, set on Accept)
+        # an Azure DevOps pull request completes itself (auto-complete, set on Accept): Working while
+        # its checks run, Ready while only its reviewers are left (SHEP-26)
         if task.get("ado_auto_complete"):
-            return ADO_COMPLETES
+            if ado_reviewers(task):
+                return None
+            return task["pr"].get("wait") or ADO_COMPLETES
         # #743: waits calmly for a review GitHub requires
         return APPROVAL_LINE if task["pr"].get("needs_approval") else MERGES_ITSELF
     return (task.get("pr") or {}).get("wait") or None

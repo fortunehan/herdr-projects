@@ -351,7 +351,12 @@ class Merging(Base):
         self.assertEqual((self.task["state"], self.task["auto_merge"], bool(self.task.get("ado_auto_complete"))), ("ready", "checks", True))
         self.assertEqual((data["accepted"], data["auto_complete"]), ("approval", True))
         self.assertIn("Azure DevOps completes it once it's approved", text)
-        self.assertEqual(agents.task_status(self.task, [])[2], "Completes in Azure DevOps once approved")
+        # SHEP-26: its checks done, only its reviewers left: the person's again, saying so.
+        self.assertEqual(agents.task_status(self.task, []), ("ready", None, "Waiting on reviewers in Azure DevOps"))
+        # Accept again: auto-complete stays on, the task stays as it is.
+        data, _ = self.accept()
+        self.assertEqual(len(f.sent("PATCH", r".*")), 2)
+        self.assertEqual((self.task["state"], self.task["auto_merge"], data["auto_complete"]), ("ready", "checks", True))
 
     def test_accept_that_merges_at_once_sets_no_auto_complete(self):
         seen = []
@@ -463,9 +468,49 @@ class MergedInAzureDevOps(Base):
                                               evaluation("queued", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers")])
         self.assertEqual((wait, status), (None, "ready"))
         self.assertTrue(self.task["pr"]["needs_approval"])
+        self.assertEqual(agents.task_status(self.task, [])[2], "Waiting on reviewers in Azure DevOps")  # SHEP-26
         # a build still running: Working
         wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci")])
         self.assertEqual((wait, status), ("Checks running", "working"))
+
+    def test_accepted_with_auto_complete_and_only_reviewers_left_is_ready(self):
+        # SHEP-26: Accept turned on auto-complete; its build passed, only the reviewer policies are left: Ready.
+        self.task.update(auto_merge="checks", ado_auto_complete=1)
+        reviewers = [evaluation("queued", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers"),
+                     evaluation("queued", type_id="fd2167ab-b0be-447a-8ec8-39368250530e", name="Required reviewers")]
+        wait, status = self.ready_wait(pr(autoCompleteSetBy={"id": "x"}), [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
+        self.assertEqual((wait, status), (None, "ready"))
+        self.assertEqual(agents.task_status(self.task, [])[2], "Waiting on reviewers in Azure DevOps")
+        self.assertFalse(self.task["_pr_fresh"])  # Herdr's own merge doesn't go first
+        # its build still running: Working, saying so
+        wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci"), *reviewers])
+        self.assertEqual((wait, agents.task_status(self.task, [])), ("Checks running", ("working", None, "Checks running")))
+        # its build failed: Needs you, as before
+        self.ready_wait(pr(), [evaluation("rejected", buildDefinitionName="web-ci"), *reviewers])
+        self.task["attention_at"] = 0
+        self.assertEqual(agents.task_status(self.task, [])[:2], ("needs", "attention"))
+        self.assertIn("web-ci", self.task["attention"])
+        # approved, completing by itself any moment: Working
+        self.task.pop("attention")
+        wait, status = self.ready_wait(pr(), [evaluation("approved", buildDefinitionName="web-ci")])
+        self.assertEqual((wait, agents.task_status(self.task, [])), (None, ("working", None, "Completes in Azure DevOps")))
+
+    def test_a_reviewer_rejecting_after_ready_reaches_the_task(self):
+        # SHEP-26: Ready on its reviewers, then one rejects: a problem Herdr found, as other pull request news.
+        self.task.update(auto_merge="checks", ado_auto_complete=1)
+        reviewers = [evaluation("queued", type_id="fd2167ab-b0be-447a-8ec8-39368250530e", name="Required reviewers")]
+        self.ready_wait(pr(), [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
+        self.assertEqual(agents.task_status(self.task, [])[0], "ready")
+        wait, _ = self.ready_wait(pr(reviewers=[{"displayName": "Ann", "vote": -10}]),
+                                  [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
+        self.assertEqual(wait, "Back to its agent to fix")
+        self.assertIn("Review by Ann: rejected", self.task["attention"])
+
+    def test_a_github_pull_request_waiting_on_a_review_is_unchanged(self):
+        t = {"state": "ready", "auto_merge": "checks", "pr": {"number": 3, "repo": "o/r", "needs_approval": True}}
+        self.assertEqual(agents.task_status(t, []), ("working", None, "Merges once it's approved"))
+        self.assertEqual(agents.task_status({"state": "ready", "pr": {"number": 3, "repo": "o/r", "needs_approval": True}}, []),
+                         ("ready", None, None))
 
     def test_a_draft_waiting_on_a_validation_is_ready_for_the_accept_that_publishes_it(self):
         # Azure DevOps runs no build validation on a draft: its queued build must not keep it Working before Accept.
