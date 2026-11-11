@@ -18,7 +18,7 @@ import re
 import subprocess
 import threading
 
-from .base import APP_HOME, Fail, guard, HOME, hc_json, now, run, STORE, WHERE
+from .base import APP_HOME, Fail, guard, HOME, hc_json, now, run, STORE, unlocked, WHERE
 from .settings import LOCAL_MACHINE, SETTINGS
 from .output import say
 from .store import is_task_list, read_list, store_files
@@ -209,8 +209,9 @@ def remote_report(machine, candidates, since, news_only, timeout=40):
         args.append("--news-only")
     cmd = 'exec "$HOME/.local/bin/herdr-task" "$@"'
     try:
-        r = subprocess.run(["hc", "exec", "--on", machine, "--timeout", str(timeout), "--", "sh", "-c", cmd, "sh", *args],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout + 15)
+        with unlocked():
+            r = subprocess.run(["hc", "exec", "--on", machine, "--timeout", str(timeout), "--", "sh", "-c", cmd, "sh", *args],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout + 15)
     except subprocess.TimeoutExpired:
         raise Fail("timed out")
     line = next((l for l in reversed(r.stdout.splitlines()) if l.startswith("{")), None)

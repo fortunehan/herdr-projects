@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .base import Fail, git, HOME, now, proxy_for, STORE, WHERE
+from .base import Fail, git, HOME, now, proxy_for, STORE, unlocked, WHERE
 
 
 PREFIX = "ado:"
@@ -201,8 +201,9 @@ def git_credential(repo):
     ask = f"protocol=https\nhost=dev.azure.com\npath={org}/{project}/_git/{name}\n\n"
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
     try:
-        r = subprocess.run(["git", "credential", "fill"], input=ask, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True, env=env, cwd=HOME, timeout=20)
+        with unlocked():
+            r = subprocess.run(["git", "credential", "fill"], input=ask, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True, env=env, cwd=HOME, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
     got = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line) if r.returncode == 0 else {}
@@ -292,7 +293,7 @@ def _request(repo, method, url, body, raw):
             data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with opener(repo).open(req, timeout=timeout) as r:
+            with unlocked(), opener(repo).open(req, timeout=timeout) as r:
                 status, text = r.status, r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             status, text = e.code, (e.read() or b"").decode("utf-8", "replace")

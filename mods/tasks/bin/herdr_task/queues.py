@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 
-from .base import beside_store, ENTRY, Fail, guard, now, STORE
+from .base import beside_store, ENTRY, Fail, guard, now, STORE, unlocked
 from .agents import agent_running, live_agents
 from .store import parse_ref, prefixes_in_use, read_list, store_path
 
@@ -55,7 +55,8 @@ def ext_state(x):
     args = [sys.executable, ENTRY, "--on", x["machine"], "show", ref, "--json"]
     guard(["hc"])
     try:
-        r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+        with unlocked():
+            r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
     except subprocess.TimeoutExpired:
         raise Fail(f"{x['machine']} didn't answer.")
     try:

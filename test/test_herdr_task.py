@@ -5021,3 +5021,209 @@ class StopLog(unittest.TestCase):
         from unittest import mock
         with mock.patch.object(base, "STOP_LOG", "/proc/forbidden/stops.jsonl"):
             base.stop_note("gone", task="SHEP-1")  # must not raise
+
+
+class SlowCallsOutsideTheLock(unittest.TestCase):
+    """SHEP-29: a hung `gh pr view` under the scheduler's lock once kept every herdr-task command on that list waiting
+    for 18 minutes. Real herdr-task processes on a throwaway store and git repo; gh a fake that hangs while a file
+    says so, hc a fake that knows no terminals."""
+
+    VIEW = {"state": "OPEN", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "headRefOid": "abc", "isDraft": False,
+            "statusCheckRollup": [{"name": "check", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store = os.path.join(self.tmp, "tasks")
+        self.folder = os.path.join(self.tmp, "app")
+        self.wt = os.path.join(self.tmp, "app-wt")
+        for f in (self.store, self.folder, self.wt):
+            os.makedirs(f)
+        subprocess.run(["git", "init", "-q", self.folder], check=True)
+        fakebin = os.path.join(self.tmp, "bin")
+        os.makedirs(fakebin)
+        with open(os.path.join(fakebin, "hc"), "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        self.hang, self.asked = os.path.join(self.tmp, "hang"), os.path.join(self.tmp, "asked")
+        self.gh = os.path.join(fakebin, "gh")
+        with open(self.gh, "w") as f:
+            f.write("#!/usr/bin/env python3\nimport json, os, sys, time\n"
+                    f"if sys.argv[1:3] == ['pr', 'view']:\n    open({self.asked!r}, 'a').write('x')\n"
+                    f"    while os.path.exists({self.hang!r}):\n        time.sleep(0.1)\n"
+                    f"    print(json.dumps({self.VIEW!r}))\n"
+                    "elif sys.argv[1:2] == ['api']:\n    print('[]')\n")
+        for p in (os.path.join(fakebin, "hc"), self.gh):
+            os.chmod(p, 0o755)
+        self.env = {**os.environ, "HERDR_TASK_STORE": self.store, "HERDR_TASK_GH": self.gh,
+                    "HERDR_TASK_SETTINGS": os.path.join(self.tmp, "settings.json"), "GIT_CONFIG_GLOBAL": os.devnull,
+                    "PATH": fakebin + os.pathsep + os.environ.get("PATH", "")}
+        self.path = json.loads(self.herdr("where", "--folder", self.folder, "--json").stdout)["store"]
+        ready_at = 1_000_000
+        with open(self.path, "w") as f:
+            json.dump({"version": 1, "folder": os.path.realpath(self.folder), "prefix": "APP", "next": 3, "tasks": [
+                {"id": 1, "title": "Login", "state": "ready", "mode": "worktree", "worktree": self.wt, "branch": "b",
+                 "agents": [], "ready_at": ready_at, "created": ready_at,
+                 "pr": {"number": 25, "url": "https://github.com/o/r/pull/25", "repo": "o/r", "checked": 0,
+                        "wait": "Checks running"}},
+                {"id": 2, "title": "Logout", "state": "running", "mode": "here", "agents": [], "created": ready_at}]}, f)
+
+    def herdr(self, *args, wait=True):
+        # on this run's throwaway HOME herdr-task refuses hc (base.not_real): its hc here is a fake, so let it
+        b = ("import sys, runpy; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]);"
+             "import herdr_task.base as base; base.not_real = lambda: None;"
+             "sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+        argv = [sys.executable, "-c", b, BIN, os.path.join(BIN, "herdr-task"), *args]
+        if not wait:
+            return subprocess.Popen(argv, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=60)
+
+    def timed(self, *args):
+        import time
+        t0 = time.monotonic()
+        r = self.herdr(*args)
+        return r, time.monotonic() - t0
+
+    def task(self, n):
+        with open(self.path) as f:
+            return next(t for t in json.load(f)["tasks"] if t["id"] == n)
+
+    def test_commands_answer_while_the_schedulers_poll_hangs(self):
+        import time
+        open(self.hang, "w").close()
+        tick = self.herdr("tick", "--folder", self.folder, "--json", wait=False)
+        try:
+            for _ in range(300):
+                if os.path.exists(self.asked) or tick.poll() is not None:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(os.path.exists(self.asked), tick.stderr.read() if tick.poll() is not None else "gh never asked")
+            r, took = self.timed("show", "APP-1", "--folder", self.folder, "--json")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(took, 5, "show waited on the tick's lock")
+            r, took = self.timed("list", "--folder", self.folder, "--json")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(took, 5, "list waited on the tick's lock")
+            r, took = self.timed("status", "APP-2", "--folder", self.folder, "Writing the login form", "--done", "40", "--left", "5m")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(took, 5, "status waited on the tick's lock")
+            self.assertIsNone(tick.poll(), "the poll ended before the commands ran")
+        finally:
+            os.remove(self.hang)
+        out, err = tick.communicate(timeout=60)
+        self.assertEqual(tick.returncode, 0, err)
+        # Both saved: status's line while the tick polled, and the tick's poll (merged in after).
+        self.assertEqual(self.task(2)["progress"]["text"], "Writing the login form")
+        pr = self.task(1)["pr"]
+        self.assertGreater(pr["checked"], 0)
+        self.assertNotIn("wait", pr, "a passed poll clears Checks running")
+
+    def test_a_read_never_waits_long_on_the_lock(self):
+        import fcntl
+        lock = open(os.path.join(self.store, "." + os.path.basename(self.path) + ".lock"), "a")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            r, took = self.timed("show", "APP-1", "--folder", self.folder, "--json")
+        finally:
+            lock.close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["title"], "Login")
+        self.assertLess(took, 6)
+
+
+class GhTimeout(unittest.TestCase):
+    """SHEP-29: every gh call herdr-task makes gives up after GH_TIMEOUT: a poll that times out failed (logged), and
+    is tried again; the next one that answers records it and clears the wait."""
+
+    PASSED = {"name": "check", "status": "COMPLETED", "conclusion": "SUCCESS"}
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.base as base
+        import herdr_task.github as github
+        import herdr_task.tick as tick
+        self.base, self.github, self.tick = base, github, tick
+        self.dir = tempfile.mkdtemp()
+        self.hang = os.path.join(self.dir, "hang")
+        gh = os.path.join(self.dir, "gh")
+        with open(gh, "w") as f:
+            f.write("#!/usr/bin/env python3\nimport json, os, sys, time\n"
+                    f"if os.path.exists({self.hang!r}):\n    time.sleep(30)\n"
+                    "if sys.argv[1:3] == ['pr', 'view']:\n"
+                    f"    print(json.dumps({{'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': 'abc', 'statusCheckRollup': [{self.PASSED!r}]}}))\n"
+                    "else:\n    print('[]')\n")
+        os.chmod(gh, 0o755)
+        self.clock = [50_000_000]
+        for mod, name, value in ((github, "GH", gh), (github, "STORE", self.dir), (base, "GH_TIMEOUT", 1),
+                                 (base, "NET_LOG", os.path.join(self.dir, "net.jsonl")),
+                                 (tick, "now", lambda: self.clock[0]), (github, "now", lambda: self.clock[0]),
+                                 (tick, "live_agents", lambda key: []), (tick, "pr_news", lambda s, t, v, r: None)):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_a_hung_gh_is_a_failed_poll_then_the_next_clears_the_wait(self):
+        import time
+        t = {"id": 1, "state": "ready", "worktree": self.dir, "ready_at": 1, "agents": [],
+             "pr": {"number": 25, "repo": "o/r", "checked": 0, "wait": "Checks running"}}
+        s = Store([t])
+        open(self.hang, "w").close()
+        t0 = time.monotonic()
+        self.tick.facts(s, t, {"attention": []})
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertEqual(t["pr"]["wait"], "Checks running")
+        self.assertNotIn("attention", t)
+        with open(self.base.NET_LOG) as f:
+            row = json.loads(f.read().splitlines()[-1])
+        self.assertEqual((row["kind"], row["seconds"], row["argv"][1:3]), ("timeout", 1, ["pr", "view"]))
+        os.remove(self.hang)
+        self.clock[0] += self.base.PR_EVERY
+        self.tick.facts(s, t, {"attention": []})
+        self.assertEqual(t["pr"]["checked"], self.clock[0])
+        self.assertNotIn("wait", t["pr"])
+
+    def test_which_calls_let_go_of_the_lock(self):
+        slow = self.base.slow
+        self.assertTrue(slow([self.github.GH, "pr", "view", "1"]))
+        self.assertTrue(slow(["git", "-C", "/r", "push", "origin", "b"]))
+        self.assertTrue(slow(["git", "-C", "/r", "fetch", "origin"]))
+        self.assertTrue(slow(["hc", "exec", "--on", "mini", "--", "true"]))
+        self.assertFalse(slow(["git", "-C", "/r", "status", "--porcelain"]))
+        self.assertFalse(slow(["git", "-C", "/push", "rev-parse", "HEAD"]))
+        self.assertFalse(slow(["hc", "ls", "--json"]))
+
+
+class StoreMerge(unittest.TestCase):
+    """SHEP-29: what a change that let go of the lock (a slow call) keeps of what others saved meanwhile."""
+
+    def setUp(self):
+        sys.path.insert(0, BIN)
+        import herdr_task.store as store
+        self.merge = store.merge
+
+    def test_both_sides_kept_and_ours_objects_stay(self):
+        base = {"next": 3, "tasks": [{"id": 1, "state": "ready", "pr": {"checked": 0, "wait": "Checks running"}},
+                                     {"id": 2, "state": "running"}]}
+        ours = json.loads(json.dumps(base))
+        t1, pr = ours["tasks"][0], ours["tasks"][0]["pr"]
+        pr["checked"] = 99
+        pr.pop("wait")
+        theirs = json.loads(json.dumps(base))
+        theirs["tasks"][1]["progress"] = {"text": "Writing"}
+        theirs["tasks"][0]["pr"]["url"] = "u"
+        theirs["tasks"].append({"id": 3, "state": "todo"})
+        theirs["next"] = 4
+        self.merge(ours, base, theirs)
+        self.assertIs(ours["tasks"][0], t1)
+        self.assertIs(ours["tasks"][0]["pr"], pr)
+        self.assertEqual(pr, {"checked": 99, "url": "u"})
+        self.assertEqual(ours["tasks"][1]["progress"], {"text": "Writing"})
+        self.assertEqual([t["id"] for t in ours["tasks"]], [1, 2, 3])
+        self.assertEqual(ours["next"], 4)
+
+    def test_removed_stays_removed_and_a_clash_is_renumbered(self):
+        base = {"next": 3, "tasks": [{"id": 1}, {"id": 2}]}
+        ours = {"next": 4, "tasks": [{"id": 1, "x": 1}, {"id": 2}, {"id": 3, "title": "mine"}]}
+        theirs = {"next": 4, "tasks": [{"id": 1}, {"id": 3, "title": "theirs"}]}
+        self.merge(ours, base, theirs)
+        self.assertEqual(ours["tasks"], [{"id": 1, "x": 1}, {"id": 3, "title": "theirs"}, {"id": 4, "title": "mine"}])
+        self.assertEqual(ours["next"], 5)

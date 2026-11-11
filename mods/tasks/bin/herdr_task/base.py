@@ -1,11 +1,13 @@
 """Shared ground: paths, Fail, the clock, this herdr-task's own files, and running programs
 (hc, herdr-app, git) only in the real environment."""
 
+import contextlib
 import io
 import json
 import os
 import pwd
 import subprocess
+import threading
 import time
 import zipfile
 
@@ -34,6 +36,8 @@ SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "xons
 RANK = {"blocked": 4, "done": 3, "working": 2, "idle": 1}
 MAX_RUNNING = 10
 GH = os.environ.get("HERDR_TASK_GH") or "gh"
+# SHEP-29: how long one gh call may take (s); past it, it failed (a poll is tried again next round).
+GH_TIMEOUT = int(os.environ.get("HERDR_TASK_GH_TIMEOUT") or 45)
 # How often tick asks GitHub about a pull request (ms).
 PR_EVERY = 60000
 
@@ -89,19 +93,24 @@ STOP_LOG_LINES = 500
 
 def stop_note(kind, **fields):
     """Appends {at, kind, ...fields} to the stop log (a JSON line)."""
+    log_line(STOP_LOG, kind, **fields)
+
+
+def log_line(path, kind, **fields):
+    """Appends {at, kind, ...fields} to a small JSON-lines log (the last STOP_LOG_LINES)."""
     try:
-        os.makedirs(os.path.dirname(STOP_LOG), exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            with open(STOP_LOG) as f:
+            with open(path) as f:
                 lines = f.readlines()
         except OSError:
             lines = []
         lines = lines[-(STOP_LOG_LINES - 1):] + [json.dumps({"at": now(), "kind": kind, **fields}, ensure_ascii=False) + "\n"]
-        tmp = f"{STOP_LOG}.{os.getpid()}.tmp"
+        tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w") as f:
             f.writelines(lines)
-        os.replace(tmp, STOP_LOG)
-    except Exception:  # noqa: BLE001 - a log line never stops the agent work it records
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - a log line never stops the work it records
         pass
 
 
@@ -145,11 +154,61 @@ def guard(args):
                    "HC_SESSION and HC_SOCKET: changed ones can reach the real window and wipe its spaces.")
 
 
-def run(args, cwd=None, check=False, env=None):
+# ---- slow calls never hold a task list's lock (SHEP-29) -------------------------------------------
+# A hung `gh pr view` under the scheduler's lock once kept every herdr-task command on that list
+# waiting for 18 minutes. So whatever may wait on the network (gh, git fetch/push, another machine,
+# Azure DevOps) runs inside unlocked(): each task list this process holds (store.Store) lets go of
+# its lock first and takes it again after, merging what others saved meanwhile (Store.reacquire()).
+HELD = []
+NET_GIT = {"fetch", "push", "pull", "ls-remote", "clone"}
+NET_LOG = os.path.join(STORE, ".network.jsonl")
+
+
+@contextlib.contextmanager
+def unlocked():
+    # Only the thread that holds them: a helper thread's call (machines asked at once) runs outside them anyway.
+    main = threading.current_thread() is threading.main_thread()
+    held = [s for s in HELD if s.locked] if main else []
+    for s in reversed(held):
+        s.release()
+    try:
+        yield
+    finally:
+        for s in held:
+            s.reacquire()
+
+
+def is_gh(args):
+    return args[0] == GH or os.path.basename(args[0]) == "gh"
+
+
+def slow(args):
+    """Whether a program may wait on the network: gh, git's network verbs, anything --on another machine."""
+    name = os.path.basename(args[0])
+    if is_gh(args) or "--on" in args:
+        return True
+    if name == "git":
+        verb = next((a for i, a in enumerate(args[1:], 1) if not a.startswith("-") and args[i - 1] not in ("-C", "-c")), None)
+        return verb in NET_GIT
+    return False
+
+
+def run(args, cwd=None, check=False, env=None, timeout=None):
+    """timeout (s; gh's: GH_TIMEOUT): past it the program is ended and its answer is exit 124, with
+    why on stderr (logged in NET_LOG)."""
     guard(args)
     if env is None and args[0] == GH:
         env = gh_env()
-    r = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    if timeout is None and is_gh(args):
+        timeout = GH_TIMEOUT
+    with unlocked() if slow(args) else contextlib.nullcontext():
+        try:
+            r = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            why = f"{os.path.basename(args[0])} gave no answer within {timeout} seconds"
+            log_line(NET_LOG, "timeout", argv=args[:4], seconds=timeout)
+            r = subprocess.CompletedProcess(args, 124, "", why)
     if check and r.returncode != 0:
         raise Fail((r.stderr or r.stdout).strip() or f"{args[0]} failed")
     return r

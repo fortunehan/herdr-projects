@@ -219,8 +219,9 @@ def due_pass(s, report):
 
 def tick_store(s, report):
     """One folder's turn: Ready tasks back at work are Working again, merged tasks become done,
-    auto-merges go when they can, and queued tasks start while there's room."""
-    for t in s.data["tasks"]:
+    auto-merges go when they can, and queued tasks start while there's room. Its loops go over a copy:
+    a slow call lets go of the lock and may bring in others' changes (base.unlocked())."""
+    for t in list(s.data["tasks"]):
         if t["state"] == "ready":
             back_pass(s, t, report)
         elif t["state"] == "running" and (t.get("back") or {}).get("auto"):
@@ -350,7 +351,7 @@ def end_done_pass(report, folder=None, pressed=False):
         if not d or not os.path.isdir(d.get("folder") or "") or not any(ending(t) or tidy_due(t) for t in tasks):
             continue
         with Store(locate(d["folder"])) as s:
-            for t in s.data["tasks"]:
+            for t in list(s.data["tasks"]):
                 if ending(t):
                     ended += end_done(s, t, report, pressed)
                 if not ending(t) and tidy_due(t):

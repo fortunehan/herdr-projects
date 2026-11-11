@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from .base import addon_off, APP_HOME, ASK_HOME, sync_held, bundle, ENTRY, Fail, guard, HOME, hc_json, layout, now, PACKAGE, run, STORE, WHERE
+from .base import addon_off, APP_HOME, ASK_HOME, sync_held, bundle, ENTRY, Fail, guard, HOME, hc_json, layout, now, PACKAGE, run, STORE, unlocked, WHERE
 from .news import news_send, send_or_hold, typing
 
 
@@ -293,9 +293,10 @@ def connected_machines():
 def _remote_python(machine, script, payload, timeout=120):
     guard(["hc"])
     try:
-        r = subprocess.run(["hc", "exec", "--on", machine, "--stdin", "--timeout", str(timeout), "--", "python3", "-c", script],
-                           input=json.dumps(payload), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
-                           timeout=timeout + 30)
+        with unlocked():
+            r = subprocess.run(["hc", "exec", "--on", machine, "--stdin", "--timeout", str(timeout), "--", "python3", "-c", script],
+                               input=json.dumps(payload), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               timeout=timeout + 30)
     except subprocess.TimeoutExpired:
         raise Fail("timed out")
     if r.returncode != 0:
@@ -815,8 +816,10 @@ def _deliver(names, hows, address, text):
     send, as news is (no <hc from> of this machine's). Mid-turn, Claude Code's "send now"."""
     guard(["hc"])
     env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
-    there = lambda inner: subprocess.run(_hops(names, hows, inner), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         universal_newlines=True, timeout=90)
+    def there(inner):
+        with unlocked():
+            return subprocess.run(_hops(names, hows, inner), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True, timeout=90)
     # Not into words the person is writing to it (HERD-71): a minute for them to finish.
     for i in range(12):
         if not typing(address, there=there):

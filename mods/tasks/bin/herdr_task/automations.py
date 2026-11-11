@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-from .base import ENTRY, Fail, guard, hc_json, layout, now, STORE, WHERE
+from .base import ENTRY, Fail, guard, hc_json, layout, now, STORE, unlocked, WHERE
 from .when import parse_at
 from .settings import bare, set_task, settings_for, SET_KEYS, worker_argv, worktrees_on
 from .agents import agent_running, live_agents, starting, status_of, task_status
@@ -498,7 +498,8 @@ def fetch_feed(src):
     guard(["hc"])
     argv = [sys.executable, ENTRY, "--on", src["machine"], "auto", "feed", "--folder", src["folder"], "--json"]
     try:
-        r = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=FEED_TIMEOUT_S + 20)
+        with unlocked():
+            r = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=FEED_TIMEOUT_S + 20)
     except subprocess.TimeoutExpired:
         raise Fail(f"{src['machine']} didn't answer.")
     line = next((x for x in reversed(r.stdout.splitlines()) if x.startswith("{")), None)
