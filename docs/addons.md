@@ -8,7 +8,7 @@ marked below off and on again, at once and on every machine (Everywhere's `off` 
 | Add-on | Switch | What it is | Off means |
 |---|---|---|---|
 | Core | always on | The layout: sidebar (spaces-chat), tab bar (tabs-tasks), pane header (pane-chat), sidebar foot, status bar, toasts, menus and dialogs, Shepherdr settings | — |
-| Tasks | always on in 3.1.31 | The Tasks panel, a task's view (files, changes, pull request), the Accept card, `herdr-task`, worker.md and reviewer.md | — |
+| Tasks | always on in 3.1.31 | The Tasks panel, a task's view (files, changes, pull request), the Changes side panel (my-changes: Uncommitted, Base or Branch; it follows the task open in the Tasks panel), the Accept card, `herdr-task`, worker.md and reviewer.md | — |
 | Assistants | always on in 3.1.31 | An Assistant per space (coordinator, assistant.md), task news. Needs Tasks | — |
 | Chat | always on in 3.1.31 | Agents as a chat, model choice, opened images | — |
 | Questions and permissions | always on in 3.1.31 | Question and permission cards from Claude Code and Codex hooks. Needs Chat | — |

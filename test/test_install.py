@@ -768,6 +768,29 @@ class Install(unittest.TestCase):
         run("uninstall", "--root", self.root)
         self.assertEqual(open(self.p(APP, "mods/jump/main.js")).read(), "// someone's own jump\n")
 
+    def test_hand_made_my_changes_is_taken_over(self):
+        # SHEP-21: my-changes began as the person's own clone of Herdr's changes; an install takes it over without
+        # --adopt, keeps theirs in the backup (uninstall puts it back) and leaves Herdr's editor files alone.
+        own = self.p(APP, "mods/my-changes")
+        os.makedirs(own)
+        for name, text in (("main.js", "// the person's own changes\n"), ("mod.json", '{"place": "none"}\n'),
+                           ("jsconfig.json", "{}\n")):
+            with open(os.path.join(own, name), "w") as f:
+                f.write(text)
+        p = run("install", "--root", self.root, "--yes")
+        self.assertIn("mods/my-changes is Shepherdr's now", p.stdout)
+        with open(os.path.join(ROOT, "mods/my-changes/main.js")) as f:
+            self.assertEqual(open(os.path.join(own, "main.js")).read(), f.read())
+        self.assertTrue(os.path.isfile(os.path.join(own, "core/changes-follow.js")))
+        self.assertEqual(open(os.path.join(own, "jsconfig.json")).read(), "{}\n")
+        backups = os.listdir(self.p(APP, ".shepherdr-backup"))
+        saved = self.p(APP, ".shepherdr-backup", backups[0], APP, "mods/my-changes/main.js")
+        self.assertEqual(open(saved).read(), "// the person's own changes\n")
+        self.assertRegex(open(self.p(APP, "layouts/shepherdr.json")).read(), r'"mod":\s*"my-changes"')
+        run("install", "--root", self.root, "--yes")
+        run("uninstall", "--root", self.root)
+        self.assertEqual(open(os.path.join(own, "main.js")).read(), "// the person's own changes\n")
+
     def test_fresh_root(self):
         # A brand-new home: no Herdr folder, no mods/, no .local/bin yet.
         root = tempfile.mkdtemp(prefix="shepherdr-fresh-")
