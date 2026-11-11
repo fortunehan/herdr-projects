@@ -384,7 +384,7 @@
         ]
       },
       "forms": {
-        "herdr": "Header (Pin, Review, status); Chat, Terminal, Shell, Files, Changes, Pull request, Browser",
+        "herdr": "Header (Pin, Review, status, Open in VS Code); Chat, Terminal, Shell, Files, Changes, Pull request, Browser",
         "desktop": "Side panel with those tabs",
         "tablet": "Slides over the list, with Back",
         "phone": "Own screen; tabs in a scrolling switcher"

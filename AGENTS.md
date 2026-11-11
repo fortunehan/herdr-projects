@@ -41,6 +41,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   resolves relative paths against the cwd, and a cwd under ~/.herdr fails 200+ tests) and diff the FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
+- Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
+  mise node shim slow. Not a hang.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
@@ -74,7 +76,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   place in the snapshot needs a `chat` field (else a blank crash); open a viewer with `?artifact=<id>`, a task with
   `?task=<id>`. Answer the client's `watch` message with `{type:'chat',chat}` per key; `sections: []` lists places
   under their machine in the sidebar. A stub chat message can carry any Message field (brief, activity, news) to
-  screenshot quiet rows without a real log.
+  screenshot quiet rows without a real log. For a before/after of task rows without rebuilding twice, import main's
+  `core/tasks.js` (`git show main:core/tasks.js`, plus `needs.js` and `asks.js`) in the stub and compute each row's
+  sub line with `place()` and `secondLine()`.
 - A cross-machine send without ssh: two throwaway cores (`HC_SESSION=a`/`b`, clean `env -i`) and
   `hc machine add --via 'sh -c' --name vmb --session b` on a; the wrap only shows with a real agent (e.g.
   `claude --model haiku`) as the target.
