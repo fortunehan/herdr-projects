@@ -145,6 +145,9 @@ SKIP = {"__pycache__", ".DS_Store"}
 # Layout blocks Herdr's mods point at whatever is shown now (a task's terminal, an opened artifact):
 # compared without them, so a layout in use still counts as unchanged.
 LIVE_BLOCKS = ("tasks-thread-term", "artifacts-view-body")
+# Columns a mod adds a terminal block to while it shows one (mods/task-shell: a task's shell, kept pointed at
+# after it hides): compared without that block, its own block not hidden, as shipped.
+LIVE_VIEWS = {"tasks-thread-shell": "tasks-thread-shell-view"}
 HOOKS = [  # (file under home, event, entry): the question and permission cards (the "needs" add-on)
     (".claude/settings.json", "SessionStart",
      {"matcher": "^(startup|resume|clear|compact)$", "hooks": [{"type": "command", "command": "sh '{app}/mods/chat/session-note.sh'", "timeout": 10}]}),
@@ -196,6 +199,11 @@ def layout_bytes(b):
         if isinstance(n, dict):
             if n.get("id") in LIVE_BLOCKS:
                 n["content"] = None
+            if n.get("id") in LIVE_VIEWS and isinstance(n.get("children"), list):
+                n["children"] = [c for c in n["children"] if not (isinstance(c, dict) and c.get("id") == LIVE_VIEWS[n["id"]])]
+                for c in n["children"]:
+                    if isinstance(c, dict):
+                        c.pop("hidden", None)
             for v in n.values():
                 walk(v)
         elif isinstance(n, list):

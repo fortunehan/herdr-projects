@@ -8,6 +8,7 @@ import shutil
 from .base import Fail, GH, git, hc_json, now, run, STORE
 from .agents import agent_running, live_agents, live_helpers, status_word
 from . import ado
+from .shells import end_shells
 
 
 # ---- GitHub ---------------------------------------------------------------------------------
@@ -486,6 +487,7 @@ def finish(s, task, even_if_busy=False):
     for k in ("attention", "merge_requested", "queue", "queued_at", "merge_queued", "kept_open"):
         task.pop(k, None)
     s.dirty = True
+    end_shells(s.key(task))
     if not task.get("worktree") or mid_turn(s, task) or (not even_if_busy and any(agent_running(k) for k in live_agents(s.key(task)))):
         return
     remove_worktree(s, task)
@@ -527,6 +529,7 @@ def tidy_done(s, t, report=None):
     if not tidy_due(t):
         return False
     wt, br, main = t["worktree"], t.get("branch"), s.loc["folder"]
+    end_shells(s.key(t))
     terms = hc_json("ls")
     real = os.path.realpath(wt)
     inside = lambda p: bool(p) and (os.path.realpath(p) + os.sep).startswith(real + os.sep)
