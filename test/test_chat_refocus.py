@@ -24,28 +24,30 @@ const sharedData = input.shared ?? {};
 const shared = (k) => sharedData[k] ?? null, dialogHolds = () => false, keysElsewhere = (h, mine) => Boolean(h?.who && h.who !== mine), liveHolder = (h) => h;
 const keysOver = (h, mine) => Boolean(h?.who && h.who !== mine && h.over), holdKeys = () => {};
 const KEY_HOLDER = "keyboard.holder";
-const HOLD_MS = %(hold)s;
 const obj = { %(method)s };
 const focusCalls = [];
 const timers = [];
 const self = Object.assign({ box: { focus: () => focusCalls.push(1) }, wasFocused: false, hadBox: false,
   focused: false, call: null, press: null, refocusAt: 0, areaKey: () => "pane" }, input.self);
-// "now": a press that just started (a held one counts only for HOLD_MS)
+// "now": a press that just started
 if (self.press?.at === "now") self.press.at = Date.now();
 const cx = { timer: { after: (ms, fn) => timers.push([ms, fn]) } };
 obj.refocus.call(self, input.paneFocused, input.showsBox, cx);
 // a press that starts after the timers were set, before they fire
 if (input.pressAfter) { self.pressing = true; self.press = { at: Date.now() }; }
+// the person goes to another pane, or the keyboard to the Tasks search, before the timers fire
+if (input.leaveAfter) self.paneFocusedNow = false;
+if (input.holderAfter) sharedData["keyboard.holder"] = input.holderAfter;
 for (const [, fn] of timers) fn();
 console.log(JSON.stringify({ focus: focusCalls.length, entryPending: Boolean(self.entryPending) }));
 """
 
 
-def run(self_state, paneFocused=True, showsBox=True, shared=None, pressAfter=False, full=False):
+def run(self_state, paneFocused=True, showsBox=True, shared=None, pressAfter=False, full=False, leaveAfter=False, holderAfter=None):
     method = MATCH.group(0).strip()
-    inp = {"self": self_state, "paneFocused": paneFocused, "showsBox": showsBox, "shared": shared or {}, "pressAfter": pressAfter}
-    hold = re.search(r"^const HOLD_MS = (\d+);", SRC, re.M).group(1)
-    script = HARNESS % {"method": method, "input": json.dumps(inp), "hold": hold}
+    inp = {"self": self_state, "paneFocused": paneFocused, "showsBox": showsBox, "shared": shared or {}, "pressAfter": pressAfter,
+           "leaveAfter": leaveAfter, "holderAfter": holderAfter}
+    script = HARNESS % {"method": method, "input": json.dumps(inp)}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "refocus.mjs")
         with open(path, "w") as f:
@@ -94,16 +96,26 @@ class RefocusKeepsSelection(unittest.TestCase):
         self.assertEqual(run({**state, "pressMoved": True}, full=True), {"focus": 0, "entryPending": False})
 
     def test_a_press_starting_after_the_timers_were_set_keeps_the_keyboard(self):
-        self.assertEqual(run({"pressMoved": False, "press": {"at": 0}}, pressAfter=True), 0)
+        # and the entry request waits for its release
+        self.assertEqual(run({"pressMoved": False, "press": {"at": 0}}, pressAfter=True, full=True), {"focus": 0, "entryPending": True})
         state = {"wasFocused": True, "hadBox": True, "focused": False, "pressMoved": False, "press": {"at": 0}}
         self.assertEqual(run(state, pressAfter=True), 0)
 
-    def test_a_release_that_never_arrived_stops_counting(self):
-        # released outside the chat: the press is old, so it no longer holds the keyboard off the box
-        state = {"wasFocused": True, "hadBox": True, "focused": False, "pressing": True, "pressMoved": False, "press": {"at": 0}}
-        self.assertEqual(run(state), 1)
-        # and leaving the pane lets it go at once
-        self.assertEqual(run({"pressing": True, "pressMoved": False, "press": {"at": "now"}}, paneFocused=False, full=True)["entryPending"], False)
+    def test_leaving_the_pane_ends_a_held_press_and_the_entry_request(self):
+        # a release outside the chat never reaches it; leaving the pane (or the next press) ends the hold
+        got = run({"pressing": True, "pressMoved": False, "entryPending": True, "press": {"at": "now"}}, paneFocused=False, full=True)
+        self.assertEqual(got, {"focus": 0, "entryPending": False})
+
+    def test_a_request_is_dropped_when_the_person_moves_on_before_it_fires(self):
+        self.assertEqual(run({"pressMoved": False, "press": {"at": 0}}, leaveAfter=True), 0)
+        search = {"who": "tasks", "at": 1}
+        self.assertEqual(run({"pressMoved": False, "press": {"at": 0}}, holderAfter=search), 0)
+        state = {"wasFocused": True, "hadBox": True, "focused": False, "pressMoved": False, "press": {"at": 0}}
+        self.assertEqual(run(state, leaveAfter=True), 0)
+        self.assertEqual(run(state, holderAfter=search), 0)
+        # the keyboard already elsewhere when the pane gets focus: no request kept
+        self.assertEqual(run({"pressMoved": False, "press": {"at": 0}}, shared={"keyboard.holder": search}, full=True),
+                         {"focus": 0, "entryPending": False})
 
     def test_a_field_in_an_overlay_keeps_the_keyboard(self):
         # SHEP-9: Mark up's note in the artifact viewer holds it "over" the panes; the pane getting focus under it takes nothing.
