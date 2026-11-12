@@ -166,13 +166,14 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
   const need = (kind, text) => { section = "needs"; needs = kind; why = text; };
   if (section) return { list, task, live, status, section, needs, why };
   // Cut off by its model's provider (herdr-task tick): Working while Herdr waits to tell it to
-  // carry on ("Provider overloaded · Retry in 2m"); Needs you once the tries are used up.
-  const retry = st === "running" && task.retry && live.some((a) => a.address === task.retry.address) && !states.includes("blocked") ? task.retry : null;
+  // carry on ("Provider overloaded · Retry in 2m"); Needs you once the tries are used up, its agent blocked or not
+  // (Claude Code reports signed out as blocked). Signed out (SHEP-37): "signed_out", until the person signs in again.
+  const retry = st === "running" && task.retry && live.some((a) => a.address === task.retry.address) && (!states.includes("blocked") || task.retry.over) ? task.retry : null;
   // Something Herdr found that only the person can sort out: failing checks, a conflict; while its agent is on it
   // (onIt()), Working with its agent's own line.
   const fixing = task.attention && onIt(task, live, now);
   if (task.attention && !fixing) need("attention", task.attention);
-  else if (retry?.over) need("provider", retry.reason);
+  else if (retry?.over) need(retry.signed_out ? "signed_out" : "provider", retry.reason);
   else if (retry) { section = "working"; why = retryLine(retry, now); }
   // Why it waits: herdr-task's words (its agent's own status line, its question or last words),
   // kept on the task by its scheduler (task.waits), else the standard reason.

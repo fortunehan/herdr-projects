@@ -126,10 +126,13 @@ def task_status(task, live):
     if task.get("attention") and not on_it(task, live):
         return "needs", "attention", task["attention"]
     # Cut off by its provider (retry_pass): still Working while Herdr waits to tell it to carry
-    # on; Needs you once the tries are used up, or at once for what waiting can't fix.
+    # on; Needs you once the tries are used up, or at once for what waiting can't fix. Signed out
+    # (SHEP-37) waits on the person to sign in again: "signed_out", told as Needs you, not failed.
     r = task.get("retry") if st == "running" else None
     if r and any(k.get("address") == r.get("address") for k in live) and ("blocked" not in states or r.get("over")):
-        return ("needs", "provider", r.get("reason")) if r.get("over") else ("working", None, retry_line(r))
+        if not r.get("over"):
+            return "working", None, retry_line(r)
+        return "needs", "signed_out" if r.get("signed_out") else "provider", r.get("reason")
     if "blocked" in states:
         return "needs", "asks", REASONS["question"]
     if trust_asked(live):

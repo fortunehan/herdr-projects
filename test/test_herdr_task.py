@@ -2542,6 +2542,100 @@ class ReviewerLine(unittest.TestCase):
 
 
 
+class SignedOutNoBackup(unittest.TestCase):
+    """SHEP-37: a task whose CLI is signed out is never handed to the backup CLI. It needs the person
+    ("Signed out of Claude Code: sign in again"), told as needs-you, with one alert per sign-out on its
+    agent's terminal; the terminal is left running. Out of allowance still hands over as before."""
+
+    def setUp(self):
+        import datetime
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        from herdr_task import takeover, tick
+        self.takeover, self.tick, self.mock = takeover, tick, mock
+        self.calls = []
+        fake = lambda argv, *a, **k: self.calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
+        for p in (mock.patch.object(takeover, "run", fake), mock.patch.object(tick, "run", fake),
+                  mock.patch.object(takeover, "stop_note", lambda *a, **k: None)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        self.k = {"address": "t1", "labels": {"herdr.agent": "claude", "herdr.role": "worker"}, "status": {"state": "blocked"}}
+
+    def log(self, text, status):
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "do it"}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "isApiErrorMessage": True, "uuid": "cut-1", "timestamp": self.ts, "apiErrorStatus": status,
+                            "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def round(self, row, log, t, s):
+        report = {"retries": []}
+        row = self.tick.retry_one(row, self.k, log, report)
+        return self.takeover.takeover(s, t, self.k, row, log, report), report
+
+    def alerts(self):
+        return [json.loads(c[3].split("=", 1)[1]) for c in self.calls if c[:2] == ["hc", "label"] and c[3].startswith("herdr.alert=")]
+
+    def test_signed_out_needs_you_with_one_alert_and_no_backup(self):
+        from herdr_task.agents import task_status
+        log = self.log("API Error: 401 OAuth token has expired. Please run /login", 401)
+        self.assertTrue(self.takeover.cant_go_on(log))  # a sign-in screen, not a question for the person
+        self.assertFalse(self.takeover.takes_over("Signed out"))
+        t = {"id": 1, "title": "x", "state": "running", "space": "sp", "agents": [{"address": "t1", "agent": "claude"}]}
+        s = Store([t])
+        with self.mock.patch.object(self.takeover, "launch", side_effect=AssertionError("started a backup")):
+            row, report = self.round(None, log, t, s)
+            self.assertEqual(row["reason"], "Signed out of Claude Code: sign in again")
+            self.assertTrue(row["over"] and row["signed_out"])
+            self.assertNotIn("backup", t)
+            self.assertFalse([c for c in self.calls if c[:2] == ["hc", "kill"]])  # its terminal stays for the sign-in
+            [a] = self.alerts()
+            self.assertEqual((a["title"], a["task"], a["about"]), ("Signed out of Claude Code", "SHEP-1", True))
+            self.assertIn("/login", a["body"])
+            self.assertEqual(report["signed_out"][0]["agent"], "claude")
+            # The next scheduler rounds: the same sign-out, no second alert.
+            for _ in range(2):
+                row, _ = self.round(row, log, t, s)
+            self.assertEqual(len(self.alerts()), 1)
+        t["retry"] = {x: row[x] for x in ("address", "reason", "tries", "over", "signed_out")}
+        self.assertEqual(task_status(t, [self.k]), ("needs", "signed_out", "Signed out of Claude Code: sign in again"))
+        from herdr_task import news
+        with self.mock.patch.object(news, "view", lambda s, t, live: dict(zip(("status", "needs", "why"), task_status(t, live)))):
+            self.assertEqual(news.news_state(s, t, [self.k])[1], "needs-you")
+        # Signed in again and told to carry on: the log no longer ends on the cut, the Needs you clears.
+        with open(log, "a") as f:
+            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "continue"}}) + "\n")
+        self.assertIsNone(self.tick.retry_one(row, self.k, log, {"retries": []}))
+
+    def test_codex_signed_out_says_codex(self):
+        self.k["labels"]["herdr.agent"] = "codex"
+        t = {"id": 2, "title": "x", "state": "running"}
+        row = self.takeover.takeover(Store([t]), t, self.k, {"address": "t1", "reason": "Signed out", "over": True}, None, {})
+        self.assertEqual(row["reason"], "Signed out of Codex: sign in again")
+        self.assertNotIn("/login", self.alerts()[0]["body"])
+
+    def test_out_of_allowance_still_hands_over(self):
+        log = self.log("You've hit your usage limit. Your limit resets 5pm", 429)
+        t = {"id": 3, "title": "x", "state": "running", "space": "sp", "agents": [{"address": "t1", "agent": "claude"}]}
+        m = self.mock
+        with m.patch.object(self.takeover, "backup_for", lambda s, t, running: ("codex", None)), \
+                m.patch.object(self.takeover, "backup_argv", lambda s, t, kind: ["codex"]), \
+                m.patch.object(self.takeover, "parent_for", lambda *a: None), \
+                m.patch.object(self.takeover, "brief", lambda *a: "brief"), \
+                m.patch.object(self.takeover, "handover", lambda *a: "handover"), \
+                m.patch.object(self.takeover, "launch", lambda *a, **k: {"address": "t9"}):
+            row, report = self.round(None, log, t, Store([t]))
+        self.assertIsNone(row)
+        self.assertEqual((t["backup"]["from"], t["backup"]["to"], t["backup"]["state"]), ("claude", "codex", "started"))
+        self.assertTrue(t["backup"]["why"].startswith("Out of allowance"))
+        self.assertIn(["hc", "kill", "t1"], self.calls)
+        self.assertFalse(self.alerts())
+        self.assertEqual(report["backups_started"][0]["to"], "codex")
+
+
 class ReadOnlyStore(unittest.TestCase):
     """#841: in a read-only sandbox (a Codex reviewer's) show and list read the task list (write="try");
     a change is refused with a clear message, never a traceback."""

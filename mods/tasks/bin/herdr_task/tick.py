@@ -530,7 +530,7 @@ def retry_pass(report):
                         row["task"] = f"{s.loc['folder']}#{t['id']}"
                         rows[k["address"]] = row
                     if row and not row.get("stale"):
-                        want = {x: row[x] for x in ("address", "reason", "tries", "due", "over") if x in row}
+                        want = {x: row[x] for x in ("address", "reason", "tries", "due", "over", "signed_out") if x in row}
                 # SHEP-189: a running task whose agents were all running and now are not has gone
                 # "stopped". Logged once at the moment it happens: which terminals, what Herdr saw.
                 up = any(agent_running(k) and (k.get("labels") or {}).get("herdr.role") != "reviewer" for k in mine)

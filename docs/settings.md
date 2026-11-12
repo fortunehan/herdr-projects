@@ -81,6 +81,14 @@ task values a machine set before (the old machine scope) still apply there until
   `everywhere`) and its heartbeat file (`~/.config/herdr-core/autopilot/everywhere.md`) are what Everywhere inherits
   until it's set.
 
+## Backup agent
+
+Agents › Backup agent, on by default: when a task's agent can't go on (out of allowance, or its provider still failing
+after the retries), the other CLI takes the task over once, in the same folder or worktree (`herdr_task/takeover.py`).
+Signed out never switches CLI (SHEP-37): the task shows Needs you ("Signed out of Claude Code: sign in again"), its
+Assistant is told, and one alert (a toast and a sound) goes out per sign-out. The agent's terminal stays open: sign in
+there again (`/login` in Claude Code), tell it to carry on, and the Needs you clears by itself.
+
 ## Reactions
 
 Agents › Reactions, on by default: every agent reacts to some of your messages with one emoji, as a person would:

@@ -105,6 +105,10 @@ describe("a task's status (as herdr-task's task_status)", () => {
     const retry = { address: "t1", reason: "Provider overloaded", due: NOW + 90_000 };
     expect(at({ id: 1, state: "running", retry }, [{ address: "t1", status: "idle" }])).toMatchObject({ section: "working", why: "Provider overloaded · Retry in 2m" });
     expect(at({ id: 1, state: "running", retry: { ...retry, over: true } }, [{ address: "t1", status: "idle" }])).toMatchObject({ section: "needs", needs: "provider" });
+    // SHEP-37: signed out (Claude Code reports it as blocked) needs a sign-in, never "Question for you".
+    const out = { address: "t1", reason: "Signed out of Claude Code: sign in again", over: true, signed_out: true };
+    expect(at({ id: 1, state: "running", retry: out }, [{ address: "t1", status: "blocked" }])).toMatchObject({ section: "needs", needs: "signed_out", why: out.reason });
+    expect(at({ id: 1, state: "running", retry }, [{ address: "t1", status: "blocked" }])).toMatchObject({ section: "needs", needs: "asks" });
   });
 });
 

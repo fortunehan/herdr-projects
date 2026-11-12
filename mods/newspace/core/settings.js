@@ -136,7 +136,7 @@ export function feedbackRepo(v) {
   if (!s) return "";
   return /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(s) ? s : null;
 }
-export const BACKUP = { title: "Backup agent", about: "The other CLI takes over a task once when its agent can't go on." };
+export const BACKUP = { title: "Backup agent", about: "The other CLI takes over a task once when its agent can't go on. Signed out never switches CLI: the task waits for you to sign in again." };
 // The machines where the other CLI can't take over (herdr-task's check, ~/.local/state/shepherdr/cli-check.json's machines: this
 // computer is ""), in one line. m: the scope's machine ("local" or its name), null for Everywhere (every machine).
 export function backupProblem(checks, m, cli) {

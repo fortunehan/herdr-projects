@@ -526,7 +526,7 @@ export default class ShepherdrSettings extends View {
   }
 
   // Backup (herdr-task's takeover.py): the other CLI takes over a task, once, when its agent
-  // can't go on. One switch: on is unset (the other CLI), off is "off". A value set before to a
+  // can't go on; never when it signed out (SHEP-37: the task waits for a sign-in). One switch: on is unset (the other CLI), off is "off". A value set before to a
   // named CLI still applies, and shows as on. A machine where the other CLI can't is one dim line.
   backupRow(t) {
     const chain = this.chain("backup", "agent");

@@ -3,10 +3,11 @@
 import json
 import os
 import re
+import secrets
 
 from .base import APP_HOME, beside_store, git, hc_json, now, run, STORE, stop_note
 from .settings import AGENTS, argv_for, settings_for
-from .agents import fit, from_person, log_tail, said
+from .agents import fit, from_person, log_tail, REASONS, said
 from .provider import provider_cut, provider_error
 from .launch import brief, launch, parent_for
 
@@ -96,9 +97,10 @@ def here_state(kind):
 
 
 # ---- the backup takes over ------------------------------------------------------------------
-# As Shepherdr's providerFallback: when a task's agent can't go on (out of allowance, signed out,
-# its provider still down after the retries: retry_pass's row is "over"), its backup agent takes
-# over, once per task. Settings → Agents → Backup (`backup.agent`): unless set, the other CLI when
+# As Shepherdr's providerFallback: when a task's agent can't go on (out of allowance, its provider
+# still down after the retries: retry_pass's row is "over"), its backup agent takes over, once per
+# task. Signed out never switches CLI (SHEP-37): the task waits on the person to sign in again in
+# its own terminal (sign_in()). Settings → Agents → Backup (`backup.agent`): unless set, the other CLI when
 # it's installed and signed in here, else off. A task never fails over to the CLI it runs on. The
 # backup starts in the same folder or worktree and branch, on its CLI's own default model, with
 # the brief and a short handover. Its first message opens with <herdr-backup>, which the task's
@@ -112,14 +114,19 @@ def head(reason):
 
 def takes_over(reason):
     """The reasons a backup is for: what waiting can't fix on this CLI, or tries all used up."""
-    return bool(re.match(r"Out of allowance|Signed out", reason or "")) or ", still after" in (reason or "")
+    return bool(re.match(r"Out of allowance", reason or "")) or ", still after" in (reason or "")
+
+
+def signed_out(reason):
+    return (reason or "").startswith(REASONS["signed_out"])
 
 
 def cant_go_on(log):
-    """Whether an agent's log ends on what only another CLI gets past (out of allowance, signed
-    out). Claude Code reports signed out as blocked: this tells it from a question for the person."""
+    """Whether an agent's log ends on what waiting can't get past (out of allowance, signed out).
+    Claude Code reports signed out as blocked: this tells it from a question for the person."""
     cut = provider_cut(log) if log else None
-    return bool(cut) and takes_over(provider_error(cut["text"], cut["code"], cut["status"])["reason"])
+    reason = provider_error(cut["text"], cut["code"], cut["status"])["reason"] if cut else None
+    return bool(cut) and (takes_over(reason) or signed_out(reason))
 
 
 def backup_for(s, t, running):
@@ -199,14 +206,39 @@ def handover(s, t, running, kind, reason, log):
             f"The chat so far (latest last):\n{chat_tail(log) or 'none'}\n</herdr-backup>")
 
 
+def running_on(t, k):
+    return (k.get("labels") or {}).get("herdr.agent") or next(
+        (a.get("agent") for a in t.get("agents") or [] if a.get("address") == k["address"]), None) or "claude"
+
+
+def sign_in(s, t, k, row, report):
+    """Signed out: no backup. The task needs the person, who signs in again in the agent's own
+    terminal (it is left running, so the same session goes on); one alert per sign-out (row's cut),
+    on that terminal's herdr.alert label as `herdr-task alert --task` sets it."""
+    row["handled"] = True
+    running = running_on(t, k)
+    name = NAMES.get(running, running)
+    row.update(reason=fit(f"Signed out of {name}: sign in again"), signed_out=True)
+    how = " (/login)" if running == "claude" else ""
+    alert = {"id": secrets.token_hex(4), "at": now(), "title": f"Signed out of {name}",
+             "body": f"{s.ref(t)} waits: sign in again in its terminal{how}, then tell it to carry on.", "task": s.ref(t), "about": True}
+    run(["hc", "label", k["address"], f"herdr.alert={json.dumps(alert, ensure_ascii=False, separators=(',', ':'))}"])
+    report.setdefault("signed_out", []).append({"task": f"{s.loc['folder']}#{t['id']}", "agent": running, "terminal": k["address"]})
+    return row
+
+
 def takeover(s, t, k, row, log, report):
     """A task worker's provider row is over: its backup takes over (once per task), or the row's
-    reason says why none did. Returns the row to keep, or None when the backup started."""
-    if row.get("handled") or not takes_over(row.get("reason")):
+    reason says why none did. Signed out never takes over (sign_in()). Returns the row to keep,
+    or None when the backup started."""
+    if row.get("handled"):
+        return row
+    if signed_out(row.get("reason")):
+        return sign_in(s, t, k, row, report)
+    if not takes_over(row.get("reason")):
         return row
     row["handled"] = True
-    running = (k.get("labels") or {}).get("herdr.agent") or next(
-        (a.get("agent") for a in t.get("agents") or [] if a.get("address") == k["address"]), None) or "claude"
+    running = running_on(t, k)
     if t.get("backup"):
         row["reason"] = fit(f"{head(row['reason'])}, backup too")
         return row
