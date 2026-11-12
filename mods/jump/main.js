@@ -44,7 +44,7 @@ const ROW = 48, HEAD = 30, MORE = 32;
 const LIST_MAX = 420;
 // Task ids in a monospace column (JetBrains Mono: 0.6 em a character), so titles line up.
 const ID_FONT = "JetBrains Mono", ID_SIZE = TEXT.id, ID_CHAR = ID_SIZE * 0.6;
-const STATUS = { needs: "Needs you", working: "Working", merging: "Merging", ready: "Ready", queued: "Queued", scheduled: "Scheduled", todo: "To do", done: "Done" };
+const STATUS = { needs: "Needs you", working: "Working", merging: "Waiting to merge", ready: "Ready", queued: "Queued", scheduled: "Scheduled", todo: "To do", done: "Done" };
 
 // The Tasks panel's reads (tasklists.js: READ_LISTS, taskLists); every artifact registry the
 // same way.

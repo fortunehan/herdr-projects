@@ -616,6 +616,14 @@ class WaitingToMerge(Base):
         with mock.patch.object(news, "view", lambda s, t, live: {"status": "merging", "needs": None, "why": "Checks running"}):
             self.assertIsNone(news.news_state(self.store, self.task, [])[1])
 
+    def test_the_rule_is_cores(self):
+        """The cases core/tasks.test.js checks place() on (core/merge-wait.cases.json)."""
+        with open(os.path.join(ROOT, "core", "merge-wait.cases.json")) as f:
+            g = json.load(f)
+        with mock.patch.object(agents, "now", lambda: g["now"]):
+            for c in g["cases"]:
+                self.assertEqual(agents.task_status(c["task"], []), (c["expect"]["status"], c["expect"]["needs"], c["expect"]["why"]), c["name"])
+
     def test_a_github_pull_request_waiting_on_a_review_is_unchanged(self):
         t = {"state": "ready", "auto_merge": "checks", "pr": {"number": 3, "repo": "o/r", "needs_approval": True}}
         self.assertEqual(agents.task_status(t, []), ("working", None, "Merges once it's approved"))

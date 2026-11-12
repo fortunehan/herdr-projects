@@ -85,17 +85,17 @@ const done = (result: string, nav?: Nav, max = MAX): Answer => ({ result: result
 const fail = (result: string): Answer => ({ result, error: true });
 
 export const STATUS: Record<string, string> = {
-  need: "needs you", ready: "ready for review", merging: "merging", work: "working", queued: "queued", scheduled: "scheduled", todo: "to do", done: "done",
+  need: "needs you", ready: "ready for review", merging: "waiting to merge", work: "working", queued: "queued", scheduled: "scheduled", todo: "to do", done: "done",
 };
 const ORDER = ["need", "ready", "work", "merging", "queued", "scheduled", "todo", "done"];
 /** "ready", "review", "needs me": a task state from the person's words */
 function stateOf(q: string): string | null {
   const w = norm(q);
   if (!w) return null;
+  if (/^(merg|waitingtomerge|waittomerge)/.test(w)) return "merging";
   if (/^(need|needs|needsyou|needsme|waiting|blocked|asking)/.test(w)) return "need";
   if (/^(ready|review|toreview|accept)/.test(w)) return "ready";
   if (/^(work|working|running|active|busy|inprogress)/.test(w)) return "work";
-  if (/^merg/.test(w)) return "merging";
   if (/^queue/.test(w)) return "queued";
   if (/^(schedul|later)/.test(w)) return "scheduled";
   if (/^(todo|notstarted|open)/.test(w)) return "todo";

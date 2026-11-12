@@ -29,11 +29,12 @@ import { taskMenu } from "./core/menus.js";
 import { machinesInOrder, machineOrderOf, chatPane } from "./core/spaces.js";
 // The rules for a task's status, order and words: shared with the web app (core/tasks.js).
 import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, machineName, refOf, taskKey, autoPrefix, place,
-  queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems } from "./core/tasks.js";
+  queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems,
+  acceptAgain } from "./core/tasks.js";
 import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
-import { TEXT, H, RADIUS, red, amber } from "./ui.js";
+import { TEXT, H, RADIUS, red, amber, toast } from "./ui.js";
 import { followSpace, switched } from "./core/thread-space.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
@@ -325,8 +326,8 @@ export default class Tasks extends View {
     this.names = { machine: false, space: true };
 
     // Needs you: everything that needs the person (inbox.js), from every space and machine. A task
-    // in it isn't shown again further down.
-    const named = new Set(inbox.filter((x) => x.ref && x.folder).map((x) => `${x.machine ?? ""}:${x.folder}:${x.ref}`));
+    // in it isn't shown again further down; a failed pull's card (SHEP-34) is beside its Done task, which stays in Done.
+    const named = new Set(inbox.filter((x) => x.ref && x.folder && x.kind !== "pull").map((x) => `${x.machine ?? ""}:${x.folder}:${x.ref}`));
     const asking = new Set(inbox.filter((x) => x.terminal).map((x) => x.terminal));
     const inNeeds = (p) => named.has(`${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`) || p.live.some((a) => asking.has(a.address));
     // A task Herdr saw go wrong that the list hasn't caught up with yet shows as itself.
@@ -533,7 +534,7 @@ export default class Tasks extends View {
     try { localStorage.setItem("filter", key); } catch {}
   }
 
-  // A row's second line (row()): Needs you and Merging, why; Working, what its agent says it's
+  // A row's second line (row()): Needs you and Waiting to merge, why; Working, what its agent says it's
   // doing (or a provider retry's line); Queued, what it waits for; Ready, when it got there, or its
   // reviewers in Azure DevOps (SHEP-26) (its summary is the Accept card's, never this line's).
   statusLine(p, w = reportOf(p.task, p.section, p.live)) {
@@ -737,7 +738,7 @@ export default class Tasks extends View {
   needRow(x, t) {
     // Where it is: a task's folder, an agent's space (and its machine, when not this computer).
     const at = this.whereOf(x.machine ?? machineOf(x.terminal), x.name ?? (x.terminal ? agents().find((a) => a.address === x.terminal)?.space_name : null), true);
-    const v = (glyph, title, go, ref = x.ref, sub = reasonOf(x)) => this.line(`need-${x.key}`, { glyph, ref, title, go, where: at, sub }, t);
+    const v = (glyph, title, go, ref = x.ref, sub = reasonOf(x), action = null) => this.line(`need-${x.key}`, { glyph, ref, title, go, where: at, sub, action }, t);
     // An agent's item: its task's title when it works on one, else its name.
     const who = (address) => this.taskTitle(address) ?? agentName(address);
     switch (x.kind) {
@@ -747,8 +748,14 @@ export default class Tasks extends View {
       }
       case "blocked": return v(needDot(), who(x.terminal), () => this.toWorker(x.terminal), this.taskRef(x.terminal));
       case "provider": return v(needDot(), who(x.terminal), () => this.toWorker(x.terminal), this.taskRef(x.terminal));
-      // A task's own item: the task opens, as its row anywhere does.
-      case "check": return v(needDot(), x.title ?? x.ref, () => this.openNeed(x));
+      // A task's own item: the task opens, as its row anywhere does. A problem its Accept fixes (Azure DevOps'
+      // auto-complete, SHEP-34) has Review at its end, as a Ready row.
+      case "check": {
+        const p = this.needPlace(x);
+        return v(needDot(), x.title ?? x.ref, () => this.openNeed(x), x.ref, reasonOf(x), p && acceptAgain(p) ? this.acceptButton(p, t) : null);
+      }
+      // A Done task's merge the main checkout couldn't pull (SHEP-34): a click copies the command to run, Dismiss drops it.
+      case "pull": return v(needDot(), x.title ?? x.ref, (cx) => this.copyPull(x, cx), x.ref, reasonOf(x), this.dismissButton(x, t));
       case "waiting":
       case "stopped": return v(needDot(), x.title ?? x.ref, () => this.openNeed(x));
       // An automation goes by its name, with no id.
@@ -756,6 +763,34 @@ export default class Tasks extends View {
         x.title ?? x.ref, () => this.fold("automations", false), null, x.error?.kind === "fire" ? "Didn't run" : "Didn't start its task");
     }
     return null;
+  }
+
+  // A task's Needs-you item's task, placed, when its list is read.
+  needPlace(x) {
+    const list = this.lists.find((l) => (l.machine ?? null) === (x.machine ?? null) && l.folder === x.folder);
+    const task = list?.tasks.find((y) => refOf(list, y) === x.ref);
+    return task ? this.place(list, task) : null;
+  }
+
+  // A failed pull's card (SHEP-34): its command to run, on the clipboard.
+  copyPull(x, cx) {
+    const command = x.pull?.command;
+    if (!command) return;
+    cx?.write_to_clipboard(command);
+    toast({ title: `${x.ref}: command copied`, body: command });
+  }
+
+  // Dismiss on a failed pull's card: herdr-task dismiss, here or on its machine; the list reads the change.
+  dismissButton(x, t) {
+    return h_flex().id(`dismiss-${x.key}`).h(24).px(10).flex_none().items_center().rounded(12).whitespace_nowrap()
+      .text_size(TEXT.label).font_medium().text_color(t.foreground).bg(t.hover).cursor_pointer().hover((s) => s.bg(t.selected))
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        exec(CLI(), [...(x.machine ? ["--on", x.machine] : []), "dismiss", x.ref, "--json", "--folder", x.folder]).then((r) => {
+          if (r.code !== 0) toast({ level: "error", title: `Couldn't dismiss ${x.ref}`, body: r.stderr?.trim() || "herdr-task refused it." });
+        }).catch(() => {});
+      })
+      .child("Dismiss");
   }
 
   // A task's Needs-you item (check, waiting, stopped): the task itself opens, as its row in any
@@ -874,7 +909,7 @@ export default class Tasks extends View {
     const focused = live.some((a) => shown.get(a.address)?.focused);
     // The second line, as Shepherdr's: Working, what its agent says it's doing (herdr-task status),
     // its time left short under the glyph, or a provider retry's line while Herdr waits; Needs you,
-    // why; Queued, what it waits for ("after HERD-3"); Merging, why it waits. The id leads it.
+    // why; Queued, what it waits for ("after HERD-3"); Waiting to merge, what it waits on. The id leads it.
     const w = reportOf(task, section, live);
     const sub = this.statusLine(p, w);
     // Scheduled (SHEP-38): its time until it starts under its calendar ("6h"), where a working row's time left goes, in grey.
@@ -884,7 +919,7 @@ export default class Tasks extends View {
     return this.line(`task-${key}`, {
       go: this.target(p), glyph: this.glyph(p, w), ref: refOf(list, task), title: task.title, sub, left, leftColor: section === "scheduled" ? t.dim : null,
       dim: section === "done", selected: focused, where: bare ? null : this.whereOf(list.machine, placeName(list)),
-      action: section === "ready" ? this.acceptButton(p, t) : null,
+      action: section === "ready" || acceptAgain(p) ? this.acceptButton(p, t) : null,
       pin: this.shelved(p) ? null : { key, on: this.pins().has(key), status: section, machine: list.machine ?? null, folder: list.folder,
         ref: refOf(list, task), sub: section === "scheduled" ? sub : null },
     }, t);
@@ -968,7 +1003,7 @@ export default class Tasks extends View {
     const row = h_flex().id(id).relative().flex_none().px(8).gap(12).items_center().rounded(RADIUS.card)
       .when(Boolean(selected), (el) => el.bg(t.selected))
       .when(Boolean(pin), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.rowMenu(pin); }))
-      .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.bg(selected ? t.selected : t.hover)).on_click((_e, cx) => { go(); cx.notify(); }));
+      .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.bg(selected ? t.selected : t.hover)).on_click((_e, cx) => { go(cx); cx.notify(); }));
     const mark = h_flex().w(14).h(20).flex_none().items_center().justify_center().child(glyph);
     const head = div().id(`${id}-title`).min_w(0).truncate().text_color(dim ? t.muted : t.foreground).child(title);
     if (!two) return row.h(32).child(mark).child(head.flex_1()).when(Boolean(end), (el) => el.child(end));

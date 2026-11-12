@@ -394,6 +394,7 @@ export class Compat {
         ...(r.machine ? { browser: { ready: false, hint: `This task runs on ${r.machine}. Its browser can be watched only from that machine's Herdr for now.` } } : { browser: { ready: true } }),
         ...(r.pinned ? { pinned: 1 } : {}),
         ...(r.archived ? { archived: r.done_at ?? 1 } : {}),
+        ...(r.acceptAgain ? { acceptAgain: true } : {}),
         // what its agent last said, as the window's task header (mods/chat/panel.js reportLine): working, its words (a
         // provider retry's line first) and minutes left; needing you, frozen with the % it stopped at
         ...(r.said ? { report: { msg: r.section === "working" && r.why ? r.why : r.said.text, ...(r.said.done != null ? { progress: r.said.done } : {}),
@@ -404,6 +405,13 @@ export class Compat {
       };
       return t;
     });
+    // SHEP-34: a Done task whose merge the main checkout couldn't pull: a Needs you card of its own, a row beside the Done
+    // one (which stays Done) that opens it; Dismiss drops the card
+    for (const r of rows) if (r.pull && !r.archived) {
+      const id = taskId(r);
+      tasks.push({ id: `${id}#pull`, name: r.title, status: "need", place: placeOf(r), listName: placeName(r), age: "", state: "needs", on: r.machine ?? host,
+        created: "", sub: r.pull.text, at: r.done_at ?? 0, ...(r.folder ? { taskFolder: r.folder } : {}), pullOf: id, ...(r.pull.command ? { pullCommand: r.pull.command } : {}) });
+    }
 
     const needs: Need[] = [
       ...rows.filter((r) => r.section === "needs" && !r.archived).map((r) => ({ id: "attention", chat: `${taskId(r)}/worker`, place: placeOf(r), task: taskId(r), at: r.started ?? Date.now(), text: r.sub ?? "" })),

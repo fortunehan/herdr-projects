@@ -482,7 +482,7 @@ function TaskPage({ task, middle, pane }: { task: Task; middle?: boolean; pane?:
   // as 3.0's task header (mods/chat/panel.js barRow): Review (opens the Accept card) once it is Ready ("Accepting…" while
   // its accept runs), sized as the header's other buttons; then its tabs (TaskTabs). No Pin here (SHEP-62): the task row's
   // menu pins it
-  const tools = task.status === 'ready' && !task.archived ? <HeadButton disabled={accepting} onClick={() => openAccept(task.id)}>{accepting ? 'Accepting…' : 'Review'}</HeadButton> : null
+  const tools = (task.status === 'ready' || task.acceptAgain) && !task.archived && !task.pullOf ? <HeadButton disabled={accepting} onClick={() => openAccept(task.id)}>{accepting ? 'Accepting…' : 'Review'}</HeadButton> : null
   // its title alone on the first line, so it keeps the room; under it, quieter, its id in the list's monospace, then what
   // its agent is doing (working with no % yet, or a provider retry's line: its row's words, as the window's header says
   // them), else where it merges
