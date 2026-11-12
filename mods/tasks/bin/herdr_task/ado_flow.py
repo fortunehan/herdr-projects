@@ -102,10 +102,14 @@ def merged(s, t, v, even_if_busy=False):
     finish(s, t, even_if_busy=even_if_busy)
 
 
+# git's lines that say nothing the card's command doesn't: hints, and what to do next.
+NOISE = re.compile(r"^(?:hint:|Aborting$|Please commit your changes or stash them|Please move or remove them)")
+
+
 def reason(err):
-    """git's words, short: its error lines without hints, on one line."""
+    """git's words, short: its error lines on one line, without hints."""
     lines = [re.sub(r"^(?:error|fatal):\s*", "", x.strip()) for x in str(err or "").splitlines()
-             if x.strip() and not x.strip().startswith("hint:")]
+             if x.strip() and not NOISE.match(x.strip())]
     text = " ".join(lines)
     return (text[:297] + "…" if len(text) > 300 else text) or "git failed"
 
@@ -124,7 +128,7 @@ def pull_main(s, t, v=None):
     if not (ok and cur == target):
         git(main, "fetch", remote, f"{target}:{target}")
         return
-    ok, _, err = git(main, "pull", "--ff-only", "--no-rebase", "--no-autostash", remote, target)
+    ok, _, err = git(main, "pull", "--quiet", "--ff-only", "--no-rebase", "--no-autostash", remote, target)
     if ok:
         t.pop("pull", None)
         return

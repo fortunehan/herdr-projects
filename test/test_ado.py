@@ -556,7 +556,7 @@ class WaitingToMerge(Base):
         self.assertEqual(self.git("-C", self.main, "status", "--porcelain"), "M a.txt")
         p = self.task["pull"]
         self.assertEqual((p["branch"], p["sha"]), ("main", sha))
-        self.assertIn("would be overwritten by merge", p["why"])
+        self.assertEqual(p["why"], "Your local changes to the following files would be overwritten by merge: a.txt")  # git's words, no fetch lines
         self.assertEqual(p["command"], f"git -C {self.main} pull --ff-only origin main")
         self.assertTrue(ado_flow.card(p).startswith("The main checkout couldn't pull main: "))
         # still there while main lacks the merge; gone once the person pulled
@@ -572,7 +572,7 @@ class WaitingToMerge(Base):
         local = self.git("-C", self.main, "rev-parse", "HEAD")
         self.look(self.merged(sha))
         self.assertEqual((self.task["state"], self.git("-C", self.main, "rev-parse", "HEAD")), ("done", local))
-        self.assertIn("fast-forward", self.task["pull"]["why"])
+        self.assertEqual(self.task["pull"]["why"], "Not possible to fast-forward, aborting.")
         # herdr-task list says it; dismiss takes it away
         self.assertIn("Needs you: The main checkout couldn't pull main", output.line({**self.task, "ref": "SHEP-1", "status": "done", "status_text": "Done"}))
         said = []

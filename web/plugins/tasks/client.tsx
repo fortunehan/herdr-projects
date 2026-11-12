@@ -135,7 +135,7 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
       kb={kb}
       // its pie: the % done, while it works; an archived one is a done task's check
       glyph={<TaskDot s={t.archived ? 'done' : t.status} w={t.archived || !t.report ? undefined : { ...t.report, eta: undefined }} />}
-      ref_={refOf(t.id)}
+      ref_={refOf(t.pullOf ?? t.id)}
       title={t.name}
       sub={t.sub}
       // Scheduled (SHEP-38): its time until it starts ("6h") in the same place, counted live, in grey
@@ -166,9 +166,9 @@ function PullActions({ t }: { t: Task }) {
       .catch((e: Error) => setError(e.message)).finally(() => setBusy(false))
   }
   return (
-    <span className="pointer-events-auto flex shrink-0 items-center gap-1.5" title={error ?? undefined}>
-      {t.pullCommand ? <button type="button" className={SOFT} onClick={(e) => void copy(t.pullCommand!, 'copy', e)}>{copied ? 'Copied' : 'Copy command'}</button> : null}
-      <button type="button" className={SOFT} disabled={busy} onClick={dismiss}>{error ? 'Try again' : 'Dismiss'}</button>
+    <span className="pointer-events-auto flex shrink-0 items-center gap-1.5">
+      {t.pullCommand ? <button type="button" className={SOFT} aria-label={`Copy the command to run: ${t.pullCommand}`} onClick={(e) => void copy(t.pullCommand!, 'copy', e)}>{copied ? 'Copied' : 'Copy'}</button> : null}
+      <button type="button" className={SOFT} disabled={busy} onClick={dismiss} aria-label={error ? `Dismiss again: ${error}` : undefined}>{error ? 'Try again' : 'Dismiss'}</button>
     </span>
   )
 }
