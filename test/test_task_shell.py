@@ -17,11 +17,22 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "mods", "tasks", "bin")
 MAIN = os.path.join(ROOT, "mods", "task-shell", "main.js")
+PANEL = os.path.join(ROOT, "mods", "chat", "panel.js")
+WHERE = os.path.join(ROOT, "lib", "taskwhere.js")
 LAYOUT = os.path.join(ROOT, "layouts", "shepherdr.json")
 
-# main.js without its imports and exports: the harness gives what it imports.
-SRC = re.sub(r"^import .*$", "", open(MAIN, encoding="utf-8").read(), flags=re.M)
-SRC = re.sub(r"^export (default )?", "", SRC, flags=re.M)
+
+def bare(path):
+    """A module's source without its imports and exports: the harness gives what it imports."""
+    with open(path, encoding="utf-8") as f:
+        s = re.sub(r"^import .*$", "", f.read(), flags=re.M)
+    return re.sub(r"^export (default )?", "", s, flags=re.M)
+
+
+# taskwhere.js's layout helpers; its shown() and where() are the harness's own.
+TW = re.sub(r"^function (shown|where)\(", r"function _\1(", bare(WHERE), flags=re.M)
+TW = re.sub(r"^const (BODY|PR|BROWSER|SHELL) = .*$", "", TW, flags=re.M)
+SRC = TW + bare(MAIN)
 
 HARNESS = r"""
 const input = %(input)s;
@@ -174,6 +185,141 @@ class ShellView(unittest.TestCase):
         self.assertEqual(call[call.index("--on") + 1], "vm")
         self.assertIn(["exec", "test", "-d", "/work/wt-25", "vm"], r["calls"])
         self.assertEqual(r["out"][-1]["view"], "vm/t90")
+
+
+# The task view's header (mods/chat/panel.js guardShell) beside the Shell's copy, after a window start (SHEP-35): Herdr
+# starts the copy only once its block shows, so it ticks only while its block isn't hidden (or once it ran).
+HEAD_HARNESS = r"""
+const input = %(input)s;
+const SHELL = "tasks-thread-shell";
+let file = JSON.stringify(input.layout);
+const st = { where: input.where, thread: { terminal: "t1" }, terms: input.terms };
+let n = 0;
+const View = class {}, div = () => el(), v_flex = () => el(), button = (id) => ({ button: id });
+function el() { const e = {}; for (const m of ["id", "size_full", "min_h", "items_center", "justify_center", "px", "gap", "bg", "text_size", "text_color", "text_center", "max_w"]) e[m] = () => e;
+  e.child = () => e; e.when = (c, f) => (c ? f(e) : e); return e; }
+const theme = () => ({}), appHome = () => "/app", shared = (k) => (k === "layout" ? "shepherdr" : k === "tasks.thread" ? st.thread : null);
+const layout = () => JSON.parse(file), readTextFile = async () => file;
+const writeTextFile = async (_p, text) => { file = text; };
+const shown = () => true, where = () => st.where, terminals = () => st.terms;
+const run = () => {};
+const exec = async () => ({ code: 0, stdout: "", stderr: "" });
+const hc = async (args) => {
+  if (args[0] !== "run") return { code: 0, stdout: "{}", stderr: "" };
+  const addr = `t${90 + n++}`, labels = {};
+  for (let i = 0; i < args.length; i++) if (args[i] === "--label") { const [k, v] = args[i + 1].split("="); labels[k] = v; }
+  st.terms.push({ address: addr, state: "live", labels });
+  return { code: 0, stdout: JSON.stringify({ address: addr }), stderr: "" };
+};
+%(src)s
+const pending = [];
+const cx = { notify() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after(_ms, fn) { fn(cx); } } };
+const settle = async () => { while (pending.length) await pending.shift(); };
+const head = { %(guard)s };
+let copy = null;
+const out = [];
+for (const step of input.steps) {
+  if (step.where !== undefined) st.where = step.where;
+  if (step.guard !== false) { head.guardShell(st.where, cx); await settle(); }
+  if (!copy && !find(layout(), "tasks-thread-shell-host")?.hidden) { copy = Object.create(TaskShell.prototype); copy.init({}, cx); }
+  if (copy) { copy.tick(cx); await settle(); }
+  out.push({ view: find(layout(), "tasks-thread-shell-view")?.content?.terminal ?? null, running: Boolean(copy) });
+}
+console.log(JSON.stringify({ out, terms: st.terms }));
+"""
+
+
+def guard_method():
+    with open(PANEL, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"^  guardShell\(w, cx\) \{\n.*?^  \}\n", src, flags=re.M | re.S)
+    if not m:
+        raise AssertionError("mods/chat/panel.js has no guardShell(): nothing points the Shell away from another task's shell")
+    return m.group(0)
+
+
+def shell_term(addr, key, state="live"):
+    return {"address": addr, "state": state, "labels": {"herdr.task-shell": key, "herdr.shell": "task"}}
+
+
+def run_head(steps, where=TASK, terms=None, view="t40"):
+    with open(LAYOUT) as f:
+        tree = json.load(f)
+    col = find(tree, "tasks-thread-shell")
+    col["children"][0]["hidden"] = True
+    col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": view}})
+    inp = {"layout": tree, "where": where, "terms": terms if terms is not None else [], "steps": steps}
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "head.mjs")
+        with open(path, "w") as f:
+            f.write(HEAD_HARNESS % {"src": SRC, "guard": guard_method(), "input": json.dumps(inp)})
+        p = subprocess.run(["node", path], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise AssertionError(p.stderr)
+    return json.loads(p.stdout)
+
+
+TASK_B = dict(TASK, terminal="t2", ref="SHEP-26", folder="/work/wt-26", key="shepherdr#26")
+
+
+@unittest.skipIf(shutil.which("node") is None, "no node")
+class AfterAWindowStart(unittest.TestCase):
+    """SHEP-35: another task's shell left in the saved layout, the Shell's own block hidden, so its copy never ran."""
+
+    def test_without_the_header_nothing_points_it_away(self):
+        r = run_head([{"guard": False}, {"guard": False}], terms=[shell_term("t40", "other#3")])
+        self.assertEqual([o["view"] for o in r["out"]], ["t40", "t40"])
+        self.assertFalse(r["out"][-1]["running"])
+
+    def test_another_tasks_shell_gives_way_to_this_tasks_own(self):
+        r = run_head([{}], terms=[shell_term("t40", "other#3")])
+        self.assertEqual(r["out"][-1], {"view": "t90", "running": True})
+        self.assertEqual(r["terms"][-1]["labels"]["herdr.task-shell"], "shepherdr#25")
+
+    def test_task_b_then_back_to_a_shows_each_ones_own_shell(self):
+        terms = [shell_term("t40", "other#3"), shell_term("t41", "shepherdr#25")]
+        r = run_head([{}, {"where": TASK_B}, {"where": TASK_B}, {"where": TASK}], terms=terms)
+        self.assertEqual([o["view"] for o in r["out"]], ["t41", "t90", "t90", "t41"])
+        self.assertEqual(len(r["terms"]), 3, "one new shell, for B only: A's own is found again")
+
+    def test_this_tasks_own_shell_stays(self):
+        r = run_head([{}, {}], terms=[shell_term("t40", "shepherdr#25")])
+        self.assertEqual([o["view"] for o in r["out"]], ["t40", "t40"])
+        self.assertEqual(len(r["terms"]), 1)
+
+    def test_a_done_task_shows_no_shell(self):
+        r = run_head([{}], where=dict(TASK, state="done"), terms=[shell_term("t40", "shepherdr#25")])
+        self.assertIsNone(r["out"][-1]["view"])
+
+    def test_an_ended_shell_gives_way(self):
+        r = run_head([{}], terms=[shell_term("t40", "shepherdr#25", state="exited")])
+        self.assertEqual(r["out"][-1]["view"], "t90")
+
+    def test_one_not_listed_yet_waits_a_read_then_gives_way(self):
+        r = run_head([{}, {}], terms=[])
+        self.assertEqual([o["view"] for o in r["out"]], ["t40", "t90"])
+
+
+@unittest.skipIf(shutil.which("node") is None, "no node")
+class WhereIsTheShownTasks(unittest.TestCase):
+    """taskwhere.js whereFits: two tasks never started both have no terminal; the key tells them apart."""
+
+    def fits(self, w, thread):
+        js = TW + f"console.log(JSON.stringify(whereFits({json.dumps(w)}, {json.dumps(thread)})));"
+        stub = "const shared = () => null, layout = () => null, appHome = () => '', readTextFile = null, writeTextFile = null;\n"
+        p = subprocess.run(["node", "--input-type=module", "-e", stub + js], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise AssertionError(p.stderr)
+        return json.loads(p.stdout)
+
+    def test_same_terminal(self):
+        self.assertTrue(self.fits(TASK, {"terminal": "t1"}))
+        self.assertFalse(self.fits(TASK, {"terminal": "t2"}))
+
+    def test_never_started_tasks_by_key(self):
+        a = dict(TASK, terminal=None)
+        self.assertTrue(self.fits(a, {"terminal": None, "key": {"machine": None, "slug": "shepherdr", "id": 25}}))
+        self.assertFalse(self.fits(a, {"terminal": None, "key": {"machine": None, "slug": "shepherdr", "id": 26}}))
 
 
 class EndsWithItsTask(unittest.TestCase):
