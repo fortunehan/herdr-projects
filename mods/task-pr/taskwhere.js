@@ -84,13 +84,19 @@ export function arrangeShell(tree, addr) {
 // One edit of the layout's file, only if it's unchanged since read (else read again); then Herdr reads it.
 export async function pointShell(addr, cx) {
   const path = `${appHome()}/layouts/${shared("layout")}.json`;
-  for (let i = 0; ; i++) {
-    const text = await readTextFile(path);
-    const tree = JSON.parse(text ?? "null");
-    if (shellShown(tree) === (addr ?? null) && find(tree, SHELL)?.type === "column") break;
-    arrangeShell(tree, addr);
-    try { await writeTextFile(path, JSON.stringify(tree, null, 2), text); break; }
-    catch (e) { if (i >= 2) throw e; }
+  try {
+    for (let i = 0; ; i++) {
+      const text = await readTextFile(path);
+      const tree = JSON.parse(text ?? "null");
+      if (shellShown(tree) === (addr ?? null) && find(tree, SHELL)?.type === "column") break;
+      arrangeShell(tree, addr);
+      try { await writeTextFile(path, JSON.stringify(tree, null, 2), text); break; }
+      catch (e) { if (i >= 2) throw e; }
+    }
+    for (let i = 0; i < 30 && shellShown(layout()) !== (addr ?? null); i++) await new Promise((r) => cx.timer.after(100, () => r()));
+    if (shellShown(layout()) !== (addr ?? null)) throw new Error("Herdr didn't load the layout with this task's shell.");
+  } catch (e) {
+    console.log(`[task-shell] pointShell failed (${path}, terminal ${addr ?? "none"}): ${String(e?.message ?? e)}`);
+    throw e;
   }
-  for (let i = 0; i < 30 && shellShown(layout()) !== (addr ?? null); i++) await new Promise((r) => cx.timer.after(100, () => r()));
 }

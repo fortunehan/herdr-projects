@@ -23,7 +23,7 @@ const BEAT_MS = 1500;
 export function target(w, thread) {
   if (!thread) return { why: "Pick a task to use its shell." };
   if (!w) return { why: null };
-  if (w.state === "done") return { why: "This task is done: its shell has ended." };
+  if (w.state === "done") return { why: "This task is done: its shell has ended.", folder: w.folder, machine: w.machine ?? null };
   if (!w.key || !w.folder) return { why: "This task has no folder yet." };
   return { key: w.key, folder: w.folder, machine: w.machine ?? null };
 }
@@ -48,9 +48,24 @@ export default class TaskShell extends View {
     if (!on || this.busy) return;
     const tg = target(where(), shared("tasks.thread"));
     if (!tg.key) {
-      if (tg.why !== null && (this.state !== "idle" || this.why !== tg.why)) {
+      const doneFolder = tg.folder ? `${tg.machine ?? ""}|${tg.folder}` : null;
+      if (doneFolder !== this.doneFolder) {
+        this.doneFolder = doneFolder;
+        this.folderGone = false;
+        if (doneFolder) {
+          cx.spawn(async (cx) => {
+            const there = await exec("test", ["-d", tg.folder], tg.machine ? { on: tg.machine } : {}).catch(() => null);
+            if (this.doneFolder !== doneFolder) return;
+            this.folderGone = there?.code === 1;
+            if (this.folderGone) this.why = "This task's folder is gone";
+            cx.notify();
+          });
+        }
+      }
+      const why = this.folderGone ? "This task's folder is gone" : tg.why;
+      if (why !== null && (this.state !== "idle" || this.why !== why)) {
         this.state = "idle";
-        this.why = tg.why;
+        this.why = why;
         this.key = null;
         // Also one left pointed at from before this copy (a reload): a Done task's ended shell isn't shown.
         if (this.addr || shellShown(layout())) { this.addr = null; this.repoint(null, cx); }
@@ -58,6 +73,8 @@ export default class TaskShell extends View {
       }
       return;
     }
+    this.doneFolder = null;
+    this.folderGone = false;
     const live = shellOf(terminals(), tg.key, tg.machine);
     if (live) {
       const again = this.addr !== live.address || shellShown(layout()) !== live.address;
