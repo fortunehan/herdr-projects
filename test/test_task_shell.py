@@ -166,6 +166,12 @@ class ShellView(unittest.TestCase):
         self.assertEqual(runs(r["calls"]), [])
         self.assertIn("done", r["out"][-1]["why"])
 
+    def test_a_done_task_whose_folder_is_gone_says_so(self):
+        r = run_mod([{}, {}], where=dict(TASK, state="done"), folder_there=False, view="t40")
+        self.assertEqual(runs(r["calls"]), [])
+        self.assertEqual(r["out"][-1]["why"], "This task's folder is gone")
+        self.assertEqual((r["out"][-1]["view"], r["out"][-1]["hostHidden"]), (None, False))
+
     def test_a_done_tasks_ended_shell_left_in_the_layout_is_not_shown(self):
         r = run_mod([{}], where=dict(TASK, state="done"), view="t40")
         self.assertEqual((r["out"][-1]["view"], r["out"][-1]["hostHidden"]), (None, False))
@@ -194,13 +200,20 @@ const input = %(input)s;
 const SHELL = "tasks-thread-shell";
 let file = JSON.stringify(input.layout);
 const st = { where: input.where, thread: { terminal: "t1" }, terms: input.terms };
+let record = null;
+const errors = [];
 let n = 0;
 const View = class {}, div = () => el(), v_flex = () => el(), button = (id) => ({ button: id });
 function el() { const e = {}; for (const m of ["id", "size_full", "min_h", "items_center", "justify_center", "px", "gap", "bg", "text_size", "text_color", "text_center", "max_w"]) e[m] = () => e;
   e.child = () => e; e.when = (c, f) => (c ? f(e) : e); return e; }
-const theme = () => ({}), appHome = () => "/app", shared = (k) => (k === "layout" ? "shepherdr" : k === "tasks.thread" ? st.thread : null);
-const layout = () => JSON.parse(file), readTextFile = async () => file;
-const writeTextFile = async (_p, text) => { file = text; };
+const theme = () => ({}), appHome = () => "/app", shared = (k) => (k === "layout" ? "shepherdr" : k === "tasks.thread" ? st.thread : k === "tasks.thread.where" ? st.where : null);
+const setShared = (k, v) => { if (k === "tasks.thread.where") st.where = v; };
+const dirs = () => ({ tasks: "/tasks" }), addonOn = () => false, ARTIFACTS = "tasks-thread-artifacts";
+const layout = () => JSON.parse(file), readTextFile = async (path) => path.startsWith("/tasks/") ? JSON.stringify(record) : file;
+const writeTextFile = async (_p, text) => { if (input.writeFails) throw new Error("read-only"); file = text; };
+const toasts = [], logs = [];
+const toast = (t) => toasts.push(t), plainError = (e) => String(e?.message ?? e);
+console.log = ((log) => (...a) => (String(a[0]).startsWith("[task-shell]") ? logs.push(a.join(" ")) : log(...a)))(console.log);
 const shown = () => true, where = () => st.where, terminals = () => st.terms;
 const run = () => {};
 const exec = async () => ({ code: 0, stdout: "", stderr: "" });
@@ -215,26 +228,36 @@ const hc = async (args) => {
 const pending = [];
 const cx = { notify() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after(_ms, fn) { fn(cx); } } };
 const settle = async () => { while (pending.length) await pending.shift(); };
-const head = { %(guard)s };
+const head = { head: true, taskOf: () => null, %(load)s, %(guard)s };
 let copy = null;
 const out = [];
 for (const step of input.steps) {
   if (step.where !== undefined) st.where = step.where;
-  if (step.guard !== false) { head.guardShell(st.where, cx); await settle(); }
+  if (step.guard !== false) {
+    const w = st.where;
+    const [slug, id] = (w?.key ?? "shepherdr#25").split("#");
+    st.thread = { terminal: w?.terminal ?? null, key: { slug, id: Number(id), machine: w?.machine ?? null } };
+    head.cur = st.thread;
+    record = step.missingRecord ? null : { folder: w?.repo ?? "/work/repo", prefix: "SHEP", tasks: [{
+      id: Number(id), state: w?.state, worktree: w?.folder, branch: w?.branch,
+    }] };
+    try { await head.loadTask(st.thread.terminal, cx); } catch (e) { errors.push(String(e)); }
+    await settle();
+  }
   if (!copy && !find(layout(), "tasks-thread-shell-host")?.hidden) { copy = Object.create(TaskShell.prototype); copy.init({}, cx); }
   if (copy) { copy.tick(cx); await settle(); }
   out.push({ view: find(layout(), "tasks-thread-shell-view")?.content?.terminal ?? null, running: Boolean(copy) });
 }
-console.log(JSON.stringify({ out, terms: st.terms }));
+console.log(JSON.stringify({ out, terms: st.terms, errors, rec: head.rec, toasts, logs }));
 """
 
 
-def guard_method():
+def panel_method(name, args):
     with open(PANEL, encoding="utf-8") as f:
         src = f.read()
-    m = re.search(r"^  guardShell\(w, cx\) \{\n.*?^  \}\n", src, flags=re.M | re.S)
+    m = re.search(r"^  (?:async )?" + name + r"\(" + args + r"\) \{\n.*?^  \}\n", src, flags=re.M | re.S)
     if not m:
-        raise AssertionError("mods/chat/panel.js has no guardShell(): nothing points the Shell away from another task's shell")
+        raise AssertionError(f"mods/chat/panel.js has no {name}()")
     return m.group(0)
 
 
@@ -242,17 +265,18 @@ def shell_term(addr, key, state="live"):
     return {"address": addr, "state": state, "labels": {"herdr.task-shell": key, "herdr.shell": "task"}}
 
 
-def run_head(steps, where=TASK, terms=None, view="t40"):
+def run_head(steps, where=TASK, terms=None, view="t40", write_fails=False):
     with open(LAYOUT) as f:
         tree = json.load(f)
     col = find(tree, "tasks-thread-shell")
     col["children"][0]["hidden"] = True
     col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": view}})
-    inp = {"layout": tree, "where": where, "terms": terms if terms is not None else [], "steps": steps}
+    inp = {"layout": tree, "where": where, "terms": terms if terms is not None else [], "steps": steps, "writeFails": write_fails}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "head.mjs")
         with open(path, "w") as f:
-            f.write(HEAD_HARNESS % {"src": SRC, "guard": guard_method(), "input": json.dumps(inp)})
+            f.write(HEAD_HARNESS % {"src": SRC, "guard": panel_method("guardShell", "w, cx"),
+                                    "load": panel_method("loadTask", "addr, cx"), "input": json.dumps(inp)})
         p = subprocess.run(["node", path], capture_output=True, text=True)
     if p.returncode != 0:
         raise AssertionError(p.stderr)
@@ -265,6 +289,12 @@ TASK_B = dict(TASK, terminal="t2", ref="SHEP-26", folder="/work/wt-26", key="she
 @unittest.skipIf(shutil.which("node") is None, "no node")
 class AfterAWindowStart(unittest.TestCase):
     """SHEP-35: another task's shell left in the saved layout, the Shell's own block hidden, so its copy never ran."""
+
+    def test_loading_the_task_reaches_the_guard_and_updates_the_header(self):
+        r = run_head([{}], terms=[shell_term("t40", "other#3")])
+        self.assertEqual(r["errors"], [])
+        self.assertEqual(r["rec"]["id"], 25)
+        self.assertEqual(r["out"][-1], {"view": "t90", "running": True})
 
     def test_without_the_header_nothing_points_it_away(self):
         r = run_head([{"guard": False}, {"guard": False}], terms=[shell_term("t40", "other#3")])
@@ -294,6 +324,13 @@ class AfterAWindowStart(unittest.TestCase):
     def test_an_ended_shell_gives_way(self):
         r = run_head([{}], terms=[shell_term("t40", "shepherdr#25", state="exited")])
         self.assertEqual(r["out"][-1]["view"], "t90")
+
+    def test_a_failed_repoint_is_logged_and_shown_once(self):
+        r = run_head([{}, {}], terms=[shell_term("t40", "other#3")], write_fails=True)
+        self.assertEqual(r["out"][-1]["view"], "t40")
+        self.assertEqual(len(r["toasts"]), 1)
+        self.assertIn("read-only", r["toasts"][0]["body"])
+        self.assertTrue(r["logs"] and "read-only" in r["logs"][0], r["logs"])
 
     def test_one_not_listed_yet_waits_a_read_then_gives_way(self):
         r = run_head([{}, {}], terms=[])

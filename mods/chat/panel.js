@@ -154,8 +154,8 @@ export class PanelHost {
         repo: rec.folder ?? null, branch: rec.branch ?? null, base: rec.base ?? null, start: rec.start ?? null, pr: rec.pr ?? null,
         key: `${k.slug}#${k.id}`, state: rec.state ?? null } : null;
       if (JSON.stringify(w) !== JSON.stringify(shared("tasks.thread.where") ?? null)) setShared("tasks.thread.where", w);
+      this.guardShell(w, cx);
     }
-    if (this.head) this.guardShell(w, cx);
     if (JSON.stringify(rec) !== JSON.stringify(this.rec)) { this.rec = rec; cx.notify(); }
     if (this.head && rec && find(layout(), ARTIFACTS) && addonOn("artifacts")) this.loadArts(rec, addr, cx);
   }
@@ -167,14 +167,22 @@ export class PanelHost {
   // (just started, or gone) only when it's still missing at the next read.
   guardShell(w, cx) {
     const addr = shellShown(layout());
-    const fit = w ? shellFits(addr, w, terminals()) : "ok";
+    const fit = shellFits(addr, w, terminals());
     const miss = fit === "unknown" && this.shellMiss === addr;
     this.shellMiss = fit === "unknown" ? addr : null;
     if ((fit !== "stale" && !miss) || this.shellBusy) return;
     this.shellBusy = true;
     cx.spawn(async (cx) => {
-      try { await pointShell(null, cx); } catch {}
-      this.shellBusy = false;
+      try {
+        await pointShell(null, cx);
+        this.shellError = null;
+      } catch (e) {
+        const error = plainError(e);
+        if (this.shellError !== error) toast({ title: "Couldn't open this task's shell", body: error, level: "error" });
+        this.shellError = error;
+      } finally {
+        this.shellBusy = false;
+      }
     });
   }
 
