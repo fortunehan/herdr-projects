@@ -62,6 +62,7 @@ core/chat-resize.js: chat
 core/chat-focus.js: tabs-tasks chat
 core/thread-bind.js: chat
 core/changes-follow.js: my-changes
+code-tabs.js: files-tasks pane-chat
 usage.js: tabs-tasks chat shepherdr-settings artifacts jump accept-card toasts
 core/usage.js: tabs-tasks chat shepherdr-settings artifacts jump accept-card toasts
 dirs.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat

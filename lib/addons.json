@@ -13,7 +13,7 @@
     "about": "The Shepherdr layout: sidebar, tab bar, chat pane header, status bar, toasts, menus, dialogs and these settings.",
     "layouts": ["shepherdr"],
     "mods": ["spaces-chat", "tabs-tasks", "pane-chat", "workspace-chrome-shepherdr", "workspace-status-chat", "toasts",
-      "menu-tasks", "new-menu-tasks", "confirm-chat", "prompt-chat", "newspace", "shepherdr-settings"],
+      "menu-tasks", "new-menu-tasks", "confirm-chat", "prompt-chat", "newspace", "shepherdr-settings", "files-tasks", "code-view"],
     "blocks": ["spaces", "sidebar-footer", "tabs", "status", "toasts"],
     "keys": ["layout:shepherdr ctrl-shift-w", "layout:shepherdr ctrl-shift-n", "layout:shepherdr f2", "layout:shepherdr shift-f2",
       "layout:shepherdr cmd-shift-l", "global cmd-alt-l",
@@ -22,7 +22,7 @@
       "global alt-shift-enter", "global alt-escape", "global ctrl-alt-left", "global ctrl-alt-down", "global ctrl-alt-up",
       "global ctrl-alt-right", "terminal ctrl-v"],
     "helpers": ["shepherdr"],
-    "uses_shipped": ["files", "workspace-chrome"]
+    "uses_shipped": ["workspace-chrome"]
   },
   "addons": [
     { "id": "tasks", "title": "Tasks", "switch": false,

@@ -23,6 +23,7 @@ import { button as uiButton, segmented, TEXT, RADIUS, toast, plainError } from "
 import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
 import { endAgent, agentTitle } from "./core/menus.js";
+import { CODE_VIEW, codeOfPane, baseName } from "./code-tabs.js";
 
 const CHAT = "chat";
 const LABEL = "herdr.chat";
@@ -216,13 +217,18 @@ export default class Pane extends View {
     const lazy = chatMode && !entry && lazySlot(self.pane);
     // An artifact (mods/artifacts: mod "art-<id>") shows its title and version.
     const art = self.mod?.startsWith("art-") ? shared("artifacts.titles")?.[self.mod] ?? self.title : null;
+    // A code tab (mods/code-view, opened from Files): its file's name and folder; its tab's name if Files didn't record it.
+    const code = self.mod === CODE_VIEW ? codeOfPane(self.pane) ?? { file: spaces().flatMap((s) => s.tabs ?? []).find((x) => x.id === self.tab)?.name } : null;
+    const codeName = code ? baseName(code.file) || "File" : null;
+    const codeFolder = code?.root ? `${code.root}/${code.file}`.replace(/\/[^/]*$/, "") : null;
     const prog = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "Shell";
     // An Assistant reads as its space ("tor-gameboy"), never its role or what it runs (SHEP-36: the composer's model
     // menu says which agent): the space's name, then its folder, quieter.
     const isAssistant = Boolean(lazy) || terminals().find((x) => x.address === (agent ?? self.terminal))?.labels?.["herdr.role"] === "coordinator";
     const space = isAssistant ? spaces().find((s) => s.tabs?.some((x) => x.id === self.tab)) : null;
-    const name = art ?? (isAssistant ? spaceName(space, { home: home() }) : chatMode && p === self ? "Chat" : p.program?.agent ? agentTitle(p.title, prog) : prog);
-    const pic = art !== null ? svg("mods/artifacts/artifacts.svg").size(14).flex_none().text_color(t.dim) : icon(p.program, 14, t.dim);
+    const name = art ?? codeName ?? (isAssistant ? spaceName(space, { home: home() }) : chatMode && p === self ? "Chat" : p.program?.agent ? agentTitle(p.title, prog) : prog);
+    const pic = art !== null ? svg("mods/artifacts/artifacts.svg").size(14).flex_none().text_color(t.dim)
+      : code ? svg("mods/code-view/file.svg").size(14).flex_none().text_color(t.dim) : icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = self.pane;
     const canSwitch = chatMode ? Boolean(entry) || Boolean(lazy) : chatty(self);
@@ -246,7 +252,7 @@ export default class Pane extends View {
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().max_w(260).min_w(0).truncate().font_medium().text_color(t.foreground).child(name))
       // The folder gives way first; the switch keeps its width; the gap after pushes the rest right.
-      .child(div().flex_shrink_1().min_w(0).truncate().text_color(t.dim).child(folder(p.cwd)))
+      .child(div().flex_shrink_1().min_w(0).truncate().text_color(t.dim).child(code ? (code.on && codeFolder ? `${code.on}: ${codeFolder}` : folder(codeFolder)) : folder(p.cwd)))
       .child(div().flex_1())
       // The status in words, right-aligned with the controls: "Working…" with its spinner, "Needs you", nothing at
       // rest (done is the normal state, no mark).

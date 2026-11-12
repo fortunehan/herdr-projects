@@ -428,7 +428,10 @@
         "worktree"
       ],
       "herdr": {
-        "builtin": "Herdr's Files side panel"
+        "mods": [
+          "files-tasks",
+          "code-view"
+        ]
       },
       "web": {
         "files": [
@@ -436,7 +439,7 @@
         ]
       },
       "forms": {
-        "herdr": "File tree with previews",
+        "herdr": "File tree; a file opens as a read-only code tab in the middle",
         "desktop": "Tree and preview side by side",
         "tablet": "Tree, then preview",
         "phone": "Tree, then full-screen preview"
