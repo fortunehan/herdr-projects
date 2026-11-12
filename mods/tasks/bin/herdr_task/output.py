@@ -7,6 +7,7 @@ from .agents import (
     agent_running, detail, live_helpers, ask_reason, held_ask, last_words, own_line, own_work, status_word, STATUSES, task_status,
 )
 from .queues import waiting_ext, waiting_for
+from .ado_flow import card
 
 
 # ---- output ---------------------------------------------------------------------------------
@@ -107,7 +108,10 @@ def say(args, data, text):
 def line(v):
     word = v.get("status_text") or v["state"]
     extra = v.get("why") or ""
-    if v["status"] in ("ready", "merging") and not extra:
+    if v.get("pull"):
+        # Done, but the main checkout couldn't pull its merge (ado_flow.pull_main()): a Needs you card.
+        extra = f"Needs you: {card(v['pull'])}"
+    elif v["status"] in ("ready", "merging") and not extra:
         extra = f"PR #{v['pr']['number']}" if v.get("pr") else v.get("branch") or ""
     elif v["status"] == "queued":
         wait = [f"{v['prefix']}-{i}" for i in v.get("waiting_for") or []] + (v.get("waiting_ext") or [])

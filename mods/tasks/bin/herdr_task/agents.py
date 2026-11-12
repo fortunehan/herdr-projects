@@ -95,12 +95,13 @@ def status_of(task, live):
 
 
 # What people see a task as: one of eight, derived, never stored. From the task's record (todo,
-# scheduled (SHEP-38: starts by itself at a time), queued, ready, done, attention, a merge asked for or waiting on checks) and its agents' own
-# Herdr status (working, blocked, idle/done), which agents report as always.
+# scheduled (SHEP-38: starts by itself at a time), queued, ready, done, attention, a merge asked for or waiting on checks,
+# waiting to merge in Azure DevOps (SHEP-34)) and its agents' own Herdr status (working, blocked, idle/done), which agents
+# report as always.
 IN_QUEUE_LINE = "In GitHub's merge queue"
 APPROVAL_LINE = "Merges once it's approved"
 STATUSES = {"todo": "To do", "scheduled": "Scheduled", "queued": "Queued", "working": "Working", "needs": "Needs you",
-            "ready": "Ready", "merging": "Merging", "done": "Done"}
+            "ready": "Ready", "merging": "Waiting to merge", "done": "Done"}
 
 
 def task_status(task, live):
@@ -138,6 +139,9 @@ def task_status(task, live):
     if task.get("attention"):
         return "working", None, WORKING_AGAIN if st == "ready" else None
     if st == "ready":
+        # Accepted on Azure DevOps, auto-complete on (SHEP-34): Waiting to merge, saying on what.
+        if waiting_to_merge(task):
+            return "merging", None, merge_wait_line(task)
         # Nothing for the person yet (SHEP-175): its merge under way (asked, in GitHub's merge queue, or
         # by itself), or its pull request's checks still running. Working, with what it waits for.
         wait = ready_wait(task, live)
@@ -179,16 +183,27 @@ STOPPED = "Agent stopped"
 # (pr["wait"], kept by the tick), nor while it merges by itself. Then it is Working, its row saying
 # in small words what it waits for. As core/tasks.js readyWait().
 MERGING, MERGES_ITSELF = "Merging", "Merges once its checks pass"
-ADO_COMPLETES = "Completes in Azure DevOps"
 # SHEP-26: an Azure DevOps pull request whose checks all passed and that waits only on its reviewer
-# policies is the person's (Ready), Accepted or not: its Accept turns on (or keeps) auto-complete.
+# policies is the person's (Ready) before Accept: its Accept turns on auto-complete.
 ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps"
+# SHEP-34: what a task Waiting to merge waits on (ado_flow.py), as core/tasks.js mergeWaitLine().
+ADO_CHECKS, ADO_COMPLETING = "Checks running", "Azure DevOps is completing it"
 
 
 def ado_reviewers(task):
     """SHEP-26: an Azure DevOps pull request waiting only on its reviewers (its checks done)."""
     pr = task.get("pr") or {}
     return str(pr.get("repo") or "").startswith("ado:") and bool(pr.get("needs_approval")) and not pr.get("wait")
+
+
+def waiting_to_merge(task):
+    """SHEP-34: accepted, its pull request not merged yet, Azure DevOps merging it (auto-complete on)."""
+    return task["state"] == "ready" and bool(task.get("merge_wait")) and bool(task.get("pr")) and not task.get("merged")
+
+
+def merge_wait_line(task):
+    pr = task.get("pr") or {}
+    return ADO_CHECKS if pr.get("wait") == ADO_CHECKS else ADO_REVIEWERS if pr.get("needs_approval") else ADO_COMPLETING
 
 
 def ready_wait(task, live):
@@ -198,12 +213,6 @@ def ready_wait(task, live):
     if task.get("merge_queued") and task.get("pr"):
         return IN_QUEUE_LINE
     if task.get("auto_merge") and task.get("pr") and not task.get("merged"):
-        # an Azure DevOps pull request completes itself (auto-complete, set on Accept): Working while
-        # its checks run, Ready while only its reviewers are left (SHEP-26)
-        if task.get("ado_auto_complete"):
-            if ado_reviewers(task):
-                return None
-            return task["pr"].get("wait") or ADO_COMPLETES
         # #743: waits calmly for a review GitHub requires
         return APPROVAL_LINE if task["pr"].get("needs_approval") else MERGES_ITSELF
     return (task.get("pr") or {}).get("wait") or None

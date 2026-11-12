@@ -16,7 +16,7 @@ from .agents import (
 )
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
-from . import ado
+from . import ado, ado_flow
 from .github import (already_merged, BEHIND, drop_branch, finish, github, merged_here, needs_approval, note_checks, pr_merged, pr_pending, pr_problem,
                      pr_view, pr_wait, queue_entry, tidy_done, tidy_due, update_main, watch_main)
 from .launch import default_space
@@ -87,10 +87,14 @@ def facts(s, t, report):
         if v.get("state") == "MERGED":
             if at_work(s, t) or holds_open(s, t):
                 return
+            if ado.owns(pr["repo"]):
+                # Azure DevOps merged it (auto-complete, or someone there): Done, and the main checkout pulls.
+                ado_flow.merged(s, t, v)
+                report["done"].append(t["id"])
+                return
             t["merged"] = True
             watch_main(s, t, (v.get("mergeCommit") or {}).get("oid"))
-            # Its base here catches up, as a merge Herdr made itself would (merge_now()): also one
-            # Azure DevOps completed by itself (auto-complete).
+            # Its base here catches up, as a merge Herdr made itself would (merge_now()).
             update_main(s, t)
             if t.get("merge_queued"):
                 # Herdr queued it: its branch on GitHub goes too.
@@ -107,6 +111,8 @@ def facts(s, t, report):
             pr.pop("needs_approval", None)
         # A draft merges only through the person's Accept, which publishes it first.
         t["_pr_fresh"] = not problem and not pr_pending(v) and not needs_approval(v) and not v.get("isDraft")
+        # Read just now with nothing in the way of an Accept (an Azure DevOps merge policy's, below).
+        t["_pr_seen"] = not problem and not v.get("isDraft")
         # Ready only once its checks are done and its forge knows it can merge (SHEP-175): Working till then.
         if t["state"] == "ready":
             wait = pr_wait(v, t.get("ready_at"), ado.forge(pr["repo"]))
@@ -135,6 +141,8 @@ def facts(s, t, report):
                     t.pop("merge_failed_head", None)
             elif t.get("attention", "").startswith(("Checks failing", "It conflicts", "The pull request was closed", BEHIND)):
                 t.pop("attention")
+        if ado.owns(pr["repo"]) and t["state"] == "ready":
+            ado_flow.watch(s, t, v, problem, report)
     elif merged_here(s, t) and not at_work(s, t):
         t["merged"] = True
         finish(s, t)
@@ -149,7 +157,10 @@ def facts(s, t, report):
             t["merged"] = True
             if gone:
                 watch_main(s, t, (gone.get("mergeCommit") or {}).get("oid"))
-                update_main(s, t)
+                if ado.owns(gone.get("repo")):
+                    ado_flow.pull_main(s, t, gone)
+                else:
+                    update_main(s, t)
             finish(s, t)
             report["done"].append(t["id"])
 
@@ -233,10 +244,16 @@ def tick_store(s, report):
                     pr_deliver(s, t, report)
                 except Exception as e:  # never stops the tick
                     report.setdefault("github_error", []).append(f"{s.ref(t)}: {e}")
-            if t["state"] == "ready" and t.get("auto_merge") and t.get("pr") and not t.get("attention") and t.get("_pr_fresh"):
+            # A merge policy (Settings: auto, checks) merges it once it can. On Azure DevOps that is the person's Accept
+            # made for them, at once: it turns on auto-complete when it can't complete now (Waiting to merge).
+            if t["state"] == "ready" and t.get("auto_merge") and t.get("pr") and not t.get("attention") and (
+                    t.get("_pr_fresh") or (ado.owns(t["pr"]["repo"]) and t.get("_pr_seen"))):
                 if not merge_now(s, t):
                     report["done"].append(t["id"])
             t.pop("_pr_fresh", None)
+            t.pop("_pr_seen", None)
+        elif t["state"] == "done" and t.get("pull") and ado_flow.pull_pass(s, t):
+            report.setdefault("pulled", []).append(s.ref(t))
     due_pass(s, report)
     queued = sorted((t for t in s.data["tasks"] if t["state"] == "queued"), key=lambda t: t.get("queued_at") or 0)
     n = running_count(s) if queued else 0
@@ -574,7 +591,8 @@ def cmd_tick(args):
         d = read_list(p)
         tasks = (d or {}).get("tasks") or []
         if not d or not os.path.isdir(d.get("folder") or "") or not (d.get("main_watch") or any(
-                t.get("state") in ("queued", "scheduled", "ready") or (t.get("worktree") and t.get("state") == "running") for t in tasks)):
+                t.get("state") in ("queued", "scheduled", "ready") or (t.get("worktree") and t.get("state") == "running") or t.get("pull")
+                for t in tasks)):
             continue
         with Store(locate(d["folder"])) as s:
             tick_store(s, report)

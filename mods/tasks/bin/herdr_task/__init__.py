@@ -15,6 +15,7 @@ before it:
                resume.
   ado          Azure DevOps: a repo whose origin is there, its pull requests in gh's shapes.
   github       GitHub and merging: pull requests, checks, and finishing a merged task.
+  ado_flow     Azure DevOps from Accept to Done: auto-complete, Waiting to merge, the main checkout's pull.
   launch       Starting agents: their argv, labels, brief, tab and coordinator.
   takeover     The backup agent: a task whose CLI can't go on is taken over, once, by the other
                CLI; and which CLIs each machine has installed and signed in.

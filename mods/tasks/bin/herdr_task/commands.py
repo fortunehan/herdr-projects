@@ -20,7 +20,7 @@ from .agents import (
     WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
-from . import ado, local
+from . import ado, ado_flow, local
 from .github import (already_merged, drop_branch, finish, gh, github, merged_here, needs_approval, note_checks, own_work, pr_adopt, pr_open,
                      pr_pending, pr_problem, pr_view, publish as publish_pr, remote_of, update_main, watch_main)
 from .github import CHECKS_RUNNING as PR_CHECKS_RUNNING
@@ -260,6 +260,8 @@ def cmd_show(args):
         text.append(f"pull request: #{v['pr']['number']} {v['pr']['url']}")
     if v.get("why") and v["status"] == "needs":
         text.append(f"needs the person: {v['why']}")
+    if v.get("pull"):
+        text.append(f"needs the person: {ado_flow.card(v['pull'])}\n  run: {v['pull'].get('command')}\n  (it goes once the main checkout has the merge, or: herdr-task dismiss {s.ref(t)})")
     if v.get("proof"):
         text.append(f"proof: {v['proof']['title']} ({v['proof']['id']})")
     if v.get("archived"):
@@ -701,7 +703,7 @@ def finalize(s, t):
     """Ready: on GitHub its pull request opens; then the merge policy in Settings decides who
     merges: auto (now), checks (once its checks pass) or ask (the person). Returns what to say."""
     t["state"], t["ready_at"] = "ready", now()
-    for k in ("attention", "merge_requested", "review"):
+    for k in ("attention", "merge_requested", "review", "merge_wait"):
         t.pop(k, None)
     (t.get("pr") or {}).pop("wait", None)
     s.dirty = True
@@ -792,7 +794,7 @@ def cmd_state(args, state):
             # pull request merged and close it again at once) until its agent says ready.
             if t["state"] == "done" and t.get("merged"):
                 t["kept_open"] = True
-            for k in ("reviews", "review", "auto_merge", "merged", "nothing_to_merge", "accepted_at", "merge_queued"):
+            for k in ("reviews", "review", "auto_merge", "merged", "nothing_to_merge", "accepted_at", "merge_queued", "merge_wait", "pull"):
                 t.pop(k, None)
         if state == "done" and t.get("worktree") and merged_here(s, t):
             t["merged"] = True
@@ -1021,13 +1023,15 @@ def merge_failed(t, v, err):
 
 
 def merge_now(s, t, publish=False):
-    """Merges the task's pull request on GitHub (squash) or Azure DevOps (the repo's merge strategy)
-    and tidies up here. A draft is published first when the person asked (publish: Accept, Merge),
-    then merges once its checks pass. Returns why it couldn't, or None when it's merged (and the task
-    done). A GitHub base branch with GitHub's merge queue (#742, #801, #802): the pull request joins
-    the queue and the task stays Merging until GitHub merged it (the tick finishes it then, and
-    deletes its branch there)."""
+    """Merges the task's pull request on GitHub (squash) and tidies up here. A draft is published
+    first when the person asked (publish: Accept, Merge), then merges once its checks pass. Returns
+    why it couldn't, or None when it's merged (and the task done). A GitHub base branch with GitHub's
+    merge queue (#742, #801, #802): the pull request joins the queue and the task stays Merging until
+    GitHub merged it (the tick finishes it then, and deletes its branch there). On Azure DevOps its
+    own way (ado_flow.accept(): ado_flow.WAITS while Azure DevOps merges it)."""
     n, repo = str(t["pr"]["number"]), t["pr"]["repo"]
+    if ado.owns(repo):
+        return ado_flow.accept(s, t, publish)
     v = pr_view(t)
     s.dirty = True
     if not v:
@@ -1056,27 +1060,22 @@ def merge_now(s, t, publish=False):
             t["pr"]["needs_approval"] = True
             return WAITS_APPROVAL
         t["pr"].pop("needs_approval", None)
-        if ado.owns(repo):
-            ok, _, err = ado.merge(t, v)
-            # A one-off error can come after the merge went through: asked again.
-            again = pr_view(t) if not ok else None
-        else:
-            base = t.get("base") or "main"
-            merge = lambda *extra: gh("pr", "merge", n, "--repo", repo, "--squash", *extra,
-                                      "--match-head-commit", v.get("headRefOid") or "")
-            queue = uses_queue(s, base)
-            ok, _, err = merge() if queue else merge("--delete-branch")
-            if not ok and not queue and "merge queue" in err:
-                # gh refuses --delete-branch on a merge queue: asked again without it, which queues it.
-                s.data.setdefault("merge_queue", {})[base] = now()
-                queue = True
-                ok, _, err = merge()
-            # Merged, or only queued (or set to merge by itself)? Asked again; a one-off GitHub error can
-            # also come after the merge went through.
-            again = pr_view(t)
+        base = t.get("base") or "main"
+        merge = lambda *extra: gh("pr", "merge", n, "--repo", repo, "--squash", *extra,
+                                  "--match-head-commit", v.get("headRefOid") or "")
+        queue = uses_queue(s, base)
+        ok, _, err = merge() if queue else merge("--delete-branch")
+        if not ok and not queue and "merge queue" in err:
+            # gh refuses --delete-branch on a merge queue: asked again without it, which queues it.
+            s.data.setdefault("merge_queue", {})[base] = now()
+            queue = True
+            ok, _, err = merge()
+        # Merged, or only queued (or set to merge by itself)? Asked again; a one-off GitHub error can
+        # also come after the merge went through.
+        again = pr_view(t)
         if (again or {}).get("state") == "MERGED":
             v = again
-        elif ok and not ado.owns(repo):
+        elif ok:
             t["merge_queued"] = now()
             t.pop("attention", None)
             t["pr"]["checked"] = 0
@@ -1108,6 +1107,8 @@ def cmd_merge(args):
             error = merge_now(s, t, publish=True)
             if error == IN_QUEUE:
                 how, error = "queue", None
+            elif error == ado_flow.WAITS:
+                how, error = "waiting", None
             elif error == CHECKS_RUNNING:
                 error += " Merge again when they pass."
             elif error == WAITS_APPROVAL:
@@ -1122,8 +1123,10 @@ def cmd_merge(args):
         sys.exit(1)
     text = f"{s.ref(t)}: pull request #{t['pr']['number']} merged; done." if how == "github" else \
         f"{s.ref(t)}: pull request #{t['pr']['number']} is in GitHub's merge queue; done once GitHub merges it." if how == "queue" else \
+        f"{s.ref(t)}: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on)." if how == "waiting" else \
         f"{s.ref(t)}: merge asked of {sent}" + (" (a new agent)" if started else "")
-    say(args, {**v, "terminal": sent, "new_agent": started, "merged": how == "github", "queued": how == "queue"}, text)
+    say(args, {**v, "terminal": sent, "new_agent": started, "merged": how == "github", "queued": how == "queue",
+               "waiting": how == "waiting"}, text)
 
 
 def branch_tip(s, t):
@@ -1161,7 +1164,7 @@ def cmd_accept(args):
     once when there is nothing to merge, else merged first, as the merge settings say how: a pull
     request is squash-merged on GitHub (or merges once its checks pass); a local branch is
     fast-forwarded when it can be, else its agent merges it (rebase, checks) and marks it done."""
-    error, how, sent, started, back, auto = None, "done", None, False, False, None
+    error, how, sent, started, back = None, "done", None, False, False
     with open_store(args) as s:
         t = s.find(args.id)
         if t["state"] != "ready":
@@ -1198,18 +1201,12 @@ def cmd_accept(args):
             error = merge_now(s, t, publish=True)
             if error == IN_QUEUE:
                 how, error = "queue", None
+            elif error == ado_flow.WAITS:
+                # Azure DevOps: auto-complete is on, and it merges there (Waiting to merge).
+                how, error = "waiting", None
             elif error in (CHECKS_RUNNING, WAITS_APPROVAL):
                 # Accepted: it merges by itself once they pass, or once it's approved (Merging).
                 t["auto_merge"], how, error = "checks", "checks" if error == CHECKS_RUNNING else "approval", None
-                if ado.owns(t["pr"]["repo"]):
-                    # Also in Azure DevOps itself, which completes it with this machine off; the
-                    # tick stays a backup and does the follow-up here (update_main, finish).
-                    ok, why = ado.auto_complete(t)
-                    auto = True if ok else why
-                    if ok:
-                        t["ado_auto_complete"] = now()
-                    else:
-                        t.pop("ado_auto_complete", None)
         elif merged_here(s, t) or in_base(s, t):
             # Its own work already in the base branch, or none of its own: nothing to merge.
             t["merged"] = merged_here(s, t)
@@ -1234,14 +1231,9 @@ def cmd_accept(args):
             "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
             "approval": f"{s.ref(t)} accepted: it merges once it's approved.",
             "queue": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} is in GitHub's merge queue; done once GitHub merges it.",
+            "waiting": f"{s.ref(t)} accepted: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on).",
             "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
-    if auto is True:
-        text = f"{s.ref(t)} accepted: Azure DevOps completes it once it's approved and its checks pass (auto-complete is on)."
-    elif auto:
-        text += f" Azure DevOps auto-complete couldn't be set ({auto}): it merges while Herdr runs."
-    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started,
-               **({"auto_complete": auto is True} if auto is not None else {}),
-               **({"auto_complete_error": auto} if isinstance(auto, str) else {})}, text)
+    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
 
 
 def cmd_fix(args):

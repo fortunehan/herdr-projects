@@ -21,11 +21,13 @@ sys.path.insert(0, os.path.join(ROOT, "mods", "tasks", "bin"))
 sys.dont_write_bytecode = True
 
 import herdr_task.ado as ado  # noqa: E402
+import herdr_task.ado_flow as ado_flow  # noqa: E402
 import herdr_task.agents as agents  # noqa: E402
 import herdr_task.base as base  # noqa: E402
 import herdr_task.commands as commands  # noqa: E402
 import herdr_task.ghnews as ghnews  # noqa: E402
 import herdr_task.github as github  # noqa: E402
+import herdr_task.output as output  # noqa: E402
 
 REPO = "ado:contoso/My Proj/web"
 API = "https://dev.azure.com/contoso/My%20Proj/_apis/"
@@ -264,145 +266,156 @@ class Opening(Base):
         self.assertIn("!30", str(e.exception))
 
 
-class Merging(Base):
-    """Accept / Merge / a merge policy: completed on Azure DevOps at the head its checks passed on."""
+REVIEWERS = [evaluation("queued", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers")]
+BUILT = [evaluation("approved", buildDefinitionName="web-ci")]
+ME = "6f1e2d3c-1111-2222-3333-1234567890ab"
+
+
+class Accepting(Base):
+    """SHEP-34: Accept (Merge, a merge policy) on Azure DevOps: completed at once when Azure DevOps allows it, else
+    auto-complete on and the task Waiting to merge (ado_flow.py)."""
 
     def setUp(self):
         super().setUp()
         self.task = {"id": 1, "title": "Login", "state": "ready", "mode": "worktree", "worktree": "/w", "branch": "task/1-login",
                      "base": "main", "pr": {"number": 7, "url": ado.pr_url(REPO, 7), "repo": REPO}}
         self.store = Store([self.task])
+        self.pulled = []
         done = lambda s, t, even_if_busy=False: t.update(state="done")
-        for name, value in (("finish", done), ("watch_main", lambda *a: None), ("update_main", lambda *a: None)):
-            p = mock.patch.object(commands, name, value)
+        for name, value in (("finish", done), ("watch_main", lambda *a: None), ("pull_main", lambda s, t, v=None: self.pulled.append(v))):
+            p = mock.patch.object(ado_flow, name, value)
             p.start()
             self.addCleanup(p.stop)
         p = mock.patch.object(ado.time, "sleep", lambda s: None)
         p.start()
         self.addCleanup(p.stop)
 
-    def test_it_completes_the_tested_head_and_the_task_is_done(self):
-        seen = []
+    def azure(self, views, patch=None, evaluations=BUILT):
+        """Azure DevOps answering views (each GET of the pull request takes the next, the last one stays) and patch the PATCHes."""
+        views = list(views)
+        get = lambda url, body: views.pop(0) if len(views) > 1 else views[0]
+        return self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": ME, "providerDisplayName": "Herdr Bot"}},
+                          ("GET", r"git/repositories/web/pullrequests/7"): get,
+                          ("PATCH", r"git/repositories/web/pullrequests/7"): patch or {},
+                          ("GET", r"policy/evaluations"): {"value": list(evaluations)},
+                          ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
 
-        def view(url, body):
-            seen.append(1)
-            return pr(status="completed" if len(seen) > 1 else "active", lastMergeCommit={"commitId": "f00"})
-        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): view, ("PATCH", r"git/repositories/web/pullrequests/7"): {},
-                       ("GET", r"policy/evaluations"): {"value": [evaluation("approved", buildDefinitionName="web-ci")]},
-                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
-        self.assertIsNone(commands.merge_now(self.store, self.task))
-        self.assertEqual((self.task["state"], self.task["merged"]), ("done", True))
-        body = f.sent("PATCH", r"git/repositories/web/pullrequests/7")[0][3]
-        self.assertEqual((body["status"], body["lastMergeSourceCommit"], body["completionOptions"]["mergeStrategy"],
-                          body["completionOptions"]["deleteSourceBranch"]), ("completed", {"commitId": "abc"}, "squash", True))
+    def accept(self, code=0):
+        said = []
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}), \
+                mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+            except SystemExit as e:
+                self.assertEqual(e.code, code)
+                return None, err.getvalue()
+        self.assertEqual(code, 0)
+        return said[-1]
+
+    @staticmethod
+    def auto_complete_kept(url, body):
+        return pr(autoCompleteSetBy={"id": ME}) if "autoCompleteSetBy" in body else {}
+
+    def test_allowed_now_it_completes_the_tested_head_and_the_task_is_done(self):
+        f = self.azure([pr(), pr(status="completed", lastMergeCommit={"commitId": "f00"})])
+        data, text = self.accept()
+        self.assertEqual((self.task["state"], self.task["merged"], data["accepted"]), ("done", True, "github"))
+        self.assertNotIn("merge_wait", self.task)
+        bodies = [c[3] for c in f.sent("PATCH", r".*")]
+        self.assertEqual([(b["status"], b["lastMergeSourceCommit"], b["completionOptions"]["mergeStrategy"], b["completionOptions"]["deleteSourceBranch"])
+                          for b in bodies], [("completed", {"commitId": "abc"}, "squash", True)])
+        self.assertFalse(f.sent("GET", r"connectionData"))  # no auto-complete
+        self.assertEqual(self.pulled[0]["mergeCommit"], {"oid": "f00"})  # the main checkout pulls
 
     def test_the_repos_own_merge_strategy(self):
         with open(ado.CONFIG, "w") as fh:
             json.dump({"merge": "rebase", "repos": {"contoso/My Proj/web": {"merge": "noFastForward"}}}, fh)
         f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(status="completed"), ("PATCH", r"git/repositories/web/pullrequests/7"): {}})
-        self.assertEqual(ado.merge(self.task, {"headRefOid": "abc"})[0], True)
+        self.assertEqual(ado.complete(self.task, {"headRefOid": "abc"}), ("merged", ""))
         self.assertEqual(f.sent("PATCH", r".*")[0][3]["completionOptions"]["mergeStrategy"], "noFastForward")
 
-    def test_a_reviewer_still_to_approve_keeps_it_merging(self):
-        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(),
-                       ("GET", r"policy/evaluations"): {"value": [evaluation("queued", type_id="x", name="Minimum number of reviewers")]},
-                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
-                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
-                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None):
-            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None))
-        self.assertEqual((self.task["state"], self.task["auto_merge"]), ("ready", "checks"))
-        self.assertEqual(f.sent("PATCH", r".*"), [])
-
-    def test_a_refused_completion_is_said(self):
-        self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(mergeStatus="conflicts", mergeFailureMessage="conflict in a.txt"),
-                   ("PATCH", r"git/repositories/web/pullrequests/7"): {}})
-        self.assertEqual(ado.merge(self.task, {"headRefOid": "abc"}), (False, "", "Azure DevOps couldn't complete it: conflict in a.txt"))
-
-    def accept(self):
-        said = []
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
-                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
-                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), \
-                mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
-            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None))
-        return said[-1]
-
-    ME = "6f1e2d3c-1111-2222-3333-1234567890ab"
-
-    def waiting_on_a_reviewer(self, patch):
-        """Azure DevOps with a reviewer policy still queued; patch answers the PATCH."""
-        return self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": self.ME, "providerDisplayName": "Herdr Bot"}},
-                          ("GET", r"git/repositories/web/pullrequests/7"): pr(),
-                          ("PATCH", r"git/repositories/web/pullrequests/7"): patch,
-                          ("GET", r"policy/evaluations"): {"value": [evaluation("queued", type_id="x", name="Minimum number of reviewers")]},
-                          ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
-
-    def test_accept_waiting_on_a_reviewer_turns_on_auto_complete_as_herdrs_account(self):
+    def test_approval_needed_turns_on_auto_complete_and_it_waits_to_merge(self):
         with open(ado.CONFIG, "w") as fh:
             json.dump({"repos": {"contoso/My Proj/web": {"merge": "noFastForward", "transition_work_items": True}}}, fh)
-        f = self.waiting_on_a_reviewer(lambda url, body: pr(autoCompleteSetBy={"id": self.ME, "displayName": "Herdr Bot"}))
+        f = self.azure([pr()], self.auto_complete_kept, BUILT + REVIEWERS)
+        # before Accept: the person's (SHEP-26, unchanged)
+        self.task["pr"]["needs_approval"] = True
+        self.assertEqual(agents.task_status(self.task, []), ("ready", None, "Waiting on reviewers in Azure DevOps"))
         data, text = self.accept()
         self.assertEqual([c[3] for c in f.sent("PATCH", r".*")], [{
-            "autoCompleteSetBy": {"id": self.ME},
+            "autoCompleteSetBy": {"id": ME},
             "completionOptions": {"mergeStrategy": "noFastForward", "deleteSourceBranch": True, "transitionWorkItems": True,
-                                  "mergeCommitMessage": "Merged PR 7: SHEP-1 Login"}}])
-        # Herdr's own merge stays as a backup, and the follow-up here.
-        self.assertEqual((self.task["state"], self.task["auto_merge"], bool(self.task.get("ado_auto_complete"))), ("ready", "checks", True))
-        self.assertEqual((data["accepted"], data["auto_complete"]), ("approval", True))
-        self.assertIn("Azure DevOps completes it once it's approved", text)
-        # SHEP-26: its checks done, only its reviewers left: the person's again, saying so.
-        self.assertEqual(agents.task_status(self.task, []), ("ready", None, "Waiting on reviewers in Azure DevOps"))
-        # Accept again: auto-complete stays on, the task stays as it is.
+                                  "mergeCommitMessage": "Merged PR 7: SHEP-1 Login"}}])  # never a completion
+        self.assertEqual((self.task["state"], data["accepted"], "auto_merge" in self.task), ("ready", "waiting", False))
+        self.assertTrue(self.task["merge_wait"])
+        self.assertEqual(agents.task_status(self.task, []), ("merging", None, "Waiting on reviewers in Azure DevOps"))
+        self.assertEqual(agents.STATUSES["merging"], "Waiting to merge")
+        self.assertEqual(text, "SHEP-1 accepted: waiting to merge: Waiting on reviewers in Azure DevOps (auto-complete is on).")
+        # Accept again: auto-complete set again, still waiting
         data, _ = self.accept()
-        self.assertEqual(len(f.sent("PATCH", r".*")), 2)
-        self.assertEqual((self.task["state"], self.task["auto_merge"], data["auto_complete"]), ("ready", "checks", True))
+        self.assertEqual((len(f.sent("PATCH", r".*")), data["accepted"]), (2, "waiting"))
 
-    def test_accept_that_merges_at_once_sets_no_auto_complete(self):
-        seen = []
-
-        def view(url, body):
-            seen.append(1)
-            return pr(status="completed" if len(seen) > 1 else "active", lastMergeCommit={"commitId": "f00"})
-        f = self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": self.ME}},
-                       ("GET", r"git/repositories/web/pullrequests/7"): view, ("PATCH", r"git/repositories/web/pullrequests/7"): {},
-                       ("GET", r"policy/evaluations"): {"value": [evaluation("approved", buildDefinitionName="web-ci")]},
-                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+    def test_a_refused_completion_falls_back_to_auto_complete(self):
+        def patch(url, body):
+            if body.get("status") == "completed":
+                raise ado.AdoError("http", "HTTP 403: You need the Bypass policies permission")
+            return self.auto_complete_kept(url, body)
+        f = self.azure([pr()], patch)
         data, _ = self.accept()
-        self.assertEqual((self.task["state"], data["accepted"]), ("done", "github"))
-        bodies = [c[3] for c in f.sent("PATCH", r".*")]
-        self.assertEqual([b["status"] for b in bodies], ["completed"])
-        self.assertFalse(any("autoCompleteSetBy" in b for b in bodies) or f.sent("GET", r"connectionData") or "auto_complete" in data)
+        self.assertEqual([("status" in c[3], "autoCompleteSetBy" in c[3]) for c in f.sent("PATCH", r".*")], [(True, False), (False, True)])
+        self.assertEqual((self.task["state"], data["accepted"]), ("ready", "waiting"))
+        self.assertEqual(agents.task_status(self.task, []), ("merging", None, "Azure DevOps is completing it"))
+        # a policy refusing it (rejectedByPolicy) too
+        self.task.pop("merge_wait")
+        self.azure([pr(), pr(mergeStatus="rejectedByPolicy", mergeFailureMessage="policies not met")], self.auto_complete_kept)
+        self.assertEqual(commands.merge_now(self.store, self.task, publish=True), ado_flow.WAITS)
 
-    def test_a_refused_auto_complete_keeps_herdrs_own_merge_and_says_so(self):
+    def test_auto_complete_that_cant_be_turned_on_needs_you_and_accept_retries(self):
         def refuse(url, body):
             raise ado.AdoError("http", "HTTP 403: You need the Contribute to pull requests permission")
-        f = self.waiting_on_a_reviewer(refuse)
-        data, text = self.accept()
-        self.assertEqual(len(f.sent("PATCH", r".*")), 1)
-        self.assertEqual((self.task["state"], self.task["auto_merge"], self.task.get("ado_auto_complete"), self.task.get("attention")),
-                         ("ready", "checks", None, None))
-        self.assertEqual((data["accepted"], data["auto_complete"]), ("approval", False))
-        self.assertIn("Contribute to pull requests", data["auto_complete_error"])
-        self.assertIn("it merges once it's approved. Azure DevOps auto-complete couldn't be set", text)
-        self.assertEqual(agents.task_status(self.task, [])[2], "Merges once it's approved")
+        self.azure([pr()], refuse, BUILT + REVIEWERS)
+        _, err = self.accept(code=1)
+        self.assertIn("Couldn't turn on auto-complete in Azure DevOps: HTTP 403: You need the Contribute", err)
+        self.assertNotIn("merge_wait", self.task)
+        self.task["attention_at"] = 0
+        status, needs, why = agents.task_status(self.task, [])
+        self.assertEqual((status, needs), ("needs", "attention"))
+        self.assertTrue(why.startswith("Couldn't turn on auto-complete in Azure DevOps: "))
+        self.assertTrue(why.startswith(ado_flow.ACCEPT_AGAIN))
+        # Accept again, now allowed: waiting
+        self.azure([pr()], self.auto_complete_kept, BUILT + REVIEWERS)
+        data, _ = self.accept()
+        self.assertEqual((data["accepted"], self.task.get("attention")), ("waiting", None))
+        # Azure DevOps answering without keeping it
+        self.task.pop("merge_wait")
+        self.azure([pr()], {}, BUILT + REVIEWERS)
+        self.assertEqual(commands.merge_now(self.store, self.task, publish=True),
+                         "Couldn't turn on auto-complete in Azure DevOps: Azure DevOps didn't keep it")
 
-    def test_a_failed_completion_says_azure_devops_not_github(self):
-        self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(mergeStatus="rejectedByPolicy", mergeFailureMessage="policies not met"),
-                   ("PATCH", r"git/repositories/web/pullrequests/7"): {},
-                   ("GET", r"policy/evaluations"): {"value": []}, ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
-        self.assertEqual(commands.merge_now(self.store, self.task),
-                         "The merge didn't go through: Azure DevOps couldn't complete it: policies not met")
-        self.assertEqual(self.task["merge_failed_head"], "abc")
+    def test_a_problem_on_accept_needs_you_and_stops_waiting(self):
+        self.task["merge_wait"] = 1
+        self.azure([pr(mergeStatus="conflicts")])
+        self.assertEqual(commands.merge_now(self.store, self.task, publish=True), "It conflicts with the base branch.")
+        self.assertNotIn("merge_wait", self.task)
 
-    def test_accept_publishes_a_draft_and_it_merges_once_its_checks_pass(self):
+    def test_accept_publishes_a_draft_and_it_waits_to_merge(self):
         views = [pr(isDraft=True)]
-        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): lambda url, b: views[0],
-                       ("PATCH", r"git/repositories/web/pullrequests/7"): lambda url, body: views.__setitem__(0, pr(isDraft=body.get("isDraft", True))) or {},
+
+        def patch(url, body):
+            if "isDraft" in body:
+                views[0] = pr(isDraft=body["isDraft"])
+                return {}
+            return self.auto_complete_kept(url, body)
+        f = self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": ME}},
+                       ("GET", r"git/repositories/web/pullrequests/7"): lambda url, b: views[0],
+                       ("PATCH", r"git/repositories/web/pullrequests/7"): patch,
                        ("GET", r"policy/evaluations"): {"value": []}, ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
-        self.accept()
-        self.assertEqual([c[3] for c in f.sent("PATCH", r".*")], [{"isDraft": False}])  # published, not completed
-        self.assertEqual((self.task["state"], self.task["auto_merge"]), ("ready", "checks"))
+        data, _ = self.accept()
+        self.assertEqual([list(c[3])[0] for c in f.sent("PATCH", r".*")], ["isDraft", "autoCompleteSetBy"])  # published, never completed
+        self.assertEqual((self.task["state"], data["accepted"]), ("ready", "waiting"))
         self.assertFalse(views[0]["isDraft"])
 
     def test_a_merge_policy_never_publishes_a_draft(self):
@@ -411,100 +424,197 @@ class Merging(Base):
         self.assertIn("draft", commands.merge_now(self.store, self.task))
         self.assertEqual(f.sent("PATCH", r".*"), [])
 
+    def test_merge_waits_to_merge_too(self):
+        self.azure([pr()], self.auto_complete_kept, BUILT + REVIEWERS)
+        said = []
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}), \
+                mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertTrue(said[-1][0]["waiting"])
+        self.assertIn("waiting to merge", said[-1][1])
 
-class MergedInAzureDevOps(Base):
-    """SHEP-4: a pull request someone completes in Azure DevOps makes the task done and brings main
-    here up to date, as Herdr's own merge does. A throwaway repo whose origin is a local bare one."""
+
+class WaitingToMerge(Base):
+    """SHEP-34: the tick's look at a task Waiting to merge, and what follows Azure DevOps' merge: the main checkout's
+    fast-forward-only pull. Throwaway repos: main (origin a local bare repo) and another clone that makes the merge."""
 
     def setUp(self):
         super().setUp()
         import herdr_task.tick as tick
         self.tick = tick
         git = self.git = lambda *a: subprocess.run(["git", *a], check=True, capture_output=True, text=True).stdout.strip()
-        self.main, bare, other = (os.path.join(self.tmp, x) for x in ("repo", "bare.git", "other"))
-        git("init", "-q", "--bare", "-b", "main", bare)
+        self.main, self.bare, self.other = (os.path.join(self.tmp, x) for x in ("repo", "bare.git", "other"))
+        git("init", "-q", "--bare", "-b", "main", self.bare)
         git("init", "-q", "-b", "main", self.main)
-        git("clone", "-q", bare, other)
-        for repo in (self.main, other):
+        git("clone", "-q", self.bare, self.other)
+        for repo in (self.main, self.other):
             for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
                 git("-C", repo, "config", k, v)
-        git("-C", self.main, "remote", "add", "origin", bare)
-        git("-C", self.main, "commit", "-q", "--allow-empty", "-m", "base")
+        git("-C", self.main, "remote", "add", "origin", self.bare)
+        for name in ("a.txt", "b.txt"):
+            with open(os.path.join(self.main, name), "w") as fh:
+                fh.write("one\n")
+        git("-C", self.main, "add", ".")
+        git("-C", self.main, "commit", "-q", "-m", "base")
         git("-C", self.main, "push", "-q", "origin", "main")
-        git("-C", other, "pull", "-q", "origin", "main")
-        git("-C", other, "commit", "-q", "--allow-empty", "-m", "Merged PR 7: SHEP-1 Login")
-        git("-C", other, "push", "-q", "origin", "main")
-        self.merged = git("-C", other, "rev-parse", "HEAD")
         self.task = {"id": 1, "title": "Login", "state": "ready", "mode": "worktree", "worktree": "/w", "branch": "task/1-login",
-                     "base": "main", "pr": {"number": 7, "url": ado.pr_url(REPO, 7), "repo": REPO, "checked": 0}}
+                     "base": "main", "merge_wait": 1, "ready_at": 0, "pr": {"number": 7, "url": ado.pr_url(REPO, 7), "repo": REPO, "checked": 0}}
         self.store = Store([self.task], self.main)
         done = lambda s, t, even_if_busy=False: t.update(state="done")
-        for name, value in (("finish", done), ("live_agents", lambda k: []), ("watch_main", lambda *a: None)):
-            p = mock.patch.object(tick, name, value)
+        for mod, name, value in ((ado_flow, "finish", done), (ado_flow, "watch_main", lambda *a: None), (self.tick, "live_agents", lambda k: []),
+                                 (self.tick, "pr_news", lambda *a: None)):
+            p = mock.patch.object(mod, name, value)
             p.start()
             self.addCleanup(p.stop)
 
-    def test_completed_by_someone_else_main_catches_up(self):
-        self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(status="completed", lastMergeCommit={"commitId": self.merged})})
-        report = {"attention": [], "done": []}
-        self.tick.facts(self.store, self.task, report)
-        self.assertEqual((self.task["state"], self.task["merged"], report["done"]), ("done", True, [1]))
-        self.assertEqual(self.git("-C", self.main, "rev-parse", "main"), self.merged)
+    def merge_there(self, branch="main", text="two\n"):
+        """Azure DevOps' merge: a commit on branch at origin changing a.txt; its sha."""
+        self.git("-C", self.other, "fetch", "-q", "origin")
+        self.git("-C", self.other, "checkout", "-q", "-B", branch, f"origin/{branch}")
+        with open(os.path.join(self.other, "a.txt"), "w") as fh:
+            fh.write(text)
+        self.git("-C", self.other, "commit", "-q", "-am", "Merged PR 7: SHEP-1 Login")
+        self.git("-C", self.other, "push", "-q", "origin", branch)
+        return self.git("-C", self.other, "rev-parse", "HEAD")
 
-    def ready_wait(self, d, evaluations):
-        self.fake({("GET", r"git/repositories/web/pullrequests/7"): d, ("GET", r"policy/evaluations"): {"value": evaluations},
-                   ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []},
-                   ("GET", r"pullRequests/7/threads"): {"value": []}})
-        self.task.update(ready_at=0)
-        self.task["pr"].update(checked=0, wait="Checks running")
-        with mock.patch.object(self.tick, "pr_news", lambda *a: None):
-            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
-        return self.task["pr"].get("wait"), agents.task_status(self.task, [])[0]
+    def look(self, d, evaluations=(), report=None):
+        """One tick's look at the task's pull request (d: Azure DevOps' answer); its status after."""
+        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): d, ("GET", r"policy/evaluations"): {"value": list(evaluations)},
+                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, report if report is not None else {"attention": [], "done": []})
+        self.assertEqual(f.sent("PATCH", r".*"), [])  # Herdr never completes it itself
+        return agents.task_status({**self.task, "attention_at": 0}, [])
 
-    def test_waiting_for_a_reviewer_is_ready_for_the_persons_accept(self):
-        # SHEP-175 on Azure DevOps: builds done, a reviewer policy still to be met: Ready (Accept turns on auto-complete),
-        # never Working on "Checks running" until someone approves.
-        wait, status = self.ready_wait(pr(), [evaluation("approved", buildDefinitionName="web-ci"),
-                                              evaluation("queued", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers")])
-        self.assertEqual((wait, status), (None, "ready"))
-        self.assertTrue(self.task["pr"]["needs_approval"])
-        self.assertEqual(agents.task_status(self.task, [])[2], "Waiting on reviewers in Azure DevOps")  # SHEP-26
-        # a build still running: Working
-        wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci")])
-        self.assertEqual((wait, status), ("Checks running", "working"))
+    def merged(self, sha, base="main"):
+        return pr(status="completed", lastMergeCommit={"commitId": sha}, targetRefName=f"refs/heads/{base}")
 
-    def test_accepted_with_auto_complete_and_only_reviewers_left_is_ready(self):
-        # SHEP-26: Accept turned on auto-complete; its build passed, only the reviewer policies are left: Ready.
-        self.task.update(auto_merge="checks", ado_auto_complete=1)
-        reviewers = [evaluation("queued", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers"),
-                     evaluation("queued", type_id="fd2167ab-b0be-447a-8ec8-39368250530e", name="Required reviewers")]
-        wait, status = self.ready_wait(pr(autoCompleteSetBy={"id": "x"}), [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
-        self.assertEqual((wait, status), (None, "ready"))
-        self.assertEqual(agents.task_status(self.task, [])[2], "Waiting on reviewers in Azure DevOps")
-        self.assertFalse(self.task["_pr_fresh"])  # Herdr's own merge doesn't go first
-        # its build still running: Working, saying so
-        wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci"), *reviewers])
-        self.assertEqual((wait, agents.task_status(self.task, [])), ("Checks running", ("working", None, "Checks running")))
-        # its build failed: Needs you, as before
-        self.ready_wait(pr(), [evaluation("rejected", buildDefinitionName="web-ci"), *reviewers])
-        self.task["attention_at"] = 0
-        self.assertEqual(agents.task_status(self.task, [])[:2], ("needs", "attention"))
-        self.assertIn("web-ci", self.task["attention"])
-        # approved, completing by itself any moment: Working
-        self.task.pop("attention")
-        wait, status = self.ready_wait(pr(), [evaluation("approved", buildDefinitionName="web-ci")])
-        self.assertEqual((wait, agents.task_status(self.task, [])), (None, ("working", None, "Completes in Azure DevOps")))
+    def read(self, name):
+        with open(os.path.join(self.main, name)) as fh:
+            return fh.read()
 
-    def test_a_reviewer_rejecting_after_ready_reaches_the_task(self):
-        # SHEP-26: Ready on its reviewers, then one rejects: a problem Herdr found, as other pull request news.
-        self.task.update(auto_merge="checks", ado_auto_complete=1)
-        reviewers = [evaluation("queued", type_id="fd2167ab-b0be-447a-8ec8-39368250530e", name="Required reviewers")]
-        self.ready_wait(pr(), [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
+    def test_what_it_waits_on_and_never_completed_by_herdr(self):
+        auto = {"autoCompleteSetBy": {"id": ME}}
+        self.assertEqual(self.look(pr(**auto), BUILT + REVIEWERS), ("merging", None, "Waiting on reviewers in Azure DevOps"))
+        self.assertEqual(self.look(pr(**auto), [evaluation("running", buildDefinitionName="web-ci")] + REVIEWERS),
+                         ("merging", None, "Checks running"))
+        self.assertEqual(self.look(pr(**auto), BUILT), ("merging", None, "Azure DevOps is completing it"))
+        self.assertEqual(self.look(pr(mergeStatus="queued", **auto), BUILT), ("merging", None, "Azure DevOps is completing it"))
+        # the tick's whole pass: no completion either, even with everything passed
+        self.task["pr"]["checked"] = 0
+        f = self.fake({("GET", r"git/repositories/web/pullrequests/7"): pr(**auto), ("GET", r"policy/evaluations"): {"value": BUILT},
+                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        with mock.patch.object(self.tick, "back_pass", lambda *a: None):
+            self.tick.tick_store(self.store, {"attention": [], "done": [], "started": []})
+        self.assertEqual((f.sent("PATCH", r".*"), self.task["state"]), ([], "ready"))
+
+    def test_problems_while_waiting_need_you_and_its_ready_again_is_the_persons(self):
+        auto = {"autoCompleteSetBy": {"id": ME}}
+        for d, ev, said in ((pr(reviewers=[{"displayName": "Ann", "vote": -10}], **auto), BUILT, "Review by Ann: rejected"),
+                            (pr(reviewers=[{"displayName": "Ann", "vote": -5}], **auto), BUILT, "Review by Ann: waiting for the author"),
+                            (pr(**auto), [evaluation("rejected", buildDefinitionName="web-ci")], "Checks failing: web-ci"),
+                            (pr(mergeStatus="conflicts", **auto), BUILT, "It conflicts with the base branch."),
+                            (pr(status="abandoned"), [], "The pull request was closed.")):
+            self.task.pop("attention", None)
+            status, needs, why = self.look(d, ev)
+            self.assertEqual((status, needs), ("needs", "attention"), said)
+            self.assertIn(said, why)
+        # handed to its agent, which says ready again: Ready, for the person's Accept again
+        with mock.patch.object(commands, "github", lambda s: None):
+            commands.finalize(self.store, self.task)
         self.assertEqual(agents.task_status(self.task, [])[0], "ready")
-        wait, _ = self.ready_wait(pr(reviewers=[{"displayName": "Ann", "vote": -10}]),
-                                  [evaluation("approved", buildDefinitionName="web-ci"), *reviewers])
-        self.assertEqual(wait, "Back to its agent to fix")
-        self.assertIn("Review by Ann: rejected", self.task["attention"])
+
+    def test_auto_complete_turned_off_in_azure_devops_needs_you(self):
+        report = {"attention": [], "done": []}
+        status, needs, why = self.look(pr(), BUILT + REVIEWERS, report)
+        self.assertEqual((status, needs, why, report["attention"]), ("needs", "attention", "Auto-complete was turned off in Azure DevOps", [1]))
+        self.assertTrue(why.startswith(ado_flow.ACCEPT_AGAIN))
+        # it stays until Accept turns it on again (not cleared by the next look)
+        self.assertEqual(self.look(pr(), BUILT + REVIEWERS)[2], "Auto-complete was turned off in Azure DevOps")
+
+    def test_merged_in_azure_devops_it_is_done_and_main_pulls_past_unrelated_changes(self):
+        sha = self.merge_there()
+        with open(os.path.join(self.main, "b.txt"), "w") as fh:
+            fh.write("mine\n")
+        report = {"attention": [], "done": []}
+        self.look(self.merged(sha), report=report)
+        self.assertEqual((self.task["state"], self.task["merged"], report["done"], "merge_wait" in self.task), ("done", True, [1], False))
+        self.assertEqual(self.git("-C", self.main, "rev-parse", "HEAD"), sha)
+        self.assertEqual((self.read("a.txt"), self.read("b.txt")), ("two\n", "mine\n"))
+        self.assertNotIn("pull", self.task)
+
+    def test_a_pull_that_fails_leaves_main_untouched_the_task_done_and_a_card(self):
+        sha = self.merge_there()
+        before = self.git("-C", self.main, "rev-parse", "HEAD")
+        with open(os.path.join(self.main, "a.txt"), "w") as fh:
+            fh.write("mine\n")
+        self.look(self.merged(sha))
+        self.assertEqual(self.task["state"], "done")
+        self.assertEqual((self.git("-C", self.main, "rev-parse", "HEAD"), self.read("a.txt")), (before, "mine\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.main, ".git", "MERGE_HEAD")))
+        self.assertEqual(self.git("-C", self.main, "status", "--porcelain"), "M a.txt")
+        p = self.task["pull"]
+        self.assertEqual((p["branch"], p["sha"]), ("main", sha))
+        self.assertIn("would be overwritten by merge", p["why"])
+        self.assertEqual(p["command"], f"git -C {self.main} pull --ff-only origin main")
+        self.assertTrue(ado_flow.card(p).startswith("The main checkout couldn't pull main: "))
+        # still there while main lacks the merge; gone once the person pulled
+        self.assertFalse(ado_flow.pull_pass(self.store, self.task))
+        self.git("-C", self.main, "checkout", "--", "a.txt")
+        self.git("-C", self.main, "pull", "-q", "--ff-only", "origin", "main")
+        self.assertTrue(ado_flow.pull_pass(self.store, self.task))
+        self.assertNotIn("pull", self.task)
+
+    def test_diverged_local_commits_a_card_and_dismiss(self):
+        sha = self.merge_there()
+        self.git("-C", self.main, "commit", "-q", "--allow-empty", "-m", "local")
+        local = self.git("-C", self.main, "rev-parse", "HEAD")
+        self.look(self.merged(sha))
+        self.assertEqual((self.task["state"], self.git("-C", self.main, "rev-parse", "HEAD")), ("done", local))
+        self.assertIn("fast-forward", self.task["pull"]["why"])
+        # herdr-task list says it; dismiss takes it away
+        self.assertIn("Needs you: The main checkout couldn't pull main", output.line({**self.task, "ref": "SHEP-1", "status": "done", "status_text": "Done"}))
+        said = []
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), \
+                mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
+            ado_flow.cmd_dismiss(argparse.Namespace(id="SHEP-1", json=True, folder=None))
+        self.assertEqual((said[-1][0]["dismissed"], "pull" in self.task), (True, False))
+
+    def test_merged_into_a_branch_not_checked_out_moves_it_silently(self):
+        self.git("-C", self.main, "branch", "release")
+        self.git("-C", self.main, "push", "-q", "origin", "release")
+        sha = self.merge_there("release")
+        self.task["base"] = "release"
+        self.look(self.merged(sha, "release"))
+        self.assertEqual((self.task["state"], self.git("-C", self.main, "rev-parse", "release")), ("done", sha))
+        # diverged there: left as it is, nothing said
+        self.task.update(state="ready", merge_wait=1)
+        self.git("-C", self.main, "branch", "-f", "release", self.git("-C", self.main, "commit-tree", "-m", "x", "HEAD^{tree}"))
+        mine = self.git("-C", self.main, "rev-parse", "release")
+        sha = self.merge_there("release", "three\n")
+        self.look(self.merged(sha, "release"))
+        self.assertEqual((self.task["state"], self.git("-C", self.main, "rev-parse", "release"), "pull" in self.task), ("done", mine, False))
+
+    def test_a_merge_policy_accepts_for_the_person(self):
+        # Settings' merge policy (and an Accept made before SHEP-34: auto_merge on Azure DevOps): auto-complete, waiting
+        self.task.pop("merge_wait")
+        self.task.update(auto_merge="checks")
+        f = self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": ME}},
+                       ("GET", r"git/repositories/web/pullrequests/7"): pr(),
+                       ("PATCH", r"git/repositories/web/pullrequests/7"): lambda url, body: pr(autoCompleteSetBy={"id": ME}),
+                       ("GET", r"policy/evaluations"): {"value": BUILT + REVIEWERS},
+                       ("GET", r"git/repositories/web/pullRequests/7/statuses"): {"value": []}})
+        with mock.patch.object(self.tick, "back_pass", lambda *a: None):
+            self.tick.tick_store(self.store, {"attention": [], "done": [], "started": []})
+        self.assertEqual([list(c[3])[0] for c in f.sent("PATCH", r".*")], ["autoCompleteSetBy"])
+        self.assertEqual((agents.task_status(self.task, [])[0], "auto_merge" in self.task), ("merging", False))
+
+    def test_entering_it_is_no_news(self):
+        import herdr_task.news as news
+        with mock.patch.object(news, "view", lambda s, t, live: {"status": "merging", "needs": None, "why": "Checks running"}):
+            self.assertIsNone(news.news_state(self.store, self.task, [])[1])
 
     def test_a_github_pull_request_waiting_on_a_review_is_unchanged(self):
         t = {"state": "ready", "auto_merge": "checks", "pr": {"number": 3, "repo": "o/r", "needs_approval": True}}
@@ -512,11 +622,23 @@ class MergedInAzureDevOps(Base):
         self.assertEqual(agents.task_status({"state": "ready", "pr": {"number": 3, "repo": "o/r", "needs_approval": True}}, []),
                          ("ready", None, None))
 
+    def ready_wait(self, d, evaluations):
+        self.task.pop("merge_wait", None)
+        self.task["pr"].update(wait="Checks running")
+        status = self.look(d, evaluations)[0]
+        return self.task["pr"].get("wait"), status
+
+    def test_before_accept_waiting_for_a_reviewer_is_ready_for_the_persons_accept(self):
+        # SHEP-175 on Azure DevOps: builds done, a reviewer policy still to be met: Ready (Accept turns on auto-complete)
+        wait, status = self.ready_wait(pr(), BUILT + REVIEWERS)
+        self.assertEqual((wait, status), (None, "ready"))
+        self.assertEqual(agents.task_status(self.task, [])[2], "Waiting on reviewers in Azure DevOps")  # SHEP-26
+        wait, status = self.ready_wait(pr(), [evaluation("running", buildDefinitionName="web-ci")])
+        self.assertEqual((wait, status), ("Checks running", "working"))
+
     def test_a_draft_waiting_on_a_validation_is_ready_for_the_accept_that_publishes_it(self):
-        # Azure DevOps runs no build validation on a draft: its queued build must not keep it Working before Accept.
         wait, status = self.ready_wait(pr(isDraft=True), [evaluation("queued", buildDefinitionName="web-ci")])
         self.assertEqual((wait, status), (None, "ready"))
-        self.assertFalse(self.task["_pr_fresh"])  # still never merged by itself
 
     def test_a_merge_azure_devops_still_works_out_says_azure_devops(self):
         wait, _ = self.ready_wait(pr(mergeStatus="queued"), [])
