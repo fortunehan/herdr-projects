@@ -1948,6 +1948,134 @@ class NewWorktrees(unittest.TestCase):
             set_branch(self.store, self.task(mode="here"), "ABC-4")
 
 
+
+class AdoDevelopBase(unittest.TestCase):
+    """SHEP-32: on Azure DevOps a new worktree task's base is develop when nothing more explicit
+    (--base, herdr.base, the space's Base branch) picks one and the remote has it. Throwaway repos;
+    the remote's URL counts as Azure DevOps through a mocked ado.repo_in; hc and gh never run."""
+
+    git, commit, task, write_settings = NewWorktrees.git, NewWorktrees.commit, NewWorktrees.task, NewWorktrees.write_settings
+
+    def setUp(self):
+        from unittest import mock
+        NewWorktrees.setUp(self)
+        import herdr_task.commands as commands
+        import herdr_task.github as github
+        self.commands, self.github = commands, github
+        self.ado = "ado:org/proj/repo"
+        p = mock.patch.object(commands.ado, "repo_in", lambda folder: self.ado)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def push_develop(self, words="on develop"):
+        """develop made and pushed by someone else: never fetched in the folder."""
+        self.git(self.other, "checkout", "-q", "-B", "develop")
+        sha = self.commit(self.other, words)
+        self.git(self.other, "push", "-q", "origin", "develop")
+        return sha
+
+    def add(self, space=None):
+        t = self.task()
+        self.commands.set_base(self.store, t, None, space, new=True)
+        return t
+
+    def has(self, ref):
+        return subprocess.run(["git", "-C", self.main, "show-ref", "--verify", "--quiet", ref]).returncode == 0
+
+    def test_develop_only_on_the_remote(self):
+        tip = self.push_develop()
+        self.assertFalse(self.has("refs/heads/develop") or self.has("refs/remotes/origin/develop"))
+        t = self.add()
+        self.assertEqual((t["base"], t["base_set"], t["base_by"]), ("develop", True, "ado"))
+        newer = self.commit(self.other, "merged on develop later")
+        self.git(self.other, "push", "-q", "origin", "develop")
+        path = self.launch.folder_for(self.store, t)
+        self.assertEqual(self.git(path, "rev-parse", "HEAD"), newer)  # from origin/develop's latest, not the stale local one
+        self.assertEqual(t["base"], "develop")
+        self.assertNotEqual(tip, newer)
+        self.assertEqual(self.git(self.main, "symbolic-ref", "--short", "HEAD"), "main")  # the folder stays on main
+        block = self.settings.settings_block(self.store, t)
+        self.assertIn("- Base: develop: your branch starts from it and merges into it (Herdr's default on Azure DevOps", block)
+
+    def test_offline_uses_the_last_fetched_develop(self):
+        tip = self.push_develop()
+        self.git(self.main, "fetch", "-q", "origin")
+        self.git(self.main, "remote", "set-url", "origin", os.path.join(self.root, "gone.git"))
+        t = self.add()
+        self.assertEqual((t["base"], t["base_by"]), ("develop", "ado"))
+        self.assertEqual(self.git(self.main, "rev-parse", "develop"), tip)
+
+    def test_no_develop_on_the_remote_keeps_the_folders_branch(self):
+        t = self.add()
+        self.assertFalse({"base", "base_set", "base_by"} & set(t))
+        self.launch.folder_for(self.store, t)
+        self.assertEqual(t["base"], "main")
+
+    def test_a_stale_local_develop_ref_gone_from_the_remote_is_not_picked(self):
+        self.push_develop()
+        self.git(self.main, "fetch", "-q", "origin")
+        self.git(self.other, "push", "-q", "origin", ":develop")
+        self.assertFalse({"base", "base_set", "base_by"} & set(self.add()))
+
+    def test_github_repos_are_unchanged(self):
+        self.push_develop()
+        self.ado = None
+        self.assertFalse({"base", "base_set", "base_by"} & set(self.add()))
+
+    def test_the_folder_on_develop_needs_no_mark(self):
+        self.push_develop()
+        self.git(self.main, "fetch", "-q", "origin")
+        self.git(self.main, "checkout", "-q", "develop")
+        self.assertFalse({"base", "base_set", "base_by"} & set(self.add()))
+
+    def test_herdr_base_and_the_space_setting_win(self):
+        self.push_develop()
+        self.git(self.other, "push", "-q", "origin", "develop:release")
+        self.git(self.main, "config", "herdr.base", "release")
+        t = self.add()
+        self.assertEqual((t["base"], t["base_by"]), ("release", "space"))
+        self.git(self.main, "config", "--unset", "herdr.base")
+        self.write_settings({"spaces": {"sp1": {"folder": self.main, "tasks": {"base": "release"}}}})
+        t = self.add("sp1")
+        self.assertEqual((t["base"], t["base_by"]), ("release", "space"))
+        # the space's Base branch set to the folder's own branch: that, never develop
+        self.write_settings({"spaces": {"sp1": {"folder": self.main, "tasks": {"base": "main"}}}})
+        self.assertFalse({"base", "base_set", "base_by"} & set(self.add("sp1")))
+        t = self.task()
+        self.commands.set_base(self.store, t, "main", None)  # --base wins too
+        self.assertNotIn("base_set", t)
+
+    def test_only_new_worktree_tasks(self):
+        self.push_develop()
+        t = self.task(mode="here")
+        self.commands.set_base(self.store, t, None, None, new=True)
+        self.assertNotIn("base", t)
+        t = self.task()
+        self.commands.set_base(self.store, t, None, None)  # an edit without --base
+        self.assertNotIn("base", t)
+
+    def test_fresh_start_from_a_base_only_the_remote_has(self):
+        tip = self.push_develop()
+        self.git(self.main, "fetch", "-q", "origin")
+        self.assertFalse(self.has("refs/heads/develop"))
+        self.assertEqual(self.launch.fresh_start(self.main, "develop"), "origin/develop")
+        self.assertEqual(self.git(self.main, "rev-parse", "origin/develop"), tip)
+        self.assertEqual(self.launch.fresh_start(self.main, "nowhere"), "nowhere")
+
+    def test_after_a_merge_a_develop_not_checked_out_catches_up(self):
+        self.push_develop()
+        t = self.add()
+        merged = self.commit(self.other, "the task merged into develop")
+        self.git(self.other, "push", "-q", "origin", "develop")
+        self.github.update_main(self.store, t)
+        self.assertEqual(self.git(self.main, "rev-parse", "develop"), merged)
+        self.git(self.main, "branch", "-D", "develop")  # no local develop at all
+        merged = self.commit(self.other, "another merge")
+        self.git(self.other, "push", "-q", "origin", "develop")
+        self.github.update_main(self.store, t)
+        self.assertEqual(self.git(self.main, "rev-parse", "develop"), merged)
+
+
 class MergedOnlyWithOwnWork(unittest.TestCase):
     """SHEP-23: a task counts as merged only when work of its own landed (its pull request merged, or
     commits made on its branch now in the base), never when its branch just caught up with main, and
@@ -3868,7 +3996,8 @@ class AssistantSettings(unittest.TestCase):
         note = self.aset.session_note("t5")
         self.assertTrue(note.startswith("Your settings: "))
         for label, words in [("Review", "off"), ("Merge", "ask the person first"), ("Proof", "on"), ("Task agent", "claude"),
-                             ("Base branch", "the folder's checked-out branch"), ("Worktrees", "on"), ("Tasks at once", "10 per folder"),
+                             ("Base branch", "the folder's checked-out branch (develop on Azure DevOps when the remote has it)"),
+                             ("Worktrees", "on"), ("Tasks at once", "10 per folder"),
                              ("Task notes", "none"), ("Autopilot", "off"), ("Reactions", "on"),
                              ("Feedback offers", "on (offer once to file a Shepherdr problem as an issue on eliasstravik/shepherdr")]:
             self.assertTrue(self.line(note, label).startswith(f"- {label}: {words}"), self.line(note, label))

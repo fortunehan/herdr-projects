@@ -251,7 +251,7 @@ def argv_model(argv):
 
 SETTINGS_HEAD = "Settings: (from herdr-task show; where the brief above says otherwise, it wins)"
 SET_BY = {"task": "set by the assistant for this task", "folder": "this folder's setting", "machine": "this machine's setting",
-          "all": "your setting everywhere"}
+          "all": "your setting everywhere", "ado": "Herdr's default on Azure DevOps, as the remote has it"}
 MERGE_WORDS = {"ask": "ask the person first: they accept it in the Tasks panel, which merges it",
                "checks": "after checks: once you say ready, Herdr merges it when its checks pass",
                "auto": "on its own: once you say ready, Herdr merges it"}
@@ -464,7 +464,7 @@ def task_settings(s, t, space=None, argv=None):
         add("Merge", MERGE_WORDS[policy], policy, m_by)
         if t.get("base_set"):
             add("Base", f"{t['base']}: your branch starts from it and merges into it", t["base"],
-                "folder" if t.get("base_by") == "space" else "task")
+                {"space": "folder", "ado": "ado"}.get(t.get("base_by"), "task"))
     proof = sets["proof"] == "on" if "proof" in sets else k.get("proof") is not False
     add("Proof", PROOF_WORDS["on" if proof else "off"], proof,
         "task" if "proof" in sets else by_layer(s, space, "tasks", "proof", proof, True))
@@ -510,7 +510,8 @@ def review_limits(s, t):
 
 def space_base(s, space=None):
     """The branch a space's new tasks branch from and merge into (Shepherdr settings > Tasks >
-    Base branch, per space); "" when unset: the folder's current branch."""
+    Base branch, per space); "" when unset: develop on Azure DevOps when it has one, else the
+    folder's current branch."""
     return str(settings_for(s, space)["tasks"].get("base") or "").strip()
 
 

@@ -542,7 +542,7 @@ def base_ref(main, base):
     names = git(main, "remote")[1].split()
     remote = remote_of(main)
     if remote in names:
-        git(main, "fetch", remote, base)
+        git_quick(main, "fetch", "--quiet", "--no-tags", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}")
         if git(main, "show-ref", "--verify", "--quiet", f"refs/remotes/{remote}/{base}")[0]:
             ok, _, err = git(main, "branch", "--track", base, f"{remote}/{base}")
             if not ok:
@@ -570,15 +570,26 @@ def fresh_start(main, base):
     task branches from the latest even when others merge on GitHub. The remote's when it holds
     everything the local branch has (the local one is only behind); else the local branch (it has
     work of its own, or the fetch failed: offline, no remote, no such branch there). The folder's
-    own checkout is never moved."""
+    own checkout is never moved. A base only the remote has (no local branch yet) starts from the remote's."""
     remote = remote_of(main)
-    if remote not in git(main, "remote")[1].split() or not git(main, "show-ref", "--verify", "--quiet", f"refs/heads/{base}")[0]:
-        return base
-    git_quick(main, "fetch", "--quiet", "--no-tags", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}")
     theirs = f"refs/remotes/{remote}/{base}"
-    if git(main, "show-ref", "--verify", "--quiet", theirs)[0] and git(main, "merge-base", "--is-ancestor", f"refs/heads/{base}", theirs)[0]:
+    mine = git(main, "show-ref", "--verify", "--quiet", f"refs/heads/{base}")[0]
+    if remote not in git(main, "remote")[1].split() or not (mine or git(main, "show-ref", "--verify", "--quiet", theirs)[0]):
+        return base
+    git_quick(main, "fetch", "--quiet", "--no-tags", remote, f"+refs/heads/{base}:{theirs}")
+    if git(main, "show-ref", "--verify", "--quiet", theirs)[0] and (not mine or git(main, "merge-base", "--is-ancestor", f"refs/heads/{base}", theirs)[0]):
         return f"{remote}/{base}"
     return base
+
+
+def on_remote(main, name, timeout=10):
+    """Whether the folder's remote has branch `name`: asked now when it answers within seconds,
+    else as git last fetched it."""
+    remote = remote_of(main)
+    if remote not in git(main, "remote")[1].split():
+        return False
+    ok, out, _ = git_quick(main, "ls-remote", "--heads", remote, f"refs/heads/{name}", timeout=timeout)
+    return bool(out) if ok else git(main, "show-ref", "--verify", "--quiet", f"refs/remotes/{remote}/{name}")[0]
 
 
 def branch_problem(main, name):
@@ -597,11 +608,8 @@ def branch_taken(s, t, name):
     main = s.loc["folder"]
     if git(main, "show-ref", "--verify", "--quiet", f"refs/heads/{name}")[0]:
         return "a branch by that name is already here"
-    remote = remote_of(main)
-    if remote in git(main, "remote")[1].split():
-        ok, out, _ = git_quick(main, "ls-remote", "--heads", remote, f"refs/heads/{name}", timeout=10)
-        if (ok and out) or (not ok and git(main, "show-ref", "--verify", "--quiet", f"refs/remotes/{remote}/{name}")[0]):
-            return f"{remote} already has a branch by that name"
+    if on_remote(main, name):
+        return f"{remote_of(main)} already has a branch by that name"
     return None
 
 
