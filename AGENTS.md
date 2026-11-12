@@ -39,6 +39,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `test/test_local.py` does. Main's list without a second worktree: `git archive main` into a fresh `mktemp -d` folder (the
   dev Mac's command guard refuses recursive deletes of a fixed /tmp one), run unittest with that folder as the cwd (os.chdir, e.g. runpy: home_guard
   resolves relative paths against the cwd, and a cwd under ~/.herdr fails 200+ tests) and diff the FAIL lines.
+  That folder has no node_modules, so test_chat_refocus, test_open_vscode, test_task_shell and test_thread_space also
+  fail there: compare only the branch's extra FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
 - Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
