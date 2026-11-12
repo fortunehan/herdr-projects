@@ -210,7 +210,7 @@ export const SAVED = "Saved";
 // Base branch, a space's only (tasks.base): checked before it's saved.
 export const BASE = {
   title: "Base branch",
-  about: "New tasks branch from it and merge into it. Empty: the branch the folder has checked out.",
+  about: "New tasks branch from it and merge into it. Empty: the branch the folder has checked out (develop on Azure DevOps when the remote has it).",
   empty: (now) => (now ? `Its branch now: ${now}` : "Its current branch"),
   missing: (want) => `There's no branch “${want}” here or on origin.`,
   follows: "the folder's branch",

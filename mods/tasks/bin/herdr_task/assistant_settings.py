@@ -115,7 +115,7 @@ def rows(space, d=None, auto=None):
             ("agent", "Task agent", pick_words(cfg.get("worker"), "claude, its own default model and effort"),
              pick_words(cfg.get("worker"), "claude").replace(", model ", "/").replace(", effort ", "/"), [("worker", None)]),
             ("base", "Base branch", f"{t['base']} (new tasks branch from it and merge into it)" if str(t.get("base") or "").strip()
-             else "the folder's checked-out branch", str(t.get("base") or "").strip(), [("tasks", "base")]),
+             else "the folder's checked-out branch (develop on Azure DevOps when the remote has it)", str(t.get("base") or "").strip(), [("tasks", "base")]),
             ("worktrees", "Worktrees", "on (in a git repo, a worktree and branch per task)" if t.get("worktrees") is not False
              else "off (tasks work in the folder itself)", "off" if t.get("worktrees") is False else "on", [("tasks", "worktrees")]),
             ("max_running", "Tasks at once", f"{t.get('max_running') or MAX_RUNNING} per folder (more wait and start by themselves)",

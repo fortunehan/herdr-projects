@@ -25,7 +25,7 @@ from .github import (already_merged, drop_branch, finish, gh, github, merged_her
                      pr_pending, pr_problem, pr_view, publish as publish_pr, remote_of, update_main, watch_main)
 from .github import CHECKS_RUNNING as PR_CHECKS_RUNNING
 from .launch import (
-    base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs,
+    base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs, on_remote,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
 )
 from .store import is_task_list, locate, open_store, prefixes_in_use, read_list, Store, store_files
@@ -163,21 +163,32 @@ def ensure_scheduler_quietly():
         pass
 
 
+# A new worktree task's base in a repo on Azure DevOps whose remote has it, when nothing else picks one.
+ADO_BASE = "develop"
+
+
 def set_base(s, t, base, space=None, new=False):
     """--base: the branch a worktree task branches from and merges into (its pull request's base).
     Without it a new task takes its space's base branch (Shepherdr settings > Tasks > Base branch,
     as Shepherdr's space.base: captured when added, so a later change only touches new tasks);
-    unset, the folder's current branch, kept unmarked. "" goes back to the folder's."""
+    unset, develop on Azure DevOps when its remote has one (SHEP-32), else the folder's current
+    branch, kept unmarked. "" goes back to the folder's."""
     if base is None:
-        own = (local.base(s.loc["folder"]) or space_base(s, space)) if new and t.get("mode") == "worktree" else ""
+        if not (new and t.get("mode") == "worktree"):
+            return
         main = s.loc["folder"]
+        own, by = local.base(main) or space_base(s, space), "space"
+        if not own and ado.repo_in(main) and current_base(main) != ADO_BASE and on_remote(main, ADO_BASE):
+            own, by = ADO_BASE, "ado"
         if own and own != current_base(main):
             try:
                 base_ref(main, own)
             except Fail as e:
+                if by == "ado":
+                    return
                 raise Fail(f"This space's base branch is {own} (Shepherdr settings > Tasks > Base branch), but: {e} "
                            "Change the setting, or pass --base.")
-            t["base"], t["base_set"], t["base_by"] = own, True, "space"
+            t["base"], t["base_set"], t["base_by"] = own, True, by
         return
     t.pop("base_by", None)
     base = base.strip()
@@ -235,7 +246,8 @@ def cmd_show(args):
     elif v.get("branch") and v.get("mode") == "worktree":
         text.append(f"branch: {v['branch']} (set for this task)")
     if v.get("base_set"):
-        text.append(f"merges into: {v['base']} (" + ("its space's base branch" if v.get("base_by") == "space" else "set for this task") + ")")
+        text.append(f"merges into: {v['base']} (" + {"space": "its space's base branch", "ado": "Herdr's default on Azure DevOps"}
+                    .get(v.get("base_by"), "set for this task") + ")")
     if v.get("after_refs"):
         text.append("comes after: " + ", ".join(v["after_refs"]))
     if v.get("review_rounds"):
