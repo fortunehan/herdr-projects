@@ -15,7 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def source(*rel):
     """A module without its imports and exports: the harness gives what it imports."""
-    src = re.sub(r"^import .*$", "", open(os.path.join(ROOT, *rel), encoding="utf-8").read(), flags=re.M)
+    with open(os.path.join(ROOT, *rel), encoding="utf-8") as f:
+        src = re.sub(r"^import .*$", "", f.read(), flags=re.M)
     return re.sub(r"^export (default )?", "", src, flags=re.M)
 
 
@@ -188,7 +189,8 @@ class FilesClick(unittest.TestCase):
         self.assertIn("README.md", r["tree"])
 
     def test_no_preview_in_the_side_panel(self):
-        src = open(os.path.join(ROOT, "mods", "files-tasks", "main.js"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "mods", "files-tasks", "main.js"), encoding="utf-8") as f:
+            src = f.read()
         self.assertNotIn("Editor", src)
         self.assertNotIn("mods/files/", src, "its own icons")
 
