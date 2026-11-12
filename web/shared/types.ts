@@ -361,6 +361,12 @@ export interface Task {
   browser?: { ready: boolean; hint?: string }
   /** what its row says it is in (3.0's Tasks): the space working in its list's folder, else the list's name */
   listName?: string
+  /** Needs you on what its Accept itself fixes (Azure DevOps' auto-complete, SHEP-34): Review on its row, as a Ready one */
+  acceptAgain?: boolean
+  /** a Needs you card beside a Done task (SHEP-34: the main checkout couldn't pull its merge): the Done task's id, and
+   *  the command to run; Dismiss drops the card */
+  pullOf?: string
+  pullCommand?: string
 }
 
 /** An automation as a project's Tasks lists it: its name, when it runs, the task it adds */
@@ -1308,6 +1314,8 @@ export type Action =
   | { type: 'close'; chat: string; force?: boolean }
   /** undo done or ready (herdr-task reopen): a voice call's act reopen */
   | { type: 'reopen'; chat: string }
+  /** dismiss a Done task's card: the main checkout couldn't pull its merge (herdr-task dismiss, SHEP-34) */
+  | { type: 'dismiss'; task: string }
   /** SHEP-38: start a task that hasn't started by itself later (herdr-task edit --at / --in, the words as typed), take that
    *  back (off: back to To do) or start a scheduled one now */
   | { type: 'schedule'; chat: string; at?: string; in?: string; off?: boolean; now?: boolean }

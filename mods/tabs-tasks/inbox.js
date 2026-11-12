@@ -33,7 +33,7 @@
 // Shared: the source is lib/inbox.js; bin/sync-shared copies it into each mod in lib/COPIES.
 // Edit lib/inbox.js, never a mod's copy, then run bin/sync-shared.
 
-import { LINE_MAX, REASONS, fit, reqReason, reportReason } from "./core/needs.js";
+import { LINE_MAX, REASONS, fit, pullCard, reqReason, reportReason } from "./core/needs.js";
 import { SH } from "./core/paths.js";
 import { dirsReady } from "./dirs.js";
 import { notifies, spaceOfTerminal } from "./notify.js";
@@ -243,10 +243,13 @@ async function readTasksNow() {
       // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
       if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
       // Ready: herdr-task's own status, the same as Tasks' Ready group and Shepherdr's green
-      // counts (not Merging, nor one whose agent asks: that agent is a "blocked" item).
+      // counts (not Waiting to merge, nor one whose agent asks: that agent is a "blocked" item).
       // "asks": its agent waits (a live blocked terminal, an item of its own): kept for its reason.
       // "provider": cut off by its model's provider, the tries used up (herdr-task tick).
       // A problem its agent is on (herdr-task's on_it(): Working, not Needs you) is no item.
+      // "pull": a Done task whose merge the main checkout couldn't pull (SHEP-34): a card of its own; the task stays Done.
+      if (x.state === "done" && x.pull) tasks.push({ kind: "pull", machine, folder: g.folder, name: g.name, ref: x.ref ?? `#${x.id}`, title: x.title,
+        why: pullCard(x), pull: x.pull, space: pre(machine, x.space), at: x.pull.at ?? x.done_at ?? 0 });
       const kind = x.attention ? (x.needs === "attention" ? "check" : null) : x.state === "ready" ? (x.status === "ready" ? "merge" : null)
         : x.needs === "stopped" || x.status === "stopped" ? "stopped" : x.needs === "reply" || x.needs === "provider" ? "waiting"
         : x.needs === "asks" ? "asks" : null;

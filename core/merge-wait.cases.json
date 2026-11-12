@@ -1,0 +1,199 @@
+{
+ "about": "SHEP-34: Waiting to merge (section merging): an Azure DevOps task the person accepted, auto-complete on, until Azure DevOps merges it. core/tasks.js place() and herdr-task's task_status() both pass these (core/tasks.test.js, test/test_ado.py). now is fixed; no agents live.",
+ "now": 1800000000000,
+ "cases": [
+  {
+   "name": "Accepted, reviewers still to approve: Waiting to merge",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web",
+     "needs_approval": true
+    }
+   },
+   "expect": {
+    "status": "merging",
+    "needs": null,
+    "why": "Waiting on reviewers in Azure DevOps"
+   }
+  },
+  {
+   "name": "Accepted, its checks still running: Waiting to merge",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web",
+     "needs_approval": true,
+     "wait": "Checks running"
+    }
+   },
+   "expect": {
+    "status": "merging",
+    "needs": null,
+    "why": "Checks running"
+   }
+  },
+  {
+   "name": "Accepted, approved and checks passed: Azure DevOps is completing it",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    }
+   },
+   "expect": {
+    "status": "merging",
+    "needs": null,
+    "why": "Azure DevOps is completing it"
+   }
+  },
+  {
+   "name": "Accepted, a rejecting vote past its grace: Needs you",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    },
+    "attention": "Checks failing: Review by Ann: rejected.",
+    "attention_at": 1799999940000
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Checks failing: Review by Ann: rejected."
+   }
+  },
+  {
+   "name": "Accepted, a problem just found: still Waiting to merge for its grace",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    },
+    "attention": "It conflicts with the base branch.",
+    "attention_at": 1799999999000
+   },
+   "expect": {
+    "status": "merging",
+    "needs": null,
+    "why": "Azure DevOps is completing it"
+   }
+  },
+  {
+   "name": "Auto-complete turned off in Azure DevOps: Needs you",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    },
+    "attention": "Auto-complete was turned off in Azure DevOps",
+    "attention_at": 1799999940000
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Auto-complete was turned off in Azure DevOps"
+   }
+  },
+  {
+   "name": "Auto-complete couldn't be turned on: Needs you",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web",
+     "needs_approval": true
+    },
+    "attention": "Couldn't turn on auto-complete in Azure DevOps: HTTP 403",
+    "attention_at": 1799999940000
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Couldn't turn on auto-complete in Azure DevOps: HTTP 403"
+   }
+  },
+  {
+   "name": "Before Accept, only reviewers left: Ready (SHEP-26)",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999880000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web",
+     "needs_approval": true
+    }
+   },
+   "expect": {
+    "status": "ready",
+    "needs": null,
+    "why": "Waiting on reviewers in Azure DevOps"
+   }
+  },
+  {
+   "name": "Merged: Done",
+   "task": {
+    "id": 1,
+    "state": "done",
+    "merge_wait": 1799999940000,
+    "ready_at": 1799999880000,
+    "merged": true,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    }
+   },
+   "expect": {
+    "status": "done",
+    "needs": null,
+    "why": null
+   }
+  },
+  {
+   "name": "GitHub, merging once approved: Working as before",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999880000,
+    "auto_merge": "checks",
+    "pr": {
+     "number": 3,
+     "repo": "o/r",
+     "needs_approval": true
+    }
+   },
+   "expect": {
+    "status": "working",
+    "needs": null,
+    "why": "Merges once it's approved"
+   }
+  }
+ ]
+}

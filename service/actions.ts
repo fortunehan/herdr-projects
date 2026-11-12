@@ -605,7 +605,7 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     if (!t) throw new Error("That task isn't here any more.");
     b = { ...b, ref: t.ref, folder: t.folder, machine: t.machine };
   }
-  else if ((b?.type === "evidence" || b?.type === "accept") && typeof b.task === "string") {
+  else if ((b?.type === "evidence" || b?.type === "accept" || b?.type === "dismiss") && typeof b.task === "string") {
     const t = compat.taskOf(b.task);
     if (!t) throw new Error("That task isn't here any more.");
     b = { ...b, ref: t.ref, folder: t.folder, machine: t.machine };
@@ -667,6 +667,13 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       try { out = JSON.parse(r.stdout); } catch {}
       if (r.code !== 0 || out?.error) throw new Error(out?.error || r.stderr.trim() || "herdr-task accept failed");
       return out ?? { ok: true };
+    }
+    case "dismiss": {
+      // a Done task's failed-pull card (SHEP-34): herdr-task drops it
+      const { ref, folder, machine } = taskOf(b);
+      const r = await task(["dismiss", ref], folder, machine);
+      if (r.code !== 0) return { ok: false, error: r.stderr.trim().split("\n").pop() || "herdr-task refused it." };
+      return { ok: true };
     }
     case "task-resume": {
       // an ended task's Resume (the window's): herdr-task starts its agent again on its session

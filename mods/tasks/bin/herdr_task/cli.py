@@ -25,7 +25,7 @@ from .star import cmd_star
 from .home import cmd_home
 from .assistant_settings import cmd_session_note
 from .feedback import cmd_feedback
-from . import ado
+from . import ado, ado_flow
 
 
 # ---- another machine ------------------------------------------------------------------------
@@ -276,6 +276,7 @@ def main():
     c.add_argument("--space")
     cmd("reopen", lambda a: cmd_state(a, "reopen"), "undo done or ready; a queued or scheduled task goes back to to do")
     cmd("unarchive", cmd_unarchive, "bring an archived task back into its list (only when the person asks; writing to it does too)")
+    cmd("dismiss", ado_flow.cmd_dismiss, "dismiss a Done task's Needs you card: the main checkout couldn't pull its merge (Azure DevOps)")
     c = cmd("edit", cmd_edit, "change a task")
     c.add_argument("--title")
     c.add_argument("--prompt")

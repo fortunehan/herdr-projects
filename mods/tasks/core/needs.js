@@ -8,6 +8,11 @@ export const LINE_MAX = 40;
 export const REASONS = { plan: "Plan to approve", permission: "Asks permission", question: "Question for you",
   reply: "Waits for your reply", signedOut: "Signed out", stopped: "Agent stopped", trust: "Asks to trust this folder" };
 
+// A Done task whose merge the main checkout couldn't pull (SHEP-34, herdr-task's ado_flow.pull_main()): a Needs you
+// card of its own beside the Done task, until the main checkout holds the merge or the person dismisses it. Its words,
+// as herdr-task's ado_flow.card(); null for any other task.
+export const pullCard = (task) => (task?.state === "done" && task.pull ? `The main checkout couldn't pull ${task.pull.branch}: ${task.pull.why}` : null);
+
 // One line of at most n characters, cut at a word ("…" at the end) when longer (herdr-task's fit()).
 export function fit(text, n = LINE_MAX) {
   const s = String(text ?? "").split(/\s+/).filter(Boolean).join(" ");

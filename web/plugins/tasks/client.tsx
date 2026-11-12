@@ -6,8 +6,10 @@
 // the window's too); the Assistant does the rest. Done tasks archive themselves: the Archived row at the bottom opens them.
 import clsx from 'clsx'
 import { openAccept, useAccepting } from '@client/screens/Accept.tsx'
+import { useCopy } from '@client/copy.ts'
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import {
+  act,
   archivedIn,
   definePlugin,
   DONE_OPEN,
@@ -117,9 +119,10 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
   const menu = useRowMenu()
   const busy = useAccepting(t.id) || !!t.accepting
   // Review (opens the Accept card) at a Ready row's end, soft as the chat header's Review: one per Ready row, so never the
-  // filled look; "Accepting…" while its accept runs
+  // filled look; "Accepting…" while its accept runs. Also on a Needs you row its Accept fixes (SHEP-34: Azure DevOps'
+  // auto-complete)
   const accept =
-    t.status === 'ready' && !t.archived ? (
+    (t.status === 'ready' || t.acceptAgain) && !t.archived && !t.pullOf ? (
       <button type="button" disabled={busy} onClick={() => openAccept(t.id)}
         className="press-dim pointer-events-auto relative z-1 h-6 shrink-0 rounded-full bg-bubble px-2.5 text-[0.75rem] font-medium whitespace-nowrap text-fg after:absolute after:-inset-x-1 after:-inset-y-2.5 enabled:hover:bg-sel disabled:opacity-60 phone:px-3 phone:text-[0.8125rem]">
         {busy ? 'Accepting…' : 'Review'}
@@ -132,7 +135,7 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
       kb={kb}
       // its pie: the % done, while it works; an archived one is a done task's check
       glyph={<TaskDot s={t.archived ? 'done' : t.status} w={t.archived || !t.report ? undefined : { ...t.report, eta: undefined }} />}
-      ref_={refOf(t.id)}
+      ref_={refOf(t.pullOf ?? t.id)}
       title={t.name}
       sub={t.sub}
       // Scheduled (SHEP-38): its time until it starts ("6h") in the same place, counted live, in grey
@@ -140,13 +143,33 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
       leftQuiet={t.status === 'scheduled'}
       dim={t.status === 'done'}
       where={where?.join(' · ')}
-      action={accept}
-      // with ⌘ (Ctrl off a Mac), beside the focused pane in split view
-      onOpen={(e) => !menu.held() && (splitClick(e) ? openSplit({ kind: 'task', id: t.id }) : openTask(t.id))}
-      menu={t.archived ? undefined : menu}
+      action={t.pullOf ? <PullActions t={t} /> : accept}
+      // with ⌘ (Ctrl off a Mac), beside the focused pane in split view; a failed pull's card opens its Done task
+      onOpen={(e) => !menu.held() && (splitClick(e) ? openSplit({ kind: 'task', id: t.pullOf ?? t.id }) : openTask(t.pullOf ?? t.id))}
+      menu={t.archived || t.pullOf ? undefined : menu}
     >
-      {menu.open && !t.archived ? <TaskMenu t={t} menu={menu} /> : null}
+      {menu.open && !t.archived && !t.pullOf ? <TaskMenu t={t} menu={menu} /> : null}
     </Line>
+  )
+}
+
+const SOFT = 'press-dim pointer-events-auto relative z-1 h-6 shrink-0 rounded-full bg-bubble px-2.5 text-[0.75rem] font-medium whitespace-nowrap text-fg after:absolute after:-inset-x-1 after:-inset-y-2.5 enabled:hover:bg-sel disabled:opacity-60 phone:px-3 phone:text-[0.8125rem]'
+
+/** A failed pull's card (SHEP-34): Copy puts the command to run on the clipboard, Dismiss drops the card */
+function PullActions({ t }: { t: Task }) {
+  const { copied, copy } = useCopy()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const dismiss = () => {
+    setBusy(true)
+    act({ type: 'dismiss', task: t.pullOf! }).then((r: { ok?: boolean; error?: string }) => { if (r?.ok === false) setError(r.error ?? "Couldn't dismiss it.") })
+      .catch((e: Error) => setError(e.message)).finally(() => setBusy(false))
+  }
+  return (
+    <span className="pointer-events-auto flex shrink-0 items-center gap-1.5">
+      {t.pullCommand ? <button type="button" className={SOFT} aria-label={`Copy the command to run: ${t.pullCommand}`} onClick={(e) => void copy(t.pullCommand!, 'copy', e)}>{copied ? 'Copied' : 'Copy'}</button> : null}
+      <button type="button" className={SOFT} disabled={busy} onClick={dismiss} aria-label={error ? `Dismiss again: ${error}` : undefined}>{error ? 'Try again' : 'Dismiss'}</button>
+    </span>
   )
 }
 

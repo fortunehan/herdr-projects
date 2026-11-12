@@ -1,5 +1,5 @@
 // How a list's tasks are grouped: two ways (SHEP-182), one toggle, kept on this device. Status (the default): one group
-// per status in the order of who has to act (Needs you, Ready, Merging, Working, Queued, Scheduled, To do), each row
+// per status in the order of who has to act (Needs you, Ready, Waiting to merge, Working, Queued, Scheduled, To do), each row
 // saying its machine and space; Done last, behind its count. Place: a group per space, under its machine when more than
 // one machine has tasks, every status mixed in each (the row's icon says which); Done last too. Pinned tasks get a
 // Pinned group on top in both.
@@ -10,7 +10,7 @@ export type GroupBy = 'status' | 'place'
 export const GROUPS: [Task['status'], string][] = [
   ['need', 'Needs you'],
   ['ready', 'Ready'],
-  ['merging', 'Merging'],
+  ['merging', 'Waiting to merge'],
   ['work', 'Working'],
   ['queued', 'Queued'],
   ['scheduled', 'Scheduled'],

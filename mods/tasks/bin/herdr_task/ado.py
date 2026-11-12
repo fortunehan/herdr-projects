@@ -1,5 +1,6 @@
 """Azure DevOps: the pull requests of a repo whose origin is on Azure DevOps, in gh's shapes, so the
-rest of herdr-task (tick, proof, merge policies, news) treats them as GitHub's.
+rest of herdr-task (tick, proof, news) reads them as GitHub's. What Accept does there, what the task
+waits on and what follows the merge is its own (ado_flow.py).
 
 A repo on Azure DevOps is "ado:<org>/<project>/<repo>" wherever a GitHub one is "owner/name"
 (github(), a task's pr["repo"]). Its REST API (7.1) is reached with Python's own urllib, through
@@ -432,7 +433,8 @@ def shape(repo, d, checks, files=0):
             "headRefName": branch(d.get("sourceRefName")), "baseRefName": branch(d.get("targetRefName")),
             "headRefOid": (d.get("lastMergeSourceCommit") or {}).get("commitId") or "",
             "mergeCommit": {"oid": merge} if state == "MERGED" and merge else None,
-            "statusCheckRollup": checks, "additions": 0, "deletions": 0, "changedFiles": files}
+            "statusCheckRollup": checks, "additions": 0, "deletions": 0, "changedFiles": files,
+            "autoComplete": bool((d.get("autoCompleteSetBy") or {}).get("id"))}
 
 
 def view(repo, n, full=False):
@@ -594,7 +596,7 @@ def me(repo):
 
 def auto_complete(task):
     """Turns on Azure DevOps' auto-complete for the task's pull request, set by Herdr's own account
-    with merge()'s completion options: it completes there once its reviewers approve and its
+    with complete()'s completion options: it completes there once its reviewers approve and its
     policies pass, whether or not this machine is on. Never cleared by Herdr (the person's call),
     not even after new pushes. Returns (ok, why not)."""
     repo, n = task["pr"]["repo"], int(task["pr"]["number"])
@@ -616,31 +618,31 @@ def auto_complete(task):
     return True, ""
 
 
-MERGE_WAIT = 12  # seconds a completion is watched before the tick takes over
+MERGE_WAIT = 12  # seconds a completion is watched before auto-complete takes over
 
 
-def merge(task, v):
-    """Completes the task's pull request at the head its checks passed on (lastMergeSourceCommit:
+def complete(task, v):
+    """Completes the task's pull request now, at the head its checks passed on (lastMergeSourceCommit:
     never a commit pushed since), with the repo's merge strategy (default squash), deleting its
-    branch there. Returns (ok, "", why not), as gh pr merge."""
+    branch there. Returns ("merged", ""), ("completing", "") while Azure DevOps still works on it
+    after MERGE_WAIT, or ("refused", why): a permission, a policy, a conflict."""
     repo, n = task["pr"]["repo"], int(task["pr"]["number"])
     try:
         call(repo, "PATCH", git_api(repo, f"pullrequests/{n}"), {
             "status": "completed", "lastMergeSourceCommit": {"commitId": v.get("headRefOid") or ""},
             "completionOptions": completion_options(repo)})
-        # Azure DevOps completes it in the background: watched a moment, then the tick's next look.
         until = time.time() + MERGE_WAIT
         while True:
             d = call(repo, "GET", git_api(repo, f"pullrequests/{n}"))
             if d.get("status") == "completed":
-                return True, "", ""
+                return "merged", ""
             if d.get("mergeStatus") in ("conflicts", "failure", "rejectedByPolicy"):
-                return False, "", f"Azure DevOps couldn't complete it: {d.get('mergeFailureMessage') or d.get('mergeStatus')}"
+                return "refused", f"Azure DevOps couldn't complete it: {d.get('mergeFailureMessage') or d.get('mergeStatus')}"
             if time.time() > until:
-                return False, "", "Azure DevOps is still completing it; the next check marks it done once it has."
+                return "completing", ""
             time.sleep(2)
     except AdoError as e:
-        return False, "", f"Azure DevOps: {e}"
+        return "refused", f"Azure DevOps: {e}"
 
 
 # ---- news: comments, failed builds, the base branch -------------------------------------------

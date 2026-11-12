@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { place, queueReason, reportOf, estimated, order, ago, autoPrefix, refOf, taskKey, matches, busyAgain, secondLine, leftOf, ORDER, STATUS, WORKING_AGAIN, GRACE_MS, fromLine, autoWhere, inSpace, holdingItems } from "./tasks.js";
-import { REASONS, fit } from "./needs.js";
+import { place, queueReason, reportOf, estimated, order, ago, autoPrefix, refOf, taskKey, matches, busyAgain, secondLine, leftOf, ORDER, STATUS, WORKING_AGAIN, GRACE_MS, fromLine, autoWhere, inSpace, holdingItems, acceptAgain } from "./tasks.js";
+import { REASONS, fit, pullCard } from "./needs.js";
 
 const NOW = 1_800_000_000_000;
 const list = (tasks, more = {}) => ({ slug: "dev-x", prefix: "X", folder: "/f", machine: null, tasks, ...more });
@@ -46,24 +46,51 @@ describe("a task's status (as herdr-task's task_status)", () => {
     expect(at({ id: 1, state: "ready", auto_merge: "checks", pr: { number: 3, needs_approval: true } })).toMatchObject({ section: "working", why: "Merges once it's approved" });
     expect(at({ id: 1, state: "ready", merge_requested: true }, [{ address: "t1", status: "working" }])).toMatchObject({ section: "working", why: "Merging" });
     expect(at({ id: 1, state: "ready", auto_merge: true, pr: { number: 3 } })).toMatchObject({ section: "working", why: "Merges once its checks pass" });
-    expect(at({ id: 1, state: "ready", auto_merge: true, ado_auto_complete: 1, pr: { number: 3 } }))
-      .toMatchObject({ section: "working", why: "Completes in Azure DevOps" });
   });
-  test("an Azure DevOps pull request left only to its reviewers is Ready, Accepted or not (SHEP-26)", () => {
+  test("an Azure DevOps pull request left only to its reviewers is Ready before Accept (SHEP-26)", () => {
     const ado = { number: 3, repo: "ado:contoso/web/web", needs_approval: true };
-    const accepted = { id: 1, state: "ready", auto_merge: "checks", ado_auto_complete: 1 };
     expect(at({ id: 1, state: "ready", pr: ado })).toMatchObject({ section: "ready", why: "Waiting on reviewers in Azure DevOps" });
-    expect(at({ ...accepted, pr: ado })).toMatchObject({ section: "ready", needs: null, why: "Waiting on reviewers in Azure DevOps" });
-    expect(at({ ...accepted, pr: { ...ado, wait: "Checks running" } })).toMatchObject({ section: "working", why: "Checks running" });
-    expect(at({ ...accepted, pr: ado, attention: "Checks failing: web-ci.", attention_at: 0 })).toMatchObject({ section: "needs", needs: "attention" });
-    expect(at({ ...accepted, state: "done", pr: ado }).section).toBe("done");
-    expect(secondLine(at({ ...accepted, ready_at: NOW - 60_000, pr: ado }), null, null, NOW)).toBe("Waiting on reviewers in Azure DevOps");
+    expect(secondLine(at({ id: 1, state: "ready", ready_at: NOW - 60_000, pr: ado }), null, null, NOW)).toBe("Waiting on reviewers in Azure DevOps");
     // GitHub's: unchanged.
     expect(secondLine(at({ id: 1, state: "ready", ready_at: NOW - 60_000, pr: { number: 3, repo: "o/r", needs_approval: true } }), null, null, NOW))
       .toBe("Ready 1m ago");
     expect(at({ id: 1, state: "ready", pr: { number: 3, repo: "o/r", needs_approval: true } })).toMatchObject({ section: "ready", why: null });
     expect(at({ id: 1, state: "ready", auto_merge: "checks", pr: { number: 3, repo: "o/r", needs_approval: true } }))
       .toMatchObject({ section: "working", why: "Merges once it's approved" });
+  });
+  test("accepted on Azure DevOps it is Waiting to merge, its own group after Ready, saying on what (SHEP-34)", () => {
+    const ado = { number: 3, repo: "ado:contoso/web/web" };
+    const accepted = { id: 1, state: "ready", merge_wait: NOW, ready_at: NOW - 60_000 };
+    expect(STATUS.merging).toBe("Waiting to merge");
+    expect(ORDER.slice(0, 4)).toEqual(["needs", "ready", "merging", "working"]);
+    expect(at({ ...accepted, pr: { ...ado, needs_approval: true } })).toMatchObject({ section: "merging", needs: null, why: "Waiting on reviewers in Azure DevOps" });
+    expect(at({ ...accepted, pr: { ...ado, needs_approval: true, wait: "Checks running" } })).toMatchObject({ section: "merging", why: "Checks running" });
+    expect(at({ ...accepted, pr: ado })).toMatchObject({ section: "merging", why: "Azure DevOps is completing it" });
+    expect(at({ ...accepted, pr: { ...ado, wait: "Waiting for Azure DevOps" } })).toMatchObject({ section: "merging", why: "Azure DevOps is completing it" });
+    expect(secondLine(at({ ...accepted, pr: ado }), null, null, NOW)).toBe("Azure DevOps is completing it");
+    // whatever its agent does at rest: no Working first
+    expect(at({ ...accepted, pr: ado }, [{ address: "t1", status: "idle", since: NOW - 600_000 }]).section).toBe("merging");
+    // a problem (a rejecting vote, failing checks, a conflict, abandoned), after its grace: Needs you
+    const failing = { ...accepted, pr: ado, attention: "Checks failing: Review by Ann: rejected.", attention_at: 0 };
+    expect(at(failing)).toMatchObject({ section: "needs", needs: "attention" });
+    expect(at({ ...failing, attention_at: NOW }).section).toBe("merging");
+    expect(acceptAgain(at(failing))).toBe(false);
+    // auto-complete couldn't be turned on, or was turned off there: Needs you, and Accept again fixes it
+    for (const why of ["Couldn't turn on auto-complete in Azure DevOps: HTTP 403", "Auto-complete was turned off in Azure DevOps"]) {
+      const p = at({ id: 1, state: "ready", pr: ado, attention: why, attention_at: 0 });
+      expect(p).toMatchObject({ section: "needs", needs: "attention", why });
+      expect(acceptAgain(p)).toBe(true);
+    }
+    // merged: Done
+    expect(at({ ...accepted, merged: true, state: "done", pr: ado }).section).toBe("done");
+    // a merge state never seen on GitHub: auto_merge there is unchanged
+    expect(at({ id: 1, state: "ready", auto_merge: "checks", pr: { number: 3, repo: "o/r", needs_approval: true } }).section).toBe("working");
+  });
+  test("a Done task whose merge the main checkout couldn't pull has a card of its own (SHEP-34)", () => {
+    const pull = { branch: "develop", why: "Not possible to fast-forward, aborting.", command: "git -C /r pull --ff-only origin develop" };
+    expect(pullCard({ id: 1, state: "done", pull })).toBe("The main checkout couldn't pull develop: Not possible to fast-forward, aborting.");
+    expect(at({ id: 1, state: "done", pull }).section).toBe("done");
+    expect(pullCard({ id: 1, state: "done" })).toBe(null);
   });
   test("a pull request whose checks still run is Working, then Ready (SHEP-175)", () => {
     const idle = [{ address: "t1", status: "idle", since: NOW - 600_000 }];
@@ -162,6 +189,15 @@ describe("a short grace before Needs you (as herdr-task's GRACE_MS)", () => {
   test("the grace is the same on both sides", () => {
     expect(GRACE_MS).toBe(20000);
     expect(readFileSync(new URL("../mods/tasks/bin/herdr_task/agents.py", import.meta.url), "utf8")).toContain("GRACE_MS = 20_000");
+  });
+});
+
+// SHEP-34: Waiting to merge on Azure DevOps (core/merge-wait.cases.json, which herdr-task's tests read too).
+const mergeWait = JSON.parse(readFileSync(new URL("./merge-wait.cases.json", import.meta.url), "utf8"));
+describe("Waiting to merge (as herdr-task's waiting_to_merge)", () => {
+  for (const c of mergeWait.cases) test(c.name, () => {
+    const p = place(list([c.task]), c.task, { now: mergeWait.now });
+    expect({ section: p.section, needs: p.needs, why: p.why }).toEqual({ section: c.expect.status, needs: c.expect.needs, why: c.expect.why });
   });
 });
 
