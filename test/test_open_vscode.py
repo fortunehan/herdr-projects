@@ -1,7 +1,8 @@
-"""The task view's Open in VS Code (SHEP-27): mods/chat/panel.js openInEditor() opens the task's folder (its worktree,
-a --here task's list folder) with core/open-editor.js's command, and says why in a toast when it can't: another
-machine's task (nothing runs), a removed worktree, no VS Code, sh not starting. The method runs as written in
-panel.js, in node, with core/open-editor.js as is and exec and toast stubbed; the bar's button is checked in the source."""
+"""The task view's Open in VS Code, iTerm2 and Finder (SHEP-27, SHEP-38): mods/chat/panel.js openIn() opens the
+task's folder (its worktree, a --here task's list folder) with core/open-editor.js's command, and says why in a toast
+when it can't: another machine's task (nothing runs), a removed worktree, the app missing, sh not starting. The method
+runs as written in panel.js, in node, with core/open-editor.js as is and exec and toast stubbed; the bar's icons are
+checked in the source."""
 import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
 import json
 import os
@@ -14,7 +15,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PANEL = os.path.join(ROOT, "mods", "chat", "panel.js")
 SRC = open(PANEL, encoding="utf-8").read()
-MATCH = re.search(r"\n  openInEditor\(cx\) \{\n.*?\n  \}\n", SRC, re.S)
+MATCH = re.search(r"\n  openIn\(app, cx\) \{\n.*?\n  \}\n", SRC, re.S)
 CORE = re.sub(r"^export ", "", open(os.path.join(ROOT, "core", "open-editor.js"), encoding="utf-8").read(), flags=re.M)
 
 HARNESS = r"""
@@ -27,7 +28,7 @@ const obj = { %(method)s };
 const pending = [];
 const cx = { notify() {}, spawn(fn) { pending.push(fn(cx)); } };
 const self = { rec: input.rec, opening: false };
-obj.openInEditor.call(self, cx);
+obj.openIn.call(self, input.app, cx);
 while (pending.length) await pending.shift();
 console.log(JSON.stringify({ calls: calls.map((c) => [c[0], c[1], c[3], c[4]]), toasts, opening: self.opening }));
 """
@@ -37,8 +38,8 @@ TASK = {"mode": "worktree", "worktree": WT, "folder": "/h/dev/shop", "machine": 
 OK = {"code": 0, "stdout": "", "stderr": ""}
 
 
-def run(rec, result=OK):
-    script = HARNESS % {"method": MATCH.group(0).strip(), "core": CORE, "input": json.dumps({"rec": rec, "result": result})}
+def run(rec, result=OK, app="vscode"):
+    script = HARNESS % {"method": MATCH.group(0).strip(), "core": CORE, "input": json.dumps({"rec": rec, "result": result, "app": app})}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "open.mjs")
         with open(path, "w") as f:
@@ -51,7 +52,7 @@ class OpenInVSCode(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if MATCH is None or shutil.which("node") is None:
-            raise unittest.SkipTest("panel.js openInEditor() not found or no node")
+            raise unittest.SkipTest("panel.js openIn() not found or no node")
 
     def test_a_worktree_task_opens_its_worktree_without_a_word(self):
         out = run(TASK)
@@ -88,11 +89,37 @@ class OpenInVSCode(unittest.TestCase):
         self.assertEqual(out["calls"], [])
         self.assertIn("no worktree yet", out["toasts"][0]["body"])
 
-    def test_the_bar_has_the_button_dim_for_another_machine(self):
+    def test_iterm_opens_the_worktree(self):
+        out = run(TASK, app="iterm")
+        self.assertEqual(out["calls"], [["sh", "-c", "open-iterm", WT]])
+        self.assertEqual(out["toasts"], [])
+
+    def test_finder_opens_a_here_tasks_folder(self):
+        out = run({"mode": "here", "folder": "/h/dev/shop", "machine": None, "state": "running"}, app="finder")
+        self.assertEqual(out["calls"], [["sh", "-c", "open-finder", "/h/dev/shop"]])
+
+    def test_no_iterm_says_so(self):
+        out = run(TASK, {"code": 4, "stdout": "", "stderr": ""}, app="iterm")
+        self.assertEqual(out["toasts"], [{"title": "Couldn't open iTerm2", "body": "iTerm2 isn't installed.", "level": "error"}])
+
+    def test_a_done_tasks_removed_worktree_in_finder_says_so(self):
+        out = run({**TASK, "state": "done"}, {"code": 3, "stdout": "", "stderr": ""}, app="finder")
+        self.assertEqual(out["toasts"], [{"title": "Couldn't open Finder", "body": "Its folder is gone (a finished task's worktree is removed).", "level": "error"}])
+
+    def test_another_machines_task_runs_nothing_in_iterm_or_finder(self):
+        for app, name in (("iterm", "iTerm2"), ("finder", "Finder")):
+            out = run({**TASK, "machine": "vm-demo"}, app=app)
+            self.assertEqual(out["calls"], [])
+            self.assertEqual(out["toasts"][0]["body"], f"This task runs on vm-demo: {name} opens only this machine's folders.")
+
+    def test_the_bar_has_the_three_icons_dim_for_another_machine(self):
         bar = re.search(r"\n  barRow\(t, st, addr\) \{\n.*?\n  \}\n", SRC, re.S).group(0)
-        self.assertIn('button("thread-vscode", "Open in VS Code"', bar)
-        self.assertIn("this.openInEditor(cx)", bar)
-        self.assertIn("Boolean(this.rec.machine), (b) => b.opacity(0.5)", bar)
+        self.assertIn("Object.keys(APPS).map((app) => this.openIcon(t, app))", bar)
+        icon = re.search(r"\n  openIcon\(t, app\) \{\n.*?\n  \}\n", SRC, re.S).group(0)
+        self.assertIn("accessibility_label(`Open in ${a.name}`)", icon)
+        self.assertIn("this.openIn(app, cx)", icon)
+        self.assertIn("busy || Boolean(this.rec.machine), (el) => el.opacity(0.5)", icon)
+        self.assertNotIn(".tooltip(", icon)
 
 
 if __name__ == "__main__":
