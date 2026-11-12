@@ -42,7 +42,7 @@ core/agents.js: chat chat-models newspace shepherdr-settings coordinator
 core/settings.js: chat newspace shepherdr-settings coordinator
 core/host.js: chat newspace shepherdr-settings coordinator
 core/secrets.js: chat shepherdr-settings tabs-tasks
-taskwhere.js: task-pr task-browser task-shell
+taskwhere.js: task-pr task-browser task-shell chat
 emoji-data.js: chat-react spaces-chat
 notify.js: chat spaces-chat tabs-tasks tasks shepherdr-settings workspace-status-chat
 spacelog.js: coordinator menu-tasks new-menu-tasks newspace shepherdr-settings tabs-tasks tasks spaces-chat

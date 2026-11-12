@@ -37,6 +37,7 @@ import { cantOpen, folderOf, vscodeCommand, vscodeProblem } from "./core/open-ed
 import { SH } from "./core/paths.js";
 import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
+import { pointShell, shellFits, shellShown } from "./taskwhere.js";
 
 // The task header's shared left edge, and task ids in the Tasks list's monospace (mods/tasks).
 const EDGE = 12, ID_FONT = "JetBrains Mono";
@@ -154,8 +155,27 @@ export class PanelHost {
         key: `${k.slug}#${k.id}`, state: rec.state ?? null } : null;
       if (JSON.stringify(w) !== JSON.stringify(shared("tasks.thread.where") ?? null)) setShared("tasks.thread.where", w);
     }
+    if (this.head) this.guardShell(w, cx);
     if (JSON.stringify(rec) !== JSON.stringify(this.rec)) { this.rec = rec; cx.notify(); }
     if (this.head && rec && find(layout(), ARTIFACTS) && addonOn("artifacts")) this.loadArts(rec, addr, cx);
+  }
+
+  // The Shell column (mods/task-shell) shows only the shown task's own live shell, SHEP-35. That mod's block is hidden
+  // while a shell shows, and Herdr never starts a copy that never showed: after a window start with another task's
+  // shell left in the saved layout, nothing else would ever point it away. Another task's or an ended shell, or a Done
+  // task: the column goes back to the mod alone, which then shows, finds or starts the right one. One not in the list
+  // (just started, or gone) only when it's still missing at the next read.
+  guardShell(w, cx) {
+    const addr = shellShown(layout());
+    const fit = w ? shellFits(addr, w, terminals()) : "ok";
+    const miss = fit === "unknown" && this.shellMiss === addr;
+    this.shellMiss = fit === "unknown" ? addr : null;
+    if ((fit !== "stale" && !miss) || this.shellBusy) return;
+    this.shellBusy = true;
+    cx.spawn(async (cx) => {
+      try { await pointShell(null, cx); } catch {}
+      this.shellBusy = false;
+    });
   }
 
   // Its artifacts (core/task-artifacts.js, as the web's Artifacts tab finds them): its folder's list (herdr-artifact,
