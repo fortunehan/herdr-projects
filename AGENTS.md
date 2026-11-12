@@ -84,7 +84,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   under their machine in the sidebar. A stub chat message can carry any Message field (brief, activity, news) to
   screenshot quiet rows without a real log. For a before/after of task rows without rebuilding twice, import main's
   `core/tasks.js` (`git show main:core/tasks.js`, plus `needs.js` and `asks.js`) in the stub and compute each row's
-  sub line with `place()` and `secondLine()`.
+  sub line with `place()` and `secondLine()`. For whole rendered rows, build main's dist in a git-archive copy with
+  node_modules symlinked from the worktree, and make each stub's snapshot with that tree's own `service/compat.ts`
+  `Compat().snapshot({host,user,machines,spaces,sections,rows})`, rows placed by that tree's `core/tasks.js`.
 - A cross-machine send without ssh: two throwaway cores (`HC_SESSION=a`/`b`, clean `env -i`) and
   `hc machine add --via 'sh -c' --name vmb --session b` on a; the wrap only shows with a real agent (e.g.
   `claude --model haiku`) as the target.
