@@ -20,7 +20,8 @@
 // task side panel. All are one switcher (only one shows at a time), the main chat's header switch
 // (ui.js segmented); Pull request only once the task has one. They show the task the header
 // publishes (shared "tasks.thread.where", from its record: lib/taskwhere.js).
-// The slim bar's Open in VS Code opens the task's folder in VS Code on this machine (core/open-editor.js, SHEP-27).
+// The slim bar's VS Code, iTerm2 and Finder icons open the task's folder in that app on this machine
+// (core/open-editor.js, SHEP-27, SHEP-38).
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -33,7 +34,7 @@ import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
 import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
-import { cantOpen, folderOf, vscodeCommand, vscodeProblem } from "./core/open-editor.js";
+import { APPS, cantOpen, folderOf, openCommand, openProblem } from "./core/open-editor.js";
 import { SH } from "./core/paths.js";
 import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
@@ -234,20 +235,33 @@ export class PanelHost {
       props: { ref: r.ref, folder: r.folder, machine: r.machine ?? null, title: r.title } });
   }
 
-  // Open in VS Code (core/open-editor.js): the task's folder, on this machine only. Every failure says why in a toast.
-  openInEditor(cx) {
-    const r = this.rec, no = cantOpen(r);
+  // Open in VS Code, iTerm2 or Finder (core/open-editor.js APPS): the task's folder, on this machine only. Every
+  // failure says why in a toast.
+  openIn(app, cx) {
+    const r = this.rec, no = cantOpen(r, app);
     if (no) { toast({ ...no, level: "error" }); return; }
     if (this.opening) return;
-    this.opening = true;
+    this.opening = app;
     cx.spawn(async (cx) => {
-      const [cmd, args] = vscodeCommand(folderOf(r));
+      const [cmd, args] = openCommand(app, folderOf(r));
       const res = await exec(cmd, args).catch(() => null);
-      const p = vscodeProblem(res, r.state === "done");
+      const p = openProblem(app, res, r.state === "done");
       if (p) toast({ ...p, level: "error" });
       this.opening = false;
       cx.notify();
     });
+  }
+
+  // One of the bar's open icons: icon-only, its words for screen readers (no tooltips: lib/UI.md). Dim for another
+  // machine's task, where a click says why.
+  openIcon(t, app) {
+    const a = APPS[app], busy = this.opening === app;
+    return h_flex().id(`thread-open-${app}`).size(24).flex_none().items_center().justify_center().rounded(RADIUS.control)
+      .text_color(t.muted).accessibility_label(`Open in ${a.name}`)
+      .when(busy || Boolean(this.rec.machine), (el) => el.opacity(0.5))
+      .when(!busy, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openIn(app, cx); cx.notify(); }))
+      .child(svg(`mods/chat/${a.icon}`).size(14).flex_none());
   }
 
   // Another worker asked for: the old chat is closed and released, a new one made for the task shown once that's done
@@ -462,7 +476,7 @@ export class PanelHost {
   }
 
   // The slim bar: ‹ Tasks back to the list on the left (its chevron on the shared edge, its hover
-  // reaching past it), and on the right Open in VS Code, the task's base and Accept
+  // reaching past it), and on the right the VS Code, iTerm2 and Finder icons, the task's base and Accept
   // (no Pin: the task's row menu pins it, SHEP-62).
   barRow(t, st, addr) {
     return h_flex().id("thread-bar").h(24).flex_none().pl(EDGE - 6).pr(EDGE).gap(4).items_center()
@@ -472,9 +486,8 @@ export class PanelHost {
         .child(svg("mods/workspace-chrome/chevron-left.svg").size(14).flex_none())
         .child("Tasks"))
       .child(div().flex_1())
-      // Dim for another machine's task: a click says why (the window has no tooltips).
-      .when(Boolean(this.rec), (el) => el.child(button("thread-vscode", "Open in VS Code",
-        { kind: "plain", disabled: this.opening, onClick: (_e, cx) => this.openInEditor(cx) }).when(Boolean(this.rec.machine), (b) => b.opacity(0.5))))
+      .when(Boolean(this.rec), (el) => el.child(h_flex().id("thread-open").flex_none().gap(2).items_center()
+        .children(Object.keys(APPS).map((app) => this.openIcon(t, app)))))
       // A task's own base (herdr-task add --base), where it merges into; the folder's default isn't shown.
       .when(Boolean(this.rec?.base_set && this.rec?.base), (el) => el.child(div().id("thread-base").flex_none().max_w(160).truncate().pr(4)
         .text_size(TEXT.label).text_color(t.muted).child(`→ ${this.rec.base}`)))
