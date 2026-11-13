@@ -317,6 +317,26 @@ class Opening(Base):
             github.pr_open(self.store, self.task, REPO)
         self.assertIn("isn't a regular file", str(e.exception))
         os.rmdir(path)
+        # a link (to a secret, say) is never followed into a pull request, nor is a linked folder
+        secret = os.path.join(self.tmp, "secret.md")
+        with open(secret, "w") as t:
+            t.write("TOP SECRET")
+        os.symlink(secret, path)
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("isn't a regular file", str(e.exception))
+        os.unlink(path)
+        os.rmdir(os.path.dirname(path))
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        with open(os.path.join(elsewhere, "pull_request_template.md"), "w") as t:
+            t.write("TOP SECRET")
+        os.symlink(elsewhere, os.path.dirname(path))
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("isn't a regular file", str(e.exception))
+        os.unlink(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path))
         with open(path, "wb") as t:
             t.write(b"\xff\xfe not utf-8")
         with self.assertRaises(commands.Fail) as e:

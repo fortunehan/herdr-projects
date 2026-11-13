@@ -575,19 +575,24 @@ def pr_title(task, wid, ref):
 
 
 def pr_template(wt):
-    """The repo's pull request template in the task's worktree (a regular file), its text; None only when
-    it isn't there. One that can't be read is a Fail, never taken for absent."""
+    """The repo's pull request template in the task's worktree (a regular file, not a link: a branch can
+    carry any link, and the text goes public), its text; None only when it isn't there. One that can't
+    be read is a Fail, never taken for absent."""
     path = os.path.join(wt, TEMPLATE)
+    refused = f"{TEMPLATE} isn't a regular file inside the worktree, so no pull request was opened."
     try:
-        os.lstat(path)
+        found = os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError as e:
         raise Fail(f"Couldn't read {TEMPLATE} ({e.strerror or e}), so no pull request was opened.")
+    if not stat.S_ISREG(found.st_mode) or os.path.realpath(path) != os.path.join(os.path.realpath(wt), TEMPLATE):
+        raise Fail(refused)
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            raise Fail(f"{TEMPLATE} isn't a regular file, so no pull request was opened.")
-        with open(path, encoding="utf-8") as f:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise Fail(refused)
             return f.read()
     except (OSError, UnicodeDecodeError) as e:
         raise Fail(f"Couldn't read {TEMPLATE} ({getattr(e, 'strerror', None) or e}), so no pull request was opened.")
