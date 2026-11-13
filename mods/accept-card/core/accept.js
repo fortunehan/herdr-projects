@@ -3,6 +3,11 @@
 // the same reading of `herdr-task show --evidence` from here.
 // Shared core: the source is core/accept.js; bin/sync-shared copies it into the mods in lib/COPIES. Edit it here,
 // never a copy.
+import { acceptAgain } from "./tasks.js";
+
+// show --evidence includes the derived status; the saved ready state alone is not eligibility.
+export const canAccept = (x) => Boolean(x?.state === "ready" && (x.status === "ready"
+  || acceptAgain({ section: x.status, needs: x.needs, task: x })));
 
 // The card's words, as the window shows them.
 export const ACCEPT = {
