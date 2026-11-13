@@ -163,6 +163,18 @@ plugins_home = Path(os.environ.get("CLAUDE_CODE_PLUGIN_CACHE_DIR") or str(home /
 registry = obj(plugins_home / "installed_plugins.json").get("plugins", {})
 if not isinstance(registry, dict):
     registry = {}
+marketplaces = obj(plugins_home / "known_marketplaces.json")
+def default_enabled(plugin_id, manifest):
+    name, _, market = plugin_id.partition("@")
+    known = marketplaces.get(market)
+    location = absolute(known.get("installLocation")) if isinstance(known, dict) else None
+    entries = obj(location / ".claude-plugin/marketplace.json").get("plugins") if location else None
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("name") == name and isinstance(entry.get("defaultEnabled"), bool):
+                return entry["defaultEnabled"]
+    return manifest.get("defaultEnabled", True)
+
 projects = {p for p in [cwd, root, local_root] if p}
 for plugin_id, installs in registry.items():
     if not isinstance(installs, list):
@@ -183,7 +195,7 @@ for plugin_id, installs in registry.items():
     manifest = obj(manifest_path)
     if manifest_path.exists() and not manifest:
         continue
-    if enabled.get(plugin_id, manifest.get("defaultEnabled", True)) is not True:
+    if enabled.get(plugin_id, default_enabled(plugin_id, manifest)) is not True:
         continue
     namespace = manifest.get("name", plugin_id.split("@")[0])
     if not valid(namespace) or ":" in namespace:

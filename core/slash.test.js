@@ -163,6 +163,17 @@ test("default enablement respects explicit disables and manifest opt-out", () =>
   expect(scan().map((c) => c.name)).toEqual(["opt-out:hidden"]);
 });
 
+test("registered marketplace default overrides the manifest, but not explicit enablement", () => {
+  const root = plugin("default@market");
+  skill(root, "skills/found");
+  const marketplace = join(home, "marketplace with spaces");
+  put(join(home, ".claude/plugins/known_marketplaces.json"), { market: { installLocation: marketplace } });
+  put(join(marketplace, ".claude-plugin/marketplace.json"), { plugins: [{ name: "default", defaultEnabled: false }] });
+  expect(scan()).toEqual([]);
+  settings(home, { "default@market": true });
+  expect(scan().map((c) => c.name)).toEqual(["default:found"]);
+});
+
 test("builtin and legacy precedence and Codex behavior are unchanged", () => {
   put(join(home, ".claude/commands/same.md"), "---\ndescription: User first\n---\n");
   put(join(cwd, ".claude/commands/same.md"), "---\ndescription: Project second\n---\n");
