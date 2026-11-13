@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACCEPT, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle } from "./accept.js";
+import { ACCEPT, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle, canAccept } from "./accept.js";
 
 const root = join(import.meta.dir, "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
+
+test("Accept uses the computed status, not the worker's saved ready state", () => {
+  for (const status of ["working", "needs", "merging", "done"]) expect(canAccept({ state: "ready", status })).toBe(false);
+  expect(canAccept({ state: "ready", status: "ready" })).toBe(true);
+  expect(canAccept({ state: "done", status: "ready" })).toBe(false);
+  expect(canAccept(null)).toBe(false);
+  expect(canAccept({ state: "ready" })).toBe(false);
+  expect(canAccept({ state: "ready", status: "needs", needs: "attention", attention: "Auto-complete was turned off in Azure DevOps" })).toBe(true);
+  for (const file of ["mods/accept-card/main.js", "web/src/screens/Accept.tsx"]) expect(read(file)).toContain("canAccept(");
+});
 
 test("a long old summary keeps its first sentence; the whole goes under Details", () => {
   const long = `Fixed the login. ${"More words here. ".repeat(12)}`;

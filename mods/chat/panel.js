@@ -25,10 +25,10 @@
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces } from "herdr";
+import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces, machines } from "herdr";
 import { terminals, agents } from "./live.js";
 import { taskDot, ownProgress, estimated } from "./dot.js";
-import { busyAgain, onIt, readyWait } from "./core/tasks.js";
+import { place, acceptAgain, machineOf, RANK } from "./core/tasks.js";
 import { button, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
@@ -145,7 +145,7 @@ export class PanelHost {
       try {
         const d = JSON.parse(text || "null");
         const t = d?.tasks?.find((x) => x.id === k.id);
-        rec = t ? { ...t, folder: d.folder, machine: k.machine, ref: d.prefix ? `${d.prefix}-${t.id}` : String(t.id) } : null;
+        rec = t ? { ...t, slug: k.slug, folder: d.folder, machine: k.machine, ref: d.prefix ? `${d.prefix}-${t.id}` : String(t.id) } : null;
       } catch {}
     }
     if (this.cur !== cur) return;
@@ -213,18 +213,27 @@ export class PanelHost {
     cx.notify();
   }
 
-  // Ready and nothing in the way (as the list's Ready group): not asking, no problem, not already merging, not
-  // back at work.
-  acceptable(st, addr) {
+  // The list and header use the same task rules, including own work and every live worker/helper.
+  placement(addr) {
     const r = this.rec;
-    return Boolean(r && r.state === "ready" && !r.attention && st !== "blocked" && !readyWait(r, [addr]))
-      && !this.again(st, addr);
+    if (!r) return null;
+    const list = { machine: r.machine ?? null, slug: r.slug ?? this.cur?.key?.slug ?? this.taskOf(addr)?.slug };
+    const key = `${list.slug}#${r.id}`, shown = new Map(agents().map((a) => [a.address, a]));
+    const helper = (k) => ["reviewer", "helper"].includes(k.labels?.["herdr.role"]) && !!k.parent;
+    const mine = terminals().filter((k) => k.state === "live" && k.labels?.["herdr.task"] === key
+      && machineOf(k.address) === list.machine && k.program?.key !== "shell" && !k.program?.shell);
+    const asLive = (k) => ({ address: k.address, status: shown.get(k.address)?.status ?? (RANK[k.status] ? k.status : null),
+      turn: k.turn, role: k.labels?.["herdr.role"] ?? "worker", since: k.status_ms });
+    const live = mine.filter((k) => !helper(k)).map(asLive);
+    const parents = new Set(live.map((a) => a.address.split("/").pop()));
+    const helpers = mine.filter((k) => helper(k) && parents.has(String(k.parent).split("/").pop())).map(asLive);
+    const loaded = machines().find((m) => (m.name ?? null) === list.machine)?.layout !== "loading";
+    return place(list, r, { live, helpers, loaded });
   }
 
-  // Its worker took up work again since it said ready (core/tasks.js busyAgain()): Working, no Accept.
-  again(st, addr) {
-    const r = this.rec, k = addr ? terminals().find((x) => x.address === addr) : null;
-    return Boolean(r && k) && busyAgain(r, [{ address: addr, status: st, turn: k.turn, role: k.labels?.["herdr.role"] ?? "worker" }]);
+  acceptable(_st, addr) {
+    const p = this.placement(addr);
+    return Boolean(p && (p.section === "ready" || acceptAgain(p)));
   }
 
   // Accept shows what you approve first: the Accept card (mods/accept-card) runs herdr-task
@@ -298,21 +307,9 @@ export class PanelHost {
 
   // The task's status dot, by the Tasks list's rules (mods/tasks place()): its record, then its
   // worker's own status. Nothing (an empty spot the dot's size) until its record is read.
-  dot(st, addr) {
-    const r = this.rec;
-    if (!r) return div();
-    const live = terminals().find((x) => x.address === addr)?.state === "live";
-    const last = r.agents?.[r.agents.length - 1];
-    const starting = !last?.ended && Date.now() - Math.max(0, ...[r.started, last?.at].filter((x) => typeof x === "number")) < 90000;
-    // A problem (failing checks) its worker is on (core/tasks.js onIt()): Working; nobody on it: Needs you.
-    const k = addr ? terminals().find((x) => x.address === addr) : null;
-    const fixing = r.attention && onIt(r, live ? [{ address: addr, status: st, turn: k?.turn, role: k?.labels?.["herdr.role"] ?? "worker" }] : []);
-    const s = ["todo", "queued", "scheduled", "done"].includes(r.state) ? r.state
-      : (r.attention && !fixing) || st === "blocked" || r.retry?.over ? "needs"
-      : fixing ? "working"
-      : r.state === "ready" && !this.again(st, addr) ? (readyWait(r, live ? [addr] : []) ? "working" : "ready")
-      : st === "working" || r.retry || starting ? "working" : "needs";
-    return taskDot(s, { pct: ownProgress([addr])?.pct ?? r.progress?.done, halo: true });
+  dot(_st, addr) {
+    const p = this.placement(addr);
+    return p ? taskDot(p.section, { pct: ownProgress([addr])?.pct ?? p.task.progress?.done, halo: true }) : div();
   }
 
   status(addr) {

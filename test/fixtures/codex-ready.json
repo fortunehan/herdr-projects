@@ -1,0 +1,12 @@
+{
+  "now": 1794564000000,
+  "task": {"id": 43, "state": "ready", "ready_at": 1794563386285, "ready_turns": {"t6j": 1}, "own_work": true, "space": "sp1", "pr": {"number": 37}},
+  "live": [{"address": "t6j", "status": "idle", "turn": 1, "role": "worker"}],
+  "log": [
+    {"timestamp": "2026-11-13T09:36:28.022Z", "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "start", "output": [{"type": "input_text", "text": "{\"chunk_id\":\"start\",\"session_id\":93264,\"output\":\"\"}"}]}},
+    {"timestamp": "2026-11-13T09:36:28.758Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "CommandExecution", "process_id": "93264", "status": "completed", "exit_code": 0}}},
+    {"timestamp": "2026-11-13T09:37:27.573Z", "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "poll", "name": "exec", "input": "text(await tools.exec_command({cmd:'pwd'})); text(await tools.write_stdin({session_id:93264,chars:''})); text(await tools.write_stdin({session_id:33773,chars:''}));"}},
+    {"timestamp": "2026-11-13T09:37:36.215Z", "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "poll", "output": [{"type": "input_text", "text": "{\"chunk_id\":\"other\",\"exit_code\":0,\"output\":\"\"}"}, {"type": "input_text", "text": "{\"chunk_id\":\"poll\",\"exit_code\":0,\"output\":\"\"}"}, {"type": "input_text", "text": "{\"chunk_id\":\"running\",\"session_id\":33773,\"output\":\"\"}"}]}},
+    {"timestamp": "2026-11-13T09:37:46.308Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "CommandExecution", "process_id": "33773", "status": "completed", "exit_code": 0}}}
+  ]
+}

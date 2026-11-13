@@ -27,7 +27,7 @@ type Evidence = {
   diff?: { files: number; added: number; removed: number; list: { path: string; added: number; removed: number }[] } | null
   checks?: { state: 'passed' | 'failed' | 'running' | 'none' | 'unknown'; text: string }
 }
-type Shown = { ref: string; title: string; state: string; status_text?: string; accepted_at?: number; evidence?: Evidence }
+type Shown = { ref: string; title: string; state: string; status?: string; needs?: string; attention?: string; status_text?: string; accepted_at?: number; evidence?: Evidence }
 
 // Which task's card is open (one at a time): a small store of its own, so any row or header can open it.
 let open: string | null = null
@@ -125,7 +125,8 @@ function ArtifactRow({ a }: { a: { id: string; title: string } }) {
 
 export function AcceptCard() {
   const task = useOpen()
-  const named = useStore((s) => (task && s.snap ? taskOf(s.snap, task)?.name : undefined))
+  const current = useStore((s) => (task && s.snap ? taskOf(s.snap, task) : undefined))
+  const named = current?.name
   const artifacts = useStore((s) => s.snap?.artifacts)
   const [t, setT] = useState<Shown | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -138,10 +139,10 @@ export function AcceptCard() {
     let gone = false
     act({ type: 'evidence', task } as never).then((x) => !gone && setT(x as Shown), (e) => !gone && setError(String(e?.message ?? e)))
     return () => { gone = true }
-  }, [task])
+  }, [task, current?.status, current?.acceptAgain])
 
   if (!task) return null
-  const ready = t?.state === 'ready'
+  const ready = A.canAccept(t) && (current?.status === 'ready' || !!current?.acceptAgain)
   const e = t?.evidence ?? {}
   // its proof as the app knows it, to draw in the card; one it doesn't know (yet) stays a row that opens it
   const proofArt = e.proof ? artifacts?.find((a) => a.id === e.proof!.id) : undefined
@@ -159,7 +160,7 @@ export function AcceptCard() {
       setError(String((err as Error)?.message ?? err))
       // accepted (or changed) from elsewhere meanwhile: show where it is now, not the refusal
       const now = (await act({ type: 'evidence', task } as never).catch(() => null)) as Shown | null
-      if (now && now.state !== 'ready') { setT(now); setError(null) }
+      if (now && !A.canAccept(now)) { setT(now); setError(null) }
       setBusy(false)
     }
   }

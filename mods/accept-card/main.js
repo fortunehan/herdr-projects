@@ -17,7 +17,7 @@ import { appHome, closeOverlay, exec, notify, openOverlay, props, shared, setSha
 import { note } from "./usage.js";
 import { dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
-import { ACCEPT, words, readable, commitsLine, filesLine, moreLine, proofTitle, whereNow } from "./core/accept.js";
+import { ACCEPT, words, readable, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
 
 export { words, readable };
 
@@ -125,6 +125,7 @@ export default class AcceptCard extends View {
     this.handle.focus();
     this.t = null;        // the task, with its evidence
     this.error = null;    // why it couldn't be read, or accepted
+    this.readError = false;
     this.busy = false;    // accepting
     this.opening = false; // pulling the proof
     this.details = false; // Details unfolded
@@ -135,11 +136,28 @@ export default class AcceptCard extends View {
       cx.timer.after(0, () => this.close());
       return;
     }
-    cx.spawn(async (cx) => {
-      try { this.t = await task(p, ["show", p.ref, "--evidence"]); }
-      catch (e) { this.error = String(e?.message ?? e); }
-      cx.notify();
-    });
+    cx.spawn(async (cx) => this.refresh(cx, true));
+    cx.timer.every(3000, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
+  }
+
+  async refresh(cx, evidence = false) {
+    if (this.reading || this.busy) return;
+    this.reading = true;
+    const p = props() ?? {};
+    try {
+      const withEvidence = evidence || !this.t?.evidence;
+      const next = await task(p, ["show", p.ref, ...(withEvidence ? ["--evidence"] : [])]);
+      this.t = withEvidence ? next : { ...next, evidence: this.t?.evidence };
+      if (this.readError) this.error = null;
+      this.readError = false;
+    } catch (e) {
+      this.error = String(e?.message ?? e);
+      this.readError = true;
+      if (this.t) this.t = { ...this.t, status: null };
+    } finally {
+      this.reading = false;
+    }
+    cx.notify();
   }
 
   close() {
@@ -148,7 +166,7 @@ export default class AcceptCard extends View {
   }
 
   accept(cx) {
-    if (this.busy || !this.t || this.t.state !== "ready") return;
+    if (this.busy || !canAccept(this.t)) return;
     const p = props() ?? {};
     note("act", { type: "accept", task: p.ref });
     this.busy = true;
@@ -172,7 +190,7 @@ export default class AcceptCard extends View {
         this.error = String(e?.message ?? e);
         // Accepted (or changed) from elsewhere meanwhile: show where it is now, not the refusal.
         const now = await task(p, ["show", p.ref]).catch(() => null);
-        if (now && now.state !== "ready") {
+        if (now && !canAccept(now)) {
           this.t = { ...now, evidence: this.t.evidence };
           this.error = null;
         }
@@ -291,7 +309,7 @@ export default class AcceptCard extends View {
     const t = theme();
     const p = props() ?? {};
     const x = this.t, e = x?.evidence;
-    const ready = x?.state === "ready";
+    const ready = canAccept(x);
     const settled = Boolean(x && !ready);
     const w = e ? words(e) : null;
     const body = !x
