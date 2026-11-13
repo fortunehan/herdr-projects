@@ -8,11 +8,9 @@ import { exec } from "herdr";
 import { SCAN, scanned, commandList } from "./core/slash.js";
 export { opensMenu, typing, match } from "./core/slash.js";
 
-const cache = new Map();
-// Every command this agent knows: [{ name, about }], built-in first. Cached per machine and folder.
+// Every command this agent knows: [{ name, about }], built-in first. The chat refreshes it periodically.
 export async function commands(kind, machine, cwd) {
   if (kind !== "claude") return commandList(kind);
-  const k = `${machine ?? ""}|${cwd ?? ""}`;
-  if (!cache.has(k)) cache.set(k, exec("sh", ["-c", SCAN, "scan", cwd ?? ""], { on: machine }).then((r) => scanned(r.stdout)).catch(() => []));
-  return commandList(kind, await cache.get(k));
+  const mine = await exec("sh", ["-c", SCAN, "scan", cwd ?? ""], { on: machine }).then((r) => scanned(r.stdout)).catch(() => []);
+  return commandList(kind, mine);
 }

@@ -27,21 +27,183 @@ export const MENU = {
   codex: new Set(["model", "approvals", "review", "mention", "resume", "fork", "status", "diff"]),
 };
 
-// The person's own commands and skills, on the agent's machine: "name<TAB>description" lines.
-export const SCAN = `
-cwd="$1"
-desc() { awk '/^description:/ { sub(/^description:[[:space:]]*/, ""); if ($0 ~ /^[>|]-?$/ || $0 == "") { getline; sub(/^[[:space:]]+/, "") } gsub(/"/, ""); print substr($0, 1, 90); exit }' "$1" 2>/dev/null; }
-for d in "$HOME/.claude/commands" "$cwd/.claude/commands"; do
-  [ -d "$d" ] || continue
-  find "$d" -name '*.md' 2>/dev/null | while read -r f; do n=\${f#"$d"/}; n=\${n%.md}; printf '%s\\t%s\\n' "$(echo "$n" | tr / :)" "$(desc "$f")"; done
-done
-for d in "$HOME/.claude/skills" "$cwd/.claude/skills"; do
-  for f in "$d"/*/SKILL.md; do [ -f "$f" ] || continue; n=\${f%/SKILL.md}; printf '%s\\t%s\\n' "\${n##*/}" "$(desc "$f")"; done
-done
-true`;
+// Run on the agent's machine, not the machine hosting the window or web service.
+// Python's JSON reader handles settings, the install registry and manifests without shell interpolation.
+export const SCAN = String.raw`python3 - "$1" <<'PY'
+import json, os, re, subprocess, sys
+from pathlib import Path
 
-// SCAN's output as commands: [{ name, about }].
+def obj(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def frontmatter(path):
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, ValueError):
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return {}
+    out = {}
+    # Only the menu's scalar fields; other YAML (tools, hooks, etc.) is never interpreted.
+    for i in range(1, end):
+        m = re.match(r"^(name|description|user-invocable):\s*(.*)$", lines[i])
+        if not m:
+            continue
+        key, value = m.groups()
+        if re.match(r"^[>|][+-]?(?:\s+#.*)?$", value) or not value:
+            continuation = []
+            for line in lines[i + 1:end]:
+                if line and not line.startswith((" ", "\t")):
+                    break
+                continuation.append(line.strip())
+            value = " ".join(continuation)
+        elif value.startswith('"'):
+            try:
+                value = json.JSONDecoder().raw_decode(value)[0]
+            except ValueError:
+                continue
+        elif value.startswith("'"):
+            m = re.match(r"^'((?:[^']|'')*)'(?:\s+#.*)?$", value)
+            if not m:
+                continue
+            value = m[1].replace("''", "'")
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            if key == "user-invocable":
+                value = value.lower() != "false"
+        out[key] = value
+    return out
+
+def files(root, filename, contained=None):
+    if not root.is_dir():
+        return
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and (contained is None or inside(contained, Path(folder) / d)))
+        for name in sorted(names):
+            path = Path(folder) / name
+            if (name == filename or filename == "*.md" and name.endswith(".md")) and (contained is None or inside(contained, path)):
+                yield path
+
+def inside(root, path):
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+def valid(name):
+    return isinstance(name, str) and re.fullmatch(r"[\w.-]+(?::[\w.-]+)*", name, re.ASCII)
+
+def absolute(value):
+    if not isinstance(value, str) or not value or "\0" in value:
+        return None
+    try:
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+commands, seen = [], set()
+def add(path, name, prefix="", skill=False):
+    meta = frontmatter(path)
+    if meta.get("user-invocable") is False:
+        return
+    if skill and valid(meta.get("name")):
+        name = meta["name"]
+    name = prefix + name
+    if not valid(name) or name in seen:
+        return
+    seen.add(name)
+    about = meta.get("description", "")
+    commands.append({"name": name, "about": " ".join(str(about).split())[:90] or "Your command"})
+
+home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"))
+cwd = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and sys.argv[1] else None
+for root in [home / "commands"] + ([cwd / ".claude/commands"] if cwd else []):
+    for path in files(root, "*.md"):
+        add(path, ":".join(path.relative_to(root).with_suffix("").parts))
+for root in [home / "skills"] + ([cwd / ".claude/skills"] if cwd else []):
+    if root.is_dir():
+        for folder in sorted(root.iterdir()):
+            path = folder / "SKILL.md"
+            if path.is_file():
+                add(path, folder.name, skill=True)
+
+def git(*args):
+    if not cwd:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), "rev-parse", *args], capture_output=True, text=True, timeout=3)
+        return Path(r.stdout.strip()).resolve() if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+root = git("--show-toplevel")
+common = git("--path-format=absolute", "--git-common-dir")
+local_root = common.parent if common and common.name == ".git" else root
+settings = [home / "settings.json"]
+if cwd:
+    settings += [cwd / ".claude/settings.json", cwd / ".claude/settings.local.json"]
+    if local_root and local_root != cwd and local_root != Path.home():
+        settings.append(local_root / ".claude/settings.local.json")
+enabled = {}
+for path in settings:
+    values = obj(path).get("enabledPlugins")
+    if isinstance(values, dict):
+        enabled.update({k: v for k, v in values.items() if isinstance(v, bool)})
+
+plugins_home = Path(os.environ.get("CLAUDE_CODE_PLUGIN_CACHE_DIR") or str(home / "plugins"))
+registry = obj(plugins_home / "installed_plugins.json").get("plugins", {})
+if not isinstance(registry, dict):
+    registry = {}
+projects = {p for p in [cwd, root, local_root] if p}
+for plugin_id, installs in registry.items():
+    if not isinstance(installs, list):
+        continue
+    candidates = []
+    for install in installs:
+        if not isinstance(install, dict) or absolute(install.get("installPath")) is None:
+            continue
+        scope = install.get("scope")
+        project = install.get("projectPath")
+        if scope == "user" or scope in ("project", "local") and absolute(project) in projects:
+            candidates.append(install)
+    if not candidates:
+        continue
+    install = max(candidates, key=lambda v: {"user": 0, "project": 1, "local": 2}[v["scope"]])
+    plugin = Path(install["installPath"])
+    manifest_path = plugin / ".claude-plugin/plugin.json"
+    manifest = obj(manifest_path)
+    if manifest_path.exists() and not manifest:
+        continue
+    if enabled.get(plugin_id, manifest.get("defaultEnabled", True)) is not True:
+        continue
+    namespace = manifest.get("name", plugin_id.split("@")[0])
+    if not valid(namespace) or ":" in namespace:
+        continue
+    roots = [plugin / "skills"]
+    custom = manifest.get("skills", [])
+    for location in [custom] if isinstance(custom, str) else custom if isinstance(custom, list) else []:
+        if isinstance(location, str) and (location == "." or location.startswith("./")) and ".." not in Path(location).parts:
+            path = plugin / location
+            if inside(plugin, path):
+                roots.append(path)
+    for skills in roots:
+        for path in files(skills, "SKILL.md", plugin):
+            add(path, path.parent.name, namespace + ":", skill=True)
+print(json.dumps(commands))
+PY`;
+
+// Accept the older line protocol too, during a rolling service/window update.
 export function scanned(stdout) {
+  try { const list = JSON.parse(stdout); if (Array.isArray(list)) return list.filter((c) => typeof c?.name === "string" && typeof c?.about === "string"); } catch {}
   return String(stdout ?? "").split("\n").filter(Boolean).map((l) => { const [name, about] = l.split("\t"); return { name, about: about || "Your command" }; });
 }
 

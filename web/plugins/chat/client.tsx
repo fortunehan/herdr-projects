@@ -1872,26 +1872,25 @@ export function useChat(key: string) {
 
 /** Shepherdr 3's "/" list: while the message is one /command so far, its CLI's commands (and the person's own) that
  *  match, a tap takes one into the box. Whatever is typed goes to the agent as typed; this only suggests. */
-const slashLists = new Map<string, Promise<{ name: string; about: string }[]>>()
 function SlashList({ chatKey, text, pick }: { chatKey: string; text: string; pick: (name: string) => void }) {
   const word = slashTyping(text)
   const [list, setList] = useState<{ name: string; about: string }[]>([])
   useEffect(() => {
     if (word === null) return
-    if (!slashLists.has(chatKey)) slashLists.set(chatKey, fetch(`api/commands?chat=${encodeURIComponent(chatKey)}`).then((r) => r.json()).then((r) => r.commands ?? []).catch(() => []))
     let gone = false
-    slashLists.get(chatKey)!.then((l) => !gone && setList(l))
+    setList([])
+    fetch(`api/commands?chat=${encodeURIComponent(chatKey)}`).then((r) => r.json()).then((r) => !gone && setList(r.commands ?? [])).catch(() => !gone && setList([]))
     return () => { gone = true }
   }, [chatKey, word === null])
   if (word === null) return null
   const shown = slashMatch(list, word)
   if (!shown.length) return null
   return (
-    <div role="listbox" aria-label="Commands" className="overflow-hidden rounded-box bg-bg p-1 shadow-menu">
+    <div role="listbox" aria-label="Commands" className="max-h-[40dvh] overflow-x-hidden overflow-y-auto overscroll-contain rounded-box bg-bg p-1 shadow-menu">
       {shown.map((c: { name: string; about: string }) => (
         <button key={c.name} type="button" role="option" aria-selected={false} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(c.name)}
-          className="flex w-full min-w-0 items-baseline gap-2 rounded-row px-2.5 py-1.5 text-left hover:bg-hover phone:py-2.5">
-          <span className="shrink-0 font-medium">/{c.name}</span>
+          className="flex w-full min-w-0 items-baseline gap-2 rounded-row px-2.5 py-1.5 text-left hover:bg-hover phone:flex-col phone:items-stretch phone:gap-0.5 phone:py-2.5">
+          <span className="max-w-full shrink-0 wrap-anywhere font-medium">/{c.name}</span>
           <span className="min-w-0 truncate text-fg3">{c.about}</span>
         </button>
       ))}
