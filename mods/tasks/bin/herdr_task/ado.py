@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import time
@@ -37,6 +38,8 @@ STATE = os.path.join(STORE, ".ado.json")
 API = "7.1"
 TIMEOUT = 10
 DESCRIPTION_MAX = 4000
+TITLE_MAX = 69  # "under 70 characters", the "#<id>: " prefix included
+TEMPLATE = os.path.join(".azuredevops", "pull_request_template.md")
 BUILD_POLICY = "0609b952-1397-4640-95ec-e00a01b2c241"
 # Minimum number of reviewers, Required reviewers: one still to be met is an approval the pull request waits for
 # (gh's reviewDecision REVIEW_REQUIRED), not a check running: Ready meanwhile, as GitHub's (SHEP-175, #743).
@@ -523,9 +526,143 @@ def comment(repo, n, text):
              {"comments": [{"parentCommentId": 0, "content": text.strip(), "commentType": 1}], "status": "closed"})
 
 
+def work_item(repo, wid):
+    """The work item a pull request links, read live (never taken on a branch name's word): its id must
+    be the one asked for and its project and type non-empty. Fail says why when not."""
+    org = parts(repo)[0]
+    url = f"https://dev.azure.com/{_q(org)}/_apis/wit/workitems/{_q(wid)}?api-version={API}"
+    try:
+        d = call(repo, "GET", url)
+    except AdoError as e:
+        if str(e).startswith("HTTP 404"):
+            raise Fail(f"Work item #{wid} doesn't exist in Azure DevOps organization {org} (or Herdr's account can't read it), so no "
+                       f"pull request was opened. Link a real work item and run ready again.")
+        raise Fail(f"Couldn't check work item #{wid} on Azure DevOps, so no pull request was opened: {e}")
+    fields = d.get("fields") if isinstance(d.get("fields"), dict) else {}
+    try:
+        same = int(d.get("id")) == int(wid)
+    except (TypeError, ValueError):
+        same = False
+    if not same or not str(fields.get("System.TeamProject") or "").strip() or not str(fields.get("System.WorkItemType") or "").strip():
+        raise Fail(f"Azure DevOps didn't answer with a valid work item for #{wid} (its id, project or type is missing or another), "
+                   f"so no pull request was opened. Link a real work item and run ready again.")
+    return d
+
+
+def linked_work_items(repo, task, ref):
+    """The task's work items, each checked live. Fail when it has none: its pull request is made
+    for one."""
+    found = wids(task)
+    if not found:
+        raise Fail(f"{ref} has no Azure DevOps work item, and its pull request needs one, so none was opened. Link one with "
+                   f"`git -C {task['worktree']} config branch.{task['branch']}.ado-workitem <work item id>` and run ready again.")
+    for w in found:
+        work_item(repo, w)
+    return found
+
+
+def pr_title(task, wid, ref):
+    """"#<id>: <Summary>" from the task's title: one sentence, first word capitalised, no final period,
+    under 70 characters in all."""
+    text = " ".join(str(task.get("title") or "").split())
+    text = re.sub(rf"^{re.escape(ref)}\s*[:\u2013-]?\s*", "", text, flags=re.I)
+    room = TITLE_MAX - len(f"#{wid}: ")
+    if len(text) > room:
+        cut = text[:room + 1]
+        text = cut[:cut.rfind(" ")] if " " in cut else text[:room]
+    text = text.rstrip(" .,;:-\u2013\u2014\u3002")
+    return f"#{wid}: {text[:1].upper() + text[1:] if text else 'Changes'}"
+
+
+def pr_template(wt):
+    """The repo's pull request template in the task's worktree (a regular file, not a link: a branch can
+    carry any link, and the text goes public), its text; None only when it isn't there. One that can't
+    be read is a Fail, never taken for absent."""
+    path = os.path.join(wt, TEMPLATE)
+    refused = f"{TEMPLATE} isn't a regular file inside the worktree, so no pull request was opened."
+    try:
+        found = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        raise Fail(f"Couldn't read {TEMPLATE} ({e.strerror or e}), so no pull request was opened.")
+    if not stat.S_ISREG(found.st_mode) or os.path.realpath(path) != os.path.join(os.path.realpath(wt), TEMPLATE):
+        raise Fail(refused)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise Fail(refused)
+            return f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Fail(f"Couldn't read {TEMPLATE} ({getattr(e, 'strerror', None) or e}), so no pull request was opened.")
+
+
+def _bullets_of(text):
+    return [re.sub(r"\s+", " ", m.group(1)).strip() for m in re.finditer(r"^\s*[-*\u2022]\s+(.+)$", text or "", re.M)]
+
+
+def _sentence(text):
+    text = " ".join(str(text or "").split())
+    return text[:1].upper() + text[1:]
+
+
+def _subject(text):
+    """A commit subject as a sentence: without its conventional-commit type and task reference."""
+    text = re.sub(r"^\w+(?:\([^)]*\))?!?:\s*", "", text.strip())
+    return _sentence(re.sub(r"^[A-Z]+-\d+:?\s+", "", text))
+
+
+def change_bullets(task, summary, base_ref):
+    """What the pull request changes, as 1-5 short lines: the task's details (their bullets), else its
+    summary, else its commits' subjects, else its title."""
+    found = _bullets_of(task.get("details"))
+    if not found and summary and summary.strip():
+        found = [x for x in re.split(r"(?<=[.!?])\s+", " ".join(summary.split())) if x]
+    if not found:
+        for rng in (f"{base_ref[0]}..{task['branch']}", f"{base_ref[1]}..{task['branch']}"):
+            ok, out, _ = git(task["worktree"], "log", "--reverse", "--format=%s", rng)
+            if ok and out:
+                found = [_subject(x) for x in out.splitlines()]
+                break
+    found = list(dict.fromkeys(x for x in (_sentence(x) for x in found) if x))[:5]
+    return found or [_sentence(task.get("title")) or "Changes"]
+
+
+NAMES_THE_CHANGE = re.compile(r"summary|description|changes?|what|overview|context|purpose|why|about", re.I)
+CHECKLIST = re.compile(r"^\s*[-*]\s+\[[ xX]\]")
+
+
+def fill_template(template, bullets):
+    """The template as written, every section in order and nothing run: its HTML comments (the guidance)
+    dropped, the bullets in the first section that names the change (its placeholder text replaced),
+    else the first empty one, else above the first heading. Its checklists stay unchecked: nothing here
+    verifies an item."""
+    lines = re.sub(r"<!--.*?-->", "", template.replace("\r\n", "\n"), flags=re.S).split("\n")
+    heads, fenced = [], False
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        elif not fenced and re.match(r"^#{1,6}\s", line):
+            heads.append(i)
+    ends = heads[1:] + [len(lines)]
+    plain = [(a, b) for a, b in zip(heads, ends) if not any(CHECKLIST.match(x) for x in lines[a + 1:b])]
+    pick = next(((a, b) for a, b in plain if NAMES_THE_CHANGE.search(lines[a])), None) \
+        or next(((a, b) for a, b in plain if not "".join(lines[a + 1:b]).strip()), None)
+    listing = [f"- {x}" for x in bullets]
+    if pick:
+        a, b = pick
+        lines[a + 1:b] = ["", *listing, ""]
+    else:
+        lines[:0] = [*listing, ""]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def pr_open(s, task, repo, summary=None):
     """github.pr_open on Azure DevOps: pushes the task's branch (git's own remote and proxy) and opens
-    its pull request, linked to its work item, or keeps the open one."""
+    its pull request, or keeps the open one (never rewritten). A new one is titled "#<id>: <Summary>",
+    described by the repo's template (else a few bullets), and linked to its work item, which Azure DevOps
+    must know: without one no pull request is opened (Fail, so the task Needs you)."""
     wt, br, main = task["worktree"], task["branch"], s.loc["folder"]
     names = git(main, "remote")[1].split()
     remote = "origin" if "origin" in names else (names[0] if names else "origin")
@@ -546,17 +683,18 @@ def pr_open(s, task, repo, summary=None):
         if done:
             raise Fail(f"Pull request !{done['number']} for {br} is already merged, and {br} has commits since. "
                        f"Put them on a new branch (a new task) rather than a second pull request.")
-        body = (task.get("prompt") or "").strip() or task["title"]
-        if summary:
-            body += "\n\n## Summary\n\n" + summary.strip()
-        if (task.get("details") or "").strip():
-            body += "\n\n## Details\n\n" + task["details"].strip()
+        base = task.get("base") or "main"
+        linked = linked_work_items(repo, task, s.ref(task))
+        template = pr_template(wt)
+        bullets = change_bullets(task, summary, (f"{remote}/{base}", base))
+        body = fill_template(template, bullets) if template is not None else "\n".join(f"- {x}" for x in bullets)
         if len(body) > DESCRIPTION_MAX:
-            body = body[:DESCRIPTION_MAX - 1] + "…"
+            raise Fail(f"The pull request's description is {len(body)} characters and Azure DevOps takes {DESCRIPTION_MAX} "
+                       f"(is {TEMPLATE} that long?), so no pull request was opened.")
         d = call(repo, "POST", git_api(repo, "pullrequests"), {
-            "sourceRefName": f"refs/heads/{br}", "targetRefName": f"refs/heads/{task.get('base') or 'main'}",
-            "title": f"{s.ref(task)} {task['title']}"[:400], "description": body,
-            "workItemRefs": [{"id": w} for w in wids(task)]})
+            "sourceRefName": f"refs/heads/{br}", "targetRefName": f"refs/heads/{base}",
+            "title": pr_title(task, linked[0], s.ref(task)), "description": body,
+            "workItemRefs": [{"id": w} for w in linked]})
     except AdoError as e:
         raise Fail(f"Couldn't open a pull request on Azure DevOps: {e}")
     n = d.get("pullRequestId")

