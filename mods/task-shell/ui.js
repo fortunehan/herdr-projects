@@ -167,11 +167,13 @@ export function dialogFooter({ onCancel, primary, cancelLabel = "Cancel", note =
 // number of pixels tall, so they centre; a lone "1" is narrow with its flag on the left, so it
 // moves right a pixel to look centred.
 export function countBadge(need, ready, line) {
-  const num = (n) => div().line_height("16px").when(n === 1, (el) => el.ml(1)).child(n > 9 ? "9+" : String(n));
-  const part = (n, bg) => div().h(16).flex().items_center().justify_center().bg(bg).child(num(n));
+  // Fix the text box as well as its line height, so both halves share the same vertical origin.
+  const num = (n) => div().h(16).flex_none().whitespace_nowrap().line_height("16px")
+    .when(n === 1, (el) => el.ml(1)).child(n > 9 ? "9+" : String(n));
+  const part = (n, bg) => div().h(16).flex_none().flex().items_center().justify_center().bg(bg).child(num(n));
   const badge = h_flex().h(16).flex_none().text_color(onStatus()).text_size(TEXT.id).font_semibold();
   if (need > 0 && ready > 0)
-    return badge.child(part(need, red()).w(need > 9 ? 19 : 15).rounded_l(8)).child(div().w(1).h(16).bg(line))
+    return badge.child(part(need, red()).w(need > 9 ? 19 : 15).rounded_l(8)).child(div().w(1).h(16).flex_none().bg(line))
       .child(part(ready, green()).w(ready > 9 ? 19 : 15).rounded_r(8));
   const n = need || ready;
   return badge.child(part(n, need ? red() : green()).min_w(16).px(n > 9 ? 4 : 0).rounded(8));
