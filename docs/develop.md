@@ -63,6 +63,26 @@ GitHub runs these and more on every pull request (`.github/workflows/check.yml`)
 needs the window's runtime and runs a mod's `init()` for real (it can reach the live app): only on a person's
 machine, and never for `shepherdr-settings` (its init pushes settings to other machines).
 
+### Codex approval boundary (SHEP-43)
+
+Codex 0.167.2 runs `PermissionRequest` hooks before Auto-review. Returning no decision continues to Codex's reviewer;
+returning `allow` approves the request instead. Native managed checkpoints still require a human, and hook denials win.
+The [hook input schema](https://github.com/openai/codex/blob/rust-v0.167.2/codex-rs/hooks/schema/generated/permission-request.command.input.schema.json)
+does not expose the effective reviewer or mandatory-human requirement.
+[`permission_mode`](https://github.com/openai/codex/blob/rust-v0.167.2/codex-rs/core/src/hook_runtime.rs) is `default`
+for on-request, untrusted, and granular policies. It does not identify Auto-review.
+
+The current integration cannot authenticate fresh effective policy for a specific approval from labels, argv, global
+config, or a user-writable transcript. Approval routing is therefore unchanged: the human-card wait still blocks
+Auto-review. A conditional early return needs supported policy context bound to the active session, turn, and request.
+`test/test_ask_hook.py` preserves the human-card and denial controls; it does not prove a routing fix.
+
+The chat acknowledgment tests use the captured rejected-process outputs in `test/fixtures/codex-approval-chat.jsonl`.
+They exercise both log parser paths, service cid matching, outbox settlement, pagination, rereads, restart, and attachment
+paths. Duplicate detection coalesces one adjacent ordinary/approval echo with identical words and reply target within
+five seconds, not an authenticated client id. Neither new-session Codex behavior nor the installed interfaces are proven
+by these isolated tests. No pending messages, queues, or localStorage keys are cleared as a workaround.
+
 ## Parity check (a machine that runs these mods by hand)
 
 ```bash

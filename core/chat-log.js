@@ -78,7 +78,7 @@ BEGIN { pos = base; first = base; msgs = 0 }
     if (match(line, /"(backgroundTaskId|taskId)":"[^"]+"/)) { m = substr(line, RSTART, RLENGTH); sub(/^"[A-Za-z]*":"/, "", m); sub(/"$/, "", m); ids = ids " TASK=" m }
     print off "\tR\t" ids
     # An answer to a question, or words that declined a request: read whole (answers()).
-    if (claude && length(line) <= 262144 && ((index(line, "\"answers\":{") && index(line, "\"questions\":[")) || index(line, "wrote in the chat instead: "))) print off "\tJ\t" line
+    if (length(line) <= 262144 && ((claude && index(line, "\"answers\":{") && index(line, "\"questions\":[")) || index(line, "wrote in the chat instead: "))) print off "\tJ\t" line
     next
   }
   # The queue of messages typed while Claude Code works: what goes in (the words of the person)
@@ -168,6 +168,27 @@ const time = (s) => Date.parse(s ?? "") || 0;
 // Text Claude Code puts in a user line that the person didn't type.
 const INJECTED = /^\s*(<(local-command-|system-reminder|bash-|task-notification|user-memory-input|user-prompt-submit-hook|command-message)|Caveat: The messages below|\[Request interrupted)/;
 const CODEX_INJECTED = /^\s*(# AGENTS\.md instructions|<(environment_context|user_instructions|user_shell_command|turn_aborted|subagent_notification|skill|INSTRUCTIONS)\b)/;
+
+// Only the transport's rejected-process error carries a permission card's chat reply.
+function codexApprovalReplies(output) {
+  const prefix = "The person didn't use the card and wrote in the chat instead: ";
+  if (Array.isArray(output) && (output[0]?.type !== "input_text" || !/^Script failed\nWall time [\d.]+ seconds\nOutput:\n$/.test(output[0]?.text ?? ""))) return [];
+  const texts = typeof output === "string" ? [output] : Array.isArray(output)
+    ? output.filter((b) => b?.type === "input_text" && typeof b.text === "string").map((b) => b.text) : [];
+  return texts.flatMap((text) => {
+    const m = /^(?:Script error:\n)?exec_command failed: CreateProcess \{ message: ("(?:[^"\\]|\\.)*") \}$/.exec(text);
+    if (!m) return [];
+    try {
+      const rejected = /^Rejected\(([\s\S]*)\)$/.exec(JSON.parse(m[1]));
+      if (!rejected) return [];
+      let quoted = rejected[1];
+      // Code mode escapes the rejection's quoted message one extra time.
+      if (quoted.startsWith('\\"')) quoted = JSON.parse(`"${quoted}"`);
+      const reason = JSON.parse(quoted);
+      return typeof reason === "string" && reason.startsWith(prefix) && reason.slice(prefix.length).trim() ? [reason.slice(prefix.length)] : [];
+    } catch { return []; }
+  });
+}
 
 // What the person typed, without what the CLI or herdr-core wrapped around it.
 // A message another agent sent with `hc send` comes as <hc from="t3 name">text</hc>.
@@ -635,6 +656,8 @@ export class Conversation {
     // Claude Code's queue of what was typed while it works, in order: { id, raw, at, text?,
     // images? } (text only for the person's words; a job's end has a place too).
     this.queue = [];
+    this.approvalReplies = new Set();
+    this.codexEcho = null;
   }
 
   push(item) {
@@ -989,6 +1012,18 @@ export class Conversation {
     }
   }
 
+  // Coalesce one adjacent ordinary/approval echo, not repeated sends with the same words.
+  codexUser(id, u, approval = false) {
+    const prev = this.codexEcho;
+    const same = prev && prev.approval !== approval && u.text === prev.item.text && u.from === prev.item.from && (u.replyTo ?? null) === prev.item.replyTo
+      && u.at && prev.item.at && Math.abs(u.at - prev.item.at) <= 5000;
+    if (same) { this.codexEcho = null; return; }
+    const before = this.items.length;
+    this.user(id, u);
+    const item = this.items[this.items.length - 1];
+    this.codexEcho = this.items.length > before && item?.kind === "user" ? { item, approval } : null;
+  }
+
   codex(l, off) {
     const p = l.payload;
     if (!p || typeof p !== "object") return;
@@ -1002,10 +1037,21 @@ export class Conversation {
           return CODEX_INJECTED.test(it.text) ? "" : it.text.trim();
         }).filter(Boolean).join("\n\n");
         const u = words ? cleanUser(words) : null;
-        if (u) this.user(`u${off}`, { ...u, at: time(l.timestamp) });
+        if (u) this.codexUser(`u${off}`, { ...u, at: time(l.timestamp) });
+      } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+        codexApprovalReplies(p.output).forEach((text, i) => {
+          const key = `${p.call_id ?? off}:${i}`;
+          if (this.approvalReplies.has(key)) return;
+          this.approvalReplies.add(key);
+          const u = cleanUser(text);
+          if (u) this.codexUser(`ua${off}:${i}`, { ...u, at: time(l.timestamp) }, true);
+        });
       } else if (p.type === "message" && p.role === "assistant") {
         const words = this.agentText((Array.isArray(p.content) ? p.content : []).filter((it) => it?.type === "output_text" && it.text?.trim()).map((it) => it.text.trim()).join("\n\n"));
-        if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp), ...this.takeSuggest() });
+        if (words) {
+          this.codexEcho = null;
+          this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp), ...this.takeSuggest() });
+        }
       } else if ((p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") && p.name !== "wait" && p.name !== "sleep") {
         const cid = String(p.call_id ?? p.id ?? `c${off}`);
         // Codex's own questions (Plan mode): answered in its terminal, shown here as asked.
@@ -1041,6 +1087,7 @@ export class Conversation {
       const limits = codexLimits(p.rate_limits, time(l.timestamp));
       this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window, ...(limits ? { limits } : {}) };
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
+      this.codexEcho = null;
       for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;
       this.open.clear();
       this.waits.clear();

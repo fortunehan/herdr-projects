@@ -44,13 +44,21 @@ class AskHook(unittest.TestCase):
             json.dump(t, f)
         os.replace(self.state + ".tmp", self.state)
 
-    def start(self, **env):
+    def start(self, request=None, **env):
         e = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": self.tmp, "HERDR_APP_HOME": self.app,
              "HC_TERMINAL_ID": "t9", "FAKE_HC_STATE": self.state, **env}
         p = subprocess.Popen(["sh", HOOK], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=e)
-        p.stdin.write(json.dumps(REQ).encode())
+        p.stdin.write(json.dumps(REQ if request is None else request).encode())
         p.stdin.close()
+        self.addCleanup(self.stop, p)
         return p
+
+    @staticmethod
+    def stop(p):
+        if p.poll() is None:
+            p.kill()
+        p.wait()
+        p.stdout.close()
 
     @staticmethod
     def out(p, timeout=10):
@@ -147,6 +155,45 @@ class AskHook(unittest.TestCase):
         out = self.out(self.start(**env))
         self.assertEqual(out, b"")
         self.assertIsNone(self.waiting(0.2))
+
+    def test_codex_policy_claims_cannot_replace_a_human_card_or_its_denial(self):
+        # The supported 0.167.2 hook input does not attest the effective reviewer.
+        config = os.path.join(self.tmp, ".codex")
+        os.makedirs(config)
+        with open(os.path.join(config, "config.toml"), "w") as f:
+            f.write('approvals_reviewer = "auto_review"\n')
+        transcript = os.path.join(self.tmp, "rollout.jsonl")
+        with open(transcript, "w") as f:
+            f.write(json.dumps({"type": "turn_context", "payload": {"turn_id": "turn", "approvals_reviewer": "auto_review"}}) + "\n")
+        cases = [
+            ({}, {}),
+            ({"permission_mode": "default"}, {}),
+            ({"approvals_reviewer": "auto_review"}, {}),
+            ({"approvals_reviewer": "user"}, {}),
+            ({"required_human_approval": True}, {}),
+            ({"transcript_path": transcript, "session_id": "session", "turn_id": "turn"}, {}),
+            ({}, {"herdr.approvals_reviewer": "auto_review", "herdr.trusted": "true"}),
+        ]
+        denied = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "security denial"}}}
+        for fields, labels in cases:
+            with self.subTest(fields=fields, labels=labels):
+                self.term({"state": "live", "status": "working", "argv": ["codex", "-c", "approvals_reviewer=user"], "labels": labels})
+                p = self.start(request={**REQ, "hook_event_name": "PermissionRequest", **fields}, CODEX_APPROVALS_REVIEWER="auto_review")
+                ask = self.waiting()
+                self.assertIsNotNone(ask)
+                self.assertIsNone(p.poll(), "no inferred policy may release the hook before a human answers")
+                with open(os.path.join(self.asks, "ans", ask + ".json"), "w") as f:
+                    json.dump(denied, f)
+                self.assertEqual(json.loads(self.out(p)), denied)
+
+    def test_codex_no_decision_is_empty_not_allow_and_still_waits_for_the_card(self):
+        self.term({"state": "live", "status": "working", "argv": ["codex"]})
+        p = self.start(request={**REQ, "hook_event_name": "PermissionRequest", "permission_mode": "default"})
+        ask = self.waiting()
+        self.assertIsNotNone(ask)
+        self.assertIsNone(p.poll(), "SHEP-42 ordering boundary: Codex's reviewer is still behind this hook")
+        open(os.path.join(self.asks, "ans", ask + ".json"), "w").close()
+        self.assertEqual(self.out(p), b"", "fall through to Codex's reviewer, never synthesize allow")
 
 
 if __name__ == "__main__":
