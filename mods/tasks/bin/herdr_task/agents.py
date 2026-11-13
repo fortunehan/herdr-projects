@@ -641,7 +641,7 @@ FG_MAX_MS = 15 * 60000
 BG_HINTS = ("<task-notification>", "task_id", "backgroundTaskId", "timeoutMs", "isAsync", "in background with ID",
             "Monitor started", "Async agent launched", "session_id", "session ID",
             # Codex (SHEP-207): a poll's result without its session id, a wait on a code-mode cell
-            "exit_code", "Process exited", "cell_id", "cell ID")
+            "exit_code", "Process exited", "cell_id", "cell ID", "CommandExecution")
 BG_MAX_MS = 3 * 3600_000  # a background job started longer ago than this no longer counts
 BG_STARTED = re.compile(r"Command running in background with ID: (\w+)|Monitor started \(task (\w+)|Async agent launched[\s\S]*?agentId: (\w+)")
 BG_ENDED = re.compile(r"<task-id>(\w+)</task-id>(?:(?!</task-notification>)[\s\S])*?<status>(\w+)</status>")
@@ -728,6 +728,7 @@ def _bg_scan(lines, seen):
     calls open and done are read off the raw line (an image's result is megabytes of JSON)."""
     running, calls, ended = seen["running"], seen["calls"], seen["ended"]
     cells = seen.setdefault("cells", {})  # Codex code-mode cell id -> the session ids its wait polls
+    finished = seen.setdefault("finished", {})
     opened = seen.setdefault("open", {})
     for raw in lines:
         # Claude Code keeps a copy of each request it sends (api-request-blob): every call and
@@ -749,6 +750,16 @@ def _bg_scan(lines, seen):
             if not isinstance(d, dict):
                 continue
             at = _ms(d.get("timestamp")) or now()
+            # Codex's execution event names the session even when a batched poll drops its id.
+            p = d.get("payload") or {}
+            item = p.get("item") or {}
+            if (d.get("type") == "event_msg" and p.get("type") == "item_completed"
+                    and isinstance(item, dict) and item.get("type") == "CommandExecution"
+                    and item.get("process_id") is not None and item.get("status") in ("completed", "failed")):
+                key = "codex:" + str(item["process_id"])
+                if running.pop(key, None) is not None:
+                    ended = max(ended, at)
+                finished[key] = at
             # Claude Code: ended by its notice (in the queue, an attachment or a user line), or stopped.
             if "<task-notification>" in raw and (d.get("type") in ("queue-operation", "attachment") or from_person(d) is not None):
                 for m in BG_ENDED.finditer(raw):
@@ -770,7 +781,6 @@ def _bg_scan(lines, seen):
                 for i in filter(None, ids):
                     running.setdefault(str(i), at)
             # Codex: a process left running has a session id until an output says it exited.
-            p = d.get("payload") or {}
             if d.get("type") == "response_item" and p.get("type") in ("function_call", "custom_tool_call"):
                 calls[p.get("call_id")] = str(p.get("arguments") or p.get("input") or "")
             elif d.get("type") == "response_item" and p.get("type") in ("function_call_output", "custom_tool_call_output"):
@@ -779,6 +789,11 @@ def _bg_scan(lines, seen):
                 polled = cells.get(cell.group(1), []) if cell else CODEX_SESSION_ARG.findall(call)
                 if _codex_output(_text(p.get("output")), polled, cells, running, at):
                     ended = max(ended, at)
+                # A yielded script can report a session after its completion event was written.
+                for key in list(running):
+                    if key in finished:
+                        running.pop(key)
+                        ended = max(ended, finished[key])
     seen["ended"] = ended
 
 

@@ -1474,6 +1474,97 @@ class CodexCodeMode(unittest.TestCase):
         self.assertTrue(self.agents.codex_working(codex))
         self.assertTrue(self.agents.codex_working({}))  # no pid: its log decides
 
+    def ready_replay(self):
+        """SHEP-43's execution metadata, with command output and local paths removed."""
+        with open(os.path.join(ROOT, "test", "fixtures", "codex-ready.json")) as f:
+            fixture = json.load(f)
+        self.task.update(fixture["task"])
+        self.setUp_ps("100 1 codex\n101 100 codex-code-mode-host\n102 100 node mcp-server\n")
+        return fixture
+
+    def test_completed_command_clears_phantom_work_before_expiry(self):
+        fixture = self.ready_replay()
+        for item in fixture["log"]:
+            with open(self.log, "a") as f:
+                f.write(json.dumps(item) + "\n")
+        with self.mock.patch.object(self.agents, "now", lambda: fixture["now"]):
+            jobs, ended = self.agents.background_jobs(self.log)
+            self.assertEqual(jobs, {})
+            self.assertEqual(ended, 1794562666308)
+            self.assertEqual(self.status(self.codex())[0], "ready")
+
+    def test_completion_before_yielded_output_cannot_reopen_a_session(self):
+        fixture = self.ready_replay()
+        self.stamp(-300_000, fixture["log"][1])
+        self.assertEqual(self.agents.background_jobs(self.log)[0], {})
+        self.stamp(-299_000, fixture["log"][0])
+        self.assertEqual(self.agents.background_jobs(self.log)[0], {})
+        self.assertEqual(self.status(self.codex())[0], "ready")
+
+    def test_failure_also_ends_work_but_another_running_job_still_counts(self):
+        fixture = self.ready_replay()
+        self.stamp(-300_000, fixture["log"][0])
+        self.assertEqual(self.status(self.codex())[0], "working")
+        event = fixture["log"][1]
+        event["payload"]["item"].update(status="failed", exit_code=1)
+        self.stamp(-200_000, event)
+        self.assertEqual(self.status(self.codex())[0], "ready")
+        self.stamp(-100_000, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "other",
+                              "output": "Process running with session ID 8"}})
+        self.assertEqual(self.status(self.codex())[0], "working")
+
+    def test_nonterminal_or_quoted_completion_is_not_an_end(self):
+        fixture = self.ready_replay()
+        self.stamp(-300_000, fixture["log"][0])
+        event = fixture["log"][1]
+        event["payload"]["item"].update(status="in_progress", exit_code=None)
+        self.stamp(-200_000, event)
+        self.stamp(-100_000, {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "read",
+                              "output": json.dumps(fixture["log"][1])}})
+        self.assertEqual(self.status(self.codex())[0], "working")
+
+    def test_scheduler_clears_saved_work_and_emits_ready_once(self):
+        import contextlib
+        import herdr_task.news as news
+        import herdr_task.assistant_settings as assistant_settings
+        import herdr_task.reactions as reactions
+        fixture = self.ready_replay()
+        s = Store([self.task])
+        s.loc["folder"] = self.dir
+        path = os.path.join(self.dir, "news.json")
+        self.stamp(-300_000, fixture["log"][0])
+        with contextlib.ExitStack() as stack:
+            for mod, name, value in ((news, "NEWS", path), (news, "now", lambda: self.clock),
+                                     (news, "store_files", lambda folder: ["fixture"]),
+                                     (news, "read_list", lambda p: {"folder": self.dir, "tasks": [self.task]}),
+                                     (news, "locate", lambda folder: s.loc), (news, "Store", lambda *a, **kw: s),
+                                     (news, "live_agents", lambda key: self.codex()), (news, "detail", lambda k: k),
+                                     (news, "coordinator_in", lambda space: None), (news, "news_read", lambda quiet: None),
+                                     (news, "held_pass", lambda report: None),
+                                     (assistant_settings, "settings_pass", lambda *a: None),
+                                     (reactions, "reactions_pass", lambda *a: None)):
+                stack.enter_context(self.mock.patch.object(mod, name, value))
+            news.news_pass({})
+            self.assertTrue(self.task["own_work"])
+            self.stamp(-200_000, fixture["log"][1])
+            news.news_pass({})
+            self.assertNotIn("own_work", self.task)
+            with open(path) as f:
+                state = json.load(f)
+            self.assertEqual(state["seen"]["f"]["43"]["status"], "ready")
+            self.assertEqual([x["event"] for x in state["outbox"]], ["ready"])
+            news.news_pass({})
+            with open(path) as f:
+                self.assertEqual(len(json.load(f)["outbox"]), 1)
+
+    def test_unrelated_foreground_completion_does_not_end_a_wait(self):
+        self.task["progress"] = {"text": "Waiting on GitHub check", "set": self.clock - 120_000}
+        fixture = self.ready_replay()
+        self.task["state"] = "running"
+        self.stamp(-100_000, fixture["log"][1])
+        self.assertEqual(self.agents.background_jobs(self.log)[1], 0)
+        self.assertEqual(self.status(self.codex())[0], "working")
+
 
 class NoFalseNeedsYou(unittest.TestCase):
     """SHEP-133: no Needs you for a few seconds that moves on by itself. A quiet agent or a problem
