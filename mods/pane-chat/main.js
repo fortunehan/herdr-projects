@@ -14,12 +14,12 @@
 // sees it, and the agents list, tab bar, spaces and status bar read it (chat/parked.js).
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex } from "gpui-base";
-import { props, run, theme, home, exec, hc, notify, nextCommand, shared, setShared } from "herdr";
+import { h_flex, v_flex } from "gpui-base";
+import { props, run, theme, home, exec, hc, notify, nextCommand, shared, setShared, openOverlay, closeOverlay } from "herdr";
 import { panes, terminals, spaces, inRender } from "./live.js";
 import { spaceName, chatPane, chatLabel } from "./core/spaces.js";
 import { apSpace, apWatch, apPoll, apGroup, apHeartbeatLink, COMPACT_BELOW } from "./autopilot.js";
-import { button as uiButton, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
+import { button as uiButton, segmented, menuRow, TEXT, RADIUS, toast, plainError } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
 import { endAgent, agentTitle } from "./core/menus.js";
@@ -74,8 +74,33 @@ function parked(terminal) {
   return { program: k.program, status: st, cwd: k.foreground?.cwd ?? k.cwd ?? null, title: k.title ?? "" };
 }
 
+const COPY_ACTIONS = [["id", "Copy ID"], ["path", "Copy full path"], ["both", "Copy ID and path"]];
+
+/** Resolve the clicked header again for each action, including parked Chat agents and remote addresses.
+ * A lazy Assistant's configured folder is not a running terminal's cwd. */
+function copyTarget(pane) {
+  const self = panes().find((p) => p.pane === pane);
+  const address = self?.mod === CHAT ? agentOf(pane) : self?.mod ? null : self?.terminal;
+  const terminal = address ? terminals().find((k) => k.address === address && k.state === "live") : null;
+  const cwd = terminal?.foreground?.cwd ?? terminal?.cwd;
+  const absolute = typeof cwd === "string" && (/^\//.test(cwd) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd));
+  return { terminal: terminal?.address || null, path: absolute ? cwd : null };
+}
+
+function copyUnavailable(target, action) {
+  if (!target.terminal) return "No live terminal is available for this pane.";
+  if (action !== "id" && !target.path) return "The terminal's current full path is unavailable.";
+  return null;
+}
+
 export default class Pane extends View {
   init(_props, cx) {
+    if (props()?.copyPane) {
+      this.copyFocus = cx.focus_handle();
+      this.copyFocus.focus();
+      this.copyIndex = 0;
+      return;
+    }
     this.hovered = false;
     // An Assistant's header: its Autopilot, looked at again now and then (the scheduler changes it).
     cx.timer.every(4000, (cx) => apPoll(this, cx));
@@ -125,6 +150,50 @@ export default class Pane extends View {
         cx.notify();
       })
       .child(svg(`mods/pane-chat/${icon}.svg`).size(14));
+  }
+
+  copy(pane, action, cx) {
+    const target = copyTarget(pane);
+    const unavailable = copyUnavailable(target, action);
+    if (unavailable) {
+      notify({ title: "Couldn't copy", body: unavailable, level: "warning" });
+      return;
+    }
+    const text = action === "id" ? target.terminal : action === "path" ? target.path
+      : `Terminal: ${target.terminal}\nPath: ${target.path}`;
+    try {
+      cx.write_to_clipboard(text);
+      closeOverlay(props()?.overlay);
+      notify({ title: action === "id" ? "Terminal ID copied" : action === "path" ? "Full path copied" : "Terminal ID and path copied", level: "success", timeout: 1600 });
+    } catch (e) {
+      notify({ title: "Couldn't copy", body: plainError(e), level: "error" });
+    }
+  }
+
+  copyMenu() {
+    const pane = props()?.copyPane;
+    const target = copyTarget(pane);
+    const t = theme();
+    return v_flex().id("pane-copy-menu").track_focus(this.copyFocus).w_full().p(4).bg(t.popover)
+      .on_key_down((e, cx) => {
+        const current = copyTarget(pane);
+        const available = COPY_ACTIONS.map(([action], i) => copyUnavailable(current, action) ? -1 : i).filter((i) => i >= 0);
+        if (e.key === "escape") closeOverlay(props()?.overlay);
+        else if (e.key === "enter") this.copy(pane, COPY_ACTIONS[this.copyIndex][0], cx);
+        else if (e.key === "down" || e.key === "up") {
+          const at = available.indexOf(this.copyIndex);
+          this.copyIndex = available.length ? available[(at + (e.key === "down" ? 1 : available.length - 1)) % available.length] : 0;
+          this.copyKeyed = true;
+        } else return;
+        cx.stop_propagation();
+        cx.notify();
+      })
+      .children(COPY_ACTIONS.map(([action, label], i) => {
+        const unavailable = copyUnavailable(target, action);
+        return menuRow(`ph-copy-${action}`, label, { disabled: Boolean(unavailable),
+          onClick: (_e, cx) => this.copy(pane, action, cx) })
+          .when(this.copyKeyed && this.copyIndex === i && !unavailable, (el) => el.bg(t.hover));
+      }));
   }
 
   // Terminal → Chat: the chat takes this agent pane's spot.
@@ -202,7 +271,7 @@ export default class Pane extends View {
 
   // One copy of Herdr's live lists for the whole render (live.js): past ~50 ms Herdr stops it.
   render(cx) {
-    return inRender(() => this.draw(cx));
+    return inRender(() => props()?.copyPane ? this.copyMenu() : this.draw(cx));
   }
 
   draw(cx) {
@@ -279,6 +348,10 @@ export default class Pane extends View {
       .when(canSwitch, (el) => el.child(this.switcher(t, `ph-mode-${pane}`, chatMode,
         (cx) => this.toChat(self, cx),
         // No agent yet: the chat starts it (no first message) and then shows its terminal.
-        (cx) => (lazy && !agentOf(pane) ? setShared("chat.startreq", { pane, at: Date.now() }) : this.toTerminal(pane, cx)))));
+        (cx) => (lazy && !agentOf(pane) ? setShared("chat.startreq", { pane, at: Date.now() }) : this.toTerminal(pane, cx)))))
+      .when(chatMode || (!self.mod && Boolean(self.terminal)), (el) => el.child(
+        this.button(t, `ph-copy-${pane}`, "copy", null, null, () => openOverlay({
+          mod: "pane-chat", kind: "popup", width: 224, height: 104, props: { copyPane: pane },
+        })).accessibility_label("Copy terminal ID or full path").tooltip("Copy terminal ID or full path")));
   }
 }
