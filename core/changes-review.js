@@ -357,7 +357,7 @@ export class ChangesReview {
           const processed = run.round.response?.status === "completed";
           const recoveryOnly = !!(d?.body && !["pending", "waiting", "not-sent"].includes(d.state));
           await this.io.reserve({ ...run, source });
-          (run.recovery ??= []).push({ at: Date.now(), type: "rebind", source: previousSource, delivery: structuredClone(run.round.delivery) });
+          (run.recovery ??= []).push({ at: Date.now(), type: "rebind", source: previousSource, delivery: JSON.parse(JSON.stringify(run.round.delivery)) });
           run.source = source;
           if (run.round.findings !== null && !processed) run.round.delivery = { id: `${run.round.id}-rebind-${run.recovery.length}`, state: "pending", recoveryOnly };
           run.state = processed ? "ready-for-recheck" : run.round.findings === null ? "reviewing" : "awaiting-delivery"; delete run.resumeState;
