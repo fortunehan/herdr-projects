@@ -1,0 +1,4 @@
+{
+  "name": "Changes Review bridge harness",
+  "description": "Read-only native rendering of the existing dialog with fixture target data. No reviews or agents are started."
+}

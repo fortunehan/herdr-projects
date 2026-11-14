@@ -59,6 +59,20 @@ function fixture(unborn = false) {
   return { dir, root, data, target, source, state, io, review, start, event, records };
 }
 
+test("bridge Base/Branch uses the producer's chosen ref instead of the repository default", async () => {
+  const f = fixture();
+  git(f.root, "branch", "chosen-base");
+  git(f.root, "config", "herdr.base", "missing-default");
+  for (const mode of ["base", "ref"]) {
+    const observed = await capture(f.io, { ...f.target, mode, ref: "chosen-base" });
+    expect(observed.ref).toBe("chosen-base");
+    expect(observed.base).toBe(git(f.root, "rev-parse", "chosen-base"));
+    expect(observed.root).toBe(f.source.root);
+    expect(observed.inventory.some((entry) => entry.path === "new")).toBe(true);
+  }
+  await expect(capture(f.io, { ...f.target, mode: "base", ref: "missing-chosen-ref" })).rejects.toThrow("Unknown or missing base ref");
+});
+
 test("clean review persists the complete report, waits for a receipt, then closes only its reviewer", async () => {
   const f = fixture(), r = await f.start();
   const a = f.state.opens[0].argv;

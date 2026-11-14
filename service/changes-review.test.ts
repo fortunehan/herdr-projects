@@ -7,7 +7,8 @@ import { DEFAULTS, menuFor, parseDefaults, sessionOf } from "../core/agents.js";
 import { FIND, Conversation } from "../core/chat-log.js";
 import { CLEAN_ENV, AGENT_PATH } from "../core/clean-env.js";
 import { ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, DEFAULT_MODEL } from "../core/changes-review.js";
-import { CAPTURE } from "../core/review-target.js";
+import { CAPTURE, capture } from "../core/review-target.js";
+import { ReviewLaunchBridge, REVIEW_COMMAND, REVIEW_BRIDGE } from "../core/review-launch.js";
 import { chatPane } from "../core/spaces.js";
 
 const roots: string[] = [];
@@ -85,18 +86,48 @@ async function fixture() {
     if (old !== expected) throw new Error("Stale snapshot");
     await fs.mkdir(join(path, ".."), { recursive: true }); await fs.writeFile(path, text);
   };
-  const bindings = { exec, hc, writeTextFile, openOverlay: () => {}, panes: () => state.panes, terminals: () => state.terminals,
+  const bindings = { exec, hc, writeTextFile, openOverlay: (value: any) => { (state.overlays ??= []).push(value); return "fixture-overlay"; }, panes: () => state.panes, terminals: () => state.terminals,
     spaces: () => [{ id: "workspace", machine: null, tabs: (state.tabCount === 2 ? [{ id: "source-tab" }] : []).concat([{ id: "review-tab" }]) }], fs,
     dirsReady: async () => ({ reviews: data }), DEFAULTS, menuFor, parseDefaults, sessionOf, FIND, Conversation, CLEAN_ENV, AGENT_PATH,
-    ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, chatPane, shared: (key: string) => state.shared?.[key] };
+    ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, chatPane, capture, ReviewLaunchBridge,
+    shared: (key: string) => state.shared?.[key], setShared: (key: string, value: unknown) => { (state.shared ??= {})[key] = value; } };
   const src = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
-  const reload = () => new Function(...Object.keys(bindings), src + "\nreturn { reviews, reviewRecords, reviewTick, reviewSweep };")(...Object.values(bindings));
+  const reload = () => new Function(...Object.keys(bindings), src + "\nreturn { reviews, reviewRecords, reviewTick, reviewSweep, reviewBridge: reviewLauncher(), bindReviewLaunch };")(...Object.values(bindings));
   const api: any = reload();
   const target = { cwd: root, mode: "uncommitted", workspace: "workspace" };
   const start = async () => api.reviews.launch(await api.reviews.prepare(target), target);
   const complete = (r: any, findings: any[] = []) => ({ type: "completed", runId: r.id, roundId: r.round.id, reportId: r.round.reportId, session: r.session, complete: true, findings, text: "Full report text" });
   return { state, api, reload, start, complete, target, commands, source, root, top };
 }
+
+for (const mode of ["uncommitted", "branch", "base"]) test(`Annotator ${mode} command binds real Git checkout and source before the existing launch boundary`, async () => {
+  const f = await fixture();
+  f.source.labels["herdr.chat"] = "source-pane";
+  run("git", ["branch", "chosen-ref"], f.root);
+  const head = run("git", ["rev-parse", "HEAD"], f.root).stdout.trim();
+  f.api.reviewBridge.announce();
+  f.state.shared["changes.review.target"] = { cwd: "/unrelated", mode: "uncommitted" };
+  const req = { version: 1, id: `annotator-${mode}`, bridge: f.state.shared[REVIEW_BRIDGE].instance, at: Date.now(),
+    target: { cwd: f.root, on: null, workspace: "workspace", tab: "source-tab", comparison: { mode, base: mode === "uncommitted" ? null : "chosen-ref" },
+      head, baseline: head, source: { address: f.source.address, pid: f.source.foreground.pid } } };
+  const command = REVIEW_COMMAND + encodeURIComponent(JSON.stringify(req));
+  expect((await f.api.reviewBridge.handle(command)).status).toBe("opened");
+  await f.api.reviewBridge.handle(command);
+  expect(f.state.overlays).toHaveLength(1);
+  expect(f.state.launches).toEqual([]); expect(f.state.sends).toEqual([]);
+  const input = f.state.overlays[0].props.target;
+  expect(input.ref).toBe(mode === "uncommitted" ? "" : "chosen-ref");
+  expect(input.workspace).toBe("workspace"); expect(input.binding.address).toBe(f.source.address);
+  const form = await f.api.reviews.prepare(input);
+  const runRecord = await f.api.reviews.launch(form, input);
+  expect(runRecord.target.root).toBe(await fs.realpath(f.root));
+  expect(runRecord.source.conversation).toBe(sessionOf("codex", f.state.sourcePath));
+  expect(runRecord.input.workspace).toBe("workspace");
+  expect(runRecord.model).toBe(DEFAULT_MODEL); expect(runRecord.maxRounds).toBe(3);
+  expect(f.state.launches).toHaveLength(1);
+  await f.api.reviews.message(f.complete(runRecord));
+  expect((await f.api.reviewRecords())[0].round.findings).toEqual([]);
+});
 
 test("desktop launch opens centered Chat with exact model, separate levels and bound source, then retains a source-linked pass", async () => {
   const f = await fixture();
