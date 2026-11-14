@@ -454,11 +454,14 @@
       "title": "Changes side panel",
       "core": [
         "worktree",
-        "changes-follow"
+        "changes-follow",
+        "changes-review",
+        "review-target"
       ],
       "herdr": {
         "mods": [
-          "my-changes"
+          "my-changes",
+          "changes-review"
         ]
       },
       "web": {

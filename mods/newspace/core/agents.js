@@ -67,7 +67,7 @@ function overrides(argv) {
 // model list. Read once per agent process.
 export const DEFAULTS = `
 if [ "$1" = claude ]; then
-  f="$HOME/.claude/settings.json"
+  f="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
   command -v jq >/dev/null && [ -f "$f" ] && jq -r '"model\\t\\(.model // "")", "effort\\t\\(.effortLevel // "")", "fast\\t\\(if .fastMode == true then "on" else "" end)", "per\\t\\(.modelSettings // {} | with_entries(.value |= (.effortLevel // null)) | tojson)", "mode\\t\\(.permissions.defaultMode // "")", "picker\\t\\(.modelPicker.options // null | if type == "array" then map(select(type == "object") | {model, label}) else null end | tojson)"' "$f" 2>/dev/null
 else
   f="$HOME/.codex/config.toml"

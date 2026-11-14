@@ -9,26 +9,26 @@ core/screen.js: chat
 core/accept.js: accept-card
 core/toasts.js: toasts
 core/menus.js: spaces-chat tasks tasks-menu menu-tasks new-menu-tasks pane-chat tabs-tasks coordinator
-core/asks.js: accept-card chat jump spaces-chat tabs-tasks tasks workspace-status-chat toasts
+core/asks.js: accept-card chat jump spaces-chat tabs-tasks tasks workspace-status-chat toasts changes-review
 core/needs.js: accept-card chat jump spaces-chat tabs-tasks tasks workspace-status-chat toasts
 core/tasks.js: accept-card chat jump tasks
 core/notify.js: chat spaces-chat tabs-tasks tasks shepherdr-settings workspace-status-chat
 parked.js: chat spaces-chat tabs-tasks workspace-status-chat
-keyholder.js: chat tasks artifacts chat-image newspace
+keyholder.js: chat tasks artifacts chat-image newspace changes-review
 unread.js: chat spaces-chat
 agent.js: chat newspace shepherdr-settings
 settings.js: chat newspace shepherdr-settings
 dot.js: chat jump tasks
 core/tasklists.js: jump tasks
-core/chat-log.js: chat
+core/chat-log.js: chat changes-review tabs-tasks
 core/chat-view.js: chat
 core/screens.js: chat
 core/send.js: chat
 core/person.js: chat shepherdr-settings tabs-tasks
-core/spaces.js: chat spaces-chat shepherdr-settings jump pane-chat tasks newspace coordinator menu-tasks new-menu-tasks tabs-tasks workspace-status-chat
+core/spaces.js: chat spaces-chat shepherdr-settings jump pane-chat tasks newspace coordinator menu-tasks new-menu-tasks tabs-tasks workspace-status-chat changes-review
 core/autopilot.js: pane-chat shepherdr-settings
 core/chat-reader.js: chat
-core/clean-env.js: chat
+core/clean-env.js: chat changes-review tabs-tasks
 core/worktree.js: task-pr
 core/recipe.js: artifacts chat
 core/task-artifacts.js: chat task-artifacts
@@ -38,7 +38,7 @@ core/keys.js: keybinds
 core/machines.js: spaces-chat shepherdr-settings
 core/slash.js: chat
 core/mentions.js: chat
-core/agents.js: chat chat-models newspace shepherdr-settings coordinator
+core/agents.js: chat chat-models newspace shepherdr-settings coordinator changes-review tabs-tasks
 core/settings.js: chat newspace shepherdr-settings coordinator
 core/host.js: chat newspace shepherdr-settings coordinator
 core/secrets.js: chat shepherdr-settings tabs-tasks
@@ -55,7 +55,7 @@ ui.js: accept-card artifacts chat chat-call chat-image chat-models chat-react co
 artview.js: accept-card artifacts chat chat-image jump task-artifacts
 artifact-sidebar.js: chat-image jump
 addons.js: chat pane-chat shepherdr-settings tabs-tasks artifacts jump accept-card toasts spaces-chat workspace-chrome-shepherdr
-live.js: chat coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks tasks workspace-status-chat
+live.js: chat coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks tasks workspace-status-chat changes-review
 core/bg-jobs.js: chat
 core/audio.js: chat
 core/chat-resize.js: chat
@@ -65,8 +65,11 @@ core/changes-follow.js: my-changes
 code-tabs.js: files-tasks pane-chat
 usage.js: tabs-tasks chat shepherdr-settings artifacts jump accept-card toasts
 core/usage.js: tabs-tasks chat shepherdr-settings artifacts jump accept-card toasts
-dirs.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat
-core/paths.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat
+dirs.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat changes-review
+core/paths.js: accept-card artifacts chat chat-models coordinator jump menu-tasks new-menu-tasks newspace pane-chat shepherdr-settings spaces-chat tabs-tasks task-browser tasks toasts workspace-status-chat changes-review
 core/image-actions.js: chat-image
 core/open-editor.js: chat
 core/thread-space.js: chat tasks
+reviews.js: changes-review chat tabs-tasks
+core/changes-review.js: changes-review chat tabs-tasks
+core/review-target.js: changes-review chat tabs-tasks
