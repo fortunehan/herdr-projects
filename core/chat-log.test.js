@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LOG, Conversation, records, pilotLine, sendsOf, codexLimits } from "./chat-log.js";
+import { ChatReader } from "./chat-reader.js";
+import { marked } from "marked";
 
 // A Claude Code log as LOG reads it, fed to a Conversation.
 async function read(lines) {
@@ -57,6 +59,95 @@ test("thinking stays hidden: empty, or summarized", async () => {
   ]);
   expect(said(c)).toEqual([]);
   expect(c.doing).toBe("Thinking");
+});
+
+const joinedStatus = JSON.parse(readFileSync(new URL("../test/fixtures/claude-joined-status.jsonl", import.meta.url), "utf8"));
+const separatedStatus = "**Preparing notes pipeline**\n\n**Finalizing local notes**";
+
+test("captured adjacent status headings become separate paragraphs through the log reader", async () => {
+  const c = await read([joinedStatus]);
+  expect(said(c)).toEqual([separatedStatus]);
+  expect(marked.parse(said(c)[0], { async: false, gfm: true, breaks: false })).toBe(
+    "<p><strong>Preparing notes pipeline</strong></p>\n<p><strong>Finalizing local notes</strong></p>\n");
+});
+
+test("separated status headings and separate update blocks keep their paragraph boundaries", async () => {
+  expect(said(await read([reply("separated", [thinking(separatedStatus, NARRATION)])]))).toEqual([separatedStatus]);
+  const blocks = [thinking("**Preparing notes pipeline**", NARRATION), thinking("**Finalizing local notes**", NARRATION)];
+  expect(said(await read([reply("blocks", blocks)]))).toEqual([separatedStatus]);
+});
+
+test("only complete narration heading chains are separated; ordinary Markdown and stars survive", async () => {
+  const preserved = [
+    "Ordinary narration with **bold** and *emphasis*.",
+    "**One heading**",
+    "**Heading**\n\nA paragraph with **bold**.",
+    "A sentence with **Preparing notes pipeline****Finalizing local notes** in it.",
+    "**Use **** as literal stars**",
+    "**Preparing `****`****Finalizing notes**",
+    "`**Preparing notes pipeline****Finalizing local notes**`",
+    "```md\n**Preparing notes pipeline****Finalizing local notes**\n```",
+    "    **Preparing notes pipeline****Finalizing local notes**",
+    "\n    **Preparing notes pipeline****Finalizing local notes**",
+    "**Literal <code>****</code> stars**",
+    "**[literal **** stars](https://example.com)**",
+    "\\*\\*Preparing notes pipeline\\*\\*\\*\\*Finalizing local notes\\*\\*",
+    "**Preparing notes pipeline****Finalizing local notes",
+    "****literal stars****",
+    "**bold with *nested emphasis****another heading**",
+  ];
+  for (const words of preserved) {
+    expect(said(await read([reply("preserve", [thinking(words, NARRATION)])]))).toEqual([words.trim()]);
+  }
+  expect(said(await read([reply("text", [text(joinedStatus.message.content[0].thinking)])]))).toEqual([joinedStatus.message.content[0].thinking]);
+  const user = await read([{ ...person, message: { role: "user", content: joinedStatus.message.content[0].thinking } }]);
+  expect(user.items.find((x) => x.kind === "user").text).toBe(joinedStatus.message.content[0].thinking);
+});
+
+test("status heading normalization agrees on complete, incremental, and restarted reads", () => {
+  const lines = [
+    reply("stream", [thinking("**Preparing notes pipeline**", NARRATION)], { thinkingDisplay: "updates" }),
+    reply("stream", [thinking("**Finalizing local notes**", NARRATION)], { thinkingDisplay: "updates" }),
+    joinedStatus,
+  ];
+  const rs = lines.map((l, i) => ({ kind: "J", off: i + 1, data: JSON.stringify(l) }));
+  const complete = new Conversation("claude"); complete.feed(rs);
+  const incremental = new Conversation("claude");
+  for (const r of rs) incremental.feed([r]);
+  const restarted = new Conversation("claude"); restarted.feed(rs);
+  expect(said(complete)).toEqual([separatedStatus, separatedStatus]);
+  expect(said(incremental)).toEqual(said(complete));
+  expect(said(restarted)).toEqual(said(complete));
+});
+
+test("file tails wait for complete status records and rereads do not duplicate or rejoin headings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "joined-status-"));
+  const f = join(dir, "log.jsonl");
+  const io = { async sh(script, args) {
+    const p = Bun.spawn(["sh", "-c", script, ...args], { stdout: "pipe", stderr: "pipe" });
+    const stdout = await new Response(p.stdout).text();
+    expect(await p.exited).toBe(0);
+    return { code: 0, stdout };
+  } };
+  try {
+    const line = JSON.stringify(joinedStatus) + "\n";
+    const split = line.indexOf("****") + 2;
+    writeFileSync(f, line.slice(0, split));
+    const reader = new ChatReader(io, "fixture").fixed(f, "claude");
+    await reader.pull();
+    expect(said(reader.conv)).toEqual([]);
+    writeFileSync(f, line);
+    await reader.pull();
+    expect(said(reader.conv)).toEqual([separatedStatus]);
+    expect(await reader.pull()).toBe(false);
+    reader.rebuild();
+    expect(said(reader.conv)).toEqual([separatedStatus]);
+    const restart = new ChatReader(io, "fixture").fixed(f, "claude");
+    await restart.pull();
+    expect(said(restart.conv)).toEqual([separatedStatus]);
+    const hidden = await read([reply("hidden", [thinking(joinedStatus.message.content[0].thinking)], { thinkingDisplay: "summarized" })]);
+    expect(said(hidden)).toEqual([]);
+  } finally { rmSync(dir, { recursive: true }); }
 });
 
 test("an update and the words after it in one reply are one message", async () => {
