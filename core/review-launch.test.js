@@ -41,14 +41,14 @@ function hostFixture() {
     ChangesReview, completedMessage: () => {}, sourceMessages: () => {}, finished: () => {}, reportText: () => {}, sourceKey,
     capture: async (_io, input) => { calls.push({ capture: input }); return observed; }, ReviewLaunchBridge };
   const code = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
-  const exports = new Function(...Object.keys(deps), code + "\nreturn { reviewBridge, bindReviewLaunch, io };")(...Object.values(deps));
+  const exports = new Function(...Object.keys(deps), code + "\nreturn { reviewBridge: reviewLauncher(), bindReviewLaunch, io };")(...Object.values(deps));
   return { ...f, ...exports, ts, ps, ss, calls, setObserved: (v) => { observed = { ...observed, ...v }; } };
 }
 
 test("native mod command routing reaches the bridge without consulting focused state", async () => {
   const received = [], pending = new Promise(() => {});
   let next = command(request());
-  const deps = { View: class {}, reviewBridge: { announce: () => {}, handle: async (c) => received.push(c) },
+  const deps = { View: class {}, reviewLauncher: () => ({ announce: () => {}, handle: async (c) => received.push(c) }),
     sweep: () => {}, watchService: () => {}, startBridge: () => {}, startTick: () => {}, startInbox: () => {}, watchViews: () => {},
     dirsReady: () => pending, nextCommand: () => { const c = next; next = null; return c ? Promise.resolve(c) : pending; },
     localStorage: { getItem: () => null }, focused: () => { throw new Error("Must not read focus for a launch command"); },
@@ -59,6 +59,13 @@ test("native mod command routing reaches the bridge without consulting focused s
   new Tabs().init({}, cx);
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   expect(received).toEqual([command(request())]);
+});
+
+test("report/storage consumers load without initializing or granting the tab host's launcher", () => {
+  const code = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
+  const host = new Function("ChangesReview", "exec", code + "\nreturn { reviews, reviewLauncher };")(ChangesReview, () => { throw new Error("No process calls allowed"); });
+  expect(host.reviews).toBeInstanceOf(ChangesReview);
+  expect(typeof host.reviewLauncher).toBe("function");
 });
 
 test("capability announces only the bounded versioned command with a renewable expiry", () => {
@@ -171,7 +178,8 @@ test("actual dialog refresh, timer and Run use pinned input; ordinary entry stil
   dialog.refresh(cx); await Promise.all(tasks.splice(0));
   dialog.launch(cx); await Promise.all(tasks.splice(0));
   expect(calls).toEqual([clicked, clicked]);
-  dialog.p.bound = false; expect(dialog.currentTarget()).toBe(global);
+  dialog.p.bound = false; dialog.refresh(cx); await Promise.all(tasks.splice(0));
+  expect(calls.at(-1)).toBe(global);
   const myChanges = readFileSync(new URL("../mods/my-changes/main.js", import.meta.url), "utf8");
   expect(myChanges).toContain('setShared("changes.review.target", target)');
   const tabs = readFileSync(new URL("../mods/tabs-tasks/main.js", import.meta.url), "utf8");

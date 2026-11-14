@@ -23,7 +23,7 @@ export default class ReviewDialog extends View {
     cx.timer.every(3000, (cx) => {
       keepKeys(HOLDER);
       if (this.p.report) { this.refresh(cx); return; }
-      const now = this.currentTarget();
+      const now = (this.p.bound ? this.p.target : shared("changes.review.target") ?? this.p.target);
       if (now && targetKey(now) !== this.form.targetKey) { this.form.stale = true; cx.notify(); }
       if (!this.form.loading && !this.form.error && !this.form.busy && !this.checking) {
         this.checking = true;
@@ -37,9 +37,6 @@ export default class ReviewDialog extends View {
       }
     });
   }
-
-  /** Cross-mod launches keep the clicked target even when another Changes view publishes global state. */
-  currentTarget() { return this.p.bound ? this.p.target : shared("changes.review.target") ?? this.p.target; }
 
   close() { this.prompt.release(); this.search.release(); dropKeys(HOLDER); }
 
@@ -55,7 +52,7 @@ export default class ReviewDialog extends View {
           this.recipients = this.record && !finished(this.record) ? await reviews.recipients(this.record.id) : [];
         }
         else {
-          const input = this.currentTarget();
+          const input = (this.p.bound ? this.p.target : shared("changes.review.target") ?? this.p.target);
           this.retained = (await reviewRecords()).filter((r) => r.input.cwd === input?.cwd).slice(0, 5);
           const f = await reviews.prepare(input);
           this.form = was.target ? { ...f, model: was.model, effort: was.effort, depth: was.depth, guidance: was.guidance } : f;
@@ -73,7 +70,7 @@ export default class ReviewDialog extends View {
     cx.spawn(async (cx) => {
       try {
         // busy is a View latch; the feature boundary separately prevents concurrent launches.
-        await reviews.launch({ ...form, busy: false }, this.currentTarget());
+        await reviews.launch({ ...form, busy: false }, (this.p.bound ? this.p.target : shared("changes.review.target") ?? this.p.target));
         closeOverlay(this.p.overlay);
       } catch (e) { this.launchError = String(e?.message ?? e); }
       finally { form.busy = false; cx.notify(); }

@@ -92,7 +92,7 @@ async function fixture() {
     ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, chatPane, capture, ReviewLaunchBridge,
     shared: (key: string) => state.shared?.[key], setShared: (key: string, value: unknown) => { (state.shared ??= {})[key] = value; } };
   const src = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
-  const reload = () => new Function(...Object.keys(bindings), src + "\nreturn { reviews, reviewRecords, reviewTick, reviewSweep, reviewBridge, bindReviewLaunch };")(...Object.values(bindings));
+  const reload = () => new Function(...Object.keys(bindings), src + "\nreturn { reviews, reviewRecords, reviewTick, reviewSweep, reviewBridge: reviewLauncher(), bindReviewLaunch };")(...Object.values(bindings));
   const api: any = reload();
   const target = { cwd: root, mode: "uncommitted", workspace: "workspace" };
   const start = async () => api.reviews.launch(await api.reviews.prepare(target), target);

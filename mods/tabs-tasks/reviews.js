@@ -31,11 +31,15 @@ export async function bindReviewLaunch(input, clicked) {
     expected: { root: observed.root, gitdir: observed.gitdir, head: observed.head, base: observed.base, resolvedRef: observed.resolvedRef } };
 }
 
-export const reviewBridge = new ReviewLaunchBridge({
-  now: () => Date.now(), token: () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-  read: shared, write: setShared, bind: bindReviewLaunch,
-  open: (target) => openOverlay({ mod: "changes-review", kind: "dialog", width: 720, height: 780, props: { target, bound: true } }),
-});
+let launchBridge;
+/** Only the tab host starts the launcher; report/storage consumers need no bridge instance. */
+export function reviewLauncher() {
+  return launchBridge ??= new ReviewLaunchBridge({
+    now: () => Date.now(), token: () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    read: shared, write: setShared, bind: bindReviewLaunch,
+    open: (target) => openOverlay({ mod: "changes-review", kind: "dialog", width: 720, height: 780, props: { target, bound: true } }),
+  });
+}
 
 const PROBE = String.raw`
 import json, mmap, os, shutil, subprocess
