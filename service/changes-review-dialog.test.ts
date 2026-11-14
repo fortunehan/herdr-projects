@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { built, byId, element, handler } from "./fake-gpui";
-import { disabled, LEVELS, sourceKey, reportText, effortReason, DEFAULT_MODEL } from "../core/changes-review.js";
+import { disabled, LEVELS, sourceKey, reportText, effortReason, DEFAULT_MODEL, finished } from "../core/changes-review.js";
 import { targetKey } from "../core/review-target.js";
 
 const target = { cwd: "/checkout", mode: "ref", ref: "develop", task: "TASK-1", base: "main", workspace: "space" };
@@ -19,11 +19,13 @@ function view() {
   const bindings = {
     View: class {}, div: element, v_flex: element, h_flex: element,
     InputState: { new: input }, TextareaState: { new: input }, Input: { new: () => element() }, Textarea: { new: () => element() }, TextView: { new: (s: string) => element().child(s) },
-    props: () => ({ target, overlay: "overlay" }), theme: () => ({}), closeOverlay: (id: string) => state.closed.push(id), shared: () => state.target,
+    props: () => ({ target, report: state.report, overlay: "overlay" }), theme: () => ({}), closeOverlay: (id: string) => state.closed.push(id), shared: () => state.target,
     reviews: { prepare: async () => { if (state.error) throw new Error(state.error); return structuredClone(state.form); }, launch: async (f: any, target: any) => {
       state.launches.push({ form: f, target }); if (state.launchError) throw new Error(state.launchError); return { id: "review" };
-    } },
-    reviewRecords: async () => [], disabled, LEVELS, sourceKey, reportText, effortReason, targetKey, keepKeys() {}, dropKeys() {},
+    }, recipients: async () => [source], recover: async (id: string, action: any) => {
+      (state.recoveries ??= []).push({ id, action }); if (state.recoveryError) throw new Error(state.recoveryError);
+    }, tick: async () => {}, cancel: async (id: string) => (state.cancellations ??= []).push(id) },
+    reviewRecords: async () => state.records ?? [], disabled, LEVELS, sourceKey, reportText, effortReason, finished, targetKey, keepKeys() {}, dropKeys() {},
   };
   const src = readFileSync(new URL("../mods/changes-review/main.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace("export default class", "class");
   const Dialog = new Function(...Object.keys(bindings), src + "\nreturn ReviewDialog;")(...Object.values(bindings));
@@ -35,7 +37,7 @@ test("dialog displays the complete confirmed target, bound source and sole CLI w
   const v = view(); await settle(); v.render(cx);
   for (const s of ["Review", "Checkout", "/checkout", "Followed task", "TASK-1", "Branch · develop", "resolved-commit / merge-base", "Agent CLI", "Claude Code", "GPT-6-Astra · Codex", "Source session", "conversation", "Model effort", "Review depth", "Prompt", "Run", "Cancel"])
     expect(text()).toContain(s);
-  expect(text()).toContain("automatic repair and recheck are not available"); expect(text()).toContain("CLI permission policy");
+  expect(text()).toContain("three completed reviews"); expect(text()).toContain("CLI permission policy");
   expect(text()).not.toContain("Cloud"); expect(byId("review-run")).toBeDefined();
 });
 
@@ -77,4 +79,36 @@ test("target/recipient changes invalidate the form before launch until refreshed
   callbacks[0](cx); await settle(); v.render(cx); expect(text()).toContain("changed. Refresh this dialog"); click("review-run"); expect(state.launches).toEqual([]);
   state.target = target; state.form.sourcesKey = "replacement"; callbacks[0](cx); await settle();
   expect(v.form.stale).toBe(true);
+});
+
+function record(state = "undelivered") {
+  return { id: "review-retained", state, input: target, target: { ...form().target, inventory: [], limitations: [] }, source,
+    model: DEFAULT_MODEL, effort: "high", depth: "high", completedReviews: 2, rounds: [],
+    round: { id: "round-2", reportId: "report-2", findings: [], responses: [], delivery: { state: "uncertain" }, processing: "unknown" } };
+}
+
+test("retained reports stay reachable from Changes after the source conversation is unavailable", async () => {
+  state.records = [record()]; state.form.sources = []; state.form.source = null;
+  const v = view(); await settle(); v.render(cx);
+  expect(text()).toContain("Retained reviews"); click("review-retained-review-retained"); await settle(); built.length = 0; v.render(cx);
+  expect(text()).toContain("Review report"); expect(text()).toContain("Completed reviews: 2 / 3");
+  expect(text()).toContain("uncertain"); expect(byId("review-retry")).toBeDefined();
+});
+
+test("recovery requires explicit recipient selection and preserves a visible ambiguous-delivery error", async () => {
+  state.records = [record()]; state.report = "review-retained";
+  const v = view(); await settle(); v.render(cx);
+  click("review-rebind"); expect(state.recoveries).toBeUndefined();
+  click("review-rebind-source"); built.length = 0; v.render(cx); click("review-rebind"); await settle();
+  expect(state.recoveries[0]).toEqual({ id: "review-retained", action: { type: "rebind", source: sourceKey(source) } });
+  state.recoveryError = "Delivery remains ambiguous. No resend was made";
+  built.length = 0; v.render(cx); click("review-retry"); await settle(); built.length = 0; v.render(cx);
+  expect(text()).toContain("Delivery remains ambiguous"); expect(v.record.completedReviews).toBe(2);
+});
+
+test("ended limit-reached reports have no actions that could restart an automatic exchange", async () => {
+  state.records = [record("limit-reached")]; state.report = "review-retained";
+  const v = view(); await settle(); v.render(cx);
+  expect(text()).toContain("Limit reached"); expect(byId("review-retry")).toBeUndefined();
+  expect(byId("review-rebind")).toBeUndefined(); expect(byId("review-stop")).toBeUndefined();
 });

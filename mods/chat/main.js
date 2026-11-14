@@ -1427,7 +1427,8 @@ export default class Chat extends View {
         }
       } else if (this.path) {
         const conversation = agent.sessionOf(this.kind, this.path);
-        this.reviewReports = (await reviewRecords()).filter((r) => r.source.conversation === conversation && r.source.kind === this.kind);
+        const matches = (s) => s?.conversation === conversation && s.kind === this.kind;
+        this.reviewReports = (await reviewRecords()).filter((r) => matches(r.source) || r.recovery?.some((e) => matches(e.source)));
       }
       this.reviewError = null;
     } catch (e) { this.reviewError = String(e?.message ?? e); }
