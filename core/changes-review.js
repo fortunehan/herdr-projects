@@ -129,9 +129,12 @@ export class ChangesReview {
     const [observed, catalog, probe] = await Promise.all([capture(this.io, target), this.io.catalog(), this.io.probe(target)]);
     if (!probe.ok) throw new Error(probe.reason || "Claude Code or the required bundled skill is unavailable");
     if (!catalog?.models?.length) throw new Error("Claude model catalog discovery failed");
-    const all = await this.io.sources(observed);
+    if (target.expected && Object.entries(target.expected).some(([key, value]) => observed[key] !== value))
+      throw new Error("The bound checkout or comparison changed. Reopen Review from Changes");
+    const all = await this.io.sources({ ...observed, workspace: target.workspace, tab: target.tab, binding: target.binding });
     const taskSources = target.task ? all.filter((s) => s.task === target.task) : [];
-    const sources = taskSources.length ? taskSources : all;
+    const sources = target.binding ? all.filter((s) => sourceKey(s) === sourceKey(target.binding)) : taskSources.length ? taskSources : all;
+    if (target.binding && sources.length !== 1) throw new Error("The bound Source conversation changed. Reopen Review from Changes");
     return { target: observed, input: { ...target }, targetKey: targetKey(target), catalog: catalog.origin,
       models: catalog.models, model: catalog.models.some((m) => m.id === DEFAULT_MODEL) ? DEFAULT_MODEL : null,
       effort: "high", depth: "high", guidance: "", sources, source: sources.length === 1 ? sourceKey(sources[0]) : null,

@@ -1,4 +1,4 @@
-import { exec, hc, writeTextFile, openOverlay, shared } from "herdr";
+import { exec, hc, writeTextFile, openOverlay, shared, setShared } from "herdr";
 import { panes, terminals, spaces } from "./live.js";
 import * as fs from "fs/promises";
 import { dirsReady } from "./dirs.js";
@@ -7,6 +7,35 @@ import { FIND, Conversation } from "./core/chat-log.js";
 import { CLEAN_ENV, AGENT_PATH } from "./core/clean-env.js";
 import { chatPane } from "./core/spaces.js";
 import { ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey } from "./core/changes-review.js";
+import { capture } from "./core/review-target.js";
+import { ReviewLaunchBridge } from "./core/review-launch.js";
+
+function sourceInTab(address, workspace, tab) {
+  const space = spaces().find((s) => s.id === workspace && !s.machine && s.tabs.some((t) => t.id === tab));
+  const terminal = terminals().find((t) => t.address === address);
+  return Boolean(space && terminal && panes().some((p) => p.tab === tab
+    && (p.terminal === address || p.mod === "chat" && p.pane === chatPane(terminal))));
+}
+
+/** Resolve only the producer's clicked target and process; focused/global Changes state is never consulted. */
+export async function bindReviewLaunch(input, clicked) {
+  if (!sourceInTab(clicked.source.address, input.workspace, input.tab)) throw new Error("The selected Source tab or workspace is unavailable");
+  const observed = await capture({ exec }, input);
+  if (observed.head !== clicked.head || (input.mode === "uncommitted" ? observed.head : observed.base) !== clicked.baseline)
+    throw new Error("The Annotator comparison changed; refresh Changes before opening Review");
+  const terminal = terminals().find((t) => t.address === clicked.source.address);
+  const source = terminal && await liveSource(terminal, observed.root);
+  if (!source || source.pid !== clicked.source.pid || !sourceInTab(source.address, input.workspace, input.tab) || !await sameSource(source))
+    throw new Error("The selected Source conversation changed or does not match this checkout");
+  return { ...input, task: source.task, binding: source,
+    expected: { root: observed.root, gitdir: observed.gitdir, head: observed.head, base: observed.base, resolvedRef: observed.resolvedRef } };
+}
+
+export const reviewBridge = new ReviewLaunchBridge({
+  now: () => Date.now(), token: () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+  read: shared, write: setShared, bind: bindReviewLaunch,
+  open: (target) => openOverlay({ mod: "changes-review", kind: "dialog", width: 720, height: 780, props: { target, bound: true } }),
+});
 
 const PROBE = String.raw`
 import json, mmap, os, shutil, subprocess
@@ -121,7 +150,9 @@ const io = {
     return r.code === 0 ? JSON.parse(r.stdout) : { ok: false, reason: (r.stderr || "The required CLI/skill is unavailable").trim().split("\n").pop() };
   },
   async sources(target) {
-    const found = await Promise.all(terminals().map((t) => liveSource(t, target.root)));
+    const candidates = target.binding ? terminals().filter((t) => t.address === target.binding.address
+      && sourceInTab(t.address, target.workspace, target.tab)) : terminals();
+    const found = await Promise.all(candidates.map((t) => liveSource(t, target.root)));
     return found.filter(Boolean);
   },
   async reserve(r) {
