@@ -32,6 +32,16 @@ let base;
 const ready = async () => base ??= (await dirsReady()).reviews;
 const recordPath = async (id) => `${await ready()}/${id}.json`;
 const valid = (id) => /^review-[a-z0-9-]+$/.test(id);
+/** Native fs omits code and names paths relative to the granted read root.
+ * https://github.com/herdrdev/herdr-app/blob/v0.1.15/vendor/gpui-kit/crates/shell/src/engine/quickjs/host.rs#L450
+ * https://github.com/herdrdev/herdr-app/blob/v0.1.15/vendor/gpui-kit/crates/shell/src/capability.rs#L459
+ */
+const missing = (e, verb, path) => {
+  if (e?.code !== undefined) return e.code === "ENOENT";
+  const match = /^cannot (read|list) `(.+)`: No such file or directory \(os error 2\)$/.exec(e?.message ?? "");
+  return match?.[1] === verb && (match[2] === path
+    || (!match[2].startsWith("/") && path.endsWith(`/${match[2]}`)));
+};
 const snapshots = new WeakMap();
 const lockKey = (r) => {
   /** A collision conservatively blocks another launch; it cannot select another recipient. */
@@ -140,16 +150,17 @@ const io = {
     // Human-readable companion; the JSON record is authoritative for lifecycle and delivery state.
     const md = `${base}/${r.id}.md`;
     let old = null;
-    try { old = await fs.readFile(md, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+    try { old = await fs.readFile(md, "utf8"); } catch (e) { if (!missing(e, "read", md)) throw e; }
     await writeTextFile(md, reportText(r), old);
   },
   async load(id) {
     if (!valid(id)) throw new Error("Invalid Review identity");
+    const path = await recordPath(id);
     try {
-      const text = await fs.readFile(await recordPath(id), "utf8");
+      const text = await fs.readFile(path, "utf8");
       const record = JSON.parse(text);
       snapshots.set(record, text); return record;
-    } catch (e) { if (e.code === "ENOENT") return null; throw e; }
+    } catch (e) { if (missing(e, "read", path)) return null; throw e; }
   },
   async open(r, argv) {
     const space = spaces().find((s) => s.id === r.input.workspace && !s.machine);
@@ -249,8 +260,9 @@ const io = {
 
 export const reviews = new ChangesReview(io);
 export async function reviewRecords() {
+  const path = await ready();
   let names;
-  try { names = await fs.readdir(await ready()); } catch (e) { if (e.code === "ENOENT") return []; throw e; }
+  try { names = await fs.readdir(path); } catch (e) { if (missing(e, "list", path)) return []; throw e; }
   const records = [];
   for (const n of names) if (valid(n.replace(/\.json$/, "")) && n.endsWith(".json")) records.push(await io.load(n.slice(0, -5)));
   return records.sort((a, b) => b.created - a.created);
