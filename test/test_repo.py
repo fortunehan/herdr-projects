@@ -92,8 +92,8 @@ class Repo(unittest.TestCase):
     TITLE_OK = {"Dialog", "CardShell", "TitleWhere", "Line", "iframe"}
 
     def test_no_hover_tooltips(self):
-        """Nothing pops up on hover (SHEP-25): no `title=` tooltip in the web app, no `.tooltip(` in the window's
-        mods. An icon-only control says its words with `aria-label` instead."""
+        """No hover popups (SHEP-25), except the pane copy button's explicitly requested tooltip (SHEP-48).
+        Other icon-only controls say their words with `aria-label` instead."""
         found = []
         for top in ("web/src", "web/plugins"):
             for d, _, files in os.walk(J(top)):
@@ -127,7 +127,11 @@ class Repo(unittest.TestCase):
                         with open(p, encoding="utf-8") as fh:
                             for n, line in enumerate(fh, 1):
                                 if ".tooltip(" in line:
-                                    found.append(f"{os.path.relpath(p, ROOT)}:{n}: .tooltip(")
+                                    rel = os.path.relpath(p, ROOT)
+                                    if rel == "mods/pane-chat/main.js":
+                                        line = line.replace('.tooltip("Copy terminal ID or full path")', "")
+                                    if ".tooltip(" in line:
+                                        found.append(f"{rel}:{n}: .tooltip(")
         self.assertFalse(found, "hover tooltips (use aria-label, or show the words):\n" + "\n".join(found))
 
     def test_no_leftovers(self):
