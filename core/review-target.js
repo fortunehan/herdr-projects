@@ -86,7 +86,7 @@ print(json.dumps({'root': os.path.realpath(root), 'gitdir': git('rev-parse', '--
 `;
 
 export async function capture(io, target) {
-  const r = await io.exec("python3", ["-c", CAPTURE, JSON.stringify(target)]);
+  const r = await io.exec("python3", ["-I", "-c", CAPTURE, JSON.stringify(target)]);
   if (r.code !== 0) throw new Error((r.stderr || "Cannot resolve the review target").trim().split("\n").pop());
   return JSON.parse(r.stdout);
 }

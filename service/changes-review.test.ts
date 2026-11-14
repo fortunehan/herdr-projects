@@ -35,7 +35,7 @@ async function fixture() {
   const commands: any[] = [];
   const exec = async (cmd: string, args: string[], opts: any = {}) => {
     commands.push({ cmd, args, opts });
-    if (cmd === "python3" && args[1] !== CAPTURE) return state.probe ? response({ ok: true }) : { code: 1, stdout: "", stderr: "Required bundled skill is missing" };
+    if (cmd === "python3" && !args.includes(CAPTURE)) return state.probe ? response({ ok: true }) : { code: 1, stdout: "", stderr: "Required bundled skill is missing" };
     if (cmd === "sh" && args[1].includes("effortLevel")) return state.catalogError ? { code: 1, stdout: "", stderr: "Catalog discovery failed" } : { code: 0, stdout: `picker\t${JSON.stringify(state.catalog)}\n`, stderr: "" };
     if (cmd === "sh" && args[1] === FIND) return { code: 0, stdout: Number(args.at(-1)) === 101 ? state.sourcePath : state.reviewPath ?? "pending", stderr: "" };
     if (cmd === "herdr-app") {
