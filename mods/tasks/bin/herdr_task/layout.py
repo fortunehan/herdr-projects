@@ -67,6 +67,7 @@ KINDS = {
     "model-picks": (".herdr/model-picks.json", "config", "model-picks.json", "file", False),
     "tasks": (".herdr/tasks", "data", "tasks", "dir", False),
     "artifacts": (".herdr/artifacts", "data", "artifacts", "dir", True),
+    "reviews": (".herdr/reviews", "data", "reviews", "dir", False),
     "vault": (".herdr/vault.json", "data", "secrets/vault.json", "file", False),
     "secret-remote": (".herdr/secret-remote", "data", "secrets/remote", "file", False),
     "tools": (".herdr/tools.json", "data", "tools.json", "file", False),
@@ -81,7 +82,7 @@ KINDS = {
     "ado": (".herdr/ado.json", "config", "ado.json", "file", False),
     "usage": (".herdr/usage", "state", "usage", "dir", False),
 }
-PRIVATE = {"vault", "secret-remote", "secret-drop", "secret-served", "service", "browser"}  # 0700 folders
+PRIVATE = {"vault", "secret-remote", "secret-drop", "secret-served", "service", "browser", "reviews"}  # 0700 folders
 LEGACY_WORKTREES = ".herdr/worktrees"
 
 

@@ -70,6 +70,8 @@ import { followed } from "./core/thread-bind.js";
 import { CallScreen } from "./call-screen.js";
 import { on as addonOn } from "./addons.js";
 import { note } from "./usage.js";
+import { reviews, reviewTick, reviewRecords, openReviewReport } from "./reviews.js";
+import { finished as reviewFinished } from "./core/changes-review.js";
 
 // Messages a page of history holds: the newest page first, earlier ones as the person scrolls up.
 const PAGE = 200;
@@ -269,6 +271,9 @@ export default class Chat extends View {
     const P = this.inner ? _props : props();
     this.origin = P?.terminal ?? null;
     this.addr = this.origin;
+    this.reviewId = P?.review ?? null;
+    this.reviewReports = [];
+    cx.timer.every(2500, (cx) => this.reviewWork(cx));
     // No agent yet (a Coordinator tab): it may have started one already (this slot's label).
     this.role = P?.role ?? null;
     this.slot = P?.slot ?? null;
@@ -616,6 +621,7 @@ export default class Chat extends View {
   // on the web's cards: its terminal shows its own prompt meanwhile. A call or a recording ends with it.
   async close(cx) {
     if (this.host) return this.host.close(cx);
+    if (this.reviewId) await reviews.reviewerClosed(this.reviewId);
     this.box.release();
     this.findBox.release();
     this.scroll.release();
@@ -1366,6 +1372,7 @@ export default class Chat extends View {
             cx.notify();
             return;
           }
+          if (this.reviewId) { await this.reviewWork(cx); return; }
           this.closeSelf();
           return;
         }
@@ -1404,6 +1411,37 @@ export default class Chat extends View {
         await cx.sleep(working ? 1500 : 4000);
       }
     }
+  }
+
+  /** Review handoff bypasses the person's steering/reply-instead sender entirely. */
+  async reviewWork(cx) {
+    if (this.reviewWorking) return;
+    this.reviewWorking = true;
+    try {
+      if (this.reviewId) {
+        this.reviewRun = await reviewTick(this.reviewId, this.path, this.status(), false);
+        if (this.phase === "ended" && this.reviewRun && !reviewFinished(this.reviewRun) && this.reviewRun.round.findings === null) {
+          const r = this.reviewRun;
+          this.reviewRun = await reviews.message({ type: "failed", runId: r.id, roundId: r.round.id, reportId: r.round.reportId,
+            session: r.session, error: "The reviewer exited or was interrupted before a complete report" });
+        }
+      } else if (this.path) {
+        const conversation = agent.sessionOf(this.kind, this.path);
+        this.reviewReports = (await reviewRecords()).filter((r) => r.source.conversation === conversation && r.source.kind === this.kind);
+      }
+      this.reviewError = null;
+    } catch (e) { this.reviewError = String(e?.message ?? e); }
+    finally { this.reviewWorking = false; cx.notify(); }
+  }
+
+  reviewBanner(t) {
+    const records = this.reviewRun ? [this.reviewRun] : this.reviewReports ?? [];
+    const error = this.reviewError || shared("changes.review.error");
+    if (!records.length && !error) return div();
+    return v_flex().flex_none().max_h(100).overflow_y_scrollbar().px(14).gap(4)
+      .children(records.map((r) => div().id(`review-report-${r.id}`).py(5).text_size(12).text_color(t.accent).cursor_pointer()
+        .on_click(() => openReviewReport(r.id)).child(`Review · ${r.state.replaceAll("-", " ")} · Delivery: ${r.round.delivery.state.replaceAll("-", " ")} · Open retained report`)))
+      .when(Boolean(error), (e) => e.child(div().text_color(t.ansi1).child(`Review: ${error}`)));
   }
 
   // ---- sending ------------------------------------------------------------------------------
@@ -4504,7 +4542,8 @@ export default class Chat extends View {
       .on_mouse_down("left", (e) => { this.notePress(e); holdKeys(this.areaKey()); this.pressWin = e.position; this.keepIcons = null; this.pressing = true; this.pressMoved = false; if (e.bounds) this.noteArea(e.bounds); })
       .on_mouse_up("left", () => { this.pressing = false; })
       // Files dropped anywhere on the chat go with the next message.
-      .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); });
+      .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); })
+      .child(this.reviewBanner(t));
 
     // Starting (or the new agent's log not there yet): the person's message shows at once.
     const starting = (this.phase === "starting" || (this.phase === "finding" && this.role && !this.path)) && this.pending.length > 0;

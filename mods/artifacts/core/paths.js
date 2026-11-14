@@ -20,6 +20,7 @@ export const KINDS = {
   "model-picks": [".herdr/model-picks.json", "config", "model-picks.json"],
   "tasks": [".herdr/tasks", "data", "tasks"],
   "artifacts": [".herdr/artifacts", "data", "artifacts"],
+  "reviews": [".herdr/reviews", "data", "reviews"],
   "vault": [".herdr/vault.json", "data", "secrets/vault.json"],
   "secret-remote": [".herdr/secret-remote", "data", "secrets/remote"],
   "tools": [".herdr/tools.json", "data", "tools.json"],
@@ -55,7 +56,7 @@ export function paths(home, env = {}, migrated = false, mac = false) {
 /**
  * @typedef {{ roots: { config: string, data: string, state: string, cache?: string }, migrated: boolean, settings: string,
  *   "model-picks": string, tasks: string, artifacts: string, vault: string, "secret-remote": string, tools: string,
- *   service: string, browser: string, "secret-drop": string, "secret-served": string, "cli-check": string,
+ *   reviews: string, service: string, browser: string, "secret-drop": string, "secret-served": string, "cli-check": string,
  *   "machine-hold": string, "assistant-notes": string, ado: string, usage: string, worktrees: string }} ShepPaths
  */
 

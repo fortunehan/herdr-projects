@@ -16,6 +16,7 @@ import { tabName } from "./core/menus.js";
 import { inRender } from "./live.js";
 import { composeTarget } from "./core/chat-focus.js";
 import { dirsReady } from "./dirs.js";
+import { reviewSweep } from "./reviews.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -69,6 +70,10 @@ export default class Tabs extends View {
     // Agents parked behind a chat whose tab or space closed end, as their pane would have (the
     // Agents list did this; the layout has none now).
     cx.timer.every(5000, () => sweep());
+    cx.timer.every(2500, (cx) => cx.spawn(async () => {
+      try { await reviewSweep(); if (shared("changes.review.error")) setShared("changes.review.error", null); }
+      catch (e) { setShared("changes.review.error", String(e?.message ?? e)); }
+    }));
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // Shepherdr's service, which does the background work while it runs (lib/service.js).

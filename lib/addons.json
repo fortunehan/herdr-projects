@@ -27,7 +27,7 @@
   "addons": [
     { "id": "tasks", "title": "Tasks", "switch": false,
       "about": "The Tasks panel, the Accept card and herdr-task: every task with its own agent, worktree, review and merge.",
-      "mods": ["tasks", "tasks-menu", "accept-card", "task-pr", "my-changes", "task-shell"],
+      "mods": ["tasks", "tasks-menu", "accept-card", "task-pr", "my-changes", "task-shell", "changes-review"],
       "blocks": ["tasks", "tasks-list", "tasks-thread", "tasks-thread-shell"],
       "helpers": ["herdr-task"], "templates": ["worker", "reviewer"] },
     { "id": "assistants", "title": "Assistants", "switch": false, "needs": ["tasks"],

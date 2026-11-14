@@ -1168,4 +1168,3 @@ export function summary(steps) {
   const s = parts.join(", ");
   return s ? s[0].toUpperCase() + s.slice(1) : "Worked";
 }
-

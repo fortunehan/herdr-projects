@@ -6,7 +6,7 @@
 // core/changes-follow.js decides which).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, shared, layout } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, shared, setShared, layout, openOverlay } from "herdr";
 import { target as followTarget, taskOpen, modeFor, goneLine } from "./core/changes-follow.js";
 
 function location() {
@@ -102,6 +102,18 @@ export default class Changes extends View {
   key() {
     const { cwd, on, task, base, pending } = this.place();
     return JSON.stringify({ cwd, on, task, base, pending, mode: this.mode, ref: this.mode === "ref" ? this.ref : null });
+  }
+
+  reviewTarget() {
+    return { ...this.follow, mode: this.mode, ref: this.mode === "ref" ? this.ref : "", retained: Boolean(this.against?.tip || this.quiet),
+      pending: Boolean(this.loading || this.follow?.pending), workspace: spaces().find((s) => s.active)?.id };
+  }
+
+  review(cx) {
+    const target = this.reviewTarget();
+    setShared("changes.review.target", target);
+    openOverlay({ mod: "changes-review", kind: "dialog", width: 720, height: 780, props: { target } });
+    cx.notify();
   }
 
   target(mode, ref, cx) {
@@ -317,6 +329,11 @@ export default class Changes extends View {
 
   render(cx) {
     if (this.key() !== this.context) this.refresh(cx);
+    const reviewTarget = this.reviewTarget(), reviewKey = JSON.stringify(reviewTarget);
+    if (this.reviewKey !== reviewKey) {
+      this.reviewKey = reviewKey;
+      cx.timer.after(0, () => setShared("changes.review.target", reviewTarget));
+    }
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.against?.tip && !this.busy && !this.loading);
     const t0 = this.follow;
@@ -330,7 +347,10 @@ export default class Changes extends View {
         .when(Boolean(t0?.follow), (e) => e.child(div().id("follows").max_w(120).truncate().px(5).py(1).rounded(4).bg(t.raised)
           .text_size(10).text_color(t.accent).child(t0.task ?? "Task")))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
-        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
+        .child(div().flex_1())
+        .child(div().id("changes-review").px(9).py(4).rounded(6).bg(t.raised).cursor_pointer().text_size(12)
+          .on_click((_e, cx) => this.review(cx)).child("Review"))
+        .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
       .child(this.modes(t))
       .child(v_flex().id("changes-list").flex_none().h(Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).border_b(1).border_color(t.border).children(this.files.map((f) => {
         const parts = f.path.split("/"), name = parts.pop();

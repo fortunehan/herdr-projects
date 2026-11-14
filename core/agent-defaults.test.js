@@ -5,18 +5,24 @@ import { join } from "node:path";
 import { DEFAULTS, parseDefaults, menuFor, modelSections, argvFor } from "./agents.js";
 import { choicesFrom, roleSel } from "./settings.js";
 
-function defaultsFrom(settings) {
+function defaultsFrom(settings, custom = false) {
   const home = mkdtempSync(join(tmpdir(), "agent-defaults-"));
   try {
-    mkdirSync(join(home, ".claude"));
-    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify(settings));
-    const result = Bun.spawnSync(["/bin/sh", "-c", DEFAULTS, "defaults", "claude"], { env: { ...process.env, HOME: home } });
+    const config = join(home, custom ? "custom-config" : ".claude");
+    mkdirSync(config);
+    writeFileSync(join(config, "settings.json"), JSON.stringify(settings));
+    const result = Bun.spawnSync(["/bin/sh", "-c", DEFAULTS, "defaults", "claude"], { env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: custom ? config : "" } });
     expect(result.exitCode).toBe(0);
     return parseDefaults("claude", result.stdout.toString());
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+test("shared Claude catalog follows the CLI's custom configuration directory", () => {
+  const dflt = defaultsFrom({ modelPicker: { options: [{ model: "codex/gpt-6-astra", label: "Custom Astra" }] } }, true);
+  expect(menuFor("claude", dflt).models.map((m) => ({ id: m.id, name: m.name }))).toEqual([{ id: "codex/gpt-6-astra", name: "Custom Astra" }]);
+});
 
 test("Claude chat discovers Magpie's configured picker before a model is selected", () => {
   const dflt = defaultsFrom({ model: "sonnet", effortLevel: "high", modelPicker: { options: [
