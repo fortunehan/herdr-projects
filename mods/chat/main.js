@@ -1164,11 +1164,19 @@ export default class Chat extends View {
     this.argv = t.foreground?.argv ?? t.argv ?? null;
     const pid = t.foreground?.pid;
     if (!pid) { if (this.phase !== "ready") this.set("none", cx); return; }
+    const cmdFor = `${kind}|${this.machine ?? ""}|${pid}|${t.foreground?.cwd ?? t.cwd ?? ""}`;
+    if (this.cmdFor !== cmdFor || Date.now() - this.cmdAt > 30000) {
+      this.cmdFor = cmdFor;
+      this.cmdAt = Date.now();
+      cx.spawn(async (cx) => {
+        const cmds = await slash.commands(kind, this.machine, t.foreground?.cwd ?? t.cwd);
+        if (this.cmdFor === cmdFor) { this.cmds = cmds; cx.notify(); }
+      });
+    }
     // What the agent's own settings say (model, effort, speed), once per process.
     if (this.dfltFor !== `${kind}|${pid}`) {
       this.dfltFor = `${kind}|${pid}`;
       cx.spawn(async (cx) => { this.dflt = await agent.defaults(kind, this.machine); cx.notify(); });
-      cx.spawn(async (cx) => { this.cmds = await slash.commands(kind, this.machine, t.foreground?.cwd ?? t.cwd); cx.notify(); });
       cx.spawn(async (cx) => { await this.loadTasks(); cx.notify(); });
       cx.spawn(async (cx) => { await this.loadReach(); cx.notify(); });
       if (this.assistant()) cx.spawn(async (cx) => { await this.loadSpaceTasks(); cx.notify(); });
