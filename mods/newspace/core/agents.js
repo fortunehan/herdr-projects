@@ -68,7 +68,7 @@ function overrides(argv) {
 export const DEFAULTS = `
 if [ "$1" = claude ]; then
   f="$HOME/.claude/settings.json"
-  command -v jq >/dev/null && [ -f "$f" ] && jq -r '"model\\t\\(.model // "")", "effort\\t\\(.effortLevel // "")", "fast\\t\\(if .fastMode == true then "on" else "" end)", "per\\t\\(.modelSettings // {} | with_entries(.value |= (.effortLevel // null)) | tojson)", "mode\\t\\(.permissions.defaultMode // "")"' "$f" 2>/dev/null
+  command -v jq >/dev/null && [ -f "$f" ] && jq -r '"model\\t\\(.model // "")", "effort\\t\\(.effortLevel // "")", "fast\\t\\(if .fastMode == true then "on" else "" end)", "per\\t\\(.modelSettings // {} | with_entries(.value |= (.effortLevel // null)) | tojson)", "mode\\t\\(.permissions.defaultMode // "")", "picker\\t\\(.modelPicker.options // null | if type == "array" then map(select(type == "object") | {model, label}) else null end | tojson)"' "$f" 2>/dev/null
 else
   f="$HOME/.codex/config.toml"
   for k in model model_reasoning_effort service_tier sandbox_mode approval_policy; do
@@ -81,6 +81,22 @@ true`;
 
 function parsePer(text) {
   try { return JSON.parse(text || "{}") ?? {}; } catch { return {}; }
+}
+
+/** Claude Code's configured /model rows, including those Magpie writes. */
+function parsePicker(text) {
+  try {
+    const rows = JSON.parse(text);
+    if (!Array.isArray(rows)) return null;
+    const seen = new Set();
+    const models = [];
+    for (const row of rows) {
+      if (typeof row?.model !== "string" || !row.model.trim() || seen.has(row.model)) continue;
+      seen.add(row.model);
+      models.push({ id: row.model, label: typeof row.label === "string" && row.label.trim() ? row.label : row.model });
+    }
+    return models.length ? models : null;
+  } catch { return null; }
 }
 
 // The agent's own settings, from DEFAULTS' output on its machine.
@@ -102,7 +118,7 @@ export function parseDefaults(kind, stdout) {
     } catch {}
   }
   return kind === "claude"
-    ? { model: out.model || null, effort: out.effort || null, fast: Boolean(out.fast), per: parsePer(out.per), mode: out.mode || null }
+    ? { model: out.model || null, effort: out.effort || null, fast: Boolean(out.fast), per: parsePer(out.per), mode: out.mode || null, models: parsePicker(out.picker) }
     : { model: out.model || null, effort: out.model_reasoning_effort || null, fast: ["fast", "priority"].includes(out.service_tier),
       sandbox: out.sandbox_mode || null, approval: out.approval_policy || null, models };
 }
@@ -226,12 +242,18 @@ export function parseUsage(text) {
 
 // What the model picker (mods/chat-models, the web's restart.tsx) shows for one agent, as plain data:
 // { name, models: [{ id, name, efforts, defaultEffort, fast }], perms }: every model the CLI
-// offers (Codex: its own models_cache.json; Claude Code: its /model menu), the picker searches them.
+// offers (Codex: models_cache.json; Claude Code: modelPicker.options, else the built-in list), searched by the picker.
 // `dflt` is that agent's settings (defaults()); `current` its running model, kept in the list.
 export function menuFor(agent, dflt, current = null) {
   if (agent === "claude") {
-    const models = CLAUDE_MODELS.map((m) => ({ id: m.id, name: m.name, efforts: CLAUDE_EFFORTS,
-      defaultEffort: dflt?.per?.[m.match[1].replace(/\[1m\]$/, "")] ?? dflt?.effort ?? null, fast: m.id.startsWith("opus") }));
+    /** A configured picker is the CLI's catalog; keep provider-qualified IDs on Claude Code. */
+    const catalog = dflt?.models?.length ? dflt.models : CLAUDE_MODELS;
+    const models = catalog.map((m) => {
+      const own = CLAUDE_MODELS.find((b) => b.id === m.id);
+      return { id: m.id, name: m.label ?? m.name, efforts: CLAUDE_EFFORTS,
+        defaultEffort: dflt?.per?.[m.id] ?? (own ? dflt?.per?.[own.match[1].replace(/\[1m\]$/, "")] : null) ?? dflt?.effort ?? null,
+        fast: Boolean(own?.id.startsWith("opus")) };
+    });
     // a model typed by id (an older one it still takes) stays in the list while it runs
     if (current && !models.some((m) => m.id === current)) models.unshift({ id: current, name: modelName(current), efforts: CLAUDE_EFFORTS, defaultEffort: dflt?.effort ?? null, fast: false });
     return { name: NAMES.claude, perms: PERMS.claude, models };
