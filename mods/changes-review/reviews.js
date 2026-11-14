@@ -1,4 +1,4 @@
-import { exec, hc, writeTextFile, openOverlay } from "herdr";
+import { exec, hc, writeTextFile, openOverlay, shared } from "herdr";
 import { panes, terminals, spaces } from "./live.js";
 import * as fs from "fs/promises";
 import { dirsReady } from "./dirs.js";
@@ -6,7 +6,7 @@ import { DEFAULTS, menuFor, parseDefaults, sessionOf } from "./core/agents.js";
 import { FIND, Conversation } from "./core/chat-log.js";
 import { CLEAN_ENV, AGENT_PATH } from "./core/clean-env.js";
 import { chatPane } from "./core/spaces.js";
-import { ChangesReview, completedMessage, finished, reportText, sourceKey } from "./core/changes-review.js";
+import { ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey } from "./core/changes-review.js";
 
 const PROBE = String.raw`
 import json, mmap, os, shutil, subprocess
@@ -77,10 +77,31 @@ async function ownTerminal(r) {
   if (result.code !== 0) return null;
   const t = JSON.parse(result.stdout);
   const argv = t.foreground?.argv ?? t.argv ?? [];
-  return t.labels?.["herdr.review"] === r.id && argv.includes(r.session) ? t : null;
+  return t.labels?.["herdr.review"] === r.id && argv.includes(r.session)
+    && (!r.reviewerPid || !t.foreground?.pid || t.foreground.pid === r.reviewerPid) ? t : null;
 }
 async function stop(r) {
   if ((await ownTerminal(r))?.state === "live") checked(await hc(["kill", r.owned.terminal]));
+}
+
+const openDialog = (address) => (shared("chat.screens") ?? {})[address]?.at(-1)?.state === "open";
+async function conversation(source) {
+  const text = await fs.readFile(source.path, "utf8");
+  const parsed = new Conversation(source.kind);
+  parsed.feed(text.split("\n").flatMap((line, off) => {
+    let r; try { r = JSON.parse(line); } catch { return []; }
+    if (r.sessionId && r.sessionId !== source.conversation || r.isSidechain) return [];
+    return [{ kind: "J", data: line, off }];
+  }));
+  return parsed;
+}
+async function reviewerSource(run) {
+  const terminal = await ownTerminal(run);
+  if (!terminal || terminal.state !== "live" || !terminal.foreground?.pid) return null;
+  const found = await exec("sh", ["-c", FIND, "chat", "claude", String(terminal.foreground.pid)]);
+  const path = found.stdout.trim().split("\n").pop();
+  if (sessionOf("claude", path) !== run.session) return null;
+  return { address: run.owned.terminal, path, conversation: run.session, kind: "claude" };
 }
 
 const io = {
@@ -146,6 +167,7 @@ const io = {
       throw error;
     }
     r.owned = { terminal: out.address, tab: null, pane: null, space: space.id };
+    r.reviewerPid = out.foreground?.pid ?? null;
     await io.save(r);
     checked(result);
     let tab;
@@ -178,27 +200,49 @@ const io = {
     }
   },
   sameSource,
+  async sameReviewer(r) {
+    const t = await ownTerminal(r);
+    if (!t || t.state !== "live") return !!r.closeRequested && !!t;
+    if (r.reviewerPid && t.foreground?.pid !== r.reviewerPid) return false;
+    if (r.logPath && !await reviewerSource(r)) return false;
+    return true;
+  },
   async sourceReady(s) {
     const t = JSON.parse(checked(await hc(["get", s.address, "--json"])).stdout);
-    return t.status?.state === "idle" || t.status?.state === "done";
+    return !openDialog(s.address) && ["idle", "done"].includes(t.status?.state);
   },
-  async deliver(s, body) {
+  async deliver(s, body, active = () => true) {
     // The status guard is enforced at transport admission. No force, keys, or send-now path is reachable here.
+    if (openDialog(s.address)) return { accepted: false, notSent: true, error: "A question or permission dialog is open" };
+    if (!await sameSource(s)) return { accepted: false, notSent: true, error: "The Source conversation changed before admission" };
+    if (!active()) return { accepted: false, notSent: true, error: "Review cancelled before admission" };
     const r = await hc(["send", s.address, body, "--if", "idle"]);
     return { accepted: r.code === 0, error: r.code === 0 ? null : (r.stderr || r.stdout) };
   },
   async received(s, body) {
     if (!await sameSource(s)) return false;
-    const lines = (await fs.readFile(s.path, "utf8")).split("\n");
-    const conversation = new Conversation(s.kind);
-    const records = lines.flatMap((line, off) => {
-      let r; try { r = JSON.parse(line); } catch { return []; }
-      if (r.sessionId && r.sessionId !== s.conversation || r.isSidechain) return [];
-      return [{ kind: "J", data: line, off }];
-    });
-    conversation.feed(records);
     // Use the same Claude/Codex user-message parsing as Chat; a token or quoted tool result is never a receipt.
-    return conversation.items.some((m) => m.kind === "user" && m.text?.includes(body));
+    return (await conversation(s)).items.some((m) => m.kind === "user" && m.text?.includes(body));
+  },
+  async reviewerReady(r) {
+    const t = await ownTerminal(r);
+    return !openDialog(r.owned?.terminal) && ["idle", "done"].includes(t?.status?.state);
+  },
+  async reviewerReceived(r, body) {
+    const source = await reviewerSource(r);
+    if (!source) return false;
+    return (await conversation(source)).items.some((m) => m.kind === "user" && m.text?.includes(body));
+  },
+  async recheck(r, body, active = () => true) {
+    const source = await reviewerSource(r);
+    if (!source || !await io.reviewerReady(r) || !await sameSource(r.source)) return { accepted: false, notSent: true, error: "The bound conversations are not ready" };
+    // Persist the transcript boundary before submission, so old completed turns cannot complete the recheck.
+    r.round.logOffset ??= (await fs.readFile(source.path, "utf8")).length;
+    await io.save(r);
+    if (!active() || !await io.sameReviewer(r) || !await sameSource(r.source)) return { accepted: false, notSent: true, error: "Review or bound conversation changed before admission" };
+    if (!active()) return { accepted: false, notSent: true, error: "Review cancelled before admission" };
+    const result = await hc(["send", source.address, body, "--if", "idle"]);
+    return { accepted: result.code === 0, error: result.code === 0 ? null : result.stderr || result.stdout };
   },
   reportPath: (r) => `${base}/${r.id}.md`,
 };
@@ -219,7 +263,11 @@ export async function reviewTick(id, path, status, deliver = true) {
       reportId: r.round.reportId, session: r.session, error: "The reviewer conversation changed; its replacement was left alone" });
     if (r.logPath !== path) { r.logPath = path; await io.save(r); }
     const text = await fs.readFile(path, "utf8");
-    const records = text.split("\n").flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+    const offset = r.round.logOffset ?? 0;
+    if (text.length < offset) return reviews.message({ type: "failed", runId: r.id, roundId: r.round.id,
+      reportId: r.round.reportId, session: r.session, error: "The reviewer transcript was truncated during recovery" });
+    if (r.round.number > 1 && r.round.logOffset === undefined) return deliver ? reviews.tick(id) : r;
+    const records = text.slice(offset).split("\n").flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
     const event = completedMessage(r, records, status === "idle" || status === "done");
     if (event) await reviews.message(event);
   }
@@ -254,12 +302,10 @@ export async function reviewSweep() {
         const candidate = found.stdout.trim().split("\n").pop();
         if (sessionOf("claude", candidate) === r.session) path = candidate;
       }
-      await reviewTick(r.id, path, terminal?.status?.state);
-      if (r.round.findings === null && terminal?.state === "finished") {
-        const current = await io.load(r.id);
-        if (current.round.findings === null) await reviews.message({ type: "failed", runId: r.id, roundId: r.round.id,
-          reportId: r.round.reportId, session: r.session, error: "The reviewer exited before a complete report" });
+      if (r.round.findings?.length && await sameSource(r.source)) {
+        for (const event of sourceMessages(r, (await conversation(r.source)).items)) await reviews.message(event);
       }
+      await reviewTick(r.id, path, terminal?.status?.state);
     }
   } finally { sweeping = false; }
 }

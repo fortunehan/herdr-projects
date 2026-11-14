@@ -400,6 +400,16 @@ function narration(l, b) {
   return l.thinkingDisplay === "updates" || NARRATION.test(String(b.signature ?? "").slice(0, 80));
 }
 
+/** A persisted update can join standalone bold headings without a separator. Repair only that complete
+ *  narration shape, before either renderer sees it; leave prose, code and escaped/literal stars alone. */
+function narrationText(text) {
+  const t = text.trim();
+  if (!text.startsWith("**") || !t.endsWith("**")) return text;
+  const headings = t.slice(2, -2).split("****");
+  return headings.length > 1 && headings.every((h) => h && h === h.trim() && !/[*`\\\r\n<>\[\]]/.test(h))
+    ? `**${headings.join("**\n\n**")}**` : text;
+}
+
 const short = (p) => {
   const s = String(p ?? "");
   const parts = s.split("/").filter(Boolean);
@@ -973,7 +983,7 @@ export class Conversation {
       for (const b of Array.isArray(m.content) ? m.content : []) {
         const told = narration(l, b);
         if (b?.type === "thinking" && !told && !this.open.size) this.doing = "Thinking";
-        const said = b?.type === "text" ? this.agentText(b.text ?? "") : told ? this.agentText(b.thinking) : "";
+        const said = b?.type === "text" ? this.agentText(b.text ?? "") : told ? this.agentText(narrationText(b.thinking)) : "";
         if (said) {
           // One reply can be written over several lines with the same id.
           const prev = this.replies.get(id);

@@ -47,6 +47,9 @@ function fixture(unborn = false) {
     stop: async (r) => state.stopped.push(r.owned?.terminal),
     cleanup: async (r) => { if (r.owned) { state.stopped.push(r.owned.terminal); state.closed.push(r.owned.tab); } },
     sameSource: async () => state.same, sourceReady: async () => state.ready,
+    sameReviewer: async () => !state.reviewerLost, reviewerReady: async () => state.reviewerReady !== false,
+    reviewerReceived: async () => !!state.recheckReceived,
+    recheck: async (r, body) => { (state.rechecks ??= []).push({ r, body }); return { accepted: state.recheckAccepted !== false }; },
     deliver: async (s, body) => { expect(records().some((r) => r.round.findings !== null)).toBe(true); state.sends.push({ s, body }); return { accepted: state.accepted }; },
     received: async () => state.received, reportPath: (r) => join(data, `${r.id}.md`),
   };
@@ -84,7 +87,7 @@ test("findings stay visibly pending after confirmed delivery and no repair or ex
   await f.review.tick(r.id); await f.review.tick(r.id);
   const kept = f.records()[0];
   expect(kept.state).toBe("waiting-for-source"); expect(kept.round.number).toBe(1);
-  expect(kept.round.findings).toEqual(findings); expect(reportText(kept)).toContain("not implemented");
+  expect(kept.round.findings).toEqual(findings); expect(reportText(kept)).toContain("No completed source response");
   expect(f.state.closed).toEqual([]); expect(f.state.sends).toHaveLength(1); expect(f.state.opens).toHaveLength(1);
 });
 
@@ -108,6 +111,13 @@ test("uncertain delivery is durable and cannot repeat side effects after reloadi
   expect(f.records()[0].round.delivery.state).toBe("uncertain"); expect(f.state.sends).toHaveLength(1); expect(f.state.closed).toEqual([]);
 });
 
+test("explicit recovery never retries an ambiguous repair request without a receipt", async () => {
+  const f = fixture(), r = await f.start(); await f.review.message(f.event(r, [{ summary: "finding" }]));
+  f.state.accepted = false; await f.review.tick(r.id);
+  await expect(f.review.recover(r.id, { type: "retry" })).rejects.toThrow("ambiguous");
+  expect(f.state.sends).toHaveLength(1); expect(f.records()[0].completedReviews).toBe(1);
+});
+
 test("duplicate Run clicks and overlapping runs cannot create duplicate reviewer sessions", async () => {
   const f = fixture(), form = await f.review.prepare(f.target);
   const [a, b] = await Promise.all([f.review.launch(form, f.target), f.review.launch(form, f.target)]);
@@ -121,6 +131,8 @@ test("duplicate and out-of-order completion messages do not overwrite findings o
   await Promise.all([f.review.message(f.event(r)), f.review.message(f.event(r, [{ summary: "late" }]))]);
   await f.review.tick(r.id); await f.review.tick(r.id);
   expect(f.records()[0].round.findings).toEqual([]); expect(f.state.sends).toHaveLength(1);
+  await f.review.message({ ...f.event(r), type: "failed", error: "Delayed failure from the already completed turn" });
+  expect(f.records()[0].round.findings).toEqual([]); expect(f.records()[0].state).not.toBe("failed");
 });
 
 test("cancellation retains completed reports, stops only its reviewer and prevents late sends", async () => {
@@ -279,4 +291,29 @@ test("transcript completion requires bundled invocation, successful findings out
   expect(completedMessage(r, records, false)).toBeNull(); expect(completedMessage(r, records, true)?.findings).toEqual([]);
   expect(completedMessage(r, records.slice(1), true)?.type).toBe("failed");
   records[2].message.content[0].is_error = true; expect(completedMessage(r, records, true)?.type).toBe("failed");
+});
+
+test("cancellation during identity revalidation prevents an admitted late repair request", async () => {
+  const f = fixture(), r = await f.start(); await f.review.message(f.event(r, [{ summary: "finding" }]));
+  let signal, release;
+  const atBoundary = new Promise((resolve) => { signal = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  let validations = 0;
+  f.io.sameSource = async () => { if (++validations === 2) { signal(); await gate; } return true; };
+  const sending = f.review.tick(r.id);
+  await atBoundary;
+  const cancelled = f.review.cancel(r.id);
+  release(); await sending; await cancelled;
+  expect(f.records()[0].state).toBe("cancelled"); expect(f.state.sends).toEqual([]);
+  expect(f.state.closed).toEqual([]); expect(f.state.stopped).toEqual(["t-reviewer"]);
+});
+
+test("an unborn initial comparison keeps committed repairs visible and permits an empty restored comparison", async () => {
+  const f = fixture(true), r = await f.start();
+  git(f.root, "add", "-A"); git(f.root, "commit", "-qm", "authorized repair commit");
+  const observed = await capture(f.io, { ...f.target, fixed: r.target, allowEmpty: true });
+  expect(observed.inventory.map((x) => x.path)).toContain("new"); expect(observed.head).not.toBeNull();
+  const empty = fixture(); rmSync(join(empty.root, "new"));
+  const observation = await capture(empty.io, { ...empty.target, allowEmpty: true });
+  expect(observation.inventory).toEqual([]);
 });

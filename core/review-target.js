@@ -14,6 +14,10 @@ def git(*args, required=True):
 root = git('rev-parse', '--show-toplevel').stdout.decode().strip()
 if os.path.realpath(root) != os.path.realpath(cwd):
     cwd = root
+gitdir = git('rev-parse', '--absolute-git-dir').stdout.decode().strip()
+fixed_target = p.get('fixed')
+if fixed_target and (os.path.realpath(root) != fixed_target['root'] or gitdir != fixed_target['gitdir']):
+    raise ValueError('The checkout identity changed; the captured target is unavailable')
 head_r = git('rev-parse', '--verify', 'HEAD', required=False)
 head = head_r.stdout.decode().strip() if head_r.returncode == 0 else None
 mode = p.get('mode', 'uncommitted')
@@ -45,14 +49,23 @@ entries = [e for e in status.split(b'\0') if e]
 if any(b'U' in e[:2] or e[:2] in [b'AA', b'DD'] for e in entries): raise ValueError('Resolve merge conflicts before Review')
 flags = ['--no-ext-diff', '--no-textconv', '--no-color', '--no-renames']
 if mode == 'uncommitted':
+    fixed = p.get('fixed')
+    start = fixed.get('head') if fixed else head
     names = [(e[:2].decode(), e[3:]) for e in entries]
-    patches = [git('diff', '--cached', *([head] if head else []), *flags, '--binary').stdout, git('diff', *flags, '--binary').stdout]
+    patches = [git('diff', '--cached', *([start] if start else ['4b825dc642cb6eb9a060e54bf8d69288fbee4904']), *flags, '--binary').stdout, git('diff', *flags, '--binary').stdout]
+    if fixed and head != start:
+        # Keep permitted repair commits in scope instead of comparing only with the moving HEAD.
+        origin = start or '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+        parts = git('diff', origin, '--name-status', '-z', '--no-renames').stdout.split(b'\0')
+        committed = [(parts[i].decode(), parts[i+1]) for i in range(0, len(parts)-1, 2)]
+        names = list({raw: (xy, raw) for xy, raw in [*committed, *names]}.values())
+        patches.append(git('diff', origin, *flags, '--binary').stdout)
 else:
     parts = git('diff', base, '--name-status', '-z', '--no-renames').stdout.split(b'\0')
     names = [(parts[i].decode(), parts[i+1]) for i in range(0, len(parts)-1, 2)]
     names += [('??', f) for f in git('ls-files', '--others', '--exclude-standard', '-z').stdout.split(b'\0') if f]
     patches = [git('diff', base, *flags, '--binary').stdout]
-if not names: raise ValueError('There are no changes in this comparison')
+if not names and not p.get('allowEmpty'): raise ValueError('There are no changes in this comparison')
 inventory, limitations = [], []
 for xy, raw in sorted(names, key=lambda x: x[1]):
     path = os.fsdecode(raw)

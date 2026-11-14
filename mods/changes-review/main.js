@@ -2,7 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { props, theme, closeOverlay, shared } from "herdr";
 import { reviews, reviewRecords } from "./reviews.js";
-import { disabled, LEVELS, sourceKey, reportText, effortReason } from "./core/changes-review.js";
+import { disabled, LEVELS, sourceKey, reportText, effortReason, finished } from "./core/changes-review.js";
 import { targetKey } from "./core/review-target.js";
 import { keepKeys, dropKeys } from "./keyholder.js";
 
@@ -47,9 +47,14 @@ export default class ReviewDialog extends View {
     this.form = { ...was, loading: true, error: null, stale: false };
     cx.spawn(async (cx) => {
       try {
-        if (this.p.report) this.record = (await reviewRecords()).find((r) => r.id === this.p.report);
+        if (this.p.report) {
+          this.record = (await reviewRecords()).find((r) => r.id === this.p.report);
+          this.recipients = this.record && !finished(this.record) ? await reviews.recipients(this.record.id) : [];
+        }
         else {
-          const f = await reviews.prepare(shared("changes.review.target") ?? this.p.target);
+          const input = shared("changes.review.target") ?? this.p.target;
+          this.retained = (await reviewRecords()).filter((r) => r.input.cwd === input?.cwd).slice(0, 5);
+          const f = await reviews.prepare(input);
           this.form = was.target ? { ...f, model: was.model, effort: was.effort, depth: was.depth, guidance: was.guidance } : f;
         }
       } catch (e) { this.form.error = String(e?.message ?? e); }
@@ -73,6 +78,16 @@ export default class ReviewDialog extends View {
     cx.notify();
   }
 
+  recover(action, cx) {
+    if (this.recovering) return;
+    this.recovering = true; this.recoveryError = null;
+    cx.spawn(async (cx) => {
+      try { await reviews.recover(this.record.id, action); await reviews.tick(this.record.id); this.refresh(cx); }
+      catch (e) { this.recoveryError = String(e?.message ?? e); }
+      finally { this.recovering = false; cx.notify(); }
+    });
+  }
+
   button(id, text, fn, t, enabled = true) {
     return div().id(id).px(10).py(6).rounded(6).bg(t.raised).text_color(enabled ? t.foreground : t.dim)
       .when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => { if (enabled) fn(cx); }).child(text);
@@ -87,7 +102,16 @@ export default class ReviewDialog extends View {
       const r = this.record;
       return shell.child(div().font_semibold().child("Review report"))
         .child(div().flex_1().min_h(0).overflow_y_scrollbar().child(TextView.new(r ? reportText(r) : this.form.error || "Loading report…")))
-        .child(h_flex().gap(8).when(Boolean(r && !["passed", "failed", "cancelled"].includes(r.state)), (e) => e.child(this.button("review-stop", "Cancel review", (cx) => {
+        .when(Boolean(r && !finished(r)), (e) => e.child(v_flex().flex_none().gap(6)
+          .child(div().text_size(11).text_color(t.dim).child("Recovery keeps the same reviewer and round count. Ambiguous repair sends are reconciled without repeating repairs. A new recipient must be selected explicitly."))
+          .child(v_flex().max_h(100).overflow_y_scrollbar().gap(3).children((this.recipients ?? []).map((s) =>
+            this.button(`review-rebind-${s.address}`, `${this.recipient === sourceKey(s) ? "Selected · " : ""}${s.name} · ${s.address} · ${s.conversation}`, (cx) => { this.recipient = sourceKey(s); cx.notify(); }, t, !this.recovering))))
+          .child(h_flex().gap(6)
+            .child(this.button("review-rebind", "Use selected recipient", (cx) => this.recover({ type: "rebind", source: this.recipient }, cx), t, Boolean(this.recipient) && !this.recovering))
+            .child(this.button("review-retry", "Check delivery / retry", (cx) => this.recover({ type: "retry" }, cx), t, !this.recovering))
+            .when(r.state === "paused" && r.round.response?.status === "completed", (e) => e.child(this.button("review-resume", "Resume recheck", (cx) => this.recover({ type: "resume" }, cx), t, !this.recovering))))))
+        .when(Boolean(this.recoveryError || this.form.error), (e) => e.child(div().text_color(t.ansi1).child(this.recoveryError || this.form.error)))
+        .child(h_flex().gap(8).when(Boolean(r && !finished(r)), (e) => e.child(this.button("review-stop", "Cancel review", (cx) => {
           cx.spawn(async (cx) => { await reviews.cancel(r.id); this.refresh(cx); });
         }, t))).child(this.button("review-report-close", "Close", () => closeOverlay(this.p.overlay), t)));
     }
@@ -114,7 +138,9 @@ export default class ReviewDialog extends View {
         .when(!f.sources.length, (e) => e.child(div().text_color(t.dim).child("No matching live Source session")))
         .children(f.sources.map((s) => this.button(`review-source-${s.address}`, `${f.source === sourceKey(s) ? "Selected · " : ""}${s.name} · ${s.address} · ${s.conversation}`, (cx) => { f.source = sourceKey(s); cx.notify(); }, t)))))
       .child(row("Prompt", Textarea.new(this.prompt).h(62)))
-      .child(div().text_size(11).text_color(t.dim).child("The complete comparison is reviewed. Findings remain pending; automatic repair and recheck are not available yet."))
+      .when(Boolean(this.retained?.length), (e) => e.child(row("Retained reviews", v_flex().gap(3).children(this.retained.map((r) =>
+        this.button(`review-retained-${r.id}`, `${r.state.replaceAll("-", " ")} · ${r.id}`, (cx) => { this.p.report = r.id; this.refresh(cx); }, t))))))
+      .child(div().text_size(11).text_color(t.dim).child("The source evaluates findings under its existing permissions. The same reviewer rechecks, stopping after a pass or three completed reviews. Decisions and delivery problems pause the exchange."))
       .when(Boolean(reason || this.launchError), (e) => e.child(div().id("review-reason").text_size(12).text_color(t.ansi1).child(this.launchError || reason)))
       .child(h_flex().gap(8).child(this.button("review-refresh", "Refresh", (cx) => this.refresh(cx), t, !f.busy))
         .child(div().flex_1()).child(this.button("review-cancel", "Cancel", () => closeOverlay(this.p.overlay), t, !f.busy))
