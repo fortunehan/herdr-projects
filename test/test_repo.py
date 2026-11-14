@@ -92,7 +92,7 @@ class Repo(unittest.TestCase):
     TITLE_OK = {"Dialog", "CardShell", "TitleWhere", "Line", "iframe"}
 
     def test_no_hover_tooltips(self):
-        """No hover popups (SHEP-25), except the pane copy button's explicitly requested tooltip (SHEP-48).
+        """No hover popups (SHEP-25), except the pane header's explicitly requested action tooltips (SHEP-49).
         Other icon-only controls say their words with `aria-label` instead."""
         found = []
         for top in ("web/src", "web/plugins"):
@@ -129,10 +129,26 @@ class Repo(unittest.TestCase):
                                 if ".tooltip(" in line:
                                     rel = os.path.relpath(p, ROOT)
                                     if rel == "mods/pane-chat/main.js":
-                                        line = line.replace('.tooltip("Copy terminal ID or full path")', "")
+                                        for tip in ("Copy path: the terminal's current full directory",
+                                                    "Copy panel ID: hc terminal address, including remote machine prefix",
+                                                    "Open the current directory in an application"):
+                                            line = line.replace(f'.tooltip("{tip}")', "")
                                     if ".tooltip(" in line:
                                         found.append(f"{rel}:{n}: .tooltip(")
         self.assertFalse(found, "hover tooltips (use aria-label, or show the words):\n" + "\n".join(found))
+
+    def test_pane_header_action_icons(self):
+        import xml.etree.ElementTree as ET
+        with open(J("mods", "pane-chat", "main.js"), encoding="utf-8") as fh:
+            source = fh.read()
+        icons = re.findall(r'this\.button\(t,\s*`[^`]+`,\s*"([\w-]+)"', source)
+        self.assertTrue({"copy-path", "copy", "open"}.issubset(icons))
+        for name in set(icons) | {"zoom", "unzoom"}:
+            icon = ET.parse(J("mods", "pane-chat", name + ".svg")).getroot()
+            self.assertEqual(icon.tag, "{http://www.w3.org/2000/svg}svg", name)
+            self.assertTrue(icon.get("viewBox"), name)
+        self.assertNotIn("copyPane", source)
+        self.assertNotIn("Copy ID and path", source)
 
     def test_no_leftovers(self):
         for p in text_files():

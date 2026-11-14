@@ -15,7 +15,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { props, run, theme, home, exec, hc, notify, nextCommand, shared, setShared, openOverlay, closeOverlay } from "herdr";
+import { props, run, theme, home, exec, hc, notify, nextCommand, shared, setShared, openOverlay, closeOverlay, window } from "herdr";
 import { panes, terminals, spaces, inRender } from "./live.js";
 import { spaceName, chatPane, chatLabel } from "./core/spaces.js";
 import { apSpace, apWatch, apPoll, apGroup, apHeartbeatLink, COMPACT_BELOW } from "./autopilot.js";
@@ -74,7 +74,38 @@ function parked(terminal) {
   return { program: k.program, status: st, cwd: k.foreground?.cwd ?? k.cwd ?? null, title: k.title ?? "" };
 }
 
-const COPY_ACTIONS = [["id", "Copy ID"], ["path", "Copy full path"], ["both", "Copy ID and path"]];
+const OPEN_ACTIONS = [["terminal", "Terminal"], ["vscode", "VS Code"], ["finder", "Finder"], ["xcode", "Xcode"]];
+
+/** NSWorkspace's Unix executable handler is the system's default terminal selection (macOS 12+).
+ * Resolve it for every action; never assume Terminal.app or the ssh URL handler. Named apps also use LaunchServices.
+ * https://developer.apple.com/documentation/appkit/nsworkspace/urlforapplication(toopen:)-95cvp
+ * Only the action key crosses into this fixed script; directory paths remain separate process arguments. */
+const MAC_APPLICATION = `ObjC.import("AppKit");
+ObjC.import("/System/Library/Frameworks/UniformTypeIdentifiers.framework");
+function run(argv) {
+  const workspace = $.NSWorkspace.sharedWorkspace;
+  const ids = {vscode: "com.microsoft.VSCode", finder: "com.apple.finder", xcode: "com.apple.dt.Xcode"};
+  const app = argv[0] === "terminal"
+    ? workspace.URLForApplicationToOpenContentType($.UTType.typeWithIdentifier("public.unix-executable"))
+    : workspace.URLForApplicationWithBundleIdentifier(ids[argv[0]]);
+  if (app.isNil()) throw Error(argv[0] === "terminal" ? "No default terminal application is configured." : "The requested application isn't installed.");
+  return JSON.stringify(ObjC.unwrap(app.path));
+}`;
+
+function openUnavailable(target) {
+  const unavailable = copyUnavailable(target, "path");
+  if (unavailable) return unavailable;
+  if (target.terminal.includes("/")) return "This directory is on another machine. External apps open only local directories.";
+  if (window()?.platform !== "macos") return "External application opening is currently supported only on macOS.";
+  if (!target.path.startsWith("/")) return "This directory isn't a local macOS path.";
+  return null;
+}
+
+async function checkedExec(command, args) {
+  const result = await exec(command, args);
+  if (result.code !== 0) throw new Error(result.stderr?.trim() || `${command} failed (exit ${result.code}).`);
+  return result;
+}
 
 /** Resolve the clicked header again for each action, including parked Chat agents and remote addresses.
  * A lazy Assistant's configured folder is not a running terminal's cwd. */
@@ -95,10 +126,10 @@ function copyUnavailable(target, action) {
 
 export default class Pane extends View {
   init(_props, cx) {
-    if (props()?.copyPane) {
-      this.copyFocus = cx.focus_handle();
-      this.copyFocus.focus();
-      this.copyIndex = 0;
+    if (props()?.openPane) {
+      this.openFocus = cx.focus_handle();
+      this.openFocus.focus();
+      this.openIndex = 0;
       return;
     }
     this.hovered = false;
@@ -159,41 +190,63 @@ export default class Pane extends View {
       notify({ title: "Couldn't copy", body: unavailable, level: "warning" });
       return;
     }
-    const text = action === "id" ? target.terminal : action === "path" ? target.path
-      : `Terminal: ${target.terminal}\nPath: ${target.path}`;
     try {
-      cx.write_to_clipboard(text);
-      closeOverlay(props()?.overlay);
-      notify({ title: action === "id" ? "Terminal ID copied" : action === "path" ? "Full path copied" : "Terminal ID and path copied", level: "success", timeout: 1600 });
+      cx.write_to_clipboard(action === "id" ? target.terminal : target.path);
+      notify({ title: action === "id" ? "Panel ID copied" : "Full path copied", level: "success", timeout: 1600 });
     } catch (e) {
       notify({ title: "Couldn't copy", body: plainError(e), level: "error" });
     }
   }
 
-  copyMenu() {
-    const pane = props()?.copyPane;
+  openDirectory(pane, action, cx) {
     const target = copyTarget(pane);
+    const unavailable = openUnavailable(target);
+    const title = `Couldn't open ${OPEN_ACTIONS.find(([key]) => key === action)[1]}`;
+    if (unavailable) {
+      notify({ title, body: unavailable, level: "warning" });
+      return;
+    }
+    if (this.launching) return;
+    this.launching = true;
+    const overlay = props()?.overlay;
+    cx.spawn(async (cx) => {
+      try {
+        const directory = await exec("/usr/bin/test", ["-d", target.path]);
+        if (directory.code !== 0) throw new Error("The current directory is missing or isn't accessible on this machine.");
+        const result = await checkedExec("/usr/bin/osascript", ["-l", "JavaScript", "-e", MAC_APPLICATION, action]);
+        const application = JSON.parse(result.stdout);
+        if (typeof application !== "string" || !application.startsWith("/")) throw new Error("The application lookup didn't return a local application.");
+        await checkedExec("/usr/bin/open", ["-a", application, "--", target.path]);
+        closeOverlay(overlay);
+      } catch (e) {
+        notify({ title, body: plainError(e), level: "error" });
+      }
+      this.launching = false;
+      cx.notify();
+    });
+  }
+
+  openMenu() {
+    const pane = props()?.openPane;
+    const unavailable = openUnavailable(copyTarget(pane));
     const t = theme();
-    return v_flex().id("pane-copy-menu").track_focus(this.copyFocus).w_full().p(4).bg(t.popover)
+    return v_flex().id("pane-open-menu").track_focus(this.openFocus).w_full().p(4).bg(t.popover)
       .on_key_down((e, cx) => {
-        const current = copyTarget(pane);
-        const available = COPY_ACTIONS.map(([action], i) => copyUnavailable(current, action) ? -1 : i).filter((i) => i >= 0);
         if (e.key === "escape") closeOverlay(props()?.overlay);
-        else if (e.key === "enter") this.copy(pane, COPY_ACTIONS[this.copyIndex][0], cx);
+        else if (e.key === "enter") this.openDirectory(pane, OPEN_ACTIONS[this.openIndex][0], cx);
         else if (e.key === "down" || e.key === "up") {
-          const at = available.indexOf(this.copyIndex);
-          this.copyIndex = available.length ? available[(at + (e.key === "down" ? 1 : available.length - 1)) % available.length] : 0;
-          this.copyKeyed = true;
+          if (!openUnavailable(copyTarget(pane))) {
+            this.openIndex = (this.openIndex + (e.key === "down" ? 1 : OPEN_ACTIONS.length - 1)) % OPEN_ACTIONS.length;
+            this.openKeyed = true;
+          }
         } else return;
         cx.stop_propagation();
         cx.notify();
       })
-      .children(COPY_ACTIONS.map(([action, label], i) => {
-        const unavailable = copyUnavailable(target, action);
-        return menuRow(`ph-copy-${action}`, label, { disabled: Boolean(unavailable),
-          onClick: (_e, cx) => this.copy(pane, action, cx) })
-          .when(this.copyKeyed && this.copyIndex === i && !unavailable, (el) => el.bg(t.hover));
-      }));
+      .children(OPEN_ACTIONS.map(([action, name], i) => menuRow(`ph-open-${action}`, `Open in ${name}`, {
+        disabled: Boolean(unavailable) || Boolean(this.launching), onClick: (_e, cx) => this.openDirectory(pane, action, cx),
+      }).when(this.openKeyed && this.openIndex === i && !unavailable, (el) => el.bg(t.hover))))
+      .when(Boolean(unavailable), (el) => el.child(div().id("pane-open-reason").px(8).py(6).text_size(TEXT.label).text_color(t.muted).child(unavailable)));
   }
 
   // Terminal → Chat: the chat takes this agent pane's spot.
@@ -271,7 +324,7 @@ export default class Pane extends View {
 
   // One copy of Herdr's live lists for the whole render (live.js): past ~50 ms Herdr stops it.
   render(cx) {
-    return inRender(() => props()?.copyPane ? this.copyMenu() : this.draw(cx));
+    return inRender(() => props()?.openPane ? this.openMenu() : this.draw(cx));
   }
 
   draw(cx) {
@@ -340,6 +393,14 @@ export default class Pane extends View {
         .child(uiButton(`ph-end-${pane}`, endAgent(prog).verb, { kind: "primary", onClick: () => this.closeChat(pane) })))
       // Hover buttons come before the switch so Chat | Terminal never moves.
       .when(this.hovered && !(entry && this.ending === true), el => el
+        .when(chatMode || (!self.mod && Boolean(self.terminal)), (el) => el
+          .child(this.button(t, `ph-copy-path-${pane}`, "copy-path", null, null, (cx) => this.copy(pane, "path", cx))
+            .accessibility_label("Copy path").tooltip("Copy path: the terminal's current full directory"))
+          .child(this.button(t, `ph-copy-id-${pane}`, "copy", null, null, (cx) => this.copy(pane, "id", cx))
+            .accessibility_label("Copy panel ID").tooltip("Copy panel ID: hc terminal address, including remote machine prefix"))
+          .child(this.button(t, `ph-open-${pane}`, "open", null, null, () => openOverlay({
+            mod: "pane-chat", kind: "popup", width: 280, height: 224, props: { openPane: pane },
+          })).accessibility_label("Open").tooltip("Open the current directory in an application")))
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
         .child(this.button(t, `ph-z-${pane}`, self.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
@@ -348,10 +409,6 @@ export default class Pane extends View {
       .when(canSwitch, (el) => el.child(this.switcher(t, `ph-mode-${pane}`, chatMode,
         (cx) => this.toChat(self, cx),
         // No agent yet: the chat starts it (no first message) and then shows its terminal.
-        (cx) => (lazy && !agentOf(pane) ? setShared("chat.startreq", { pane, at: Date.now() }) : this.toTerminal(pane, cx)))))
-      .when(chatMode || (!self.mod && Boolean(self.terminal)), (el) => el.child(
-        this.button(t, `ph-copy-${pane}`, "copy", null, null, () => openOverlay({
-          mod: "pane-chat", kind: "popup", width: 224, height: 104, props: { copyPane: pane },
-        })).accessibility_label("Copy terminal ID or full path").tooltip("Copy terminal ID or full path")));
+        (cx) => (lazy && !agentOf(pane) ? setShared("chat.startreq", { pane, at: Date.now() }) : this.toTerminal(pane, cx)))));
   }
 }
