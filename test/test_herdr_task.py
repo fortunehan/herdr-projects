@@ -1555,6 +1555,16 @@ class CodexCodeMode(unittest.TestCase):
                               "output": "Process running with session ID 8"}})
         self.assertEqual(self.status(self.codex())[0], "working")
 
+    def test_completion_without_an_exit_code_still_ends_work(self):
+        """The event alone carries no other hint: BG_HINTS must name CommandExecution."""
+        fixture = self.ready_replay()
+        self.stamp(-300_000, fixture["log"][0])
+        event = fixture["log"][1]
+        del event["payload"]["item"]["exit_code"]
+        event["payload"]["item"]["status"] = "failed"
+        self.stamp(-200_000, event)
+        self.assertEqual(self.agents.background_jobs(self.log)[0], {})
+
     def test_nonterminal_or_quoted_completion_is_not_an_end(self):
         fixture = self.ready_replay()
         self.stamp(-300_000, fixture["log"][0])
