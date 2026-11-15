@@ -43,6 +43,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   fail there: compare only the branch's extra FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
+- On the dev Mac, `service/spaces-sidebar.test.ts`'s grace-period test fails when `service/emoji-pick.test.ts` runs first in
+  the same bun process (`bun test service`); it passes alone, on Linux CI and on pure upstream.
 - Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
   mise node shim slow. Not a hang.
 - On the dev Mac a node/python call with a whole task record (its long prompt) in argv can be SIGKILLed (exit 137) by
