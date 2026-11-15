@@ -858,6 +858,59 @@ class AudioTools(unittest.TestCase):
             self.assertNotIn(not_want, notes)
 
 
+class DcgHooks(unittest.TestCase):
+    """doctor: dcg guards a shell command only as a PreToolUse hook in each CLI's own settings, and an agent upgrade or
+    a rewritten hooks file drops it without a word, which is exactly what the check is for."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shepherdr-dcg-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def write(self, rel, d):
+        p = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(d, f)
+
+    def checks(self, home):
+        from importlib.machinery import SourceFileLoader
+        from unittest import mock
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        found = mock.Mock(stdout="dcg 0.16.0\n")
+        with mock.patch.object(sh.shutil, "which", lambda n: "/usr/local/bin/dcg"), \
+                mock.patch.object(sh.subprocess, "run", lambda *a, **k: found):
+            return sh.dcg_checks(self.root, home)
+
+    def test_a_hook_that_runs_dcg_guards_that_agent(self):
+        hook = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "/Users/x/.local/bin/dcg"}]}]}}
+        self.write(".claude/settings.json", hook)
+        self.write(".codex/hooks.json", hook)
+        bad, notes = self.checks(True)
+        self.assertEqual(bad, [])
+        for name in ("Claude Code", "Codex"):
+            self.assertTrue(any(name in x and "guarded" in x for x in notes), notes)
+
+    def test_a_hook_left_out_fails_the_doctor_only_where_nothing_else_guards_the_agent(self):
+        self.write(".claude/settings.json", {"hooks": {"PreToolUse": [{"hooks": [{"command": "sh ~/.claude/hooks/x.sh"}]}]}})
+        bad, notes = self.checks(True)
+        self.assertTrue(any("Claude Code" in x and "unguarded" in x for x in bad), bad)
+        # Codex keeps its sandbox: said, not failed
+        self.assertTrue(any("Codex" in x and "sandbox" in x for x in notes), notes)
+        # another machine's install says it, and holds nothing
+        bad, notes = self.checks(False)
+        self.assertEqual(bad, [])
+        self.assertFalse(any("unguarded" in x for x in notes), notes)
+
+    def test_dcg_not_installed_is_only_a_note(self):
+        from importlib.machinery import SourceFileLoader
+        from unittest import mock
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        with mock.patch.object(sh.shutil, "which", lambda n: None):
+            bad, notes = sh.dcg_checks(self.root, True)
+        self.assertEqual(bad, [])
+        self.assertIn("optional: dcg isn't on the PATH", "\n".join(notes))
+
+
 class StatusLine(unittest.TestCase):
     """bin/shepherdr-statusline: keeps only Claude's usage numbers and passes the person's own status line through."""
     WRAPPER = os.path.join(ROOT, "bin", "shepherdr-statusline")

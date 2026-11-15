@@ -1051,6 +1051,57 @@ def check_tools(root_is_home):
     return bad, notes
 
 
+def dcg_checks(root, root_is_home):
+    """DCG (optional) guards a shell command before an agent runs it with approvals off (Claude's
+    --dangerously-skip-permissions, Codex's -a never): it is a PreToolUse hook in each CLI's own
+    settings, and an agent upgrade or a rewrite of those files drops it without a word. -> (problems, notes)."""
+    exe = shutil.which("dcg")
+    if not exe:
+        return [], ["optional: dcg isn't on the PATH (guards shell commands run with approvals off)"]
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    have = next((w for w in out.split() if w[:1].isdigit()), "?")
+
+    def pretooluse(path):
+        """Whether one of its PreToolUse hooks runs dcg: True, False, or None when the file isn't readable."""
+        try:
+            with open(path) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return None
+        for group in ((d.get("hooks") or {}).get("PreToolUse") or []):
+            for h in (group.get("hooks") or []):
+                cmd = str(h.get("command") or "")
+                if cmd and os.path.basename(cmd.split()[0]) == "dcg":
+                    return True
+        return False
+
+    claude_dir, codex_dir = os.path.join(root, ".claude"), os.path.join(root, ".codex")
+    if root_is_home:
+        claude_dir = os.environ.get("CLAUDE_CONFIG_DIR") or claude_dir
+        codex_dir = os.environ.get("CODEX_HOME") or codex_dir
+    bad, notes = [], []
+    # Claude's approval-free mode leaves its shell commands nothing else; Codex keeps a sandbox with -a never, so a
+    # missing hook there is said, not failed: it is the person's call whether to re-register it (dcg doctor says how).
+    for name, path, mode, fails in (("Claude Code", os.path.join(claude_dir, "settings.json"), "--dangerously-skip-permissions", True),
+                                    ("Codex", os.path.join(codex_dir, "hooks.json"), "-a never", False)):
+        hooked = pretooluse(path)
+        where = short(path) if hooked is not None else f"{short(path)} (not there)"
+        if hooked:
+            notes.append(f"dcg {have}: {name}'s shell commands are guarded (they would have no other guard in its {mode})")
+        elif not fails:
+            notes.append(f"dcg {have}: {name}'s shell commands have only its sandbox in the {mode} mode: "
+                         f"no dcg PreToolUse hook in {where}")
+        elif root_is_home:
+            bad.append(f"dcg {have} is installed but {name}'s shell commands run unguarded: no dcg PreToolUse hook in "
+                       f"{where} (they would have no other guard in its {mode}; `dcg doctor` says how to register it)")
+        else:
+            notes.append(f"dcg: no dcg PreToolUse hook in {where}")
+    return bad, notes
+
+
 def cmd_install(a, update=False):
     root = os.path.realpath(a.root or real_home())
     home = root == os.path.realpath(real_home())
@@ -1543,6 +1594,9 @@ def cmd_doctor(a):
     bad, warn = install_checks(r, rec)
     t_bad, t_notes = check_tools(home)
     bad += t_bad
+    k_bad, k_notes = dcg_checks(root, home)
+    bad += k_bad
+    t_notes = k_notes + t_notes
     if home:
         warn += github_checks_check(root)
     d_bad, d_notes = data_check(root)
