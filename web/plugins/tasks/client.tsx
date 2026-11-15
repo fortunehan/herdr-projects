@@ -80,6 +80,7 @@ import {
 import { doneNewestFirst, machineName, type Automation, type Machine, type Place, type Snapshot, type Task } from '@shared/types.ts'
 import { useFlip } from '@client/motion.ts'
 import { RowMenu, useRowMenu, type RowMenuState } from '@client/rowmenu.tsx'
+import { TaskDependencies } from '@client/TaskDependencies.tsx'
 import * as MN from '@core/menus.js'
 import * as TK from '@core/tasks.js'
 import * as ND from '@core/needs.js'
@@ -137,7 +138,8 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
       glyph={<TaskDot s={t.archived ? 'done' : t.status} w={t.archived || !t.report ? undefined : { ...t.report, eta: undefined }} />}
       ref_={refOf(t.pullOf ?? t.id)}
       title={t.name}
-      sub={t.sub}
+      sub={t.status === 'queued' && t.dependencies?.waitsFor.length ? undefined : t.sub}
+      relations={t.dependencies && (t.dependencies.waitsFor.length || t.dependencies.unblocks.length) ? <TaskDependencies relations={t.dependencies} /> : undefined}
       // Scheduled (SHEP-38): its time until it starts ("6h") in the same place, counted live, in grey
       left={t.archived ? undefined : t.status === 'work' ? t.left : t.status === 'scheduled' && t.startsAt ? (TK.untilShort as (ms: number) => string)(t.startsAt) : undefined}
       leftQuiet={t.status === 'scheduled'}
@@ -184,9 +186,9 @@ function PullActions({ t }: { t: Task }) {
  *   Review or an automation's next run (`meta`).
  * A row with nothing under its title is one line. `tip`: more for its button's label only (an automation's error).
  */
-function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, leftQuiet, dim, meta, where, action, tip, onOpen, menu, children }: {
+function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, leftQuiet, dim, meta, where, action, tip, onOpen, menu, children, relations }: {
   flip?: string; sel?: boolean; kb?: boolean; glyph: ReactNode; ref_?: string; title: string; sub?: string; left?: string; leftQuiet?: boolean; dim?: boolean; meta?: string
-  where?: string; action?: ReactNode; tip?: string; onOpen?: (e: MouseEvent) => void; menu?: RowMenuState; children?: ReactNode
+  where?: string; action?: ReactNode; tip?: string; onOpen?: (e: MouseEvent) => void; menu?: RowMenuState; children?: ReactNode; relations?: ReactNode
 }) {
   const said = sub ? capital(sub) : undefined
   const shown = said ? fit(said) : undefined
@@ -232,6 +234,7 @@ function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, le
           </span>
         ) : null}
         {end ? <span className={clsx('col-start-3 row-start-1 flex items-center', two && (rows === 3 ? 'row-span-3' : 'row-span-2'), two && '@max-[24rem]:row-span-1 @max-[24rem]:row-start-2')}>{end}</span> : null}
+        {relations ? <div className="col-start-2 col-end-4 min-w-0" style={{ gridRow: rows + 1 }}>{relations}</div> : null}
       </div>
       {children}
     </li>

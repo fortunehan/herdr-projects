@@ -731,6 +731,9 @@
   .dot.merging {
     box-shadow: none;
   }
+  .task-dependencies .dot.merging::after {
+    animation: none;
+  }
   .dot.merging::after {
     content: "";
     position: absolute;

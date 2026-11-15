@@ -243,6 +243,51 @@ export function queueReason(list, task, running) {
   return task.held ? `Waits: ${task.held}` : "Starts soon";
 }
 
+// Active prerequisites and their reverse links, before a list is filtered or grouped. External states are the
+// scheduler's last observation; a loaded row supplies its title and navigation, never a replacement state.
+export function dependencies(placed) {
+  const keyOf = (p) => taskKey(p.list, p.task);
+  const byKey = new Map(placed.map((p) => [keyOf(p), p]));
+  const byRef = new Map();
+  for (const p of placed) {
+    const key = `${p.list.machine ?? ""}:${refOf(p.list, p.task)}`;
+    if (!byRef.has(key)) byRef.set(key, []);
+    byRef.get(key).push(p);
+  }
+  const out = new Map(placed.map((p) => [keyOf(p), { waitsFor: [], unblocks: [] }]));
+  const describe = (p, ref = refOf(p.list, p.task)) => ({ key: keyOf(p), ref, title: p.task.title, state: p.task.state, section: p.section });
+  for (const p of placed) {
+    if (!["queued", "todo", "scheduled"].includes(p.task.state)) continue;
+    const waits = out.get(keyOf(p)).waitsFor;
+    const seen = new Set();
+    const add = (d, target) => {
+      const key = d.key ?? d.ref;
+      if (seen.has(key) || key === keyOf(p)) return;
+      seen.add(key);
+      waits.push(d);
+      if (target) {
+        const ref = `${target.list.machine === p.list.machine || !p.list.machine ? "" : `${p.list.machine}:`}${refOf(p.list, p.task)}`;
+        out.get(keyOf(target)).unblocks.push(describe(p, ref));
+      }
+    };
+    for (const id of p.task.after ?? []) {
+      const target = byKey.get(taskKey(p.list, { id }));
+      if (target && target.task.state !== "done") add(describe(target), target);
+    }
+    for (const ext of p.task.after_ext ?? []) {
+      if (["done", "gone"].includes(ext.state)) continue;
+      const machine = ext.machine ?? p.list.machine ?? null;
+      const ref = String(ext.ref).split(":").pop();
+      const candidates = (byRef.get(`${machine ?? ""}:${ref}`) ?? []).filter((q) => !ext.folder || q.list.folder === ext.folder);
+      const target = candidates.length === 1 ? candidates[0] : null;
+      const state = ext.state ?? "unknown";
+      const section = state === "running" ? "working" : Object.hasOwn(STATUS, state) ? state : null;
+      add({ ...(target ? { key: keyOf(target) } : {}), ref: ext.ref, title: ext.title ?? target?.task.title ?? null, state, section, external: true }, target);
+    }
+  }
+  return out;
+}
+
 // Minutes left show from the agent's very first estimate on: a rough guess beats none (DECISIONS.md,
 // SHEP-13). Herdr never shows more than the agent said.
 export const estimated = (p) => typeof p?.left === "number";
