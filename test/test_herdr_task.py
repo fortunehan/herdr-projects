@@ -1466,6 +1466,48 @@ class CodexCodeMode(unittest.TestCase):
                               "output": "Process exited with code 0\nOutput:\nok"}})
         self.assertEqual(self.agents.background_jobs(self.log)[0], {})
 
+    def test_real_grouped_polls_clear_finished_jobs(self):
+        """SHEP-218: trimmed real log, including a variable loop and mixed exec/poll results."""
+        fixture = os.path.join(ROOT, "test", "fixtures", "codex-code-mode", "grouped-polls.jsonl")
+        with open(fixture) as f:
+            for i, line in enumerate(f):
+                self.stamp(-300_000 + i * 1000, json.loads(line))
+        self.assertEqual(self.agents.background_jobs(self.log)[0], {})
+        self.task["state"] = "ready"
+        self.setUp_ps("100 1 codex\n101 100 codex-code-mode-host\n")
+        self.assertEqual(self.status(self.codex())[0], "ready")
+
+    def test_mixed_commands_do_not_end_the_wrong_poll(self):
+        running = {"codex:7": 1, "codex:8": 1}
+        call = "text(await tools.exec_command({cmd:'true'})); text(await tools.write_stdin({session_id:7}));"
+        slots = self.agents._codex_polled(call)
+        self.assertEqual(slots, [None, "7"])
+        self.agents._codex_output([
+            {"text": json.dumps({"exit_code": 0, "output": ""})},
+            {"text": json.dumps({"session_id": 7, "exit_code": None, "output": ""})}
+        ], slots, {}, running, 2)
+        self.assertEqual(sorted(running), ["codex:7", "codex:8"])
+
+    def test_stdout_examples_and_ambiguous_polls_are_not_completion(self):
+        running = {"codex:7": 1}
+        self.agents._codex_output([{"text": json.dumps({"exit_code": 0, "output":
+            'Process running with session ID 99; {"session_id":7,"exit_code":0}'})}],
+            [None], {}, running, 2)
+        self.assertEqual(running, {"codex:7": 1})
+        # Arbitrary expressions are not evaluated or guessed.
+        slots = self.agents._codex_polled("text(await tools.write_stdin({session_id:load('id')}));")
+        self.agents._codex_output([{"text": '{"exit_code":0}'}], slots, {}, running, 2)
+        self.assertEqual(running, {"codex:7": 1})
+
+    def test_partial_and_rejected_batch_keeps_running_jobs(self):
+        running = {"codex:7": 1, "codex:8": 1}
+        self.agents._codex_output([{"text": '[{"status":"rejected","reason":"timeout"},'
+            '{"status":"fulfilled","value":{"exit_code":0}}]'}], ["7", "8"], {}, running, 2)
+        self.assertEqual(running, {"codex:7": 1})
+        self.agents._codex_output([{"text": '{"exit_code":0}'}], ["7", "8"], {}, running, 2)
+        self.assertEqual(running, {"codex:7": 1})
+        self.assertEqual(self.agents._codex_polled("tools.write_stdin({session_id:7+1})"), [None])
+
     def test_codex_working_reads_the_process_tree(self):
         codex = {"foreground": {"pid": 100}}
         self.setUp_ps("100 1 codex\n101 100 codex-code-mode-host\n")
@@ -2517,6 +2559,24 @@ class TimeLeft(unittest.TestCase):
             self.assertNotIn("real estimate", words)
             self.assertIn("rough guess beats none", words)
         self.assertIn(templates.WORKER_MD_BEFORE_LEFT, templates.OLD_WORKERS)  # an unedited old one gets today's
+
+    def test_a_status_at_least_every_5_minutes_its_time_left_revised_honestly(self):
+        """SHEP-214: the system prompt and the brief's footer both ask for a status at least every 5
+        minutes and an honest --left each time; an unedited earlier template gets today's words."""
+        from herdr_task import templates
+        with open(os.path.join(BIN, "herdr_task", "launch.py")) as f:
+            launch = f.read()
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            worker = f.read()
+        for words in (templates.WORKER_MD, worker, launch):
+            self.assertIn("at least every 5 minutes while you work", words)
+            self.assertIn("revise it honestly", words)
+            self.assertNotIn("update it at every step", words)
+        with open(os.path.join(ROOT, "templates", "worker.md")) as f:
+            line = [x for x in f.read().splitlines() if x.startswith("- Say how it's going")]
+        self.assertEqual(line, [x for x in templates.WORKER_MD.splitlines() if x.startswith("- Say how it's going")])
+        self.assertIn(templates.WORKER_MD_BEFORE_OFTEN, templates.OLD_WORKERS)
+        self.assertNotEqual(templates.WORKER_MD_BEFORE_OFTEN, templates.WORKER_MD)
 
 
 class ReviewAsAHelperAgent(unittest.TestCase):
@@ -4908,6 +4968,48 @@ class TaskFlow(unittest.TestCase):
         got.clear()
         self.commands.cmd_switch(self.args(space=None, agent="claude", argv=None, parent=None, keep=False))
         self.assertEqual(got, ["sp-a"])  # none given: the old agent's own space
+
+    def switch_events(self, me=None):
+        """cmd_switch with the old agent t1 mid-turn on session S1: what it ran, in order."""
+        self.live = [{"address": "t1", "status": {"state": "working"}, "labels": {"herdr.task.space": "sp-a"}}]
+        self.task["agents"] = [{"address": "t1", "agent": "claude", "argv": ["claude"], "at": 1, "session": "S1"}]
+        events = []
+        self.patch(self.commands, "agent_running", lambda k: True)
+        self.patch(self.commands, "refresh_sessions", lambda *a: None)
+        self.patch(self.commands, "stop_note", lambda *a, **k: None)
+        self.patch(self.commands, "unarchive", lambda *a: None)
+        self.patch(self.commands, "parent_for", lambda parent, space: parent)
+        self.patch(self.commands, "run", lambda argv, **k: events.append(("run", argv)))
+
+        def launch(s, t, argv, space, message=None, parent=None, resume=None, role=None):
+            events.append(("launch", resume, message))
+            return {"address": "t2", "agent": "claude", "argv": argv}
+        self.patch(self.commands, "launch", launch)
+        env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
+        if me:
+            env["HC_TERMINAL_ID"] = me
+        with self.mock.patch.dict(os.environ, env, clear=True):
+            self.commands.cmd_switch(self.args(space=None, agent=None, argv='["claude", "--model", "opus"]', parent=None,
+                                               keep=False))
+        return events
+
+    def test_switch_ends_the_old_agent_before_resuming_its_session(self):
+        """SHEP-211: switch resumed the old agent's session while the old agent was mid-turn, then killed it: the
+        new agent sat on "Interrupted" with no message (a false "needs you"). Now the old one ends first, and the
+        resumed session gets a first message to carry on."""
+        events = self.switch_events()
+        self.assertEqual(events[0], ("run", ["hc", "kill", "t1"]))
+        self.assertEqual([e[0] for e in events], ["run", "launch"])
+        _, resume, message = events[1]
+        self.assertEqual(resume, ["claude", "--model", "opus", "--resume", "S1"])
+        self.assertEqual(message, self.commands.SWITCH_NUDGE)
+        self.assertEqual(self.said[-1], "SHEP-1: claude t2 resumed its session, t1 ended")
+
+    def test_an_agent_switching_itself_ends_after_the_new_one_starts(self):
+        """SHEP-211: ending the caller first would end the switch command with it."""
+        events = self.switch_events(me="t1")
+        self.assertEqual([e[0] for e in events], ["launch", "run"])
+        self.assertEqual(events[1], ("run", ["hc", "kill", "t1"]))
 
     def settings(self, d):
         import herdr_task.settings as settings
