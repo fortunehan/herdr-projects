@@ -73,3 +73,4 @@ core/thread-space.js: chat tasks
 reviews.js: changes-review chat tabs-tasks
 core/changes-review.js: changes-review chat tabs-tasks
 core/review-target.js: changes-review chat tabs-tasks
+core/review-launch.js: changes-review chat tabs-tasks

@@ -34,6 +34,9 @@ if mode != 'uncommitted':
     elif mode == 'ref':
         label = p.get('ref') or git('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}', required=False).stdout.decode().strip()
         if not verified(label): raise ValueError('Unknown or missing branch/ref')
+    elif p.get('ref'):
+        label = p['ref']
+        if not verified(label): raise ValueError('Unknown or missing base ref')
     else:
         configured = git('config', '--get', 'herdr.base', required=False).stdout.decode().strip()
         remote = git('symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD', required=False).stdout.decode().strip()
@@ -104,4 +107,4 @@ export async function capture(io, target) {
   return JSON.parse(r.stdout);
 }
 
-export const targetKey = (t) => JSON.stringify([t.cwd, t.on ?? null, t.task ?? null, t.base ?? null, t.mode, t.ref ?? "", !!t.pending, !!t.retained, t.workspace ?? null]);
+export const targetKey = (t) => JSON.stringify([t.cwd, t.on ?? null, t.task ?? null, t.base ?? null, t.mode, t.ref ?? "", !!t.pending, !!t.retained, t.workspace ?? null, t.tab ?? null, t.binding ?? null, t.expected ?? null]);
