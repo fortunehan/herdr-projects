@@ -1,5 +1,54 @@
 # Changelog
 
+## 3.1.34
+
+A small release: creating a new space works again, and finished Codex tasks show Ready.
+
+### Spaces
+
+- Creating a new space works again: pressing Create while the folder suggestions were open did nothing, and now it
+  makes the space.
+
+### Tasks
+
+- A task run by Codex shows Ready once it's finished, instead of staying on Working when it had waited on several
+  background jobs at once.
+
+## 3.1.33
+
+A small release: task agents say how it's going more often, and their time left is more honest.
+
+### Tasks
+
+- A task's agent updates its status line at least every 5 minutes while it works, not only at the start and at each
+  step, so the Tasks panel never sits on an old line for long.
+- Its time left is revised honestly each time from how the work is really going: when it's slower than thought, the
+  time left goes up instead of just counting down.
+
+## 3.1.32
+
+A small release: artifacts hold clips, sounds and PDFs, Back sits beside a task's title, and switching a task's agent
+no longer leaves it stuck.
+
+### Artifacts
+
+- An artifact can hold a video clip, a sound or a PDF, not only pictures. A clip plays in place in the web app, with
+  its controls or muted and looping, a sound gets a small player and a PDF shows inline. Two clips side by side play
+  together.
+- At publish, a clip with no still picture gets its first frame, and a clip no browser plays gets an mp4 copy (with
+  ffmpeg; without it, the notice says so). The window shows the clip's still and says it plays in the web app.
+- Sizes: a video up to 40 MB, a sound 20 MB, a PDF 25 MB, a picture 4 MB, the whole artifact 64 MB. A file that's too
+  big is refused with what to do about it.
+- The artifact guide and the agents' instructions say a short clip beats a GIF.
+- The web app's artifact viewer keeps a pair or a stats row in two columns.
+
+### Tasks
+
+- Switching a task to another agent no longer leaves the new one sitting on Interrupted with a false Needs you: the
+  old agent ends first, then the new one picks up its session and carries on.
+- In a task's chat, Back sits level with the middle of the task's title and status line, a little bigger and closer
+  to the title.
+
 ## 3.1.31
 
 A patch release of fixes from the GitHub triage: the agent suggests your next message, the phone's Enter key stops
