@@ -71,3 +71,15 @@ describe("native count badge alignment (SHEP-41)", () => {
     }
   });
 });
+
+describe("red and green halves match in size (SHEP-62)", () => {
+  test("height and end radius are the same on both halves and the seam", () => {
+    for (const [need, ready] of [[1, 1], [7, 1], [10, 3], [3, 12]]) {
+      const [left, seam, right] = countBadge(need, ready, "#252525").children;
+      expect(left.style.h).toBe(right.style.h);
+      expect(left.style.h).toBe(seam.style.h);
+      expect(left.style.rounded_l).toBe(right.style.rounded_r);
+      expect(left.style.h).toBe(2 * left.style.rounded_l);
+    }
+  });
+});
