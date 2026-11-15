@@ -448,7 +448,9 @@ export function argvFor(pick, old) {
   a.push("-c", `service_tier="${pick.fast ? "fast" : "default"}"`);
   if (pick.perm === "full") a.push("--dangerously-bypass-approvals-and-sandbox");
   else if (pick.perm === "read-only") a.push("-s", "read-only", "-a", "on-request");
-  else if (pick.perm) a.push("-s", "workspace-write", "-a", "on-request");
+  // Auto keeps the sandbox and asks for nothing: a card per unfamiliar command made people give up the
+  // sandbox with Full access instead. What it blocks outside the workspace still fails, and says why.
+  else if (pick.perm) a.push("-s", "workspace-write", "-a", "never");
   if (same && old.session) return { argv: ["codex", "resume", ...a, old.session], resume: true, base: ["codex", ...a] };
   return { argv: ["codex", ...a], resume: false, base: ["codex", ...a] };
 }

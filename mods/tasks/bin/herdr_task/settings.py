@@ -198,7 +198,9 @@ def argv_for(pick):
         elif perm == "read-only":
             a += ["-s", "read-only", "-a", "on-request"]
         elif perm:
-            a += ["-s", "workspace-write", "-a", "on-request"]
+            # Auto keeps the sandbox and asks for nothing: a card per unfamiliar command made people give up the
+            # sandbox with Full access instead. What it blocks outside the workspace still fails, and says why.
+            a += ["-s", "workspace-write", "-a", "never"]
         return a
     return [agent] if agent else None
 
