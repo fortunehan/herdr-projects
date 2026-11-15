@@ -2,7 +2,7 @@
 // Plain JSON both ways: the server sends a Snapshot and chat contents; the client sends Actions.
 import type { BrowserNote } from './browser.ts'
 
-/** Status marks: red needs you, green ready, green turning ring merging, amber working, grey ring idle or to do, grey
+/** Status marks: red needs you, green ready, green pause ring merging, amber working, grey ring idle or to do, grey
  * clock queued, grey check done, dashed ring unreachable. */
 export type Status = 'need' | 'ready' | 'merging' | 'work' | 'idle' | 'queued' | 'scheduled' | 'todo' | 'done' | 'off'
 /** A chat's final segment is its role; the task ID may itself contain a machine qualifier. */

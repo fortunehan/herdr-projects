@@ -23,6 +23,17 @@ class Repo(unittest.TestCase):
     def setUp(self):
         self.addons = json.load(open(J("lib", "addons.json")))
 
+    def test_waiting_to_merge_mark_is_static(self):
+        with open(J("web", "src", "styles.css")) as f:
+            css = f.read()
+        marks = re.findall(r'\.dot\.merging(?:::after)?\s*\{([^}]+)\}', css)
+        self.assertEqual(len(marks), 2)
+        for mark in marks:
+            self.assertNotRegex(mark, r'\b(animation|transform|mask)\s*:')
+        self.assertIn("var(--ready)", marks[0])
+        self.assertIn("border-width: 0 1.5px", marks[1])
+        self.assertNotIn("@keyframes turn", css)
+
     def test_every_mod_is_in_one_addon(self):
         listed = list(self.addons["core"]["mods"]) + [m for a in self.addons["addons"] for m in a.get("mods", [])]
         self.assertEqual(len(listed), len(set(listed)), "a mod is listed twice in lib/addons.json")
@@ -353,7 +364,7 @@ class Repo(unittest.TestCase):
 
     def test_version_everywhere(self):
         v = re.search(r'^VERSION = "([^"]+)"', open(J("bin", "shepherdr")).read(), re.M).group(1)
-        self.assertEqual(v, "3.1.31")
+        self.assertEqual(v, "3.1.34")
         self.assertRegex(open(J("CHANGELOG.md")).read(), rf"(?m)^## {re.escape(v)}\b", "CHANGELOG's newest entry")
         self.assertIn(v, open(J("RECIPE.md")).read())
         self.assertIn(v, open(J("README.md")).read())

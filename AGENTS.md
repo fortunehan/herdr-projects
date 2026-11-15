@@ -43,6 +43,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   fail there: compare only the branch's extra FAIL lines.
 - Even with `GIT_CONFIG_GLOBAL=/dev/null`, 8 `test_herdr_task` Automation/AssistantSettings tests fail on main on the
   dev Mac, and `core/bg-jobs.test.js` 'JOBS sees the output file...' fails there too (/var vs /private/var tempdir).
+- On the dev Mac, `service/spaces-sidebar.test.ts`'s grace-period test fails when `service/emoji-pick.test.ts` runs first in
+  the same bun process (`bun test service`); it passes alone, on Linux CI and on pure upstream.
 - Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
   mise node shim slow. Not a hang.
 - On the dev Mac a node/python call with a whole task record (its long prompt) in argv can be SIGKILLed (exit 137) by
@@ -118,6 +120,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   shell alias there: use `/usr/bin/diff`.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
+- Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
+  classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
   <files>`, `bun run build`, copy `web/dist`, `git checkout HEAD -- web`) and run one stub per dist on different ports.
 - Crash recovery for real: a throwaway core, `HC_SESSION=<name> hc ...` with `HC_TERMINAL_SOCKET` and Claude's
@@ -125,6 +129,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Service code against a throwaway core (`HC_SESSION=x`): Hub ignores `HC_SESSION`, so pass `new Hub(<wrapper script
   that exports HC_SESSION and execs hc>)` and set `SHEPHERDR_HC` to it; start that core from `env -i` or its agents
   inherit `CLAUDE_CODE_CHILD_SESSION` (no transcripts).
+- A real `herdr-task switch` test without touching people's tasks: a fake hc on PATH exporting `HC_SESSION=<name>`,
+  `HERDR_TASK_STORE=<tmp>`, a scratch git repo with `add --here` and `start --space <any>`; answer the trust prompt with
+  `hc keys <t> down enter`. Claude refuses a plain sleep, so give the brief a busy step.
 - Web stub: localStorage `shepherdr.lists` = `{pinned:true,chips:[],at:null}` opens `?task=<id>` in the middle column
   (same width as the Assistant's) instead of the side.
 

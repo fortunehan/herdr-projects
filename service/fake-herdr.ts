@@ -8,8 +8,19 @@ const NAMES = [
   "window", "writeTextFile",
 ] as const;
 
-export function fakeHerdr(given: Partial<Record<(typeof NAMES)[number], unknown>>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const n of NAMES) out[n] = given[n] ?? (() => undefined);
-  return out;
+type Given = Partial<Record<(typeof NAMES)[number], unknown>>;
+
+// A mod that imports "herdr" binds the functions of the stand-in that was current when the mod first loaded, and Bun
+// does not rebind them when a later test file mocks "herdr" again. So each name is one function for the whole process,
+// forwarding to whichever test file's stand-in was installed last (SHEP-61: spaces-chat/live.js kept emoji-pick's
+// empty spaces() and the sidebar test saw no spaces).
+const latest: Given = {};
+const stable = Object.fromEntries(NAMES.map((n) => [n, (...args: unknown[]) => {
+  const f = latest[n];
+  return typeof f === "function" ? f(...args) : undefined;
+}]));
+
+export function fakeHerdr(given: Given): Record<string, unknown> {
+  for (const n of NAMES) latest[n] = given[n];
+  return { ...stable };
 }
