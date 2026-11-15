@@ -36,7 +36,7 @@ export const openAccept = (task: string) => { open = task; for (const f of liste
 const close = () => { open = null; for (const f of listeners) f() }
 const useOpen = () => useSyncExternalStore((f) => { listeners.add(f); return () => listeners.delete(f) }, () => open)
 // The tasks whose accept runs now from this screen: their row and header say "Accepting…" meanwhile, as the window's
-// (its own accepts come in the snapshot: Task.accepting)
+// until the snapshot says so itself (it reads Working, "Accepting…": herdr-task finishes the accept in the background)
 const accepting = new Set<string>()
 const setAccepting = (task: string, on: boolean) => { if (on) accepting.add(task); else accepting.delete(task); for (const f of listeners) f() }
 export const useAccepting = (task: string) => useSyncExternalStore((f) => { listeners.add(f); return () => listeners.delete(f) }, () => accepting.has(task))

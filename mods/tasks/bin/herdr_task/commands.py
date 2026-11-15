@@ -10,13 +10,13 @@ import subprocess
 import sys
 import time
 
-from .base import Fail, git, guard, now, run, STORE, stop_note, VERSION
+from .base import ENTRY, Fail, git, guard, now, run, STORE, stop_note, VERSION
 from .settings import (
     agent_argv, agent_key, bare, merge_policy, review_limits, set_opts, settings_block, settings_for, space_base,
     task_settings, worker_argv, worktrees_on,
 )
 from .agents import (
-    agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
+    accepting, agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
     WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
@@ -687,7 +687,7 @@ def back_to_work(s, t, why, said=WORKING_AGAIN, auto=False):
     if t["state"] != "ready":
         return False
     t["state"] = "running"
-    for k in ("ready_turns", "merge_requested"):
+    for k in ("ready_turns", "merge_requested", "accepting"):
         t.pop(k, None)
     t["back"] = {"at": now(), "why": why, **({"auto": True, "progress": t.get("progress")} if auto else {})}
     # by: Herdr's words, not its agent's (on_it() counts only an agent's own line).
@@ -703,7 +703,7 @@ def finalize(s, t):
     """Ready: on GitHub its pull request opens; then the merge policy in Settings decides who
     merges: auto (now), checks (once its checks pass) or ask (the person). Returns what to say."""
     t["state"], t["ready_at"] = "ready", now()
-    for k in ("attention", "merge_requested", "review", "merge_wait"):
+    for k in ("attention", "merge_requested", "review", "merge_wait", "accepting"):
         t.pop(k, None)
     (t.get("pr") or {}).pop("wait", None)
     s.dirty = True
@@ -794,7 +794,7 @@ def cmd_state(args, state):
             # pull request merged and close it again at once) until its agent says ready.
             if t["state"] == "done" and t.get("merged"):
                 t["kept_open"] = True
-            for k in ("reviews", "review", "auto_merge", "merged", "nothing_to_merge", "accepted_at", "merge_queued", "merge_wait", "pull"):
+            for k in ("reviews", "review", "auto_merge", "merged", "nothing_to_merge", "accepted_at", "accepting", "merge_queued", "merge_wait", "pull"):
                 t.pop(k, None)
         if state == "done" and t.get("worktree") and merged_here(s, t):
             t["merged"] = True
@@ -1187,12 +1187,86 @@ def ff_merge(s, t):
     return git(main, "fetch", ".", f"{br}:{base}")[0]
 
 
+# A background Accept that couldn't finish (SHEP-64): Needs you with why; the person's next Accept tries again.
+ACCEPT_FAILED = "Accept didn't finish"
+
+
 def cmd_accept(args):
     """The person's Accept on a Ready task (the one thing they do in the Tasks panel): Done at
     once when there is nothing to merge, else merged first, as the merge settings say how: a pull
     request is squash-merged on GitHub (or merges once its checks pass); a local branch is
-    fast-forwarded when it can be, else its agent merges it (rebase, checks) and marks it done."""
-    error, how, sent, started, back = None, "done", None, False, False
+    fast-forwarded when it can be, else its agent merges it (rebase, checks) and marks it done.
+    --background (the cards') answers at once and does all that in a detached herdr-task."""
+    if getattr(args, "background", False):
+        return accept_in_background(args)
+    worker = getattr(args, "worker", False)
+    if not worker:
+        accept_precheck(args)
+    try:
+        s, t, how, error, sent, started, v = accept_run(args, worker)
+    except Exception as e:
+        if not worker:
+            raise
+        # Nobody reads a worker's output: what went wrong is on the task, where the person is told.
+        accept_failed(args, str(e))
+        return
+    if worker:
+        if error:
+            accept_failed(args, error, only_if_quiet=True)
+        return
+    if error:
+        say(args, {**v, "error": error}, None) if args.json else print(f"herdr-task: {error}", file=sys.stderr)
+        sys.exit(1)
+    text = {"done": f"{s.ref(t)} accepted: done.",
+            "merged": f"{s.ref(t)} accepted: merged into {t.get('base') or 'main'}; done.",
+            "github": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} merged; done.",
+            "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
+            "approval": f"{s.ref(t)} accepted: it merges once it's approved.",
+            "queue": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} is in GitHub's merge queue; done once GitHub merges it.",
+            "waiting": f"{s.ref(t)} accepted: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on).",
+            "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
+    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
+
+
+def accept_in_background(args):
+    """SHEP-64: Accept for a card that can't wait (the window's herdr.exec ends a call after 30 s, and Azure DevOps takes
+    longer). The checks of a foreground Accept, then the task reads Accepting… and a detached herdr-task does the
+    merge (accept_run(), --worker) while this answers at once. A failure there is the task's Needs you (accept_failed()).
+    Asked again while it runs, nothing starts twice."""
+    accept_precheck(args)
+    with open_store(args) as s:
+        t = s.find(args.id)
+        if t["state"] != "ready":
+            raise Fail(f"{s.ref(t)} isn't ready ({t['state']}); only a Ready task can be accepted.")
+        again = accepting(t)
+        if not again:
+            # What an earlier try left (accept_run() clears it too) must not read Needs you while this one runs.
+            for k in ("attention", "merge_failed_head"):
+                t.pop(k, None)
+            t["accepting"] = now()
+            s.dirty = True
+        folder, ref = s.loc["folder"], str(t["id"])
+        v = view(s, t)
+    if not again:
+        subprocess.Popen([sys.executable, ENTRY, "accept", ref, "--folder", folder, "--worker"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    say(args, {**v, "accepted": "background"}, f"{s.ref(t)} accepted: finishing in the background.")
+
+
+def accept_failed(args, why, only_if_quiet=False):
+    """A background Accept that didn't finish: the task Needs you, with why (only_if_quiet: unless merge_now() already said
+    why, as for a failing check). Its next Accept tries again; the tick leaves this one."""
+    with open_store(args) as s:
+        t = s.find(args.id)
+        t.pop("accepting", None)
+        if t["state"] == "ready" and not t.get("merged") and not (only_if_quiet and t.get("attention")):
+            t["attention"], t["attention_at"] = f"{ACCEPT_FAILED}: {' '.join(str(why).split())[:300]}", now()
+        s.dirty = True
+
+
+def accept_precheck(args):
+    """What stands in the way of an Accept, before it merges anything (Fail says what)."""
+    back = False
     with open_store(args) as s:
         t = s.find(args.id)
         if t["state"] != "ready":
@@ -1208,14 +1282,24 @@ def cmd_accept(args):
             s.dirty = True
         # A pull request's problems are read fresh (merge_now()): one fixed since, or a merge that
         # failed once, doesn't stand in the way. Without one, only a failed try doesn't.
-        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED)):
+        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED, ACCEPT_FAILED)):
             raise Fail(f"{s.ref(t)} needs attention first: {t['attention']}")
     if back:
         raise Fail(f"{s.ref(t)} is working again: its agent took up more work after it said ready. Accept it once it says ready again.")
+
+
+def accept_run(args, worker=False):
+    """The merge itself: (store, task, how, error, sent, started, view). worker: the detached one of an Accept that
+    answered at once; what it saves ends the task's Accepting…. A killed one saves nothing: the task stays Accepting…
+    until ACCEPTING_MS pass, and a pull request that merged meanwhile is finished by the tick (idempotent)."""
+    error, how, sent, started = None, "done", None, False
     with open_store(args) as s:
         t = s.find(args.id)
         if t["state"] != "ready":
             raise Fail(f"{s.ref(t)} isn't ready ({t['state']}); only a Ready task can be accepted.")
+        if accepting(t) and not worker:
+            raise Fail(f"{s.ref(t)} is already being accepted.")
+        t.pop("accepting", None)
         for k in ("attention", "merge_failed_head"):
             t.pop(k, None)
         wt = t.get("worktree") if t.get("mode") == "worktree" else None
@@ -1250,18 +1334,7 @@ def cmd_accept(args):
             t["merge_requested"] = now()
             sent, started = tell(s, t, local_merge_msg(s, t), args)
         v = view(s, t)
-    if error:
-        say(args, {**v, "error": error}, None) if args.json else print(f"herdr-task: {error}", file=sys.stderr)
-        sys.exit(1)
-    text = {"done": f"{s.ref(t)} accepted: done.",
-            "merged": f"{s.ref(t)} accepted: merged into {t.get('base') or 'main'}; done.",
-            "github": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} merged; done.",
-            "checks": f"{s.ref(t)} accepted: it merges once its checks pass.",
-            "approval": f"{s.ref(t)} accepted: it merges once it's approved.",
-            "queue": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} is in GitHub's merge queue; done once GitHub merges it.",
-            "waiting": f"{s.ref(t)} accepted: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on).",
-            "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
-    say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
+    return s, t, how, error, sent, started, v
 
 
 def cmd_fix(args):

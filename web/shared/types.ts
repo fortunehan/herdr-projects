@@ -322,8 +322,6 @@ export interface Task {
   left?: string
   /** Scheduled (SHEP-38, herdr-task --at/--in): when it starts by itself (ms) */
   startsAt?: number
-  /** Ready, its accept under way from the window's Accept card: its row and header say "Accepting…" */
-  accepting?: boolean
   /** still Working, its turn over: what Shepherdr itself knows it waits for */
   waitsFor?: 'review'
   age: string

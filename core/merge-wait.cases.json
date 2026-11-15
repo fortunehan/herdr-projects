@@ -194,6 +194,61 @@
     "needs": null,
     "why": "Merges once it's approved"
    }
+  },
+  {
+   "name": "Accept finishing in the background (SHEP-64): Working, Accepting…",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999880000,
+    "accepting": 1799999990000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    }
+   },
+   "expect": {
+    "status": "working",
+    "needs": null,
+    "why": "Accepting…"
+   }
+  },
+  {
+   "name": "Its worker died 5 minutes ago (SHEP-64): Ready again",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999000000,
+    "accepting": 1799999699000,
+    "pr": {
+     "number": 7,
+     "repo": "ado:contoso/My Proj/web"
+    }
+   },
+   "expect": {
+    "status": "ready",
+    "needs": null,
+    "why": null
+   }
+  },
+  {
+   "name": "A background Accept that didn't finish (SHEP-64): Needs you",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999000000,
+    "attention": "Accept didn't finish: Couldn't reach pull request #7",
+    "attention_at": 1799999900000,
+    "pr": {
+     "number": 7,
+     "repo": "o/r"
+    }
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Accept didn't finish: Couldn't reach pull request #7"
+   }
   }
  ]
 }

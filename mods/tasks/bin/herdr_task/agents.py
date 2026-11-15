@@ -183,6 +183,9 @@ STOPPED = "Agent stopped"
 # (pr["wait"], kept by the tick), nor while it merges by itself. Then it is Working, its row saying
 # in small words what it waits for. As core/tasks.js readyWait().
 MERGING, MERGES_ITSELF = "Merging", "Merges once its checks pass"
+# SHEP-64: the person's Accept runs in the background (commands.accept_in_background): Working with this line until it
+# finished; one older than ACCEPTING_MS was left by a worker that died, and the task is Ready again. As core/tasks.js.
+ACCEPTING, ACCEPTING_MS = "Accepting…", 5 * 60000
 # SHEP-26: an Azure DevOps pull request whose checks all passed and that waits only on its reviewer
 # policies is the person's (Ready) before Accept: its Accept turns on auto-complete.
 ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps"
@@ -206,8 +209,16 @@ def merge_wait_line(task):
     return ADO_CHECKS if pr.get("wait") == ADO_CHECKS else ADO_REVIEWERS if pr.get("needs_approval") else ADO_COMPLETING
 
 
+def accepting(task):
+    """Its Accept is running in the background now (task["accepting"]: when it started)."""
+    at = task.get("accepting")
+    return bool(at) and now() - at < ACCEPTING_MS
+
+
 def ready_wait(task, live):
     """What a Ready task waits on that needs nobody, in a few words; None when it's the person's."""
+    if accepting(task):
+        return ACCEPTING
     if task.get("merge_requested") and live:
         return MERGING
     if task.get("merge_queued") and task.get("pr"):

@@ -118,7 +118,7 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
   // its menu (Pin or Unpin) on a right click, or a finger held on it, as the window's right click (not an archived
   // task's: archived ones drop out of Pinned)
   const menu = useRowMenu()
-  const busy = useAccepting(t.id) || !!t.accepting
+  const busy = useAccepting(t.id)
   // Review (opens the Accept card) at a Ready row's end, soft as the chat header's Review: one per Ready row, so never the
   // filled look; "Accepting…" while its accept runs. Also on a Needs you row its Accept fixes (SHEP-34: Azure DevOps'
   // auto-complete)

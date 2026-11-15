@@ -117,6 +117,7 @@ export function retryLine(r, now = Date.now()) {
 
 // SHEP-26: an Azure DevOps pull request whose checks all passed and that waits only on its reviewer policies is the
 // person's (Ready) before Accept: its Accept turns on auto-complete. As herdr-task's ado_reviewers().
+export const ACCEPTING_MS = 5 * 60000;
 export const ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps";
 const adoReviewers = (task) => !!(String(task.pr?.repo ?? "").startsWith("ado:") && task.pr.needs_approval && !task.pr.wait);
 
@@ -129,7 +130,8 @@ export function mergeWaitLine(task) {
 }
 // A Needs-you problem the person's Accept itself fixes (it turns auto-complete on again): its row offers Accept, as a
 // Ready one does. As herdr-task's ado_flow.ACCEPT_AGAIN.
-const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps"];
+// SHEP-64: and a background Accept that didn't finish (herdr-task's commands.ACCEPT_FAILED), on any forge.
+const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps", "Accept didn't finish"];
 export const acceptAgain = (p) => p.section === "needs" && p.needs === "attention" && p.task.state === "ready"
   && ACCEPT_AGAIN.some((x) => String(p.task.attention ?? "").startsWith(x));
 
@@ -137,7 +139,10 @@ export const acceptAgain = (p) => p.section === "needs" && p.needs === "attentio
 // news and alerts) only once the person's Accept is what's left. Not while its pull request's checks still run or
 // GitHub works out whether it can merge (task.pr.wait, kept by herdr-task's tick), nor while it merges by itself:
 // then it is Working, with what it waits for in a few words. Null when it's the person's.
-export function readyWait(task, live = []) {
+export function readyWait(task, live = [], now = Date.now()) {
+  // SHEP-64: the person's Accept finishing in a detached herdr-task (task.accepting: when it began). One older than
+  // ACCEPTING_MS was left by a worker that died: the task is Ready again.
+  if (task.accepting && now - task.accepting < ACCEPTING_MS) return "Accepting…";
   if (task.merge_requested && live.length) return "Merging";
   if (task.merge_queued && task.pr) return "In GitHub's merge queue";
   // #743: waits calmly for a review GitHub requires.
@@ -187,7 +192,7 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
   else if (waitingToMerge(task)) { section = "merging"; why = mergeWaitLine(task); }
   else if (st === "ready") {
     // Nothing for the person yet (SHEP-175, readyWait()): Working, with what it waits for.
-    const wait = readyWait(task, live);
+    const wait = readyWait(task, live, now);
     section = wait ? "working" : "ready";
     if (wait) why = wait;
     else if (adoReviewers(task)) why = ADO_REVIEWERS;

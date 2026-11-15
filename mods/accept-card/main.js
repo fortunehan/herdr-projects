@@ -6,14 +6,14 @@
 // proof artifact in a modal of a fitting size over this card: the artifact viewer's toolbar,
 // mods/chat-image's bar, over the artifact's mod) and a folded Details with the agent's long
 // text, as short markdown bullets.
-// Accept runs `herdr-task accept` (merges first when there is something to merge); Cancel, the X
-// and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
+// Accept runs `herdr-task accept --background` (merges first when there is something to merge, in a detached
+// herdr-task: the card closes at once); Cancel, the X and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
 // calmly, with only Close.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { openViewer } from "./artview.js";
-import { appHome, closeOverlay, exec, notify, openOverlay, props, shared, setShared, theme } from "herdr";
+import { appHome, closeOverlay, exec, notify, openOverlay, props, theme } from "herdr";
 import { note } from "./usage.js";
 import { dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
@@ -171,22 +171,15 @@ export default class AcceptCard extends View {
     note("act", { type: "accept", task: p.ref });
     this.busy = true;
     this.error = null;
-    // The task's row in the Tasks list says "Accepting…" meanwhile (shared "tasks.accepting").
-    const key = `${p.machine ?? ""}:${p.folder}:${p.ref}`;
-    const mark = (on) => {
-      const v = { ...(shared("tasks.accepting") ?? {}) };
-      if (on) v[key] = Date.now(); else delete v[key];
-      setShared("tasks.accepting", v);
-    };
-    mark(true);
     cx.spawn(async (cx) => {
       // Before close(): closing the card ends its tasks.
       try {
-        await task(p, ["accept", p.ref]);
-        mark(false);
+        // SHEP-64: answers at once and finishes in a detached herdr-task (a herdr.exec call ends after 30 s, and Azure
+        // DevOps takes longer). The task's row says "Accepting…" meanwhile (core/tasks.js readyWait); a failure there
+        // makes the task Needs you, with the reason.
+        await task(p, ["accept", p.ref, "--background"]);
         this.close();
       } catch (e) {
-        mark(false);
         this.error = String(e?.message ?? e);
         // Accepted (or changed) from elsewhere meanwhile: show where it is now, not the refusal.
         const now = await task(p, ["show", p.ref]).catch(() => null);

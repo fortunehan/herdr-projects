@@ -985,18 +985,16 @@ export default class Tasks extends View {
   }
 
   // Ready = "looks done, your call": Review (opens the Accept card) is the person's one action here, at the row's end. It merges first when there is something to merge (herdr-task accept follows the merge
-  // settings), else it's done. "Accepting…" while the Accept card's accept runs (shared
-  // "tasks.accepting", accepting()).
+  // settings), else it's done. Once the card's Accept is given the task reads Working, "Accepting…" (core/tasks.js
+  // readyWait: it finishes in the background), so this is only there while it can be accepted.
   acceptButton(p, t) {
     const key = `${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`;
-    const busy = accepting(key);
     // Soft, as the chat header's Review: there is one per Ready row, so never the solid look.
     return h_flex().id(`accept-${key}`).h(24).px(10).flex_none().items_center().rounded(12).whitespace_nowrap()
       .text_size(TEXT.label).font_medium().text_color(t.foreground).bg(t.hover)
-      .when(busy, (el) => el.opacity(0.6))
-      .when(!busy, (el) => el.cursor_pointer().hover((s) => s.bg(t.selected))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.accept(p); cx.notify(); }))
-      .child(busy ? "Accepting…" : "Review");
+      .cursor_pointer().hover((s) => s.bg(t.selected))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.accept(p); cx.notify(); })
+      .child("Review");
   }
 
   // Accept shows what you approve first: the Accept card (mods/accept-card) runs herdr-task
@@ -1080,13 +1078,6 @@ function openThread({ terminal = null, task = null, title = null, key = null, lo
   // On its chat, as mods/chat/panel.js openTaskThread: the drill-in has one Terminal block, so it would
   // still show the last task's worker under this task's header (GitHub #756).
   if (hasNode(layout(), "tasks-thread-body")) run("layout.select", { stack: "tasks-thread-body", child: "tasks-thread-chat" });
-}
-
-// The Accept card's accept under way (shared "tasks.accepting" = { "<machine>:<folder>:<ref>": at },
-// mods/accept-card): its row says "Accepting…". One older than 10 minutes was left by a quit.
-function accepting(key) {
-  const at = shared("tasks.accepting")?.[key];
-  return typeof at === "number" && Date.now() - at < 600000;
 }
 
 // Needs you's mark, whatever is needed: Shepherdr's red dot. What is needed shows in the row's words only.
