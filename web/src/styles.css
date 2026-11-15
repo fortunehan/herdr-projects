@@ -655,7 +655,7 @@
   initial-value: 50%;
 }
 
-/* Status marks, drawn in CSS: red needs you, green ready, green turning ring with a gap merging, amber working, grey ring idle, grey clock queued, grey
+/* Status marks, drawn in CSS: red needs you, green ready, green pause ring merging, amber working, grey ring idle, grey clock queued, grey
    check done, dashed ring a machine Shepherdr can't reach */
 @layer components {
   .dot {
@@ -726,30 +726,19 @@
     top: 3.5px;
     height: 7px;
   }
-  /* merging: on its way into main by itself, nothing for you to do: the ring in green with a gap, turning calmly
-     like a spinner; held still with reduced motion */
+  /* merging: waiting for policies or approval, a still green ring with two pause bars */
   .dot.merging {
-    box-shadow: none;
+    box-shadow: inset 0 0 0 1.5px var(--ready);
   }
   .dot.merging::after {
     content: "";
     position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    box-shadow: inset 0 0 0 1.5px var(--ready);
-    mask: conic-gradient(transparent 0 0.25turn, #000 0);
-    animation: turn 1.4s linear infinite;
-  }
-  @keyframes turn {
-    to {
-      transform: rotate(1turn);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .dot.merging::after {
-      animation: none;
-      transform: rotate(-45deg);
-    }
+    left: calc(50% - 2.5px);
+    top: calc(50% - 2.5px);
+    width: 5px;
+    height: 5px;
+    border: solid var(--ready);
+    border-width: 0 1.5px;
   }
   /* queued: the grey ring with a clock's two hands, at twelve and three */
   .dot.queued::after {
