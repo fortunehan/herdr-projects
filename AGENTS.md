@@ -106,6 +106,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Tests that run accept or merge with the real `finish()` must stub `github.live_agents` and `live_helpers` (hc is
   refused under test).
 - Bun.spawn ignores a PATH changed inside a test: point the service at fakes with `SHEPHERDR_HERDR_APP` / `SHEPHERDR_HC`.
+- Bun's `mock.module` does not rebind names a mod already imported: `service/fake-herdr.ts` forwards every name to the last
+  stand-in, so test files with different herdr data can share one process.
 - Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
   service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
   service/spaces-sidebar.test.ts.
