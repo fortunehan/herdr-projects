@@ -274,6 +274,9 @@ def main():
     c = cmd("accept", cmd_accept, "the person's Accept on a Ready task: merges first when there is something to merge, then done")
     agent_opts(c)
     c.add_argument("--space")
+    c.add_argument("--background", action="store_true",
+                   help="answer at once and finish in a detached herdr-task (a failure there makes the task Needs you): for the cards")
+    c.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)  # that detached herdr-task (commands.accept_in_background)
     cmd("reopen", lambda a: cmd_state(a, "reopen"), "undo done or ready; a queued or scheduled task goes back to to do")
     cmd("unarchive", cmd_unarchive, "bring an archived task back into its list (only when the person asks; writing to it does too)")
     cmd("dismiss", ado_flow.cmd_dismiss, "dismiss a Done task's Needs you card: the main checkout couldn't pull its merge (Azure DevOps)")

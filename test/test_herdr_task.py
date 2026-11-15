@@ -886,6 +886,102 @@ class BackToWork(unittest.TestCase):
         self.assertEqual(t["state"], "running")
         self.assertNotIn("accepted_at", t)
 
+    # SHEP-64: Accept from a card answers at once; a detached herdr-task (--worker) does the merge, and what goes wrong
+    # there is the task's Needs you (a herdr.exec call ends after 30 s: Azure DevOps takes longer).
+    def background(self):
+        """Accept --background, the detached worker's start kept (never run)."""
+        started = []
+        with self.mock.patch.object(self.commands.subprocess, "Popen", lambda argv, **kw: started.append((argv, kw))):
+            self.commands.cmd_accept(self.args(background=True))
+        return started
+
+    def test_accept_in_the_background_answers_at_once_and_starts_one_worker(self):
+        t = self.pr_task()
+        started = self.background()
+        self.assertEqual(len(started), 1)
+        argv, kw = started[0]
+        self.assertEqual(argv[2:], ["accept", "7", "--folder", "/f", "--worker"])
+        self.assertTrue(kw["start_new_session"])
+        self.assertEqual((kw["stdin"], kw["stdout"], kw["stderr"]), (subprocess.DEVNULL,) * 3)
+        # nothing merged yet; its row says what is going on
+        self.assertEqual((t["state"], "accepted_at" in t), ("ready", False))
+        self.assertEqual(self.agents.task_status(t, []), ("working", None, "Accepting…"))
+        # asked again while it runs: nothing starts twice
+        self.assertEqual(self.background(), [])
+        with self.assertRaises(self.commands.Fail) as no:
+            self.commands.cmd_accept(self.args())
+        self.assertIn("already being accepted", str(no.exception))
+
+    def test_a_worker_that_died_leaves_the_task_ready_again_and_accept_starts_over(self):
+        t = self.pr_task()
+        self.background()
+        t["accepting"] = self.commands.now() - self.agents.ACCEPTING_MS - 1
+        self.assertEqual(self.agents.task_status(t, [])[0], "ready")
+        self.assertEqual(len(self.background()), 1)
+
+    def test_the_worker_merges_and_the_task_is_done(self):
+        t = self.pr_task()
+        self.background()
+        fine = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        done = self.merging([fine, {"state": "MERGED", "mergeCommit": {"oid": "f00"}}], [(True, "", "")])
+        self.commands.cmd_accept(self.args(worker=True))
+        self.assertEqual((t["state"], t.get("merged"), done), ("done", True, [7]))
+        self.assertNotIn("accepting", t)
+        self.assertNotIn("attention", t)
+
+    def test_a_worker_that_cant_reach_the_pull_request_makes_the_task_need_you_and_accept_tries_again(self):
+        t = self.pr_task()
+        self.background()
+        self.merging([None], [])
+        self.commands.cmd_accept(self.args(worker=True))
+        self.assertNotIn("accepting", t)
+        self.assertEqual((t["state"], t["attention"]), ("ready", "Accept didn't finish: Couldn't reach pull request #593 on GitHub."))
+        t["attention_at"] = 0
+        self.assertEqual(self.agents.task_status(t, []), ("needs", "attention", t["attention"]))
+        # asked again from the card: Accepting… at once, not still Needs you while the new worker runs
+        self.assertEqual(len(self.background()), 1)
+        self.assertEqual((self.agents.task_status(t, []), "attention" in t), (("working", None, "Accepting…"), False))
+        t.pop("accepting")
+        # the person's next Accept goes through
+        done = self.merging([{"state": "MERGED", "mergeCommit": {"oid": "f00"}}], [])
+        self.commands.cmd_accept(self.args())
+        self.assertEqual((t["state"], done), ("done", [7]))
+        self.assertNotIn("attention", t)
+
+    def test_a_worker_keeps_the_reason_the_merge_already_gave(self):
+        t = self.pr_task()
+        self.background()
+        fine = {"state": "OPEN", "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
+        self.merging([fine, fine], [(False, "", "GraphQL: Something went wrong")])
+        self.commands.cmd_accept(self.args(worker=True))
+        self.assertEqual(t["attention"], "The merge didn't go through: GraphQL: Something went wrong")
+        self.assertNotIn("accepting", t)
+
+    def test_a_worker_that_crashes_says_why_on_the_task(self):
+        t = self.pr_task()
+        self.background()
+
+        def boom(*a, **k):
+            raise RuntimeError("the network went away")
+        with self.mock.patch.object(self.commands, "merge_now", boom):
+            self.commands.cmd_accept(self.args(worker=True))
+        self.assertEqual(t["attention"], "Accept didn't finish: the network went away")
+        self.assertNotIn("accepting", t)
+
+    def test_a_local_task_that_didnt_finish_can_be_accepted_again(self):
+        t = self.ready(mode="worktree", worktree="/w", branch="b", attention="Accept didn't finish: git failed")
+        self.merging([], [])
+        with self.mock.patch.object(self.commands, "merged_here", lambda s, t: False), \
+                self.mock.patch.object(self.commands, "in_base", lambda s, t: True):
+            self.commands.cmd_accept(self.args())
+        self.assertEqual((t["state"], t.get("nothing_to_merge")), ("done", True))
+
+    def test_a_task_that_went_back_to_work_loses_its_accepting(self):
+        t = self.ready()
+        t["accepting"] = self.commands.now()
+        self.commands.back_to_work(self.store, t, "the person asked for a fix")
+        self.assertNotIn("accepting", t)
+
     def test_the_tick_takes_it_back_and_the_news_says_so(self):
         t = self.ready(space="sp1")
         report = {}

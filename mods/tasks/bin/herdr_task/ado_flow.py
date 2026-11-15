@@ -56,13 +56,15 @@ def accept(s, t, publish=True):
             merged(s, t, pr_view(t) or v, even_if_busy=True)
             return None
         # Refused (a permission, a policy) or still completing: auto-complete takes it from here.
-    return wait(s, t)
+    return wait(s, t, v)
 
 
-def wait(s, t):
+def wait(s, t, v=None):
     """Auto-complete on, set by Herdr's account: Waiting to merge until Azure DevOps completes it
-    (the tick: watch(), merged()). Couldn't: Needs you with Azure DevOps' reason; Accept retries."""
-    ok, why = ado.auto_complete(t)
+    (the tick: watch(), merged()). Couldn't: Needs you with Azure DevOps' reason; Accept retries.
+    v: the pull request as read; one with auto-complete already on (an Accept that was cut short,
+    run again) isn't set again."""
+    ok, why = (True, "") if v and v.get("autoComplete") else ado.auto_complete(t)
     if not ok:
         again = pr_view(t)
         if again and again.get("state") == "MERGED":

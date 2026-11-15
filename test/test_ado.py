@@ -457,6 +457,14 @@ class Accepting(Base):
         self.assertEqual(code, 0)
         return said[-1]
 
+    def accept_worker(self):
+        """The detached worker of a background Accept (herdr-task accept --worker)."""
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=False, folder=None, worker=True))
+        return None, None
+
     @staticmethod
     def auto_complete_kept(url, body):
         return pr(autoCompleteSetBy={"id": ME}) if "autoCompleteSetBy" in body else {}
@@ -499,6 +507,34 @@ class Accepting(Base):
         # Accept again: auto-complete set again, still waiting
         data, _ = self.accept()
         self.assertEqual((len(f.sent("PATCH", r".*")), data["accepted"]), (2, "waiting"))
+
+    def test_an_accept_cut_short_and_run_again_doesnt_turn_auto_complete_on_twice(self):
+        """SHEP-64: the first run's PATCH went through (auto-complete is on at Azure DevOps) but it was killed before it
+        saved: the next one finds it on and only marks the task Waiting to merge."""
+        f = self.azure([pr(autoCompleteSetBy={"id": ME})], self.auto_complete_kept, BUILT + REVIEWERS)
+        self.task["pr"]["needs_approval"] = True
+        data, _ = self.accept()
+        self.assertEqual(data["accepted"], "waiting")
+        self.assertTrue(self.task["merge_wait"])
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
+    def test_a_merge_that_azure_devops_finished_before_the_accept_was_cut_short_pulls_once(self):
+        self.task["accepting"] = base.now()
+        self.azure([pr(status="completed", lastMergeCommit={"commitId": "f00"})])
+        data, _ = self.accept_worker()
+        self.assertEqual((self.task["state"], self.task["merged"], len(self.pulled)), ("done", True, 1))
+
+    def test_accept_in_the_background_does_no_azure_devops_work_itself(self):
+        """The slow part (the completion, its 12 s wait, the pull) is the worker's: the answer comes before any of it."""
+        f = self.azure([pr()])
+        started = []
+        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+                mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
+                mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None), \
+                mock.patch.object(commands.subprocess, "Popen", lambda argv, **kw: started.append(argv)):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None, background=True))
+        self.assertEqual((f.calls, len(started), self.task["state"]), ([], 1, "ready"))
+        self.assertEqual(agents.task_status(self.task, []), ("working", None, "Accepting…"))
 
     def test_a_refused_completion_falls_back_to_auto_complete(self):
         def patch(url, body):

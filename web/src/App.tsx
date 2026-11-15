@@ -478,7 +478,7 @@ function TaskPage({ task, middle, pane }: { task: Task; middle?: boolean; pane?:
   const shownPlace = useUI((u) => u.place)
   const keyboard = useUI((u) => u.keyboard)
   const coordinator = placeOf(snap, task.place).name
-  const accepting = useAccepting(task.id) || !!task.accepting
+  const accepting = useAccepting(task.id)
   // as 3.0's task header (mods/chat/panel.js barRow): Review (opens the Accept card) once it is Ready ("Accepting…" while
   // its accept runs), sized as the header's other buttons; then its tabs (TaskTabs). No Pin here (SHEP-62): the task row's
   // menu pins it
