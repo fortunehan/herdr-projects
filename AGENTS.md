@@ -51,6 +51,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   the command guard: pass a trimmed record or a file.
 - herdr-task as a real subprocess in tests (fake hc and `HERDR_TASK_GH` on PATH): boot it with `-c` and set
   `base.not_real = lambda: None`, as `SlowCallsOutsideTheLock` does.
+- herdr-task against a slow fake Azure DevOps in real processes: a `PYTHONPATH` dir with `sitecustomize.py` that imports
+  `herdr_task.ado` (BIN on `sys.path`) and replaces `ado._request`, a scratch `HERDR_TASK_STORE` and `HERDR_TASK_ADO`, a fake
+  hc on PATH and the real HOME; the `--worker` child inherits it.
 - The dev Mac's global commit-msg hook requires Conventional Commits (`type(scope): description`, e.g.
   `fix(chat): SHEP-7 ...`).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
