@@ -295,6 +295,16 @@ export interface TaskAgent {
   note: string
 }
 
+export interface TaskRelation {
+  ref: string
+  title: string | null
+  state: string
+  status?: TaskStatus
+  /** A loaded task that can be opened; absent while its list is unavailable. */
+  task?: string
+  external?: boolean
+}
+
 export interface Task {
   /** short name, as people say it: GTM-15 */
   id: string
@@ -306,6 +316,7 @@ export interface Task {
   place: string
   /** second line in lists */
   sub?: string
+  dependencies?: { waitsFor: TaskRelation[]; unblocks: TaskRelation[] }
   /** Working: the minutes left under its row's dot, in the window's words ("6m", "<1m", "2h"), once its agent gave them;
    *  Scheduled: the time until it starts ("6h", "2d") */
   left?: string

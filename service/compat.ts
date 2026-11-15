@@ -364,6 +364,12 @@ export class Compat {
     // one older than 10 minutes was left by a quit (as the window reads it)
     const acc = this.shared?.value("tasks.accepting") ?? {};
     const accepting = (r: Row) => { const at = acc?.[`${r.machine ?? ""}:${r.folder}:${r.ref}`]; return typeof at === "number" && Date.now() - at < 600000; };
+    const relationTargets = new Map(rows.map((r) => [r.key, r]));
+    const relation = (d: any) => {
+      const target = relationTargets.get(d.key);
+      return { ref: d.ref, title: d.title, state: d.state, ...(SECTION[d.section] ? { status: SECTION[d.section] } : {}),
+        ...(target ? { task: taskId(target) } : {}), ...(d.external ? { external: true } : {}) };
+    };
     const tasks: Task[] = rows.filter((r) => r.section !== "done" || (r.done_at && Date.now() - r.done_at < 7 * 86400000)).map((r) => {
       const id = taskId(r);
       if (r.worker) chats.set(`${id}/worker`, r.worker);
@@ -374,6 +380,7 @@ export class Compat {
         // its latest news (ms), as Jump orders tasks newest first
         at: Math.max(0, ...[r.done_at, r.ready_at, r.started].filter((x: unknown): x is number => typeof x === "number")),
         ...(r.sub ? { sub: r.sub } : {}),
+        ...(r.dependencies ? { dependencies: { waitsFor: r.dependencies.waitsFor.map(relation), unblocks: r.dependencies.unblocks.map(relation) } } : {}),
         // its worker's own helper agents (SHEP-54), named in its detail's header; each one's row is over its chat's box
         ...(r.subagents?.length ? { subagents: r.subagents.map((x: any) => ({ chat: `t:${x.address}`, title: x.title, status: x.status, at: x.at, ...(x.ended ? { ended: x.ended } : {}) })) } : {}),
         // the window's Accept card accepting it now (shared "tasks.accepting", mods/accept-card): "Accepting…"

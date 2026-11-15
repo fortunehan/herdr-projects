@@ -12,7 +12,7 @@ import * as T from "../core/tasks.js";
 import { pullCard } from "../core/needs.js";
 import { isHelper, subagentsOf } from "../core/chat-view.js";
 // The core is plain JavaScript; its defaults read as narrow types to TypeScript.
-const { place, refOf, taskKey, autoPrefix, reportOf, secondLine, leftOf, queueReason, machineOf, acceptAgain } = T as any;
+const { place, refOf, taskKey, autoPrefix, reportOf, secondLine, leftOf, queueReason, machineOf, acceptAgain, dependencies } = T as any;
 import * as S from "../core/spaces.js";
 const { spacesFromDoc, sidebarOf, assistantOf, isUnread, isThinking, workingIn, inOrder, byMachineOrder, machineOrderOf } = S as any;
 import * as N from "../core/notify.js";
@@ -239,9 +239,14 @@ export class Model {
     const lists = [null, ...this.machines].flatMap((m) => this.lists.get(m) ?? []);
 
     let settles = Infinity;
-    const rows = lists.flatMap((list) => list.tasks.map((task: any) => {
+    const placed = lists.flatMap((list) => list.tasks.map((task: any) => {
       const live = this.agentsOf(list, task);
-      const p = place(list, task, { live, helpers: this.helpersOf(list, task, live) });
+      return place(list, task, { live, helpers: this.helpersOf(list, task, live) });
+    }));
+    const relations = dependencies(placed);
+    const rows = placed.map((p: any) => {
+      const { list, task } = p;
+      const live: ReturnType<Model["agentsOf"]> = p.live;
       if (p.settles) settles = Math.min(settles, p.settles);
       const own = live.map((a) => (this.hub.terminals.get(a.address) as any)?.report).find((r) => typeof r?.progress === "number" && r.progress >= 0);
       const w = reportOf(task, p.section, own ? { pct: own.progress, msg: own.msg || null } : null);
@@ -251,6 +256,7 @@ export class Model {
       const last = task.agents?.[task.agents.length - 1];
       return {
         key: taskKey(list, task), ref: refOf(list, task), title: task.title, section: p.section, needs: p.needs,
+        dependencies: relations.get(taskKey(list, task)),
         sub: secondLine(p, w, p.section === "queued" ? queueReason(list, task, running) : null), left: leftOf(p, w), pct: w?.done ?? null,
         // what its agent last said (core reportOf), as the window's task header shows it: working, and frozen while it
         // needs the person
@@ -273,7 +279,7 @@ export class Model {
         agents: (Array.isArray(task.agents) ? task.agents : []).map((a: any) => ({ address: a.address ?? null, at: a.at ?? 0, ended: a.ended ?? null })),
         logs: (Array.isArray(task.agents) ? task.agents : []).map((a: any) => a.log).filter((x: unknown) => typeof x === "string"),
       };
-    }));
+    });
     this.live.put("tasks", rows);
     // a task in its grace before Needs you (core GRACE_MS): built again the moment it ends, not up to 10 s later
     if (this.settleTimer) clearTimeout(this.settleTimer);

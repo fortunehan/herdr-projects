@@ -30,11 +30,11 @@ import { machinesInOrder, machineOrderOf, chatPane } from "./core/spaces.js";
 // The rules for a task's status, order and words: shared with the web app (core/tasks.js).
 import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, machineName, refOf, taskKey, autoPrefix, place,
   queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems,
-  acceptAgain } from "./core/tasks.js";
+  acceptAgain, dependencies } from "./core/tasks.js";
 import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
-import { TEXT, H, RADIUS, red, amber, toast } from "./ui.js";
+import { TEXT, H, RADIUS, red, green, amber, toast } from "./ui.js";
 import { followSpace, switched } from "./core/thread-space.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
@@ -287,6 +287,8 @@ export default class Tasks extends View {
     // This space: the shown space's only; not for Ctrl+K's jump while its words are still in the search field.
     const here = this.here && filters && !(this.jumpQ && this.query.value() === this.jumpQ) ? spaces().find((s) => s.active) ?? null : null;
     let placed = this.lists.flatMap((l) => l.tasks.map((task) => this.place(l, task)));
+    this.frame.dependencies = dependencies(placed);
+    this.frame.dependencyTargets = new Map(placed.map((p) => [taskKey(p.list, p.task), p]));
     // Each task's status as its list says it now, archived ones too: a Needs-you item the list has moved past is stale.
     const truth = new Map(placed.map((p) => [`${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`, p]));
     if (here) placed = placed.filter((p) => inSpace(here, { machine: p.list.machine ?? null, folder: p.list.folder, space: p.task.space }));
@@ -911,7 +913,8 @@ export default class Tasks extends View {
     // its time left short under the glyph, or a provider retry's line while Herdr waits; Needs you,
     // why; Queued, what it waits for ("after HERD-3"); Waiting to merge, what it waits on. The id leads it.
     const w = reportOf(task, section, live);
-    const sub = this.statusLine(p, w);
+    const relation = this.frame?.dependencies?.get(taskKey(list, task));
+    const sub = section === "queued" && relation?.waitsFor.length ? null : this.statusLine(p, w);
     // Scheduled (SHEP-38): its time until it starts under its calendar ("6h"), where a working row's time left goes, in grey.
     const left = leftOf(p, w);
     // Pin / Unpin in its right-click menu (not an archived task's: archived ones drop out of Pinned).
@@ -920,9 +923,31 @@ export default class Tasks extends View {
       go: this.target(p), glyph: this.glyph(p, w), ref: refOf(list, task), title: task.title, sub, left, leftColor: section === "scheduled" ? t.dim : null,
       dim: section === "done", selected: focused, where: bare ? null : this.whereOf(list.machine, placeName(list)),
       action: section === "ready" || acceptAgain(p) ? this.acceptButton(p, t) : null,
+      relations: relation ? this.dependencyLines(relation, t, key) : null,
       pin: this.shelved(p) ? null : { key, on: this.pins().has(key), status: section, machine: list.machine ?? null, folder: list.folder,
         ref: refOf(list, task), sub: section === "scheduled" ? sub : null },
     }, t);
+  }
+
+  dependencyLines(relation, t, key) {
+    const lines = [];
+    for (const [kind, ds] of [["Waits for", relation.waitsFor], ["Unblocks", relation.unblocks]]) {
+      for (const [i, d] of ds.entries()) {
+        const target = this.frame.dependencyTargets.get(d.key);
+        const go = target ? this.target(target) : null;
+        lines.push(h_flex().id(`dependency-${key}-${kind}-${d.ref}-${i}`).h(22).min_w(0).gap(5).items_center().text_size(TEXT.label)
+          .text_color(kind === "Waits for" ? t.muted : t.dim)
+          .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .on_click((_e, cx) => { cx.stop_propagation(); go(cx); cx.notify(); }))
+          .child(div().flex_none().child(`↳ ${kind}`))
+          .when(kind === "Waits for" && Boolean(d.section), (el) => el.child(d.section === "merging"
+            ? svg("mods/tasks/merging.svg").size(14).flex_none().text_color(green()) : taskDot(d.section)))
+          .child(div().flex_none().font_family(ID_FONT).text_size(ID_SIZE).child(d.ref))
+          .when(kind === "Waits for" && Boolean(d.title), (el) => el.child(div().min_w(0).truncate().child(d.title)))
+          .when(Boolean(d.external), (el) => el.child(div().flex_none().text_color(t.dim).child(`· ${d.state}`))));
+      }
+    }
+    return lines.length ? v_flex().min_w(0).children(lines) : null;
   }
 
   // The person's pinned tasks (shared "tasks.pinned": task keys), once a render.
@@ -993,7 +1018,7 @@ export default class Tasks extends View {
   //   run (`meta`).
   // A row with nothing under its title is one line. Nothing shows on hover: no tooltips (SHEP-25).
   // `pin`: { key, on }: Pin / Unpin in the row's right-click menu.
-  line(id, { go, glyph, ref, title, sub, left, leftColor, dim, selected, meta, metaColor, where, action, pin }, t) {
+  line(id, { go, glyph, ref, title, sub, left, leftColor, dim, selected, meta, metaColor, where, action, pin, relations }, t) {
     // Every second line is at most 40 characters (herdr-task cuts an agent's own; this catches the
     // derived ones: a long queue, a check's message).
     const said = sub ? capital(sub) : null;
@@ -1018,7 +1043,8 @@ export default class Tasks extends View {
       .child(v_flex().w(14).flex_none().self_start().gap(2).child(mark)
         .when(Boolean(left), (el) => el.child(h_flex().w(14).h(16).items_center().justify_center().whitespace_nowrap()
           .font_family(ID_FONT).text_size(ID_SIZE).font_semibold().text_color(leftColor ?? amber()).child(left))))
-      .child(v_flex().flex_1().min_w(0).gap(2).child(h_flex().h(20).min_w(0).items_center().child(head.flex_1())).child(second))
+      .child(v_flex().flex_1().min_w(0).gap(2).child(h_flex().h(20).min_w(0).items_center().child(head.flex_1())).child(second)
+        .when(Boolean(relations), (el) => el.child(relations)))
       .when(Boolean(end), (el) => el.child(end));
   }
 
