@@ -3593,6 +3593,7 @@ class CleanEnv(unittest.TestCase):
     def test_login_settings_and_quoted_arguments_in_task_and_restart_commands(self):
         import re
         import shlex
+        sys.path.insert(0, BIN)
         import herdr_task.launch as L
         with tempfile.TemporaryDirectory() as d:
             shell = os.path.join(d, "login-shell")
