@@ -395,10 +395,10 @@ const AGENTS = { codex: "Codex", claude: "Claude Code", "claude-code": "Claude C
 // its CLI: its herdr.agent label, else what hc says runs in it, else its command's name
 export function subagentCli(k) {
   const a = k?.labels?.["herdr.agent"] ?? k?.agent ?? null;
-  if (a) return String(a).replace(/^claude-code$/, "claude");
+  if (a) return String(a).replace(/^claude-(code|magpie)$/, "claude");
   const argv = k?.foreground?.argv ?? k?.argv ?? [];
-  const prog = argv.map((x) => String(x).split("/").pop()).find((x) => /^(claude|codex|pi)$/.test(x));
-  return prog ?? null;
+  const prog = argv.map((x) => String(x).split("/").pop()).find((x) => /^(claude|claude-magpie|codex|pi)$/.test(x));
+  return prog === "claude-magpie" ? "claude" : prog ?? null;
 }
 
 // "Reviewer · Codex"

@@ -279,7 +279,7 @@ def tick_store(s, report):
         q = t.get("queue") or {}
         try:
             sp = q.get("space") or t.get("space") or default_space()
-            a = begin(s, t, q.get("argv") or worker_argv(s, t, sp), sp, q.get("parent"))
+            a = begin(s, t, q.get("argv") or worker_argv(s, t, sp), sp, q.get("parent"), **({"custom": True} if q.get("custom") else {}))
         except Fail as e:
             t["attention"] = f"Couldn't start: {e}"
             s.dirty = True

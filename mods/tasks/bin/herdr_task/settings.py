@@ -12,6 +12,27 @@ from .base import Fail, git, HOME, MAX_RUNNING, WHERE
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
 AGENTS = {"claude": ["claude"], "codex": ["codex", "--no-daemon"]}
+MAGPIE_MODEL = "copilot/claude-sonnet-5.5"
+LAUNCHERS = {"direct", "magpie"}
+
+
+def merge_worker(parent, own):
+    """Apply one worker layer, dropping a model when its agent or launcher changes."""
+    out = dict(parent or {})
+    own = {k: v for k, v in (own or {}).items() if v is not None}
+    if own.get("agent") and own["agent"] != out.get("agent", "claude"):
+        out = {}
+    if "launcher" in own and own["launcher"] != out.get("launcher", "direct"):
+        out.pop("model", None)
+    out.update(own)
+    return out
+
+
+def validate_launcher(pick):
+    if pick.get("launcher") not in (None, *LAUNCHERS):
+        raise Fail("launcher is direct or magpie.")
+    if pick.get("agent") == "codex" and pick.get("launcher") == "magpie":
+        raise Fail("Codex cannot use the magpie launcher. Choose Claude or the direct launcher.")
 
 
 # ---- the person's settings ------------------------------------------------------------------
@@ -130,7 +151,11 @@ def settings_for(s, space=None):
     def merge(part):
         for k, v in (part or {}).items():
             if isinstance(v, dict) and isinstance(out.get(k), dict):
-                out[k].update({kk: vv for kk, vv in v.items() if vv is not None})
+                if k == "worker":
+                    validate_launcher(v)
+                    out[k] = merge_worker(out[k], v)
+                else:
+                    out[k].update({kk: vv for kk, vv in v.items() if vv is not None})
             elif k in out and v is not None:
                 out[k] = v
     merge(everywhere)
@@ -172,11 +197,14 @@ def argv_for(pick):
         return [str(x) for x in pick["argv"]]
     agent = pick.get("agent")
     if agent == "claude":
-        a = ["claude"]
-        if pick.get("model"):
-            a += ["--model", pick["model"]]
-        if pick.get("effort"):
-            a += ["--effort", pick["effort"]]
+        magpie = pick.get("launcher") == "magpie"
+        a = ["claude-magpie" if magpie else "claude"]
+        model = pick.get("model") or (MAGPIE_MODEL if magpie else None)
+        effort = pick.get("effort") or ("high" if magpie else None)
+        if model:
+            a += ["--model", model]
+        if effort:
+            a += ["--effort", effort]
         a += ["--settings", json.dumps({"fastMode": bool(pick.get("fast")), "statusLine": STATUS_LINE})]
         perm = pick.get("perm")
         if perm == "bypassPermissions":
@@ -215,16 +243,14 @@ def worker_pick(s, task, space=None, agent=None):
             pick = {"agent": key}
     if not pick.get("agent") and not pick.get("argv"):
         pick["agent"] = "claude"
-    for k in ("model", "effort"):
-        if task.get(k):
-            pick[k] = task[k]
+    pick = merge_worker(pick, {k: task[k] for k in ("launcher", "model", "effort") if task.get(k)})
     return pick
 
 
 def worker_argv(s, task, space=None, agent=None):
     """A task's agent when nobody gave an argv: worker_pick's."""
     pick = worker_pick(s, task, space, agent)
-    if pick.get("argv") and not (task.get("model") or task.get("effort")):
+    if pick.get("argv"):
         return argv_for(pick)
     pick.pop("argv", None)
     pick.setdefault("agent", "claude")
@@ -262,7 +288,7 @@ MUST_WORDS = {"blocker": "blocker", "major": "major and up (blocker, major)", "m
 SET_KEYS = {"review": "review", "brief.review": "review", "merge": "merge", "brief.merge": "merge",
             "rounds": "review_rounds", "review.rounds": "review_rounds", "review-rounds": "review_rounds", "review_rounds": "review_rounds",
             "mustfix": "must_fix", "must-fix": "must_fix", "must_fix": "must_fix", "review.mustfix": "must_fix",
-            "agent": "agent", "task.agent": "agent", "model": "model", "task.model": "model", "effort": "effort", "task.effort": "effort",
+            "agent": "agent", "task.agent": "agent", "launcher": "launcher", "task.launcher": "launcher", "model": "model", "task.model": "model", "effort": "effort", "task.effort": "effort",
             "reviewer": "reviewer", "reviewer.agent": "reviewer", "reviewer.model": "reviewer_model", "reviewer.effort": "reviewer_effort",
             "reviewer_model": "reviewer_model", "reviewer-model": "reviewer_model",
             "reviewer_effort": "reviewer_effort", "reviewer-effort": "reviewer_effort",
@@ -284,7 +310,7 @@ def set_task(t, key, value):
     """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'."""
     field = SET_KEYS.get(key.strip().lower())
     if not field:
-        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, proof, agent, model, effort or reviewer settings, not {key!r}.")
+        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, proof, agent, launcher, model, effort or reviewer settings, not {key!r}.")
     v = value.strip().strip("\"'").strip()
     sets = t.setdefault("set", {})
     if not v or v.lower() == "default":
@@ -315,16 +341,19 @@ def set_task(t, key, value):
         # Agents, models and efforts are the task's own fields (worker_pick reads them).
         if field in ("effort", "reviewer_effort") and low not in EFFORTS:
             raise Fail(f"{field.replace('_', ' ')} is one of {', '.join(sorted(EFFORTS))} (or default).")
+        if field == "launcher" and low not in LAUNCHERS:
+            raise Fail("launcher is direct or magpie.")
         sets.pop(field, None)
-        t[field] = v
+        t[field] = low if field == "launcher" else v
     if not sets:
         t.pop("set", None)
 
 
-def set_opts(t, args):
+def set_opts(t, args, launcher=None):
     """add/edit's --set pairs and --agent, --model, --effort, --reviewer, --reviewer-model,
     --reviewer-effort, in that order (a --set pair wins over its flag)."""
-    for flag in ("agent", "model", "effort", "reviewer", "reviewer_model", "reviewer_effort"):
+    before = dict(t)
+    for flag in ("agent", "launcher", "model", "effort", "reviewer", "reviewer_model", "reviewer_effort"):
         v = getattr(args, flag, None)
         if v is not None:
             set_task(t, flag, v)
@@ -333,6 +362,12 @@ def set_opts(t, args):
             raise Fail(f"--set takes key=value, not {pair!r}.")
         k, v = pair.split("=", 1)
         set_task(t, k, v)
+    model_given = getattr(args, "model", None) is not None or any(
+        SET_KEYS.get(pair.split("=", 1)[0].strip().lower()) == "model" for pair in getattr(args, "set", None) or [])
+    previous_launcher = before.get("launcher") or launcher or "direct"
+    if t.get("launcher") and t["launcher"] != previous_launcher and not model_given:
+        t.pop("model", None)
+    validate_launcher(t)
 
 
 def by_layer(s, space, section, key, value, default):
@@ -558,7 +593,8 @@ def agent_argv(key, argv_json=None):
 
 
 def agent_key(argv):
-    return os.path.basename(argv[0])
+    name = os.path.basename(argv[0])
+    return "claude" if name == "claude-magpie" else name
 
 
 def bare(i):

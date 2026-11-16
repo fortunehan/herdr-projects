@@ -20,8 +20,8 @@ import shlex
 from .base import HOME, hc_json, now, run, SHELLS
 from .agents import agent_running, status_word
 from .sessions import session_of
-from .settings import ASSISTANT_TEMPLATES
-from .launch import CLEAN_ENV
+from .settings import ASSISTANT_TEMPLATES, agent_key
+from .launch import CLEAN_ENV, magpie_argv
 
 LABEL = "herdr.resume"
 # Claude Code: "No conversation found with session ID: …". Codex: "ERROR: No saved session found with ID …"
@@ -47,7 +47,7 @@ CODEX_VALUE = {"-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sa
 
 
 def kind_of(word):
-    b = os.path.basename(str(word))
+    b = agent_key([str(word)])
     return b if b in ("claude", "codex") else None
 
 
@@ -59,6 +59,8 @@ def base_argv(argv):
     if at is None:
         return None, None
     kind, rest, out = kind_of(argv[at]), argv[at + 1:], [argv[at]]
+    if "herdr-magpie" in argv[:at]:
+        out = magpie_argv(out)
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -177,9 +179,13 @@ def record_of(k):
     launch = k.get("argv") or []
     shell = any(os.path.basename(str(a)) in SHELLS for a in launch[:launch.index(argv[0])]) if kind else True
     if not kind:
+        saved = read_record(k)
+        if "herdr-magpie" in ((saved or {}).get("argv") or []):
+            kind, argv = base_argv(saved["argv"])
+    if not kind:
         kind, argv = base_argv(fg.get("argv"))
         if kind:
-            argv[0] = kind
+            argv[0] = "claude-magpie" if os.path.basename(argv[0]) == "claude-magpie" else kind
     if not kind:
         return None
     sid, log = session_of(pid)
@@ -208,6 +214,8 @@ def task_record(k, t):
         return None
     if (k.get("labels") or {}).get("herdr.role") != "reviewer":
         argv = own_argv(argv, k.get("cwd"))
+        if a.get("launcher") == "magpie" and not a.get("custom_argv"):
+            argv = magpie_argv(argv)
     return {"kind": kind, "session": a.get("session"), "log": a.get("log"), "argv": argv, "cwd": k.get("cwd"),
             "pid": None, "working": t.get("state") == "running", "shell": True}
 

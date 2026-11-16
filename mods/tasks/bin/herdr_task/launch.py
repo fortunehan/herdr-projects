@@ -17,7 +17,7 @@ import time
 
 from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, unlocked, WORKTREES
 from . import local
-from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for
+from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for, worker_pick
 from .templates import instructions
 from .agents import detail, LINE_MAX, live_agents, SUMMARY_MAX
 from .github import finish, remote_of
@@ -280,6 +280,30 @@ def cmd_allow(args):
 
 
 # ---- starting agents ------------------------------------------------------------------------
+
+
+MAGPIE_RUN = r'''if command -v "$1" >/dev/null 2>&1; then
+  [ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" herdr.launcher.notice= >/dev/null 2>&1
+  exec "$@"
+fi
+notice="This machine has no claude-magpie, so it runs on plain Claude."
+[ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" "herdr.launcher.notice=$notice" >/dev/null 2>&1
+printf '%s\n' "$notice" >&2
+shift
+left=$#
+while [ "$left" -gt 0 ]; do
+  word=$1; shift; left=$((left - 1))
+  case "$word" in
+    --model) [ "$left" -eq 0 ] || { shift; left=$((left - 1)); } ;;
+    --model=*) ;;
+    *) set -- "$@" "$word" ;;
+  esac
+done
+exec claude "$@"'''
+
+
+def magpie_argv(argv):
+    return ["sh", "-c", MAGPIE_RUN, "herdr-magpie", *argv]
 
 
 def resume_argv(argv, session):
@@ -689,7 +713,7 @@ def folder_for(s, task):
     return path
 
 
-def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None):
+def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None, custom=False):
     """Starts one agent for the task with no tab or pane of its own (a space can hold thousands
     of tasks): an hc child of `parent`, which parent_for() makes the space's coordinator, reached
     through the Tasks panel. Labels: herdr.task (its task), herdr.task.space (its space; never
@@ -700,8 +724,12 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     cmd = list(resume or argv)
     if not role:
         cmd = own_argv(cmd, folder_for(s, task))
+    custom = custom or bool(not role and worker_pick(s, task, space).get("argv") == argv)
+    magpie = not role and not custom and os.path.basename(argv[0]) == "claude-magpie"
     if message:
         cmd = cmd + [message]
+    if magpie:
+        cmd = magpie_argv(cmd)
     labels = ["--label", f"herdr.task={key}", "--label", f"herdr.task.space={bare(space)}",
               "--label", f"herdr.agent={agent_key(argv)}"]
     ctab = coordinator_tab(parent)
@@ -723,6 +751,10 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     if r.returncode != 0 or not out.get("address"):
         raise Fail((r.stderr or r.stdout).strip() or "hc run failed")
     a = {"address": out["address"], "agent": agent_key(argv), "argv": argv, "at": now()}
+    if not role:
+        a["launcher"] = "magpie" if os.path.basename(argv[0]) == "claude-magpie" else "direct"
+        if custom:
+            a["custom_argv"] = True
     if parent:
         a["parent"] = parent
     s.dirty = True

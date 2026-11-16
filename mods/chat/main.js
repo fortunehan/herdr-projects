@@ -82,7 +82,7 @@ const KEEP = 2000;
 const COLUMN = 1100;
 // A message bubble's width at most, as a share of the column.
 const BUBBLE = 0.9;
-const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
+const KINDS = { "claude-code": "claude", claude: "claude", "claude-magpie": "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 // The role templates' folder on the machine a command runs on (sh -c prefix: $dir).
 const TEMPLATE = 'dir="$HOME/.config/herdr-core/templates"; ';
@@ -1068,8 +1068,9 @@ export default class Chat extends View {
     if (this.lostTried.has(addr)) return false;
     this.lostTried.add(addr);
     if (!t) { try { t = JSON.parse((await hc(["get", addr, "--json"])).stdout || "null"); } catch {} }
-    const kind = cliOf({ agent: (t?.argv ?? []).map((a) => String(a).split("/").pop()).find((a) => /^(claude|codex)$/.test(a)) });
-    const fresh = kind ? agent.freshArgv(kind, t?.argv) : null;
+    const argv = agent.launchArgv(t);
+    const kind = cliOf({ agent: argv.map((a) => String(a).split("/").pop()).find((a) => /^(claude|claude-magpie|codex)$/.test(a)) });
+    const fresh = kind ? agent.freshArgv(kind, argv) : null;
     if (!fresh) return false;
     if (t.state !== "live" && (t.exit_code ?? 1) === 0) return false;
     const screen = (await hc(["read", addr, "--lines", "40"]).catch(() => null))?.stdout ?? "";
@@ -2366,7 +2367,7 @@ export default class Chat extends View {
     const tab = panes().find((p) => p.pane === this.myPane())?.tab;
     const space = spaces().find((s) => s.tabs.some((x) => x.id === tab));
     const folder = this.t?.foreground?.cwd ?? this.t?.cwd ?? undefined;
-    run("tab.new", { space: space?.id, folder, argv: agent.forkArgv(this.kind, this.argv, session) });
+    run("tab.new", { space: space?.id, folder, argv: agent.forkArgv(this.kind, agent.launchArgv(this.t), session) });
   }
 
   // ---- dictation ----------------------------------------------------------------------------
@@ -3095,6 +3096,8 @@ export default class Chat extends View {
       out.push(this.queuedLine(`q:${q.id}`));
       block(from, `q:${q.id}`);
     }
+    const launcherNotice = this.t?.labels?.["herdr.launcher.notice"];
+    if (launcherNotice) out.push({ kind: "note", id: "launcher-fallback", text: launcherNotice });
     if (this.note) out.push({ kind: "note", id: this.note.id, text: this.note.text });
     if (out.length) out.push({ kind: "end", id: "end" });
     return this.spaced(out);

@@ -3,7 +3,8 @@
 // web app's Settings say the same. herdr-task reads the file (herdr_task/settings.py: settings_for); its defaults are
 // DEFAULTS there and here.
 // Shared core: the source is core/settings.js; bin/sync-shared copies it into the mods in lib/COPIES.
-import { NAMES, levelName, current, rowFor, menuFor, permAcross } from "./agents.js";
+import { NAMES, levelName, current, rowFor, menuFor, permAcross, MAGPIE_MODEL, magpieModels } from "./agents.js";
+export { mergeWorker } from "./agents.js";
 import { SERVE } from "./host.js";
 
 // ---- the frame -------------------------------------------------------------------------------------------------
@@ -81,6 +82,17 @@ export const INSTRUCTIONS = {
 };
 export const USE_OTHER_CLI = "Use other CLI";
 export const LOADING_AGENTS = "Loading agents…";
+export const LAUNCHER = { title: "Launcher", choices: [["direct", "Direct"], ["magpie", "magpie"]] };
+export function chooseLauncher(sel, launcher) {
+  if (launcher === (sel.launcher ?? "direct")) return sel;
+  const next = { ...sel, launcher, model: launcher === "magpie" ? MAGPIE_MODEL : null };
+  delete next.argv;
+  return next;
+}
+export function workerChoices(data, sel) {
+  return sel?.agent === "claude" && sel.launcher === "magpie" && data
+    ? { ...data, menus: { ...data.menus, claude: data.magpie ?? magpieModels("") } } : data;
+}
 // An unset Reviewer's button: what runs, the other CLI.
 export const otherCliWords = (cli) => `Other CLI (${NAMES[cli] ?? cli})`;
 export const otherCli = (worker) => (worker === "codex" ? "claude" : "codex");
@@ -162,10 +174,12 @@ export function choicesFrom(dflts, installed = { claude: true, codex: true }) {
   const first = menus.claude ? "claude" : Object.keys(menus)[0] ?? "claude";
   const c = current(first, [], {}, dflts[first]);
   const model = rowFor(first, c) ?? menus[first]?.models?.[0]?.id ?? null;
-  return { menus, permDefault, defaults: { agent: first, model, effort: c.effort ?? null, fast: false, perm: permDefault[first] } };
+  return { menus, magpie: dflts.magpie ?? magpieModels(""), permDefault, defaults: { agent: first, model, effort: c.effort ?? null, fast: false, perm: permDefault[first] } };
 }
 // What a role's model button starts from: its own choice, else for the Reviewer the other CLI, else the defaults.
 export function roleSel(role, own, choices, worker) {
+  if (role === "worker" && own) return { sel: { agent: "claude", ...own,
+    model: own.model ?? (own.launcher === "magpie" ? MAGPIE_MODEL : null) }, unset: false };
   if (own) return { sel: { ...own }, unset: false };
   const o = otherCli(worker);
   if (role === "reviewer" && choices?.menus?.[o])
@@ -181,6 +195,7 @@ export function chooseModel(menus, permDefault, sel, agent, id) {
   if (next.effort && !m.efforts.includes(next.effort)) next.effort = null;
   if (!m.fast) next.fast = false;
   if (agent !== sel.agent) {
+    delete next.launcher;
     next.perm = permAcross(sel.perm, agent, permDefault);
     next.fast = false;
   }

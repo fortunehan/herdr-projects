@@ -15,7 +15,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { knownAgents, openOverlay, shared, appHome } from "herdr";
+import { knownAgents, openOverlay, shared, appHome, exec } from "herdr";
 import * as fs from "fs/promises";
 import * as agent from "./agent.js";
 // The button's words and the choices on offer: core/settings.js, shared with the web app's Settings.
@@ -29,13 +29,13 @@ const LAST = () => `${appHome()}/data/coordinator-last.json`;
 // What the agents on this machine (or `machine`) offer: { menus, icons, installed, permDefault,
 // defaults } (defaults: the CLI's own, for a first time).
 export async function loadChoices(machine = null) {
-  const [claude, codex, known] = await Promise.all([agent.defaults("claude", machine), agent.defaults("codex", machine),
-    knownAgents({ on: machine }).catch(() => [])]);
+  const [claude, codex, known, magpie] = await Promise.all([agent.defaults("claude", machine), agent.defaults("codex", machine),
+    knownAgents({ on: machine }).catch(() => []), exec("magpie", ["models", "claude"], { on: machine }).catch(() => null)]);
   const prog = (k) => known.find((a) => a.key === k || (a.run ?? [])[0] === k);
   const installed = Object.fromEntries(["claude", "codex"].map((k) => [k, prog(k) ? prog(k).installed !== false : k === "claude"]));
   const icons = Object.fromEntries(["claude", "codex"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }]));
-  const { menus, permDefault, defaults } = choicesFrom({ claude, codex }, installed);
-  return { menus, icons, installed, permDefault, defaults };
+  const data = choicesFrom({ claude, codex, magpie: agent.magpieModels(magpie?.code === 0 ? magpie.stdout : "") }, installed);
+  return { ...data, icons, installed };
 }
 
 // The last choice made (data/coordinator-last.json) when it still fits what is offered, else
@@ -163,7 +163,7 @@ export function openMenu(coord, select = null) {
   const at = b ? { x: Math.max(8, b.x + b.width - W), y: b.y - H - 6 >= 8 ? b.y - H - 6 : b.y + b.height + 6 } : "pointer";
   openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H, at,
     props: { mode: "settings", key: coord.key, width: W, height: H, remote: null, select,
-      current: { agent: sel.agent, model: sel.model, effort: sel.effort ?? null, fast: Boolean(sel.fast), perm: sel.perm ?? null },
+      current: { agent: sel.agent, model: sel.model, effort: sel.effort ?? null, fast: Boolean(sel.fast), perm: sel.perm ?? null, ...(sel.launcher ? { launcher: sel.launcher } : {}) },
       menus: data.menus, icons: data.icons, permDefault: data.permDefault } });
 }
 

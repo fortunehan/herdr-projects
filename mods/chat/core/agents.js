@@ -3,6 +3,64 @@
 // settings and restarting it run where each side runs commands (lib/agent.js, service/agents.ts).
 // Shared core: the source is core/agents.js; bin/sync-shared copies it into the mods in lib/COPIES.
 export const NAMES = { claude: "Claude Code", codex: "Codex" };
+export const MAGPIE_MODEL = "copilot/claude-sonnet-5.5";
+export const MAGPIE_NOTICE = "This machine has no claude-magpie, so it runs on plain Claude.";
+export const MAGPIE_RUN = `if command -v "$1" >/dev/null 2>&1; then
+  [ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" herdr.launcher.notice= >/dev/null 2>&1
+  exec "$@"
+fi
+notice="This machine has no claude-magpie, so it runs on plain Claude."
+[ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" "herdr.launcher.notice=$notice" >/dev/null 2>&1
+printf '%s\\n' "$notice" >&2
+shift
+left=$#
+while [ "$left" -gt 0 ]; do
+  word=$1; shift; left=$((left - 1))
+  case "$word" in
+    --model) [ "$left" -eq 0 ] || { shift; left=$((left - 1)); } ;;
+    --model=*) ;;
+    *) set -- "$@" "$word" ;;
+  esac
+done
+exec claude "$@"`;
+
+export const agentKey = (word) => {
+  const name = String(word ?? "").split("/").pop();
+  return name === "claude-magpie" || name === "claude-code" ? "claude" : name;
+};
+export const magpieArgv = (argv) => ["sh", "-c", MAGPIE_RUN, "herdr-magpie", ...argv];
+
+export function mergeWorker(parent, own) {
+  let out = { ...parent };
+  const values = Object.fromEntries(Object.entries(own ?? {}).filter(([, v]) => v != null));
+  if (values.agent && values.agent !== (out.agent ?? "claude")) out = {};
+  if (values.launcher && values.launcher !== (out.launcher ?? "direct")) delete out.model;
+  return { ...out, ...values };
+}
+
+// A worker's saved launch takes precedence over the real Claude process underneath magpie.
+export function launchArgv(t) {
+  const argv = t?.argv ?? [];
+  if (argv.includes("herdr-magpie")) return argv;
+  const at = argv.findIndex((a) => String(a).split("/").pop() === "claude-magpie");
+  if (at >= 0) return argv.slice(at);
+  try {
+    const rec = JSON.parse(t?.labels?.["herdr.resume"] ?? "null");
+    if (rec?.argv?.includes("herdr-magpie")) return rec.session ? [...rec.argv, "--resume", rec.session] : rec.argv;
+  } catch {}
+  return t?.foreground?.argv ?? argv;
+}
+
+export function magpieModels(stdout) {
+  const models = [];
+  for (const line of String(stdout ?? "").replace(/\x1b\[[0-9;]*m/g, "").split("\n")) {
+    const m = /^\s*([\w.-]+\/[\w./:-]+)\s{2,}(.+?)(?:\s{2,}([a-z]+(?:\/[a-z]+)*))?\s*$/.exec(line);
+    if (!m || models.some((x) => x.id === m[1])) continue;
+    models.push({ id: m[1], name: m[2], efforts: m[3]?.split("/") ?? CLAUDE_EFFORTS, defaultEffort: "high", fast: false });
+  }
+  if (!models.some((m) => m.id === MAGPIE_MODEL)) models.unshift({ id: MAGPIE_MODEL, name: MAGPIE_MODEL, efforts: CLAUDE_EFFORTS, defaultEffort: "high", fast: false });
+  return { name: NAMES.claude, models, perms: PERMS.claude };
+}
 
 // Claude Code's current models, as its /model menu offers them. `id` is what --model gets;
 // `match` the names a running agent may report for it.
@@ -339,7 +397,7 @@ export function modelSections(menus, agent, picks, q) {
     if (rows.length) out.push(capped(k, m.name, k, rows));
   }
   // one word that could be an id, and no model has it: start any agent on it as typed
-  if (/^[\w.\[\]-]{2,60}$/.test(query)) {
+  if (/^[\w./:\[\]-]{2,160}$/.test(query)) {
     const rows = [agent, ...Object.keys(menus ?? {}).filter((x) => x !== agent)]
       .filter((k) => menus?.[k] && !saved(k).some((m) => m.id === query)).map((k) => ({ agent: k, ...typedModel(k, query), pinned: false }));
     if (rows.length) out.push({ key: "typed", title: "Use the id typed", agent, rows, more: 0 });
@@ -398,9 +456,10 @@ function kept(kind, argv) {
 // first message), or null when argv resumed none: for a fresh start once that session is gone.
 export function freshArgv(kind, argv) {
   argv = argv ?? [];
-  const at = argv.findIndex((a, i) => (i === 0 || !a.startsWith("-")) && /^(claude|codex)$/.test(String(a).split("/").pop()));
+  const at = argv.findIndex((a, i) => (i === 0 || !a.startsWith("-")) && /^(claude|claude-magpie|codex)$/.test(String(a).split("/").pop()));
   if (at < 0) return null;
-  const rest = argv.slice(at + 1), out = [argv[at]];
+  const marker = argv.indexOf("herdr-magpie");
+  const rest = argv.slice(at + 1), out = marker >= 0 && marker < at ? [...magpieArgv([]), argv[at]] : [argv[at]];
   let resumed = false;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
@@ -431,9 +490,11 @@ export function argvFor(pick, old) {
   const same = pick.agent === old.agent;
   const flags = same ? kept(pick.agent, old.argv ?? []) : [];
   if (pick.agent === "claude") {
-    const a = ["claude", ...flags];
-    if (pick.model) a.push("--model", pick.model);
-    if (pick.effort) a.push("--effort", pick.effort);
+    const magpie = pick.launcher === "magpie";
+    const a = [magpie ? "claude-magpie" : "claude", ...flags];
+    const model = pick.model || (magpie ? MAGPIE_MODEL : null), effort = pick.effort || (magpie ? "high" : null);
+    if (model) a.push("--model", model);
+    if (effort) a.push("--effort", effort);
     a.push("--settings", JSON.stringify({ fastMode: Boolean(pick.fast), statusLine: STATUS_LINE }));
     if (pick.perm === "bypassPermissions") a.push("--dangerously-skip-permissions");
     else if (pick.perm) a.push("--permission-mode", pick.perm === "manual" ? "default" : pick.perm);
@@ -464,6 +525,9 @@ export function sessionOf(kind, path) {
 // A copy of the conversation in a new tab beside this one, through the CLI's own fork.
 export function forkArgv(kind, argv, session) {
   argv = argv ?? [];
+  const marker = argv.indexOf("herdr-magpie");
+  if (marker >= 0) return magpieArgv(forkArgv(kind, argv.slice(marker + 1), session));
+  const command = kind === "claude" && String(argv[0]).split("/").pop() === "claude-magpie" ? argv[0] : "claude";
   // The same model, effort and speed as the original.
   const same = kind === "claude"
     ? ["--model", "--effort", "--settings"].flatMap((f) => { const v = flag(argv, f); return v ? [f, v] : []; })
@@ -473,5 +537,5 @@ export function forkArgv(kind, argv, session) {
         ...["model_reasoning_effort", "service_tier"].flatMap((k) => (o[k] ? ["-c", `${k}="${o[k]}"`] : []))];
     })();
   const flags = [...kept(kind, argv), ...same];
-  return kind === "claude" ? ["claude", ...flags, "--resume", session, "--fork-session"] : ["codex", "fork", ...flags, session];
+  return kind === "claude" ? [command, ...flags, "--resume", session, "--fork-session"] : ["codex", "fork", ...flags, session];
 }

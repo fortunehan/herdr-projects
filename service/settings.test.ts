@@ -11,6 +11,27 @@ process.env.HERDR_TASK_SETTINGS = file;
 const { Settings } = await import("./settings.ts");
 const CORE: any = await import("../core/settings.js");
 
+test("worker launcher and model save together; provider IDs and typed models survive", () => {
+  const s = new Settings();
+  s.start();
+  s.choices = CORE.choicesFrom({ claude: {}, codex: {} });
+  s.set("role.worker", JSON.stringify({ agent: "claude", launcher: "magpie", effort: "max" }));
+  let worker = JSON.parse(readFileSync(file, "utf8")).everywhere.worker;
+  expect(worker).toMatchObject({ agent: "claude", launcher: "magpie", model: "copilot/claude-sonnet-5.5", effort: "max" });
+  s.set("role.worker", JSON.stringify({ ...worker, model: "openrouter/vendor/typed-model" }));
+  worker = JSON.parse(readFileSync(file, "utf8")).everywhere.worker;
+  expect(worker.model).toBe("openrouter/vendor/typed-model");
+  const row = s.sections(null, []).find((x) => x.name === "Agents")!.rows.find((r) => r.key === "role.worker")!;
+  expect(row.agent?.sel).toMatchObject({ launcher: "magpie", model: "openrouter/vendor/typed-model" });
+  expect(row.value).toContain("openrouter/vendor/typed-model");
+  expect(() => s.set("role.worker", JSON.stringify({ agent: "codex", launcher: "magpie" }))).toThrow();
+  expect(() => s.set("role.reviewer", JSON.stringify({ agent: "claude", launcher: "magpie" }))).toThrow();
+  expect(() => s.set("role.coordinator", JSON.stringify({ agent: "claude", launcher: "magpie" }))).toThrow();
+  s.set("role.worker", JSON.stringify(CORE.chooseLauncher(worker, "direct")));
+  expect(JSON.parse(readFileSync(file, "utf8")).everywhere.worker).toMatchObject({ launcher: "direct", model: null, effort: "max" });
+  s.set("role.worker", null);
+});
+
 test("the Tasks rows say the window's words, and a change keeps the rest of the file", () => {
   const s = new Settings();
   s.start();

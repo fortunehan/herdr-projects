@@ -39,7 +39,7 @@ export default class ModelMenu extends View {
     this.p = p;
     if (p.pick) { this.handle = cx.focus_handle(); cx.timer.after(0, () => this.handle.focus()); return; }
     const c = p.current ?? {};
-    this.was = { agent: c.agent, model: c.model, effort: c.effort ?? null, fast: Boolean(c.fast), perm: c.perm ?? null };
+    this.was = { agent: c.agent, model: c.model, effort: c.effort ?? null, fast: Boolean(c.fast), perm: c.perm ?? null, ...(c.launcher ? { launcher: c.launcher } : {}) };
     this.sel = { ...this.was };
     // Typed as /model <name> in the chat: that model comes chosen, Restart ready.
     const pre = p.select && this.models().find((m) => m.agent === p.select.agent && m.id === p.select.model);
@@ -115,6 +115,7 @@ export default class ModelMenu extends View {
     if (next.effort && !m.efforts.includes(next.effort)) next.effort = null;
     if (!m.fast) next.fast = false;
     if (m.agent !== was.agent) {
+      delete next.launcher;
       // Another agent: its own permission modes, the nearest to the one chosen.
       next.perm = permAcross(was.perm, m.agent, this.p.permDefault);
       next.fast = false;
@@ -215,7 +216,7 @@ export default class ModelMenu extends View {
   tell() {
     if (!this.settingsMode) return;
     const s = this.sel;
-    setShared("newspace.pick", { key: this.p.key, field: "settings", value: { agent: s.agent, model: s.model, effort: s.effort, fast: s.fast, perm: s.perm }, at: Date.now() });
+    setShared("newspace.pick", { key: this.p.key, field: "settings", value: { agent: s.agent, model: s.model, effort: s.effort, fast: s.fast, perm: s.perm, ...(s.launcher ? { launcher: s.launcher } : {}) }, at: Date.now() });
   }
 
   render(cx) {

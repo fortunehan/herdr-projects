@@ -50,6 +50,27 @@ repos" without a third layer, and one less layer keeps "where does this value co
 genuinely differs in (its hardware, its home space, a key only it has) is already on Machines and Secrets. Agent and
 task values a machine set before (the old machine scope) still apply there until Reset, and say so on Machines.
 
+## Claude worker launchers
+
+The Workers row in Agents has a Launcher choice for Claude: Direct runs `claude`, and magpie runs `claude-magpie`.
+The Agent stays Claude. Assistants and reviewers keep their own commands.
+
+The magpie model picker reads `magpie models claude` and accepts a typed provider/model ID.
+Selecting magpie saves the Launcher with `copilot/claude-sonnet-5.5` selected. Its default effort is `high`.
+Changing the Launcher drops the previous model and keeps the effort. A model supplied with the change wins.
+Selecting the same Launcher keeps its model.
+
+Tasks override their space with `herdr-task add`, `edit`, or `start --launcher magpie|direct`, or `--set launcher=...`.
+Worker settings also read the existing Everywhere and machine layers. A Codex task ignores an inherited Launcher;
+an explicit `agent=codex` and `launcher=magpie` on the same task or layer is refused.
+Custom argv runs as given, including `claude-magpie`, without Launcher defaults or fallback.
+
+Automatic recovery and resume keep the worker's original Launcher, model, and effort. A new start or
+`herdr-task switch` uses current settings; a switch between Launchers resumes the same Claude session.
+A fork keeps the original Launcher, model, and effort.
+If `claude-magpie` is missing, the worker runs plain Claude without the magpie model, keeps the effort,
+and shows the reason in chat. Later starts and recovery try magpie again.
+
 ## Where they're kept, and how they travel
 
 - `~/.config/shepherdr/settings.json`: `everywhere` and `spaces[<space id>]` (another machine's space as `<machine>/<id>`), each

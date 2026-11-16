@@ -99,8 +99,9 @@ export class Agents {
 
   /** Each CLI's own settings here (Settings › Agents' model menu: core/settings.js choicesFrom). */
   async ownDefaults() {
-    const [claude, codex] = await Promise.all([this.defaults("claude", null), this.defaults("codex", null)]);
-    return { claude, codex };
+    const [claude, codex, magpie] = await Promise.all([this.defaults("claude", null), this.defaults("codex", null),
+      sh(this.hub, 'magpie models claude', [], null).catch(() => null)]);
+    return { claude, codex, magpie: (AG as any).magpieModels(magpie?.code === 0 ? magpie.stdout : "") };
   }
 
   /** What an unset role runs, in the window's words ("Opus 5.5 · 1M · High"): each CLI's own defaults here. */

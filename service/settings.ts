@@ -114,8 +114,9 @@ export class Settings {
     const m = scope ? (scope.includes("/") ? scope.split("/")[0] : LOCAL) : null;
     const own = scope ? at(this.layer(scope)) : undefined, mach = m ? at(this.file.machines?.[m]) : undefined, every = at(this.file.everywhere);
     const dflt = field ? DEFAULTS[section]?.[field] ?? null : null;
-    const parent = mach ?? every ?? dflt;
-    return { value: scope ? own ?? parent : every ?? dflt, own: own !== undefined, parent, level: mach !== undefined ? "machine" : "everywhere", machine: m };
+    const worker = section === "worker" && !field && (own != null || mach != null || every != null);
+    const parent = worker ? (C as any).mergeWorker(every, mach) : mach ?? every ?? dflt;
+    return { value: worker ? (scope ? (C as any).mergeWorker(parent, own) : every ?? dflt) : scope ? own ?? parent : every ?? dflt, own: own !== undefined, parent, level: mach !== undefined ? "machine" : "everywhere", machine: m };
   }
 
   /** What the agents offer (core/settings.js choicesFrom: menus, permission defaults, what an unset role runs), set by
@@ -190,7 +191,7 @@ export class Settings {
       const button = (v: any) => {
         if (!this.choices) return LOADING_AGENTS;
         const { sel, unset } = roleSel(r.id, v ?? null, this.choices, worker);
-        return unset && r.id === "reviewer" && sel ? otherCliWords(otherCli(worker)) : sel ? modelLabel(menus, sel) : LOADING_AGENTS;
+        return unset && r.id === "reviewer" && sel ? otherCliWords(otherCli(worker)) : sel ? modelLabel((r.id === "worker" ? (C as any).workerChoices(this.choices, sel) : this.choices)?.menus, sel) : LOADING_AGENTS;
       };
       const { sel, unset } = roleSel(r.id, p.value ?? null, this.choices, worker);
       // on Everywhere its row has "Edit instructions" too (the same for every space), and a set Reviewer "Use other CLI"
@@ -444,11 +445,17 @@ export class Settings {
       if (word !== null) {
         try { v = JSON.parse(word); } catch { throw new Error("Not an agent."); }
         const ok = (x: unknown) => x == null || (typeof x === "string" && /^[\w.\[\]-]{1,60}$/.test(x));
-        if (!["claude", "codex"].includes(v?.agent) || !ok(v.model) || !ok(v.effort)) throw new Error("Pick Claude Code or Codex.");
+        const modelOK = v?.model == null || (typeof v.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(v.model));
+        if (!["claude", "codex"].includes(v?.agent) || !modelOK || !ok(v.effort)) throw new Error("Pick Claude Code or Codex.");
+        if (v.launcher != null && (field !== "worker" || !["direct", "magpie"].includes(v.launcher) || (v.agent === "codex" && v.launcher === "magpie"))) throw new Error("Only Claude workers can use the magpie launcher.");
         // its permission mode, as the window's Permissions pick (one of the CLI's modes; none: the CLI's own default)
         const PERM: Record<string, string[]> = { claude: ["manual", "auto", "acceptEdits", "plan", "bypassPermissions"], codex: ["read-only", "auto", "full"] };
         if (v.perm != null && !PERM[v.agent].includes(v.perm)) throw new Error("Not one of its permission modes.");
-        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null };
+        const launcher = v.launcher;
+        const previous = this.pick(space, field, null).value;
+        if (field === "worker" && launcher && launcher !== (previous?.launcher ?? "direct") && !v.model) v = (C as any).chooseLauncher({ ...v, launcher: previous?.launcher }, launcher);
+        if (field === "worker" && launcher === "magpie" && !v.model) v.model = (C as any).chooseLauncher({ ...v, launcher: "direct" }, "magpie").model;
+        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}) };
       }
       put(field, null, v);
     } else if (section === "autopilot" && AP.FIELDS.includes(field)) {
