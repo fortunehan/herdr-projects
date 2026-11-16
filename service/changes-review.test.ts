@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULTS, menuFor, parseDefaults, sessionOf } from "../core/agents.js";
 import { FIND, Conversation } from "../core/chat-log.js";
-import { CLEAN_ENV, AGENT_PATH } from "../core/clean-env.js";
+import { cleanCommand } from "../core/clean-env.js";
 import { ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, DEFAULT_MODEL } from "../core/changes-review.js";
 import { CAPTURE, capture } from "../core/review-target.js";
 import { ReviewLaunchBridge, REVIEW_COMMAND, REVIEW_BRIDGE } from "../core/review-launch.js";
@@ -88,7 +88,7 @@ async function fixture() {
   };
   const bindings = { exec, hc, writeTextFile, openOverlay: (value: any) => { (state.overlays ??= []).push(value); return "fixture-overlay"; }, panes: () => state.panes, terminals: () => state.terminals,
     spaces: () => [{ id: "workspace", machine: null, tabs: (state.tabCount === 2 ? [{ id: "source-tab" }] : []).concat([{ id: "review-tab" }]) }], fs,
-    dirsReady: async () => ({ reviews: data }), DEFAULTS, menuFor, parseDefaults, sessionOf, FIND, Conversation, CLEAN_ENV, AGENT_PATH,
+    dirsReady: async () => ({ reviews: data }), DEFAULTS, menuFor, parseDefaults, sessionOf, FIND, Conversation, cleanCommand,
     ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, chatPane, capture, ReviewLaunchBridge,
     shared: (key: string) => state.shared?.[key], setShared: (key: string, value: unknown) => { (state.shared ??= {})[key] = value; } };
   const src = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
