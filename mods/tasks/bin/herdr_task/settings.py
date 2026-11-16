@@ -237,6 +237,7 @@ def worker_pick(s, task, space=None, agent=None):
     """What a task's agent runs on, {agent, model, effort, fast, perm}: Settings' worker, then the
     task's own --agent / --model / --effort, then `agent` (start --agent). Another CLI than
     Settings' starts from its own defaults (models and permissions differ per CLI)."""
+    validate_launcher(task)
     pick = dict(settings_for(s, space)["worker"] or {})
     for key in (task.get("agent"), agent):
         if key and key != pick.get("agent"):

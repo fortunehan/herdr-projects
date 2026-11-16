@@ -916,8 +916,8 @@ def start_again(s, t, space, key=None, argv_json=None, message=None, parent=None
     keep = prev and prev.get("argv") and not current
     argv = agent_argv(None, argv_json) if argv_json else worker_argv(s, t, space, key) if key else \
         (prev["argv"] if keep else worker_argv(s, t, space))
-    custom = bool(argv_json or (keep and not key and prev.get("custom_argv")))
-    extra = {"custom": True} if custom else {}
+    custom = bool(argv_json or (prev.get("custom_argv") if keep and not key else worker_pick(s, t, space, key).get("argv") == argv))
+    extra = {"custom": custom}
     same = prev and agent_key(argv) == prev.get("agent")
     res = resume_argv(argv, prev["session"]) if same and prev.get("session") else None
     if res:

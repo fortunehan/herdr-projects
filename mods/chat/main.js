@@ -1163,7 +1163,7 @@ export default class Chat extends View {
     const pane = this.lastPane ?? (this.slot && this.slotRec()?.pane) ?? null;
     if (!this.thread && !this.inner && !this.swapping && !t.labels?.["herdr.chat"] && pane && !panes().some((p) => p.terminal === this.addr)
       && panes().some((p) => p.pane === pane && p.mod === "chat")) await hc(["label", this.addr, `herdr.chat=${chatLabel(pane)}`]);
-    const kind = KINDS[t.status?.app] ?? KINDS[t.foreground?.name];
+    const kind = KINDS[t.status?.app] ?? KINDS[String(t.foreground?.name ?? "").split("/").pop()];
     // Back at its shell because the session it resumed is gone: a new agent starts there.
     if (!kind) { if (!(await this.checkLost(this.addr, cx, t))) this.set("unsupported", cx); return; }
     this.t = t;

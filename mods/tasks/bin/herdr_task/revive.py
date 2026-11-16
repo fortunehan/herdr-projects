@@ -180,7 +180,8 @@ def record_of(k):
     shell = any(os.path.basename(str(a)) in SHELLS for a in launch[:launch.index(argv[0])]) if kind else True
     if not kind:
         saved = read_record(k)
-        if "herdr-magpie" in ((saved or {}).get("argv") or []):
+        saved_argv = (saved or {}).get("argv") or []
+        if "herdr-magpie" in saved_argv or any(os.path.basename(str(a)) == "claude-magpie" for a in saved_argv):
             kind, argv = base_argv(saved["argv"])
     if not kind:
         kind, argv = base_argv(fg.get("argv"))

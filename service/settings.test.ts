@@ -29,6 +29,8 @@ test("worker launcher and model save together; provider IDs and typed models sur
   expect(() => s.set("role.coordinator", JSON.stringify({ agent: "claude", launcher: "magpie" }))).toThrow();
   s.set("role.worker", JSON.stringify(CORE.chooseLauncher(worker, "direct")));
   expect(JSON.parse(readFileSync(file, "utf8")).everywhere.worker).toMatchObject({ launcher: "direct", model: null, effort: "max" });
+  s.set("role.worker", JSON.stringify({ ...worker, argv: ["claude-magpie", "--model", "custom/model"] }));
+  expect(JSON.parse(readFileSync(file, "utf8")).everywhere.worker.argv).toEqual(["claude-magpie", "--model", "custom/model"]);
   s.set("role.worker", null);
 });
 

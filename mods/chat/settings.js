@@ -122,7 +122,7 @@ function applyReply(coord, cx) {
   if (!reply || reply.key !== coord.key || reply.at === coord.pickAt || !cx) return;
   coord.pickAt = reply.at;
   cx.timer.after(0, (cx) => {
-    if (reply.field === "settings" && reply.value?.agent) coord.sel = { ...reply.value };
+    if (reply.field === "settings" && reply.value?.agent) coord.sel = { ...reply.value, ...(coord.sel?.argv ? { argv: coord.sel.argv } : {}) };
     if (reply.field === "model") { const [a, ...id] = String(reply.value).split(":"); choose(coord, a, id.join(":")); }
     if (reply.field === "perm") coord.sel = { ...coord.sel, perm: reply.value };
     cx.notify();
@@ -164,7 +164,7 @@ export function openMenu(coord, select = null) {
   openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H, at,
     props: { mode: "settings", key: coord.key, width: W, height: H, remote: null, select,
       current: { agent: sel.agent, model: sel.model, effort: sel.effort ?? null, fast: Boolean(sel.fast), perm: sel.perm ?? null, ...(sel.launcher ? { launcher: sel.launcher } : {}) },
-      menus: data.menus, icons: data.icons, permDefault: data.permDefault } });
+      menus: data.menus, directMenus: data.directMenus, icons: data.icons, permDefault: data.permDefault } });
 }
 
 // Also known as settingsButton (the name agreed for the New space dialog).

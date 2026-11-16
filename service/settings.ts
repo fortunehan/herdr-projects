@@ -448,6 +448,7 @@ export class Settings {
         const modelOK = v?.model == null || (typeof v.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(v.model));
         if (!["claude", "codex"].includes(v?.agent) || !modelOK || !ok(v.effort)) throw new Error("Pick Claude Code or Codex.");
         if (v.launcher != null && (field !== "worker" || !["direct", "magpie"].includes(v.launcher) || (v.agent === "codex" && v.launcher === "magpie"))) throw new Error("Only Claude workers can use the magpie launcher.");
+        if (field === "worker" && v.argv != null && (!Array.isArray(v.argv) || !v.argv.length || !v.argv.every((x: unknown) => typeof x === "string"))) throw new Error("Custom argv must be a list of words.");
         // its permission mode, as the window's Permissions pick (one of the CLI's modes; none: the CLI's own default)
         const PERM: Record<string, string[]> = { claude: ["manual", "auto", "acceptEdits", "plan", "bypassPermissions"], codex: ["read-only", "auto", "full"] };
         if (v.perm != null && !PERM[v.agent].includes(v.perm)) throw new Error("Not one of its permission modes.");
@@ -455,7 +456,7 @@ export class Settings {
         const previous = this.pick(space, field, null).value;
         if (field === "worker" && launcher && launcher !== (previous?.launcher ?? "direct") && !v.model) v = (C as any).chooseLauncher({ ...v, launcher: previous?.launcher }, launcher);
         if (field === "worker" && launcher === "magpie" && !v.model) v.model = (C as any).chooseLauncher({ ...v, launcher: "direct" }, "magpie").model;
-        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}) };
+        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}), ...(field === "worker" && v.argv ? { argv: v.argv } : {}) };
       }
       put(field, null, v);
     } else if (section === "autopilot" && AP.FIELDS.includes(field)) {

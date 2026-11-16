@@ -116,6 +116,7 @@ export default class ModelMenu extends View {
     if (!m.fast) next.fast = false;
     if (m.agent !== was.agent) {
       delete next.launcher;
+      if (this.p.directMenus) this.p.menus = this.p.directMenus;
       // Another agent: its own permission modes, the nearest to the one chosen.
       next.perm = permAcross(was.perm, m.agent, this.p.permDefault);
       next.fast = false;

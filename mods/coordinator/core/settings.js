@@ -86,12 +86,11 @@ export const LAUNCHER = { title: "Launcher", choices: [["direct", "Direct"], ["m
 export function chooseLauncher(sel, launcher) {
   if (launcher === (sel.launcher ?? "direct")) return sel;
   const next = { ...sel, launcher, model: launcher === "magpie" ? MAGPIE_MODEL : null };
-  delete next.argv;
   return next;
 }
 export function workerChoices(data, sel) {
   return sel?.agent === "claude" && sel.launcher === "magpie" && data
-    ? { ...data, menus: { ...data.menus, claude: data.magpie ?? magpieModels("") } } : data;
+    ? { ...data, directMenus: data.menus, menus: { ...data.menus, claude: data.magpie ?? magpieModels("") } } : data;
 }
 // An unset Reviewer's button: what runs, the other CLI.
 export const otherCliWords = (cli) => `Other CLI (${NAMES[cli] ?? cli})`;

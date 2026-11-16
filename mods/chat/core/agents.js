@@ -4,7 +4,6 @@
 // Shared core: the source is core/agents.js; bin/sync-shared copies it into the mods in lib/COPIES.
 export const NAMES = { claude: "Claude Code", codex: "Codex" };
 export const MAGPIE_MODEL = "copilot/claude-sonnet-5.5";
-export const MAGPIE_NOTICE = "This machine has no claude-magpie, so it runs on plain Claude.";
 export const MAGPIE_RUN = `if command -v "$1" >/dev/null 2>&1; then
   [ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" herdr.launcher.notice= >/dev/null 2>&1
   exec "$@"
@@ -46,7 +45,8 @@ export function launchArgv(t) {
   if (at >= 0) return argv.slice(at);
   try {
     const rec = JSON.parse(t?.labels?.["herdr.resume"] ?? "null");
-    if (rec?.argv?.includes("herdr-magpie")) return rec.session ? [...rec.argv, "--resume", rec.session] : rec.argv;
+    if (rec?.argv?.includes("herdr-magpie") || rec?.argv?.some((a) => String(a).split("/").pop() === "claude-magpie"))
+      return rec.session ? [...rec.argv, "--resume", rec.session] : rec.argv;
   } catch {}
   return t?.foreground?.argv ?? argv;
 }
@@ -56,7 +56,7 @@ export function magpieModels(stdout) {
   for (const line of String(stdout ?? "").replace(/\x1b\[[0-9;]*m/g, "").split("\n")) {
     const m = /^\s*([\w.-]+\/[\w./:-]+)\s{2,}(.+?)(?:\s{2,}([a-z]+(?:\/[a-z]+)*))?\s*$/.exec(line);
     if (!m || models.some((x) => x.id === m[1])) continue;
-    models.push({ id: m[1], name: m[2], efforts: m[3]?.split("/") ?? CLAUDE_EFFORTS, defaultEffort: "high", fast: false });
+    models.push({ id: m[1], name: m[1], efforts: m[3]?.split("/") ?? CLAUDE_EFFORTS, defaultEffort: "high", fast: false });
   }
   if (!models.some((m) => m.id === MAGPIE_MODEL)) models.unshift({ id: MAGPIE_MODEL, name: MAGPIE_MODEL, efforts: CLAUDE_EFFORTS, defaultEffort: "high", fast: false });
   return { name: NAMES.claude, models, perms: PERMS.claude };

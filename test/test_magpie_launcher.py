@@ -127,6 +127,10 @@ class MagpieLauncher(unittest.TestCase):
             commands.start_again(self.store, task, "sp1")
             self.assertEqual(run.call_args.args[2], old)
             self.assertEqual(run.call_args.kwargs["resume"], old + ["--resume", "S1"])
+            self.layers[2]["worker"]["argv"] = old
+            commands.start_again(self.store, task, "sp1")
+            self.assertFalse(run.call_args.kwargs["custom"])
+            self.layers[2]["worker"].pop("argv")
             commands.start_again(self.store, task, "sp1", current=True)
             self.assertEqual(run.call_args.args[2][0], "claude")
             self.assertEqual(run.call_args.kwargs["resume"][-2:], ["--resume", "S1"])
@@ -152,6 +156,9 @@ class MagpieLauncher(unittest.TestCase):
         k.update(foreground={"pid": 8, "argv": ["claude", "--effort", "max"]}, labels={revive.LABEL: json.dumps(rec)})
         with patch.object(revive, "session_of", return_value=("gone", "log")):
             self.assertEqual(revive.record_of(k)["argv"], argv)
+            rec["argv"] = ["/bin/claude-magpie", "--model", "custom/model"]
+            k["labels"][revive.LABEL] = json.dumps(rec)
+            self.assertEqual(revive.record_of(k)["argv"], rec["argv"])
 
     def test_fallback_executes_plain_claude_without_model_and_retries_magpie(self):
         with tempfile.TemporaryDirectory() as folder:

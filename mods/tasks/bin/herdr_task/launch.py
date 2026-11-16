@@ -713,7 +713,7 @@ def folder_for(s, task):
     return path
 
 
-def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None, custom=False):
+def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None, custom=None):
     """Starts one agent for the task with no tab or pane of its own (a space can hold thousands
     of tasks): an hc child of `parent`, which parent_for() makes the space's coordinator, reached
     through the Tasks panel. Labels: herdr.task (its task), herdr.task.space (its space; never
@@ -724,8 +724,10 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     cmd = list(resume or argv)
     if not role:
         cmd = own_argv(cmd, folder_for(s, task))
-    custom = custom or bool(not role and worker_pick(s, task, space).get("argv") == argv)
-    magpie = not role and not custom and os.path.basename(argv[0]) == "claude-magpie"
+    magpie = not role and os.path.basename(argv[0]) == "claude-magpie"
+    if custom is None:
+        custom = bool(magpie and worker_pick(s, task, space).get("argv") == argv)
+    magpie = magpie and not custom
     if message:
         cmd = cmd + [message]
     if magpie:

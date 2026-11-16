@@ -4991,7 +4991,7 @@ class TaskFlow(unittest.TestCase):
         self.patch(self.commands, "parent_for", lambda parent, space: parent)
         self.patch(self.commands, "run", lambda argv, **k: events.append(("run", argv)))
 
-        def launch(s, t, argv, space, message=None, parent=None, resume=None, role=None):
+        def launch(s, t, argv, space, message=None, parent=None, resume=None, role=None, custom=False):
             events.append(("launch", resume, message))
             return {"address": "t2", "agent": "claude", "argv": argv}
         self.patch(self.commands, "launch", launch)

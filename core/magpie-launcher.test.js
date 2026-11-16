@@ -38,6 +38,8 @@ test("fresh start and fork keep the saved launcher, model and effort through wra
   const recovered = { ...terminal, argv: ["/bin/zsh"], labels: { "herdr.resume": JSON.stringify({ argv: magpieArgv(base), session: "S1" }) } };
   expect(freshArgv("claude", launchArgv(recovered))).toEqual(magpieArgv(base));
   expect(forkArgv("claude", launchArgv(recovered), "S1")).toEqual([...magpieArgv(base), "--resume", "S1", "--fork-session"]);
+  recovered.labels["herdr.resume"] = JSON.stringify({ argv: base, session: "S1" });
+  expect(freshArgv("claude", launchArgv(recovered))).toEqual(base);
 });
 
 test("launcher layers drop models only on a change and keep effort", () => {

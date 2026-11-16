@@ -42,9 +42,17 @@ const withTyped = (menus: ModelMenus['menus'], x: { agent: string; id: string; t
 export function ModelButton({ row, level }: { row: SettingRow; level: string }) {
   const [open, setOpen] = useState(false)
   const [up, setUp] = useState(false)
+  const [error, setError] = useState('')
   const ref = useRef<HTMLSpanElement>(null)
   const sel = row.agent?.sel ?? null
   const worker = row.agent?.role === 'worker'
+  const launcher = (value: string) => {
+    if (!sel) return
+    setOpen(false)
+    setError('')
+    void act({ type: 'setting', key: row.key, value: JSON.stringify(ST.chooseLauncher(sel, value)), place: level } as never)
+      .then((r: any) => r?.ok === false && setError(r.error ?? 'It did not save.'), (e: Error) => setError(e.message))
+  }
   const toggle = () => {
     const r = ref.current?.getBoundingClientRect()
     const below = r ? innerHeight - r.bottom : 999
@@ -56,10 +64,11 @@ export function ModelButton({ row, level }: { row: SettingRow; level: string }) 
       {worker && sel?.agent === 'claude' ? <label className="inline-flex items-center gap-1.5 text-fg3">
         <span>{ST.LAUNCHER.title}</span>
         <select aria-label="Worker launcher" value={sel.launcher ?? 'direct'} className="rounded-row bg-raised px-2 py-1 text-fg"
-          onChange={(e) => { setOpen(false); void act({ type: 'setting', key: row.key, value: JSON.stringify(ST.chooseLauncher(sel, e.target.value)), place: level } as never) }}>
+          onChange={(e) => launcher(e.target.value)}>
           {ST.LAUNCHER.choices.map(([value, label]: string[]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label> : null}
+      {error ? <span role="alert" className="w-full text-need-fg">{error}</span> : null}
       <button
         type="button"
         aria-haspopup="menu"
