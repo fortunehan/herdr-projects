@@ -14,7 +14,13 @@ export const CLEAN_ENV = `for v in $(env | sed -nE 's/^(CLAUDECODE|CLAUDE_PID|CL
 // ~/.local/bin, Homebrew's in /opt/homebrew/bin or /usr/local/bin (GitHub #839: "exec: claude: not found").
 export const AGENT_PATH = `PATH="\${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;`;
 
-/** A template's `command:` (run by hc under sh -c) that clears those first, finds the agent where it installs, then
- *  execs the command (so the terminal's program is the agent, never sh: on dash the shell would otherwise stay). An
- *  `exec` it had is kept once. */
-export const cleanCommand = (cmd) => `${CLEAN_ENV} ${AGENT_PATH} exec ${String(cmd).trim().replace(/^exec\s+/, "")}`;
+// The login shell loads proxy and certificate settings even when launchd started the holder.
+// It execs sh so the cleanup and agent command keep POSIX semantics on every machine.
+// macOS sh invents an unexported SHELL; only use the holder's exported value.
+export const LOGIN_SHELL = `if [ -n "\${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '^SHELL='; then exec "$SHELL" -lc 'exec "$@"' herdr-login sh -c`;
+
+const quote = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+export const loginCommand = (cmd) => `${LOGIN_SHELL} ${quote(cmd)} "$0" "$@"; fi; ${cmd}`;
+
+/** A template's command loads login settings, clears session markers, and execs the agent. */
+export const cleanCommand = (cmd) => loginCommand(`${CLEAN_ENV} ${AGENT_PATH} exec ${String(cmd).trim().replace(/^exec\s+/, "")}`);

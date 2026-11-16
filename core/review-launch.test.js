@@ -37,7 +37,7 @@ function hostFixture() {
     panes: () => ps, terminals: () => ts, spaces: () => ss,
     fs: { realpath: async (v) => v }, dirsReady: () => { throw new Error("No real storage allowed"); },
     DEFAULTS: "", menuFor: () => {}, parseDefaults: () => {}, sessionOf: () => source.conversation,
-    FIND: "find-log", Conversation: class {}, CLEAN_ENV: "", AGENT_PATH: "", chatPane: (t) => t.labels?.["herdr.chat"],
+    FIND: "find-log", Conversation: class {}, cleanCommand: (cmd) => cmd, chatPane: (t) => t.labels?.["herdr.chat"],
     ChangesReview, completedMessage: () => {}, sourceMessages: () => {}, finished: () => {}, reportText: () => {}, sourceKey,
     capture: async (_io, input) => { calls.push({ capture: input }); return observed; }, ReviewLaunchBridge };
   const code = readFileSync(new URL("../lib/reviews.js", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
