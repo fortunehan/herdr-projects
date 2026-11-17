@@ -106,6 +106,12 @@ if [ -n "$argv" ]; then labels+=(--label "herdr.launcher.argv=$argv"); fi
 # The new agent never inherits a parent Claude Code session's markers the holder may carry (SHEP-86):
 # the same line as core/clean-env.js CLEAN_ENV (test_repo keeps them equal).
 clean='for v in $(env | sed -nE '"'"'s/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A-Za-z0-9_]+)=.*/\1/p'"'"' | grep -vE '"'"'^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'"'"'); do unset "$v"; done;'
+agent_path='PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
+login='if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '"'"'^SHELL='"'"'; then exec "$SHELL" -lc '"'"'exec "$@"'"'"' herdr-login sh -c'
+login_command() {
+  local body=$1
+  printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
+}
 tpl=$HOME/.config/herdr-core/templates/assistant.md
 # A coordinator restarted without an argv: the assistant template's own command and words.
 own=""
@@ -115,7 +121,7 @@ argv_cmd() { local a; cmd=(); while IFS= read -r a; do cmd+=("$a"); done < <(jq 
 if [ -n "${HERDR_RESTART_RESUME:-}" ] && [ -n "$argv" ]; then
   argv_cmd
   [ ${#cmd[@]} -gt 0 ] || exit 1
-  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(agent_key "${cmd[0]}")" -- sh -c "$clean"' exec "$@"' herdr-clean "${cmd[@]}" | jq -r '.address // empty')
+  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(agent_key "${cmd[0]}")" -- sh -c "$(login_command "$clean $agent_path"' exec "$@"')" herdr-clean "${cmd[@]}" | jq -r '.address // empty')
 elif [ -z "$argv" ] && [ "$role" = coordinator ] && [ -z "$own" ]; then
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address)
 else
@@ -139,7 +145,7 @@ else
   # handoff goes in a one-off template, removed once it has started.
   one=herdr-handoff-$$
   file=$HOME/.config/herdr-core/templates/$one.md
-  { printf -- '---\nname: %s\ndescription: A one-off Herdr handoff, removed after use.\ncommand: %s\n---\n' "$one" "$clean exec $line"
+  { printf -- '---\nname: %s\ndescription: A one-off Herdr handoff, removed after use.\ncommand: %s\n---\n' "$one" "$(login_command "$clean $agent_path exec $line")"
     printf '%s\n' "$msg"; } >"$file"
   out=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$key" "$one")
   rm -f "$file"
