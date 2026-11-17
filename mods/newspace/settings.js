@@ -13,7 +13,7 @@
 // A row's dropdown opens mods/chat-models in pick mode; its answer comes back through shared
 // "newspace.pick" = { key, field, value, at }, which the rows apply on the next render.
 
-import { div, svg, image } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { knownAgents, openOverlay, shared, appHome, exec } from "herdr";
 import * as fs from "fs/promises";
@@ -85,11 +85,6 @@ export function settingsRows(t, coord, opts = {}, cx = null) {
   applyReply(coord, cx);
   const menu = data.menus[agent.choiceKey(sel)];
   const m = modelOf(data, sel);
-  const icon = (a) => {
-    const ic = data.icons?.[a];
-    if (!ic?.icon) return div().size(14).flex_none();
-    return ic.tint ? svg(ic.icon).size(14).flex_none().text_color(t.foreground) : image(ic.icon).size(14).flex_none();
-  };
   const row = (label, control) => h_flex().h(ROW).flex_none().px(9).gap(10).items_center()
     .child(div().w(LABEL).flex_none().text_color(t.muted).child(label))
     .child(h_flex().flex_1().min_w(0).justify_end().child(control));
@@ -99,13 +94,13 @@ export function settingsRows(t, coord, opts = {}, cx = null) {
     .when(!off, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); fn(); cx.notify(); }))
     .children(content)
     .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none().text_color(t.dim));
-  const models = Object.entries(data.menus).flatMap(([a, mm]) => mm.models.map((x) => ({ id: `${a}:${x.id}`, label: x.name, icon: data.icons?.[a]?.icon, tint: data.icons?.[a]?.tint })));
+  const models = Object.entries(data.menus).flatMap(([a, mm]) => mm.models.map((x) => ({ id: `${a}:${x.id}`, label: `${mm.name} · ${x.name}` })));
   const levels = m?.efforts ?? [];
   const level = sel.effort ?? m?.defaultEffort ?? null;
   const fastOk = Boolean(m?.fast);
   const perm = menu?.perms?.find((p) => p.id === sel.perm);
   return v_flex().w_full().text_size(12.8).text_color(t.foreground).when(off, (el) => el.opacity(0.45))
-    .child(row("Agent", select("ns-model", [icon(sel.agent), div().min_w(0).truncate().child(m?.name ?? sel.model ?? "Choose")],
+    .child(row("Agent", select("ns-model", [div().min_w(0).truncate().child(m?.name ?? sel.model ?? "Choose")],
       () => pickAt("model", models, `${sel.agent}:${sel.model}`))))
     .child(row("Reasoning", h_flex().h(26).p(2).gap(2).rounded(7).bg(t.raised).children(levels.map((e) =>
       h_flex().id(`ns-level-${e}`).h_full().px(7).justify_center().items_center().rounded(5).text_size(11.5)

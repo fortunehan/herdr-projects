@@ -293,10 +293,7 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
           <Tabs label="Agent" className={clsx('w-full', agents.length > 2 ? 'grid! grid-cols-2' : 'flex')}>
             {agents.map((a) => (
               <Tab key={a} fill on={tab === a} onClick={() => { setTab(a); setQ('') }} className="text-[0.75rem]! coarse:text-[0.875rem]! phone:text-[0.875rem]!">
-                <span className="inline-flex items-center gap-1.5 align-middle">
-                  <img src={`agents/${AGc.agentKey(a)}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
-                  {menus[a].name}
-                </span>
+                {menus[a].name}
               </Tab>
             ))}
           </Tabs>
@@ -325,8 +322,6 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
               return (
                 <div key={`${x.agent}-${x.id}`} className="group relative flex items-center">
                   <button type="button" role="menuitemradio" aria-checked={on} disabled={disabled} className={clsx(row, onPin && 'pr-9')} onClick={() => pick(x)}>
-                    {/* the agent's own mark, Herdr's icon (web/public/agents, from the window's icons) */}
-                    <img src={`agents/${AGc.agentKey(x.agent)}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">{x.typed ? <>Use <span className="font-medium">{x.id}</span></> : x.name}</span>
                     {x.typed ? <span className="shrink-0 text-[0.6875rem] text-fg3">{menus[x.agent]?.name} id</span> : null}
                     <span className="grid size-3.5 shrink-0 place-items-center">{on ? <CheckIcon className="size-3.5" /> : null}</span>

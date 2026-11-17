@@ -146,12 +146,6 @@ export default class ModelMenu extends View {
     closeOverlay(this.p.overlay);
   }
 
-  icon(agent, t) {
-    const ic = this.p.icons?.[agent];
-    if (!ic?.icon) return div().size(14).flex_none();
-    return ic.tint ? svg(ic.icon).size(14).flex_none().text_color(t.foreground) : image(ic.icon).size(14).flex_none();
-  }
-
   head(t, label) {
     return div().h(HEAD).flex_none().px(9).pt(8).text_size(11).text_color(t.dim).child(label);
   }
@@ -266,7 +260,6 @@ export default class ModelMenu extends View {
             .when(this.tab === a, (el) => el.bg(t.background).text_color(t.foreground).font_medium())
             .when(this.tab !== a, (el) => el.text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
               .on_click((_e, cx) => { cx.stop_propagation(); this.tab = a; this.input.set_value(""); this.cursor = 0; cx.notify(); }))
-            .child(this.icon(a, t))
             .child(div().truncate().child(this.p.menus[a].name)))))))
       .child(h_flex().h(SEARCH).flex_none().px(4).pb(4).items_center()
         .child(h_flex().w_full().h(30).px(10).gap(8).rounded(7).bg(t.raised).items_center()
@@ -327,7 +320,7 @@ export default class ModelMenu extends View {
       .child(box);
   }
 
-  // One model in the list: its agent's mark, its name (a typed id: "Use <id>"), the check on the one
+  // One model in the list: its name (a typed id: "Use <id>"), the check on the one
   // chosen, and its star at the right end (bright when pinned, faint else; the list's click on that
   // place pins). No handlers of its own: the virtual list takes the clicks.
   modelRow(t, x, at) {
@@ -336,7 +329,6 @@ export default class ModelMenu extends View {
       .text_color(t.foreground)
       .cursor_pointer().hover((s) => s.bg(t.selected))
       .when(at, (el) => el.bg(t.selected))
-      .child(this.icon(x.agent, t))
       .child(div().flex_1().min_w(0).truncate().child(x.typed ? `Use ${x.id}` : x.name))
       .when(Boolean(x.typed), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${this.p.menus?.[x.agent]?.name ?? x.agent} id`)))
       .child(this.check(t, chosen))
