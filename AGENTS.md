@@ -137,6 +137,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - A real `herdr-task switch` test without touching people's tasks: a fake hc on PATH exporting `HC_SESSION=<name>`,
   `HERDR_TASK_STORE=<tmp>`, a scratch git repo with `add --here` and `start --space <any>`; answer the trust prompt with
   `hc keys <t> down enter`. Claude refuses a plain sleep, so give the brief a busy step.
+- React render counts with agent-browser: relaunch the session with `--enable react-devtools` (close, then
+  `--enable react-devtools open URL`) and build with `vite --minify false` to get component names.
 - Web stub: localStorage `shepherdr.lists` = `{pinned:true,chips:[],at:null}` opens `?task=<id>` in the middle column
   (same width as the Assistant's) instead of the side.
 
