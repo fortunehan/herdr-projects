@@ -2,7 +2,7 @@
 // grouped by machine when more than one is known. After a space's name: a small blue dot while
 // its Assistant has something new (the name bold too), a small dim spinner while its Assistant
 // thinks, and the repo its first terminal is in now, only where unusual: its branch. At the row's
-// end, how many of its tasks are at work (a dim count with a turning ring) before its red and
+// end, how many of its tasks are at work (a yellow count with a turning ring) before its red and
 // green counts (SHEP-17; the rules are core/spaces.js's, the web's rows show the same). Click to
 // switch, right-click for its menu, drag to reorder. Under each machine, its sections
 // (sections.js): the + on its header makes one, spaces drag in and out of them (only by
@@ -28,7 +28,7 @@ import { unreadSpaces, readShown, assistantOf } from "./unread.js";
 import { muted } from "./notify.js";
 import { MachinePopup, openMachine, openMachineSettings } from "./machine-popup.js";
 import { startPolling, allStats, healthMeters, bars } from "./machines.js";
-import { countBadge, red, green, blue, H, TEXT, RADIUS, toast } from "./ui.js";
+import { red, green, blue, H, TEXT, RADIUS, toast } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { spaceName, gitTail, tilde, sharedNames, inOrder, withOrder, machinesInOrder, machineOrderOf, withMachineOrder, isThinking, workingIn } from "./core/spaces.js";
 import { coordinatorTab } from "./coordinator.js";
@@ -98,6 +98,14 @@ function nameText(text, fresh, color, t) {
     .child(div().invisible().font_semibold().truncate().child(text))
     .child(div().absolute().top(0).left(0).right(0).truncate().text_color(fresh ? t.foreground : color)
       .when(fresh, (el) => el.font_semibold()).child(text));
+}
+
+function spaceCounts(need, ready) {
+  const cap = (n) => n > 9 ? "9+" : String(n);
+  return h_flex().h(16).flex_none().gap(8).items_center().text_size(TEXT.id).font_bold()
+    .role("image").accessibility_label(`${need} needs you, ${ready} ready`)
+    .when(need > 0, (el) => el.child(div().text_color(red()).child(cap(need))))
+    .when(ready > 0, (el) => el.child(div().text_color(green()).child(cap(ready))));
 }
 
 export default class Spaces extends View {
@@ -510,7 +518,7 @@ export default class Spaces extends View {
       .on_mouse_move((_e, cx) => this.drag("pinned", ANY, cx))
       .child(div().w(18).flex_none().flex().justify_center().child(svg("mods/workspace-chrome/pin.svg").size(14)))
       .child(div().flex_1().min_w(0).truncate().child("Pinned"))
-      .when(needs > 0 || ready > 0, (el) => el.child(countBadge(needs, ready, t.chrome)))
+      .when(needs > 0 || ready > 0, (el) => el.child(spaceCounts(needs, ready)))
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none())
       .when(this.pressed !== null && this.over === "pinned" && !open, (el) => el.child(this.line(t, "bottom")));
     const shown = open ? members : members.filter((r) => r.w.active || this.unread.has(r.w.id));
@@ -558,7 +566,7 @@ export default class Spaces extends View {
       .child(div().w(18).flex_none().flex().justify_center()
         .child(s.icon ? div().text_size(13).child(s.icon) : svg("mods/workspace-chrome/folder.svg").size(14)))
       .child(div().flex_1().min_w(0).truncate().child(s.name))
-      .when(needs > 0 || ready > 0, (el) => el.child(countBadge(needs, ready, t.chrome)))
+      .when(needs > 0 || ready > 0, (el) => el.child(spaceCounts(needs, ready)))
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none())
       .when(line, (el) => el.child(this.line(t, "bottom")));
   }
@@ -714,12 +722,12 @@ export default class Spaces extends View {
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)));
   }
 
-  // How many of a space's tasks are at work (the tab bar's engine reads them: shared "inbox.running"), dim with a
+  // How many of a space's tasks are at work (the tab bar's engine reads them: shared "inbox.running"), yellow with a
   // small turning ring, before its red and green counts.
   workingMark(w, t) {
     const n = workingIn(w, shared("inbox.running"));
     if (!n) return null;
-    return h_flex().id(`working-${w.id}`).flex_none().gap(3).items_center().text_size(TEXT.label).text_color(t.dim)
+    return h_flex().id(`working-${w.id}`).flex_none().gap(3).items_center().text_size(TEXT.label).text_color(t.working)
       .child(svg("mods/tasks/merging.svg").size(10).flex_none().spin(1400))
       .child(div().child(n > 9 ? "9+" : String(n)));
   }
@@ -780,7 +788,7 @@ export default class Spaces extends View {
           .when(Boolean(working), (el) => el.child(working))
           // What needs the person in this space (the Inbox's items in its tabs), red, and its
           // tasks in Ready, green.
-          .when(this.needs(w) > 0 || this.readyIn(w) > 0, el => el.child(countBadge(this.needs(w), this.readyIn(w), on ? t.selected : t.chrome))),
+          .when(this.needs(w) > 0 || this.readyIn(w) > 0, el => el.child(spaceCounts(this.needs(w), this.readyIn(w)))),
       );
   }
 
