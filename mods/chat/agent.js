@@ -2,7 +2,7 @@
 // message box, and restarting it with other choices. The log says what it really runs on
 // (log.js `meta`); its arguments and settings fill in what the log doesn't say.
 // Restarting reuses Herdr's own ways: `herdr-task switch` for a task's agent, else the
-// coordinator's restart.sh. The same agent resumes its conversation; another gets a handoff.
+// coordinator's restart.sh. The same agent and launcher resume; another gets a handoff.
 // Either way the new agent starts parked behind this chat (core label herdr.chat).
 // Shared: the source is lib/agent.js; bin/sync-shared copies it into each mod in lib/COPIES.
 // Edit lib/agent.js, never a mod's copy, then run bin/sync-shared.
@@ -42,7 +42,7 @@ export async function restart(t, built, pane) {
     await exec("herdr-app", ["do", "terminal.park", "--terminal", out.terminal]);
     return out.terminal;
   }
-  const env = `HERDR_RESTART_CHAT="$1"${built.resume ? " HERDR_RESTART_RESUME=1" : ""}`;
+  const env = `HERDR_RESTART_CHAT="$1" HERDR_RESTART_RESUME=${built.resume ? "1" : ""}`;
   const r = await exec("sh", ["-c", `${env} bash "$2" "$3" "$4"`, "x", chatLabel(pane), `${appHome()}/mods/coordinator/restart.sh`, t.address, JSON.stringify(built.argv)]);
   const addr = r.stdout.trim().split("\n").pop();
   if (r.code !== 0 || !addr) throw new Error(r.stderr.trim() || "The agent didn't restart.");

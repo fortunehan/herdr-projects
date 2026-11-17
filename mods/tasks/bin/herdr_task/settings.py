@@ -17,6 +17,11 @@ LAUNCHERS = {"direct", "magpie", "cdnd"}
 LAUNCHER_COMMANDS = {"direct": "claude", "magpie": "claude-magpie", "cdnd": "claude-cdnd"}
 
 
+def launcher_of(argv):
+    return next((name for word in (argv or []) for name, command in LAUNCHER_COMMANDS.items()
+                 if name != "direct" and os.path.basename(str(word)) == command), "direct")
+
+
 def merge_worker(parent, own):
     """Apply one worker layer, dropping a model when its agent or launcher changes."""
     out = dict(parent or {})

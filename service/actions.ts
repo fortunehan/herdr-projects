@@ -205,6 +205,11 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     if (!a) throw new Error("That chat isn't here any more.");
     return a;
   };
+  const launcherPick = () => {
+    if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick one of the available agent launchers.");
+    if (b.launcher !== undefined && (typeof b.launcher !== "string" || !Object.hasOwn((AGa as any).LAUNCHER_COMMANDS, b.launcher))) throw new Error("Pick one of the available agent launchers.");
+    return (AGa as any).normalizePick({ agent: b.kind, ...(b.launcher ? { launcher: b.launcher } : {}) });
+  };
   if (b?.type === "answer" && typeof b.question === "string" && b.question.startsWith("scr-")) {
     // a CLI's start screen (service/watch.ts): a tap presses that choice, only on the screen the card was drawn from;
     // "Answer in terminal" just shows the terminal
@@ -376,9 +381,8 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       const on = { kind: menu.current.agent, model: menu.current.model, effort: menu.current.effort, speed: menu.current.fast ? "fast" : "normal" };
       return { ok: true, info: { role: "coordinator", onKnown: false, on, want: on, onWords: "Not started", working: false, clis: await agents.choices(sp.machine ?? null) } };
     }
-    if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick one of the available agent launchers.");
-    const pick = (AGa as any).normalizePick({ agent: b.kind, model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : null,
-      effort: typeof b.effort === "string" && /^[\w-]{1,20}$/.test(b.effort) ? b.effort : null, fast: b.speed === "fast", perm: b.perm });
+    const pick = { ...launcherPick(), model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : null,
+      effort: typeof b.effort === "string" && /^[\w-]{1,20}$/.test(b.effort) ? b.effort : null, fast: b.speed === "fast", perm: b.perm };
     await agents.requireLauncher((AGa as any).argvFor(pick, {}).base, sp.machine ?? null);
     agents.freshPicks.set(b.chat, pick);
     return { ok: true, live: true };
@@ -389,9 +393,8 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     const a = chat(b.chat), reader = compat.reader?.(a);
     if (b.type === "restart-info") return compat.agents.info(a, reader);
     if (b.type === "model-menu") return { ok: true, menu: await (compat.agents as any).menu(a, reader) };
-    if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick one of the available agent launchers.");
     const opt = (v: unknown) => (typeof v === "string" && /^[\w.\[\]-]{1,60}$/.test(v) ? v : undefined);
-    const pick = { kind: b.kind, model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : undefined, effort: opt(b.effort), speed: opt(b.speed), perm: opt(b.perm) };
+    const pick = { kind: (AGa as any).choiceKey(launcherPick()), model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : undefined, effort: opt(b.effort), speed: opt(b.speed), perm: opt(b.perm) };
     // the model menu (live): in place when only the model, level or Fast changes; the restart sheet restarts
     if (b.live === true) return { ok: true, ...(await (compat.agents as any).change(a, reader, pick)) };
     const next = await compat.agents.restart(a, reader, pick);

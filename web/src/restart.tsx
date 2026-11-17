@@ -400,7 +400,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
     setBusy(true)
     setError(null)
     // live: the model, level or Fast change in place (SHEP-181); another agent or permission mode restarts it
-    const r = await act({ type: 'restart', live: true, chat, kind: sel.agent, model: sel.model ?? '', effort: level(sel) ?? '', speed: sel.fast ? 'fast' : 'normal', perm: sel.perm ?? '' } as never).catch((e: Error) => ({ ok: false, error: e.message }))
+    const r = await act({ type: 'restart', live: true, chat, kind: AGc.choiceKey(sel), model: sel.model ?? '', effort: level(sel) ?? '', speed: sel.fast ? 'fast' : 'normal', perm: sel.perm ?? '' } as never).catch((e: Error) => ({ ok: false, error: e.message }))
     setBusy(false)
     if ((r as { ok?: boolean }).ok === false) return setError((r as { error?: string }).error || (restarts ? "The agent didn't restart." : "It didn't switch."))
     close()
@@ -498,7 +498,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
                   {/* a permission mode is set when the agent starts: said before the press too */}
                   {restarts && AGc.agentKey(sel.agent) === AGc.agentKey(data.current.agent) ? (
                     <p className="px-[9px] text-pretty text-[0.71875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">
-                      A new permission mode restarts the agent. The conversation carries on.
+                      {AGc.choiceKey(sel) !== AGc.choiceKey(data.current) ? 'Changing launcher restarts the agent with a handoff from this conversation.' : 'A new permission mode restarts the agent. The conversation carries on.'}
                     </p>
                   ) : null}
                   {/* another machine out of reach: said when a change is chosen, the button still tries */}

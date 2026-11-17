@@ -2819,7 +2819,7 @@ export default class Chat extends View {
     cx.spawn(async (cx) => {
       try {
         const t = JSON.parse((await hc(["get", this.addr, "--json"])).stdout);
-        const built = agent.argvFor(pick, { agent: this.kind, argv: t.foreground?.argv ?? [], session: agent.sessionOf(this.kind, this.path) });
+        const built = agent.argvFor(pick, { agent: this.kind, argv: t.foreground?.argv ?? [], launcher: agent.launcherOf(agent.launchArgv(t)), session: agent.sessionOf(this.kind, this.path) });
         this.swapping = true;
         const next = await agent.restart(t, built, mine);
         this.follow_to(next);
@@ -2849,7 +2849,7 @@ export default class Chat extends View {
         const ref = k?.id != null ? String(k.id) : t.labels?.["herdr.task"];
         const folder = k?.folder ?? t.foreground?.cwd ?? t.cwd;
         if (!ref || !folder) throw new Error("This chat's task wasn't found.");
-        const built = agent.argvFor(pick, { agent: this.kind, argv: t.foreground?.argv ?? [] });
+        const built = agent.argvFor(pick, { agent: this.kind, argv: t.foreground?.argv ?? [], launcher: agent.launcherOf(agent.launchArgv(t)) });
         const on = k?.machine ?? this.machine;
         // The task shown now: the view follows its new agent only while it still shows it (core/thread-bind.js).
         const before = shared("tasks.thread") ?? null;

@@ -127,7 +127,8 @@ class MagpieLauncher(unittest.TestCase):
                 "launcher": "direct", "state": "running"}
         self.layers[2] = {"worker": {"agent": "claude", "model": "sonnet", "effort": "low"}}
         with patch.object(commands, "unarchive"), patch.object(commands, "parent_for", return_value=None), \
-                patch.object(commands, "launch", return_value={}) as run:
+                patch.object(commands, "launch", return_value={}) as run, \
+                patch.object(commands, "handoff", return_value="handoff"):
             commands.start_again(self.store, task, "sp1")
             self.assertEqual(run.call_args.args[2], old)
             self.assertEqual(run.call_args.kwargs["resume"], old + ["--resume", "S1"])
@@ -137,10 +138,36 @@ class MagpieLauncher(unittest.TestCase):
             self.layers[2]["worker"].pop("argv")
             commands.start_again(self.store, task, "sp1", current=True)
             self.assertEqual(run.call_args.args[2][0], "claude")
-            self.assertEqual(run.call_args.kwargs["resume"][-2:], ["--resume", "S1"])
+            self.assertNotIn("resume", run.call_args.kwargs)
+            self.assertEqual(run.call_args.args[4], "handoff")
             task["launcher"] = "magpie"
             commands.start_again(self.store, task, "sp1", current=True)
             self.assertEqual(run.call_args.args[2][:3], ["claude-magpie", "--model", settings.MAGPIE_MODEL])
+
+    def test_switch_resumes_only_within_the_same_launcher(self):
+        for old in settings.LAUNCHERS:
+            for new in settings.LAUNCHERS:
+                with self.subTest(old=old, new=new):
+                    previous = settings.argv_for({"agent": "claude", "launcher": old, "model": "old/model"})
+                    chosen = settings.argv_for({"agent": "claude", "launcher": new, "perm": "auto"})
+                    task = {"id": 1, "title": "Continue work", "prompt": "Keep the task context", "state": "running",
+                            "agents": [{"argv": previous, "agent": "claude", "session": "S1", "log": "/old/session.jsonl"}]}
+                    with patch.object(commands, "unarchive"), patch.object(commands, "parent_for", return_value=None), \
+                            patch.object(commands, "launch", return_value={}) as run, \
+                            patch.object(launch, "instructions", return_value="worker instructions"), \
+                            patch.object(launch, "where_line", return_value="same branch and folder"), \
+                            patch.object(launch, "notes", return_value=""), patch.object(launch, "closing_line", return_value="task commands"), \
+                            patch.object(launch, "settings_block", return_value="task settings"):
+                        _, resumed = commands.start_again(self.store, task, "sp1", argv_json=json.dumps(chosen), current=True)
+                    self.assertEqual(resumed, old == new)
+                    self.assertEqual(run.call_args.args[2], chosen)
+                    if resumed:
+                        self.assertEqual(run.call_args.kwargs["resume"], chosen + ["--resume", "S1"])
+                    else:
+                        self.assertNotIn("resume", run.call_args.kwargs)
+                        text = run.call_args.args[4]
+                        for context in ("APP-1", "Keep the task context", "/old/session.jsonl", "worker instructions", "same branch and folder"):
+                            self.assertIn(context, text)
 
     def test_recovery_and_lost_session_keep_launcher_and_hooks(self):
         argv = launch.magpie_argv(launch.own_argv(["claude-magpie", "--model", "original/model", "--effort", "max"]))

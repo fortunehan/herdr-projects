@@ -13,7 +13,7 @@ import time
 from .base import ENTRY, Fail, git, guard, now, run, STORE, stop_note, VERSION
 from .settings import (
     agent_argv, agent_key, bare, merge_policy, review_limits, set_opts, settings_block, settings_for, space_base,
-    task_settings, worker_argv, worker_pick, worktrees_on, ensure_launcher,
+    task_settings, worker_argv, worker_pick, worktrees_on, ensure_launcher, launcher_of,
 )
 from .agents import (
     accepting, agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
@@ -906,7 +906,7 @@ def last_agent(t):
 
 
 def start_again(s, t, space, key=None, argv_json=None, message=None, parent=None, nudge=None, current=False):
-    """Starts an agent for the task: the last agent's own session when it's the same kind of agent
+    """Starts an agent for the task: the last agent's own session when it's the same agent and launcher
     and the session is known; else a fresh one with a handoff. `message` goes after either; `nudge`
     is a resumed session's first message when no `message` is given (a handoff needs none)."""
     unarchive(s, t)
@@ -919,6 +919,8 @@ def start_again(s, t, space, key=None, argv_json=None, message=None, parent=None
     custom = bool(argv_json or (prev.get("custom_argv") if keep and not key else worker_pick(s, t, space, key).get("argv") == argv))
     extra = {"custom": custom}
     same = prev and agent_key(argv) == prev.get("agent")
+    if same and agent_key(argv) == "claude":
+        same = launcher_of(argv) == (prev.get("launcher") or launcher_of(prev.get("argv")))
     res = resume_argv(argv, prev["session"]) if same and prev.get("session") else None
     if res:
         return launch(s, t, argv, space, message or nudge, parent=parent, resume=res, **extra), True
