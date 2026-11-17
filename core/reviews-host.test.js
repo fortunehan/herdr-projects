@@ -32,7 +32,7 @@ function fixture(native = true, data = "configured-data") {
     try { return await fs[name](p, ...args); }
     catch (e) { throw native ? nativeError(e, verb, relative(root, p)) : e; }
   };
-  const hostFs = { readdir: wrap("readdir", "list"), readFile: wrap("readFile", "read"), realpath: fs.realpath };
+  const hostFs = { readdir: wrap("readdir", "list"), readFile: wrap("readFile", "read") };
   const calls = [];
   const exec = async (cmd, args) => {
     calls.push([cmd, args]);
