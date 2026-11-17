@@ -2,7 +2,7 @@
 # Restarts an agent in its own tab, optionally as another agent. The new one
 # starts beside the old one (same tab labels), gets a short handoff, then the
 # old one ends, so the tab keeps its name and place. A coordinator restarted
-# without an argv runs the assistant template again (edited instructions apply).
+# without an argv keeps its declared launcher and reads the assistant template again.
 # Its workers get herdr.coordinator=<tab> so they stay nested under the new one.
 # Usage: restart.sh <old address> [argv as JSON array]
 # Prints the new agent's address.
@@ -11,6 +11,7 @@
 #                                   (herdr.chat label) instead of getting a pane in the tab.
 #   HERDR_RESTART_RESUME=1          argv resumes the same conversation: no handoff is sent.
 set -u
+set -o pipefail
 old=$1 argv=${2:-}
 # Another machine's agent (<machine>/<address>): this script runs there (its logs, templates and hc are
 # that machine's), carried over hc like any cross-machine command; the new address comes back as
@@ -20,7 +21,7 @@ if [[ "$old" == */* ]]; then
   envs=()
   [ -n "${HERDR_RESTART_CHAT:-}" ] && envs+=(--env "HERDR_RESTART_CHAT=$HERDR_RESTART_CHAT")
   [ -n "${HERDR_RESTART_RESUME:-}" ] && envs+=(--env "HERDR_RESTART_RESUME=1")
-  out=$(hc exec --on "$on" --stdin --timeout 300 ${envs[@]+"${envs[@]}"} -- bash -s "$here" "$argv" <"$0" 2>/dev/null)
+  out=$(hc exec --on "$on" --stdin --timeout 300 ${envs[@]+"${envs[@]}"} -- bash -s "$here" "$argv" <"$0")
   code=$?
   new=$(tail -n 1 <<<"$out")
   if [ "$code" -ne 0 ] || [ -z "$new" ]; then
@@ -39,7 +40,14 @@ login_command() {
   local body=$1
   printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
 }
+info=$(hc get "$old" --json) || exit 1
+get() { jq -r "$1 // empty" <<<"$info"; }
+[ -n "$argv" ] || argv=$(get '.labels["herdr.launcher.argv"]')
 if [ -n "$argv" ]; then
+  if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' <<<"$argv" >/dev/null; then
+    echo "The launch command is invalid; the previous agent was kept." >&2
+    exit 1
+  fi
   command=$(jq -r '.[0] // empty' <<<"$argv")
   case $(basename "$command") in
     claude-magpie|claude-cdnd)
@@ -49,16 +57,109 @@ if [ -n "$argv" ]; then
       fi ;;
   esac
 fi
-info=$(hc get "$old" --json) || exit 1
-get() { jq -r "$1 // empty" <<<"$info"; }
 space=$(get '.labels["herdr.space"]') tab=$(get '.labels["herdr.tab"]') role=$(get '.labels["herdr.role"]')
 # Assistants start from the assistant template (earlier ones from "coordinator").
 case $(get .template) in assistant|coordinator) role=coordinator ;; esac
 cwd=$(get .cwd) app=$(get .status.app) pid=$(get .foreground.pid) created=$(get .created_ms)
-# A parked agent (behind a chat) has no tab labels: the chat names where it goes instead.
-# A coordinator in Chat mode says where it lives in its own labels (its workers name that tab).
-[ -n "$tab" ] || tab=$(get '.labels["herdr.coordinator.tab"]')
-[ -n "$space" ] && [ -n "$tab" ] || [ -n "${HERDR_RESTART_CHAT:-}" ] || [ -n "$(get '.labels["herdr.chat"]')" ] || exit 1
+chat=${HERDR_RESTART_CHAT:-$(get '.labels["herdr.chat"]')}
+chat=${chat##*/}
+if [ "$role" = coordinator ]; then
+  identity_code=$(cat <<'PY_IDENTITY'
+# ---- ASSISTANT IDENTITY ----
+"""Assistant identity shared by recipient lookup and the standalone restart script."""
+import json
+import os
+
+
+class IdentityError(ValueError):
+    pass
+
+
+def local_id(value):
+    return value if isinstance(value, str) and value and "/" not in value else None
+
+
+def saved_chats():
+    """Current local layout and slots only; historical backups cannot establish ownership."""
+    def read(path):
+        try:
+            with open(path) as f:
+                value = json.load(f)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    home = os.path.expanduser("~")
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local/state")
+    session = os.environ.get("HC_SESSION") or "default"
+    docs = read(os.path.join(state, "herdr-core", session, "docs.json"))
+    app = os.environ.get("HERDR_APP_HOME") or os.path.join(home, ".config/herdr-app")
+    slots = read(os.path.join(app, "shared.json")).get("coordinator.slots") or {}
+    rows = []
+    if isinstance(slots, dict):
+        for slot, rec in slots.items():
+            if isinstance(rec, dict) and all(local_id(rec.get(k)) for k in ("space", "tab", "pane")):
+                rows.append({**rec, "slot": slot})
+
+    def visit(node, space, tab):
+        if not isinstance(node, dict):
+            return
+        content = node.get("content") or {}
+        props = content.get("props") or {}
+        if content.get("mod") == "chat" and props.get("role") == "coordinator" and local_id(node.get("id")):
+            rows.append({"space": space, "tab": tab, "pane": node["id"], "slot": props.get("slot")})
+        for child in node.get("children") or []:
+            visit(child, space, tab)
+
+    for space in ((docs.get("herdr-app") or {}).get("value") or {}).get("spaces") or []:
+        if not local_id(space.get("id")) or space.get("machine"):
+            continue
+        for tab in space.get("tabs") or []:
+            if local_id(tab.get("id")):
+                visit(tab.get("root"), space["id"], tab["id"])
+    return rows
+
+
+def assistant_identity(record, mappings=None):
+    labels = record.get("labels") or {}
+    out = {}
+    for name in ("space", "tab"):
+        values = {labels[k] for k in (f"herdr.coordinator.{name}", f"herdr.{name}") if labels.get(k)}
+        if len(values) > 1 or any(not local_id(v) for v in values):
+            raise IdentityError(f"conflicting or nonlocal Assistant {name} labels")
+        out[name] = next(iter(values), None)
+    if all(out.values()):
+        return out
+    chat = str(labels.get("herdr.chat") or "").rsplit("/", 1)[-1]
+    slot = labels.get("herdr.chat.slot")
+    origin = labels.get("herdr.chat.origin") or ""
+    if origin.startswith("slot:"):
+        if slot and slot != origin[5:]:
+            raise IdentityError("conflicting Assistant slot labels")
+        slot = origin[5:]
+    matches = [r for r in (saved_chats() if mappings is None else mappings)
+               if (chat and r.get("pane") == chat) or (slot and r.get("slot") == slot)]
+    identities = {(r["space"], r["tab"]) for r in matches}
+    if len(identities) != 1:
+        raise IdentityError("Assistant chat mapping is ambiguous" if identities else "Assistant chat mapping is missing")
+    space, tab = next(iter(identities))
+    if any((out[k] and out[k] != v) for k, v in (("space", space), ("tab", tab))):
+        raise IdentityError("Assistant labels disagree with its saved chat")
+    if any((chat and r.get("pane") != chat) or (slot and r.get("slot") and r["slot"] != slot) for r in matches):
+        raise IdentityError("Assistant chat and slot mappings disagree")
+    return {"space": space, "tab": tab}
+# ---- end ASSISTANT IDENTITY ----
+import sys
+try:
+    print(json.dumps(assistant_identity(json.load(sys.stdin))))
+except IdentityError as e:
+    sys.exit(str(e) + "; the previous Assistant was kept.")
+PY_IDENTITY
+)
+  identity=$(printf '%s' "$info" | python3 -c "$identity_code") || exit 1
+  space=$(jq -r .space <<<"$identity") tab=$(jq -r .tab <<<"$identity")
+fi
+[ -n "$space" ] && [ -n "$tab" ] || [ -n "$chat" ] || exit 1
 
 # What the previous agent did: its screen, and its session log when we can find it.
 dir=${HERDR_APP_HOME:-$HOME/.config/herdr-app}/data/coordinator/handoff
@@ -86,7 +187,6 @@ if [ "$role" = coordinator ]; then
   if [ -n "$workers" ]; then
     list=""
     for w in $workers; do
-      hc label "$w" "herdr.coordinator=$tab" >/dev/null 2>&1
       list+=" $w ($(hc get "$w" --json | jq -r '.name // .labels.where // ""'))"
     done
     handoff+=" Workers the previous coordinator started, still running:$list. They report to $old: watch each with hc wait <t> and tell each to report to you from now on."
@@ -94,26 +194,26 @@ if [ "$role" = coordinator ]; then
 fi
 
 labels=(--label "herdr.space=$space" --label "herdr.tab=$tab")
-[ "$role" = coordinator ] && labels+=(--label herdr.role=coordinator)
 # An agent in Chat mode (parked behind a chat pane) restarts parked behind the same chat.
-chat=${HERDR_RESTART_CHAT:-$(get '.labels["herdr.chat"]')}
-# The label holds the pane as its own machine names it, never a window's "<machine>/<pane>" (#761).
-chat=${chat##*/}
 if [ -n "$chat" ]; then
   origin=$(get '.labels["herdr.chat.origin"]'); origin=${origin:-$old}
   labels=(--keep --label "herdr.chat=$chat" --label "herdr.chat.origin=$origin")
-  # What a coordinator chat finds its agent by (mods/chat), and where the coordinator lives.
-  for k in herdr.chat.slot herdr.coordinator.space herdr.coordinator.tab; do
-    v=$(get ".labels[\"$k\"]"); [ -n "$v" ] && labels+=(--label "$k=$v")
-  done
-  [ "$role" = coordinator ] && labels+=(--label herdr.role=coordinator)
+  slot=$(get '.labels["herdr.chat.slot"]')
+  [ -n "$slot" ] && labels+=(--label "herdr.chat.slot=$slot")
 fi
-if [ -n "$argv" ]; then labels+=(--label "herdr.launcher.argv=$argv"); fi
+if [ "$role" = coordinator ]; then
+  labels+=(--label herdr.role=coordinator --label "herdr.coordinator.space=$space" --label "herdr.coordinator.tab=$tab")
+fi
+# Worker association survives even when the replacement no longer has a parent.
+for k in herdr.coordinator herdr.agent; do
+  v=$(get ".labels[\"$k\"]"); [ -n "$v" ] && labels+=(--label "$k=$v")
+done
+[ -n "$argv" ] && labels+=(--label "herdr.launcher.argv=$argv")
 # The new agent never inherits a parent Claude Code session's markers the holder may carry (SHEP-86):
 # the same line as core/clean-env.js CLEAN_ENV (test_repo keeps them equal).
 clean='for v in $(env | sed -nE '"'"'s/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A-Za-z0-9_]+)=.*/\1/p'"'"' | grep -vE '"'"'^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'"'"'); do unset "$v"; done;'
 tpl=$HOME/.config/herdr-core/templates/assistant.md
-# A coordinator restarted without an argv: the assistant template's own command and words.
+# Without a declared launcher, use the assistant template's command.
 own=""
 [ -z "$argv" ] && [ "$role" = coordinator ] && own=$(awk '/^---[[:space:]]*$/ {f++; next} f == 1 && sub(/^command:[ \t]*/, "") {print; exit}' "$tpl" 2>/dev/null)
 # argv's words into cmd. A read loop, not mapfile: macOS's /bin/bash is 3.2, which has no mapfile (#736).
@@ -121,9 +221,9 @@ argv_cmd() { local a; cmd=(); while IFS= read -r a; do cmd+=("$a"); done < <(jq 
 if [ -n "${HERDR_RESTART_RESUME:-}" ] && [ -n "$argv" ]; then
   argv_cmd
   [ ${#cmd[@]} -gt 0 ] || exit 1
-  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(agent_key "${cmd[0]}")" -- sh -c "$(login_command "$clean $agent_path"' exec "$@"')" herdr-clean "${cmd[@]}" | jq -r '.address // empty')
+  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(agent_key "${cmd[0]}")" -- sh -c "$(login_command "$clean $agent_path"' exec "$@"')" herdr-clean "${cmd[@]}" | jq -r '.address // empty') || exit 1
 elif [ -z "$argv" ] && [ "$role" = coordinator ] && [ -z "$own" ]; then
-  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address)
+  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address) || exit 1
 else
   if [ -n "$own" ]; then
     own=${own#exec }
@@ -138,7 +238,7 @@ else
   fi
   msg=$handoff
   if [ "$role" = coordinator ]; then
-    body=$(awk 'f>=2 {print} /^---[[:space:]]*$/ {f++}' "$tpl")
+    body=$(awk 'f>=2 {print} /^---[[:space:]]*$/ {f++}' "$tpl") || exit 1
     msg="$body"$'\n\n'"$handoff"
   fi
   # hc delivers a template's first message once the agent is ready, so the
@@ -146,17 +246,37 @@ else
   one=herdr-handoff-$$
   file=$HOME/.config/herdr-core/templates/$one.md
   { printf -- '---\nname: %s\ndescription: A one-off Herdr handoff, removed after use.\ncommand: %s\n---\n' "$one" "$(login_command "$clean $agent_path exec $line")"
-    printf '%s\n' "$msg"; } >"$file"
+    printf '%s\n' "$msg"; } >"$file" || exit 1
   out=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$key" "$one")
+  code=$?
   rm -f "$file"
+  [ "$code" -eq 0 ] || exit 1
   new=$(jq -r '.address // empty' <<<"$out")
   # Some agents (Codex's animated start) never settle for hc: send once it reports a status.
   if [ -n "$new" ] && [ "$(jq -r '.first_message.sent' <<<"$out")" = false ]; then
     hc wait "$new" --timeout 90 >/dev/null 2>&1
-    hc send "$new" "$msg" >/dev/null 2>&1
+    if ! hc send "$new" "$msg" >/dev/null 2>&1; then
+      echo "The handoff didn't reach the replacement; the previous Assistant was kept ($new was left for inspection)." >&2
+      exit 1
+    fi
   fi
 fi
-[ -n "$new" ] || exit 1
+[ -n "$new" ] && [ "$new" != null ] && [ "$new" != "$old" ] || exit 1
+if [ "$role" = coordinator ]; then
+  replacement=$(hc get "$new" --json) || replacement='{}'
+  route=$(printf '%s' "$replacement" | python3 -c "$identity_code" 2>/dev/null) || route=''
+  if [ "$route" != "$identity" ] || ! jq -e --arg space "$space" --arg tab "$tab" --arg chat "$chat" --arg origin "${origin:-}" --arg slot "${slot:-}" '
+    .state == "live" and .labels["herdr.role"] == "coordinator"
+    and .labels["herdr.coordinator.space"] == $space and .labels["herdr.coordinator.tab"] == $tab
+    and (if $chat != "" then .labels["herdr.chat"] == $chat and .labels["herdr.chat.origin"] == $origin
+           and (if $slot != "" then .labels["herdr.chat.slot"] == $slot else true end)
+         else .labels["herdr.space"] == $space and .labels["herdr.tab"] == $tab end)
+  ' <<<"$replacement" >/dev/null; then
+    echo "The replacement Assistant has no verified route; the previous Assistant was kept ($new was left for inspection)." >&2
+    exit 1
+  fi
+  for w in $workers; do hc label "$w" "herdr.coordinator=$tab" >/dev/null 2>&1; done
+fi
 hc kill "$old" >/dev/null 2>&1
 hc rm "$old" >/dev/null 2>&1
 echo "$new"
