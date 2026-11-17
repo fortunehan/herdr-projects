@@ -13,7 +13,7 @@
 // when two machines have a space of that name.
 // "Needs you" lists everything that needs the person (inbox.js), here or not.
 // This space (the filter row's first chip, remembered by this panel): only the shown space's tasks, automations and
-// Needs you (core/tasks.js inSpace); it follows the space picked. The tab bar's counts still cover every space.
+// Needs you (core/tasks.js inSpace); it follows the space picked. The bottom status bar's totals still cover every space.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";

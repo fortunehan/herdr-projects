@@ -1,4 +1,5 @@
 import { attentionCounts } from './attention.ts'
+import { TaskStatusBar } from './TaskStatusBar.tsx'
 // The layout: places | coordinator chat | tasks or artifacts on a desktop (sidebars resize, places hides), and an open
 // task's side panel after them (focus hides places and the chat, for the task); chat | tasks or artifacts with places in a drawer on a tablet; one column with a
 // Chat | Tasks | Artifacts switch on a phone, where a task's panel items open as sheets. Every part inside comes from a
@@ -108,6 +109,7 @@ export default function App() {
         ))}
         {search && registry.views.search ? <registry.views.search onClose={() => setUI({ search: false })} /> : null}
       </div>
+      <TaskStatusBar snap={snap} />
     </div>
   )
 }

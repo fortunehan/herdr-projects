@@ -41,6 +41,7 @@ import { toast, toastWho as whoOf } from "./ui.js";
 import { exec, appHome, home, focused, shared, setShared, watchFolder, readTextFile, writeTextFile, playSound, settings, run, layout } from "herdr";
 import { terminals, agents, panes, spaces } from "./live.js";
 import { chatPane } from "./core/spaces.js";
+import { taskCounts } from "./core/task-counts.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 export const ASKS = () => `${appHome()}/data/chat-asks`;
@@ -234,11 +235,13 @@ function readTasks() {
 async function readTasksNow() {
   const r = await exec("sh", ["-c", SH + 'ls "$SHEP_TASKS/.remote" 2>/dev/null; true']).catch(() => null);
   const where = [null, ...(r?.stdout ?? "").split("\n").filter(Boolean)];
-  const tasks = [], autos = [], running = [];
+  const tasks = [], autos = [], running = [], statuses = [];
   for (const machine of where) {
     const on = machine ? ["--on", machine] : [];
     const list = await json(CLI(), [...on, "list", "--all", "--json"]);
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
+      // Derived by herdr-task, including Ready work on checks, helpers, or a resumed turn.
+      statuses.push({ key: JSON.stringify([machine, g.folder, x.ref ?? `#${x.id}`]), status: x.status, archived: Boolean(x.archived) });
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
       // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
       if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
@@ -265,6 +268,7 @@ async function readTasksNow() {
   }
   put("inbox.tasks", tasks);
   put("inbox.running", running);
+  put("inbox.statuses", statuses);
   put("inbox.autos", autos);
   await readRetries();
 }
@@ -322,6 +326,7 @@ export function items() {
 }
 
 export const count = () => items().length;
+export const statusCounts = () => taskCounts(items(), shared("inbox.statuses") ?? []);
 
 // The tab an item is in, for the red counts on tabs and spaces: its agent's (where its chat
 // shows it, else its pane), or its task's. Task agents have no tab (herdr-task runs them with no
