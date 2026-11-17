@@ -826,6 +826,58 @@ class Install(unittest.TestCase):
         self.assertEqual(tree(self.root), self.before)
 
 
+    def test_cdnd_launcher_link_replaces_legacy_copy_and_uninstall_restores_it(self):
+        for web in (False, True):
+            with self.subTest(web=web), tempfile.TemporaryDirectory(prefix="shepherdr-cdnd-") as root:
+                options = ["--web", "--force"] if web else []
+                run("install", "--root", root, "--yes", *options)
+                link = os.path.join(root, ".local/bin/claude-cdnd")
+                base = ".local/share/shepherdr" if web else APP
+                target = os.path.join(root, base, "bin/claude-launchers/claude-cdnd")
+                self.assertTrue(os.path.islink(link))
+                self.assertEqual(os.path.realpath(link), os.path.realpath(target))
+                self.assertTrue(os.access(link, os.X_OK))
+                with open(os.path.join(ROOT, "bin/claude-launchers/claude-cdnd"), "rb") as f:
+                    expected = f.read()
+                with open(link, "rb") as f:
+                    self.assertEqual(f.read(), expected)
+
+                os.unlink(link)
+                legacy = "#!/bin/zsh\nexit 42\n"
+                with open(link, "w") as f:
+                    f.write(legacy)
+                os.chmod(link, 0o755)
+                record = os.path.join(root, base, "installed.json" if web else "data/shepherdr/installed.json")
+                with open(record) as f:
+                    rec = json.load(f)
+                rec["links"].pop("claude-cdnd")
+                with open(record, "w") as f:
+                    json.dump(rec, f)
+                config = os.path.join(root, ".config/shepherdr/claude-cdnd.env")
+                os.makedirs(os.path.dirname(config), exist_ok=True)
+                with open(config, "w") as f:
+                    f.write("# dedicated config stays untouched\n")
+                os.chmod(config, 0o600)
+
+                run("update", "--root", root, *options)
+                self.assertTrue(os.path.islink(link))
+                self.assertEqual(os.path.realpath(link), os.path.realpath(target))
+                with open(link, "rb") as f:
+                    self.assertEqual(f.read(), expected)
+                with open(record) as f:
+                    rec = json.load(f)
+                saved = (os.path.join(rec["backups"][-1], ".local/bin/claude-cdnd") if web
+                         else rec["replaced"][".local/bin/claude-cdnd"])
+                with open(saved) as f:
+                    self.assertEqual(f.read(), legacy)
+                run("uninstall", "--root", root)
+                self.assertFalse(os.path.islink(link))
+                with open(link) as f:
+                    self.assertEqual(f.read(), legacy)
+                with open(config) as f:
+                    self.assertEqual(f.read(), "# dedicated config stays untouched\n")
+                self.assertFalse(os.path.exists(os.path.join(root, ".zshenv")))
+
     def test_statusline_helper_linked(self):
         """The agents' status line wrapper lands in the app's bin/ and is linked from .local/bin, where their
         --settings statusLine runs it; a web-only install links its own copy."""
