@@ -10,6 +10,7 @@ The Magpie wrapper requires a private Magpie build with
 `2071195ff4c7076dc79820502e0f1f80378b9660`. It invokes the helper after
 `agent.ClaudeLaunch` refreshes the gateway address and authentication.
 The public Magpie binary does not support this integration variable.
+Apply the patch to that source revision with `git apply --unidiff-zero`.
 
 `SHEPHERDR_CLAUDE_LAUNCHERS` selects the directory containing the helper and
 the private `magpie` executable. Its default is

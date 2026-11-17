@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -113,6 +115,39 @@ sys.exit(7)
             self.assertEqual(data["proxy"], "fixture-proxy")
             self.assertFalse(data["fast"])
             self.assertFalse(Path(data["path"]).exists())
+
+    def test_termination_reaches_child_and_removes_private_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base.json"
+            base.write_text(json.dumps(BASE))
+            marker = root / "started"
+            capture = root / "wait.py"
+            capture.write_text('''import pathlib,sys,time
+args=sys.argv[1:]
+pathlib.Path(__file__).with_name('started').write_text(args[args.index('--settings')+1])
+time.sleep(30)
+''')
+            child = root / "claude"
+            child.write_text("#!/bin/sh\nexec " + sys.executable + " " + str(capture) + ' "$@"\n')
+            child.chmod(0o700)
+            proc = subprocess.Popen([sys.executable, str(SCRIPT), "magpie", "--base", str(base), "--", str(child)],
+                                    env=dict(os.environ), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    start_new_session=True)
+            try:
+                deadline = time.monotonic() + 5
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(marker.exists())
+                path = Path(marker.read_text())
+                self.assertTrue(path.exists())
+                proc.terminate()
+                self.assertEqual(proc.wait(timeout=5), 128 + signal.SIGTERM)
+                self.assertFalse(path.exists())
+            finally:
+                if proc.poll() is None:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
 
     @unittest.skipUnless(shutil.which("zsh"), "Cdnd launcher requires zsh")
     def test_cdnd_launcher_pins_route_with_bare_file_and_equals_settings(self):
