@@ -64,7 +64,7 @@ cwd=$(get .cwd) app=$(get .status.app) pid=$(get .foreground.pid) created=$(get 
 chat=${HERDR_RESTART_CHAT:-$(get '.labels["herdr.chat"]')}
 chat=${chat##*/}
 if [ "$role" = coordinator ]; then
-  identity_code=$(cat <<'PY_IDENTITY'
+  IFS= read -r -d '' identity_code <<'PY_IDENTITY' || :
 # ---- ASSISTANT IDENTITY ----
 """Assistant identity shared by recipient lookup and the standalone restart script."""
 import json
@@ -155,7 +155,6 @@ try:
 except IdentityError as e:
     sys.exit(str(e) + "; the previous Assistant was kept.")
 PY_IDENTITY
-)
   identity=$(printf '%s' "$info" | python3 -c "$identity_code") || exit 1
   space=$(jq -r .space <<<"$identity") tab=$(jq -r .tab <<<"$identity")
 fi
