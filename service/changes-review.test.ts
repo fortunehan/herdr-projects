@@ -87,7 +87,8 @@ async function fixture() {
     await fs.mkdir(join(path, ".."), { recursive: true }); await fs.writeFile(path, text);
   };
   const bindings = { exec, hc, writeTextFile, openOverlay: (value: any) => { (state.overlays ??= []).push(value); return "fixture-overlay"; }, panes: () => state.panes, terminals: () => state.terminals,
-    spaces: () => [{ id: "workspace", machine: null, tabs: (state.tabCount === 2 ? [{ id: "source-tab" }] : []).concat([{ id: "review-tab" }]) }], fs,
+    spaces: () => [{ id: "workspace", machine: null, tabs: (state.tabCount === 2 ? [{ id: "source-tab" }] : []).concat([{ id: "review-tab" }]) }],
+    fs: { readFile: fs.readFile, readdir: fs.readdir },
     dirsReady: async () => ({ reviews: data }), DEFAULTS, menuFor, parseDefaults, sessionOf, FIND, Conversation, cleanCommand,
     ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey, chatPane, capture, ReviewLaunchBridge,
     shared: (key: string) => state.shared?.[key], setShared: (key: string, value: unknown) => { (state.shared ??= {})[key] = value; } };
