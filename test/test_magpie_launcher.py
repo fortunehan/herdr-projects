@@ -212,7 +212,8 @@ class MagpieLauncher(unittest.TestCase):
 
     def test_reviewer_does_not_use_worker_launcher(self):
         self.layers[2] = {"worker": {"agent": "claude", "launcher": "magpie"}}
-        self.assertEqual(settings.reviewer_command("claude", "sonnet", "high"), "claude --permission-mode plan --model sonnet --effort high")
+        self.assertEqual(shlex.split(settings.reviewer_command("claude", "sonnet", "high")),
+                         launch.clean_env(["claude", "--permission-mode", "plan", "--model", "sonnet", "--effort", "high"]))
 
     def test_cdnd_settings_and_reviewer_commands(self):
         for role in ("coordinator", "worker", "reviewer"):
@@ -221,7 +222,8 @@ class MagpieLauncher(unittest.TestCase):
             argv = settings.argv_for(pick)
             self.assertEqual(argv[:5], ["claude-cdnd", "--model", "custom/model", "--effort", "max"])
             self.assertEqual(settings.agent_key(argv), "claude")
-        self.assertEqual(settings.reviewer_command("claude", "custom/model", "high", launcher="cdnd"), "claude-cdnd --permission-mode plan --model custom/model --effort high")
+        self.assertEqual(shlex.split(settings.reviewer_command("claude", "custom/model", "high", launcher="cdnd")),
+                         launch.clean_env(["claude-cdnd", "--permission-mode", "plan", "--model", "custom/model", "--effort", "high"]))
         self.assertIn("--model copilot/claude-sonnet-5.5", settings.reviewer_command("claude", launcher="magpie"))
         self.assertTrue(launch.helper_hc(["hc", "run", "--bg", "--name", "shep-1-review", "--label", "herdr.agent=claude", "--",
                                          "claude-magpie", "--permission-mode", "plan", "--model", "copilot/claude-sonnet-5.5", "--effort", "high", "Review it"]))
