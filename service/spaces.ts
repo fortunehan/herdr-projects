@@ -11,7 +11,7 @@ import { HOME } from "./paths.ts";
 import { exec } from "./model.ts";
 import * as NS from "../core/newspace.js";
 import * as SP from "../core/spaces.js";
-import { cleanCommand } from "../core/clean-env.js";
+import { cleanCommand, commandCheck } from "../core/clean-env.js";
 import * as AG from "../core/agents.js";
 import { rolePick } from "../core/settings.js";
 import { readSettings } from "./settings.ts";
@@ -78,7 +78,7 @@ export async function execTemplate(hub: Hub, name: string, machine: string | nul
   if (pick?.agent || pick?.argv?.length) {
     argv = pick.argv?.length ? pick.argv : (AG as any).argvFor(pick, {}).base;
     if (/^claude-(magpie|cdnd)$/.test(String(argv?.[0]).split("/").pop() ?? "")) {
-      const check = await exec(hub, ["sh", "-c", 'command -v "$1" >/dev/null 2>&1', "launcher", argv![0]], machine);
+      const check = await exec(hub, ["sh", "-c", commandCheck(argv![0])], machine);
       if (check.code !== 0) throw new Error(`Cannot start: ${argv![0]} is not installed on this machine.`);
     }
     cmd = argv!.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ");

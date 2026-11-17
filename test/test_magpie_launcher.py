@@ -3,6 +3,7 @@ import home_guard  # noqa: F401
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -110,7 +111,9 @@ class MagpieLauncher(unittest.TestCase):
             record = launch.launch(self.store, task, argv, "sp1")
             cmd = run.call_args.args[0]
             self.assertIn("herdr.agent=claude", cmd)
-            self.assertIn(launch.CLEAN_ENV + ' exec "$@"', cmd)
+            shell = cmd[cmd.index("-c") + 1]
+            self.assertIn(launch.CLEAN_ENV, shell)
+            self.assertIn(launch.AGENT_PATH, shell)
             self.assertIn("low", cmd)
             self.assertIn("herdr-magpie", cmd)
             self.assertEqual((record["agent"], record["launcher"], record["argv"]), ("claude", "magpie", argv))
@@ -195,7 +198,7 @@ class MagpieLauncher(unittest.TestCase):
         self.assertIn("--model copilot/claude-sonnet-5.5", settings.reviewer_command("claude", launcher="magpie"))
         self.assertTrue(launch.helper_hc(["hc", "run", "--bg", "--name", "shep-1-review", "--label", "herdr.agent=claude", "--",
                                          "claude-magpie", "--permission-mode", "plan", "--model", "copilot/claude-sonnet-5.5", "--effort", "high", "Review it"]))
-        with patch.object(settings.shutil, "which", return_value=None):
+        with patch.object(settings, "run", return_value=SimpleNamespace(returncode=1)):
             for command in ("claude-magpie", "claude-cdnd"):
                 with self.assertRaisesRegex(Fail, "is not installed"):
                     settings.ensure_launcher([command])
@@ -209,7 +212,7 @@ class MagpieLauncher(unittest.TestCase):
                 patch.object(commands, "live_agents", return_value=[{"address": "t1", "labels": {}}]), \
                 patch.object(commands, "detail", side_effect=lambda x: x), patch.object(commands, "agent_running", return_value=True), \
                 patch.object(commands, "refresh_sessions"), patch.object(commands, "default_space", return_value="sp1"), \
-                patch.object(commands, "worker_argv", return_value=["claude-cdnd"]), patch.object(settings.shutil, "which", return_value=None), \
+                patch.object(commands, "worker_argv", return_value=["claude-cdnd"]), patch.object(settings, "run", return_value=SimpleNamespace(returncode=1)), \
                 patch.object(commands, "end_agent") as end:
             with self.assertRaisesRegex(Fail, "claude-cdnd is not installed"):
                 commands.cmd_switch(args)
@@ -222,6 +225,21 @@ class MagpieLauncher(unittest.TestCase):
         with patch.object(revive, "session_of", return_value=("S1", "log")):
             record = revive.record_of(terminal)
         self.assertEqual((record["kind"], record["argv"]), ("claude", argv))
+
+    def test_launcher_probe_uses_login_path_without_starting_a_worker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            marker = root / "started"
+            (root / "claude-cdnd").write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\n")
+            (root / "claude-cdnd").chmod(0o755)
+            shell = root / "login-shell"
+            shell.write_text("#!/bin/sh\nPATH=" + shlex.quote(folder) + ':"$PATH"; export PATH\nshift\nexec /bin/sh -c "$@"\n')
+            shell.chmod(0o755)
+            with patch.dict(os.environ, {"SHELL": str(shell), "PATH": "/usr/bin:/bin"}):
+                settings.ensure_launcher(["claude-cdnd"])
+                with self.assertRaisesRegex(Fail, "is not installed"):
+                    settings.ensure_launcher([str(root / "missing" / "claude-cdnd")])
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

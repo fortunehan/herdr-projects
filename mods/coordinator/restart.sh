@@ -33,11 +33,17 @@ if [[ "$old" == */* ]]; then
   exit 0
 fi
 agent_key() { case "$(basename "$1")" in claude-magpie|claude-cdnd) echo claude ;; *) basename "$1" ;; esac; }
+agent_path='PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
+login='if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '"'"'^SHELL='"'"'; then exec "$SHELL" -lc '"'"'exec "$@"'"'"' herdr-login sh -c'
+login_command() {
+  local body=$1
+  printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
+}
 if [ -n "$argv" ]; then
   command=$(jq -r '.[0] // empty' <<<"$argv")
   case $(basename "$command") in
     claude-magpie|claude-cdnd)
-      if ! command -v "$command" >/dev/null 2>&1; then
+      if ! sh -c "$(login_command "$agent_path"' command -v "$1" >/dev/null 2>&1')" launcher "$command"; then
         echo "Cannot start: $(basename "$command") is not installed on this machine." >&2
         exit 127
       fi ;;
@@ -106,12 +112,6 @@ if [ -n "$argv" ]; then labels+=(--label "herdr.launcher.argv=$argv"); fi
 # The new agent never inherits a parent Claude Code session's markers the holder may carry (SHEP-86):
 # the same line as core/clean-env.js CLEAN_ENV (test_repo keeps them equal).
 clean='for v in $(env | sed -nE '"'"'s/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A-Za-z0-9_]+)=.*/\1/p'"'"' | grep -vE '"'"'^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'"'"'); do unset "$v"; done;'
-agent_path='PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
-login='if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '"'"'^SHELL='"'"'; then exec "$SHELL" -lc '"'"'exec "$@"'"'"' herdr-login sh -c'
-login_command() {
-  local body=$1
-  printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
-}
 tpl=$HOME/.config/herdr-core/templates/assistant.md
 # A coordinator restarted without an argv: the assistant template's own command and words.
 own=""

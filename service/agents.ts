@@ -11,6 +11,7 @@ import { SH } from "../core/paths.js";
 import { sh } from "./model.ts";
 import { layoutScript } from "./layout-scripts.ts";
 import * as AG from "../core/agents.js";
+import { commandCheck } from "../core/clean-env.js";
 import { chatLabel } from "../core/spaces.js";
 import { kindOf } from "../core/chat-reader.js";
 import * as LS from "../core/live-switch.js";
@@ -124,7 +125,7 @@ export class Agents {
 
   async requireLauncher(argv: string[], machine: string | null) {
     if (!/^claude-(magpie|cdnd)$/.test(String(argv[0]).split("/").pop() ?? "")) return;
-    const r = await sh(this.hub, 'command -v "$1" >/dev/null 2>&1', ["launcher", argv[0]], machine);
+    const r = await sh(this.hub, commandCheck(argv[0]), [], machine);
     if (r.code !== 0) throw new Error(`Cannot start: ${argv[0]} is not installed on this machine.`);
   }
 

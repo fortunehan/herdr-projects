@@ -28,7 +28,7 @@ core/person.js: chat shepherdr-settings tabs-tasks
 core/spaces.js: chat spaces-chat shepherdr-settings jump pane-chat tasks newspace coordinator menu-tasks new-menu-tasks tabs-tasks workspace-status-chat changes-review
 core/autopilot.js: pane-chat shepherdr-settings
 core/chat-reader.js: chat
-core/clean-env.js: chat changes-review tabs-tasks
+core/clean-env.js: chat changes-review tabs-tasks newspace shepherdr-settings
 core/worktree.js: task-pr
 core/recipe.js: artifacts chat
 core/task-artifacts.js: chat task-artifacts

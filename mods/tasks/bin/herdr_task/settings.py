@@ -7,7 +7,7 @@ import re
 import shlex
 import shutil
 
-from .base import Fail, git, HOME, MAX_RUNNING, WHERE
+from .base import Fail, git, HOME, MAX_RUNNING, WHERE, run
 
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
@@ -603,8 +603,11 @@ def agent_key(argv):
 
 def ensure_launcher(argv):
     command = argv[0] if argv else ""
-    if os.path.basename(command) in ("claude-magpie", "claude-cdnd") and not shutil.which(command):
-        raise Fail(f"Cannot start: {os.path.basename(command)} is not installed on this machine.")
+    if os.path.basename(command) in ("claude-magpie", "claude-cdnd"):
+        from .launch import AGENT_PATH, login_command
+        check = login_command(AGENT_PATH + " command -v " + shlex.quote(command) + " >/dev/null 2>&1")
+        if run(["sh", "-c", check]).returncode:
+            raise Fail(f"Cannot start: {os.path.basename(command)} is not installed on this machine.")
 
 
 def bare(i):

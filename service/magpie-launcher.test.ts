@@ -52,7 +52,7 @@ test("task and Assistant changes preflight a missing launcher on the target mach
     await expect(agents.restart("vm/t1", {}, { kind: "claude-cdnd", model: "sonnet" })).rejects.toThrow("claude-cdnd is not installed");
   }
   expect(hub.calls).toHaveLength(2);
-  expect(hub.calls.every((c) => c.on === "vm" && c.argv.includes('command -v "$1" >/dev/null 2>&1'))).toBe(true);
+  expect(hub.calls.every((c) => c.on === "vm" && c.argv.some((a) => a.includes("command -v")))).toBe(true);
 });
 
 test("Assistant one-off templates use the chosen wrapper and keep the Claude session environment clean", async () => {
@@ -67,7 +67,7 @@ test("Assistant one-off templates use the chosen wrapper and keep the Claude ses
     expect(write.on).toBe("vm");
     tpl.done();
   }
-  const missing = fakeHub((argv) => argv[2]?.startsWith("command -v") ? { code: 1 } : { stdout: "---\ncommand: claude\n---\nInstructions" });
+  const missing = fakeHub((argv) => argv[2]?.includes("command -v") ? { code: 1 } : { stdout: "---\ncommand: claude\n---\nInstructions" });
   await expect(execTemplate(missing as never, "assistant", null, { agent: "claude-cdnd" })).rejects.toThrow("is not installed");
   expect(missing.calls).toHaveLength(2);
 });
