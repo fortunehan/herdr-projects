@@ -110,6 +110,25 @@ def shep_blocks(check):
     return bad, made
 
 
+def identity_block(check):
+    """Carry the recipient resolver with restart.sh when the script travels over hc stdin."""
+    rel = "mods/coordinator/restart.sh"
+    path = os.path.join(HOME, rel)
+    text = read(path).decode()
+    marker = "# ---- ASSISTANT IDENTITY ----\n"
+    start = text.index(marker) + len(marker)
+    end = text.index("# ---- end ASSISTANT IDENTITY ----")
+    want = read(os.path.join(MODS, "tasks/bin/herdr_task/assistant_identity.py")).decode()
+    if text[start:end] == want:
+        return [], []
+    if check:
+        return [f"{rel}'s identity block differs from assistant_identity.py"], []
+    mode = os.stat(path).st_mode
+    write(path, (text[:start] + want + text[end:]).encode())
+    os.chmod(path, mode)
+    return [], [rel]
+
+
 def main(argv):
     check = "--check" in argv
     table = copies()
@@ -161,6 +180,9 @@ def main(argv):
             if mod not in mods and (read(path) or b"").split(b"\n", 1)[0] == head:
                 bad.append(f"mods/{mod}/{name} looks like a copy of lib/{name}: add {mod} to lib/COPIES")
 
+    b1, m1 = identity_block(check)
+    bad += b1
+    made += m1
     b2, m2 = shep_blocks(check)
     bad += b2
     made += m2

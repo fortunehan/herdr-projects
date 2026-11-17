@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 
 from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, unlocked, WORKTREES
 from . import local
@@ -22,6 +23,7 @@ from .templates import instructions
 from .agents import detail, LINE_MAX, live_agents, SUMMARY_MAX
 from .github import finish, remote_of
 from .browsers import browser_line, browser_path
+from .assistant_identity import assistant_identity, IdentityError, local_id
 
 
 # ---- an agent's own herdr-task commands never ask -------------------------------------------
@@ -786,7 +788,16 @@ def coordinator_tab(addr):
     if not k or not is_coordinator(k):
         return None
     labels = k.get("labels") or {}
-    return labels.get("herdr.tab") or labels.get("herdr.coordinator.tab")
+    tab = labels.get("herdr.coordinator.tab") or labels.get("herdr.tab")
+    if tab:
+        return tab
+    if "/" in addr:
+        return None  # This machine's saved panes cannot identify another machine's Assistant.
+    try:
+        return assistant_identity(k)["tab"]
+    except IdentityError as e:
+        warnings.warn(f"{addr}: {e}")
+        return None
 
 
 def coordinators():
@@ -799,14 +810,49 @@ def coordinators():
 
 def coordinator_in(space):
     """The space's live coordinator on this machine, or None."""
-    if not space:
+    if not local_id(space):
         return None
+    matches = []
     for addr in coordinators():
         k = hc_json("get", addr) or {}
+        if k.get("state") != "live" or not is_coordinator(k):
+            continue
         labels = k.get("labels") or {}
-        if k.get("state") == "live" and bare(space) in (labels.get("herdr.space"), labels.get("herdr.coordinator.space")):
-            return addr
-    return None
+        spaces = {labels[key] for key in ("herdr.space", "herdr.coordinator.space") if labels.get(key)}
+        if spaces:
+            if spaces == {space}:
+                matches.append((addr, None))
+            elif len(spaces) > 1:
+                warnings.warn(f"{addr}: conflicting Assistant space labels")
+            continue
+        try:
+            identity = assistant_identity(k)
+        except IdentityError as e:
+            warnings.warn(f"{addr}: {e}")
+            continue
+        if identity["space"] == space:
+            matches.append((addr, identity))
+    if len(matches) != 1:
+        if matches:
+            warnings.warn(f"{space}: multiple live Assistants; no recipient selected")
+        return None
+    addr, identity = matches[0]
+    if identity:
+        wanted = {"herdr.role": "coordinator", **{f"herdr.coordinator.{k}": v for k, v in identity.items()}}
+        if run(["hc", "label", addr, *[f"{k}={v}" for k, v in wanted.items()]]).returncode != 0:
+            warnings.warn(f"{addr}: could not restore Assistant route")
+            return None
+        restored = hc_json("get", addr) or {}
+        if restored.get("state") != "live" or any((restored.get("labels") or {}).get(k) != v for k, v in wanted.items()):
+            warnings.warn(f"{addr}: restored Assistant route could not be verified")
+            return None
+        try:
+            if assistant_identity(restored) != identity:
+                raise IdentityError("restored Assistant route changed")
+        except IdentityError as e:
+            warnings.warn(f"{addr}: {e}")
+            return None
+    return addr
 
 
 def parent_for(parent, space):
