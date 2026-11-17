@@ -160,6 +160,13 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Mod names, the layout's node ids and `keys.json` contexts are what people's state and keys hang on: change them
   with care and say so in your done summary.
 
+## After a task is accepted
+
+- Only the space's Assistant (coordinator) does this, on a task's `done` news; task workers never do. In the main
+  checkout: `git fetch`, `git merge --no-edit origin/main` (a merge commit, never a rebase), then `./install.sh --yes`
+  on this machine only. Report the installed version. Stop and ask on a merge conflict. Never push, and never install
+  on another machine.
+
 ## README
 
 - `README.md` is the project's landing page, and its design is the human's. Never change its design, layout, structure,
