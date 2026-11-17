@@ -1,7 +1,7 @@
 // Restart picks for either chat role, used once or saved for its space. Opened from the + or ⋯ menu.
 import clsx from 'clsx'
 import { ChevronUpDownIcon } from '@heroicons/react/20/solid'
-import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { StarIcon as StarSolid } from '@heroicons/react/16/solid'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
 import { createPortal } from 'react-dom'
@@ -272,20 +272,61 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
   useEffect(() => {
     if (autoFocus) search.current?.focus({ preventScroll: true })
   }, [])
+  // the chosen model in view as the menu opens: a long list (Magpie's) would otherwise show only its first rows
+  useLayoutEffect(() => {
+    const l = list.current, on = l?.querySelector<HTMLElement>('[aria-checked="true"]')
+    if (!l || !on) return
+    const a = l.getBoundingClientRect(), b = on.getBoundingClientRect()
+    if (b.top < a.top || b.bottom > a.bottom) l.scrollTop += b.top - a.top - (a.height - b.height) / 2
+  }, [])
   const agents = Object.keys(menus)
-  const sections = AGc.modelSections(menus, tab, picks, q) as Section[]
+  const sections = useMemo(() => AGc.modelSections(menus, tab, picks, q) as Section[], [menus, tab, picks, q])
   const pick = (row: Section['rows'][number]) => {
     onPick(row)
     setTab(row.agent)
     setQ('')
     if (!phone) search.current?.focus({ preventScroll: true })
   }
+  // the rows are drawn again only when what they show changes, not on every render of the menu around them (a busy
+  // chat's events, a Settings snapshot): hundreds of rows redrawn under the pointer made hovering lag
+  const latest = useRef({ pick, onPin })
+  latest.current = { pick, onPin }
   const keys = (e: ReactKeyboardEvent) => {
     if (e.target === search.current || e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1 || !search.current) return
     search.current.focus({ preventScroll: true })
   }
   const row = 'flex min-h-[31px] w-full items-center gap-2.5 rounded-[7px] px-[9px] text-left enabled:hover:bg-hover focus-visible:bg-hover focus-visible:outline-none disabled:text-fg3 coarse:min-h-11 phone:min-h-11'
   const head = (t: string) => <div className="px-[9px] pt-2 pb-1 text-[0.6875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">{t}</div>
+  const pinnable = !!onPin
+  const rows = useMemo(() => (
+    <>
+      {sections.length === 0 ? <p className="px-[9px] py-2 text-fg3">No models.</p> : null}
+      {sections.map((s) => (
+        <div key={s.key} role="group" aria-label={s.title ?? undefined}>
+          {s.title ? head(s.title) : null}
+          {s.rows.map((x) => {
+            const on = x.agent === chosen.agent && x.id === chosen.model
+            return (
+              <div key={`${x.agent}-${x.id}`} className="group relative flex items-center">
+                <button type="button" role="menuitemradio" aria-checked={on} disabled={disabled} className={clsx(row, pinnable && 'pr-9', on && 'font-medium')} onClick={() => latest.current.pick(x)}>
+                  <span className="min-w-0 flex-1 truncate">{x.typed ? <>Use <span className="font-medium">{x.id}</span></> : x.name}</span>
+                  {x.typed ? <span className="shrink-0 text-[0.6875rem] text-fg3">{menus[x.agent]?.name} id</span> : null}
+                  <span className="grid size-3.5 shrink-0 place-items-center">{on ? <CheckIcon className="size-3.5" /> : null}</span>
+                </button>
+                {x.typed || disabled || !pinnable ? null : (
+                  <button type="button" tabIndex={-1} aria-label={x.pinned ? `Unpin ${x.name}` : `Pin ${x.name}`} aria-pressed={x.pinned} onClick={() => latest.current.onPin?.(x.agent, x.id)}
+                    className={clsx('absolute right-0.5 grid size-7 place-items-center rounded-[6px] text-fg3 hover:text-fg coarse:size-10 phone:size-10', !x.pinned && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 coarse:opacity-60 phone:opacity-60')}>
+                    {x.pinned ? <StarSolid className="size-3.5 text-fg2" /> : <StarOutline className="size-3.5" />}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+          {s.more ? <p className="px-[9px] py-1 text-[0.6875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">{s.more} more. Type to narrow.</p> : null}
+        </div>
+      ))}
+    </>
+  ), [sections, chosen.agent, chosen.model, disabled, pinnable, menus])
   return (
     <div onKeyDown={keys} className="flex flex-col">
       {agents.length > 1 ? (
@@ -313,31 +354,7 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
         </div>
       </div>
       <div ref={list} className={clsx('overflow-y-auto overscroll-contain', phone ? 'max-h-[40dvh]' : 'max-h-[min(300px,36dvh)]')}>
-        {sections.length === 0 ? <p className="px-[9px] py-2 text-fg3">No models.</p> : null}
-        {sections.map((s) => (
-          <div key={s.key} role="group" aria-label={s.title ?? undefined}>
-            {s.title ? head(s.title) : null}
-            {s.rows.map((x) => {
-              const on = x.agent === chosen.agent && x.id === chosen.model
-              return (
-                <div key={`${x.agent}-${x.id}`} className="group relative flex items-center">
-                  <button type="button" role="menuitemradio" aria-checked={on} disabled={disabled} className={clsx(row, onPin && 'pr-9')} onClick={() => pick(x)}>
-                    <span className="min-w-0 flex-1 truncate">{x.typed ? <>Use <span className="font-medium">{x.id}</span></> : x.name}</span>
-                    {x.typed ? <span className="shrink-0 text-[0.6875rem] text-fg3">{menus[x.agent]?.name} id</span> : null}
-                    <span className="grid size-3.5 shrink-0 place-items-center">{on ? <CheckIcon className="size-3.5" /> : null}</span>
-                  </button>
-                  {x.typed || disabled || !onPin ? null : (
-                    <button type="button" tabIndex={-1} aria-label={x.pinned ? `Unpin ${x.name}` : `Pin ${x.name}`} aria-pressed={x.pinned} onClick={() => onPin(x.agent, x.id)}
-                      className={clsx('absolute right-0.5 grid size-7 place-items-center rounded-[6px] text-fg3 hover:text-fg coarse:size-10 phone:size-10', !x.pinned && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 coarse:opacity-60 phone:opacity-60')}>
-                      {x.pinned ? <StarSolid className="size-3.5 text-fg2" /> : <StarOutline className="size-3.5" />}
-                    </button>
-                  )}
-                </div>
-              )
-            })}
-            {s.more ? <p className="px-[9px] py-1 text-[0.6875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">{s.more} more. Type to narrow.</p> : null}
-          </div>
-        ))}
+        {rows}
       </div>
     </div>
   )
@@ -349,7 +366,7 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
  *  model has it), Permissions (a small sub-menu), and, only when a choice differs from what runs now, one button:
  *  Switch (the model, level or Fast change in place, SHEP-181), or Restart for another agent (said to start a new
  *  conversation) or permission mode. Popover on a desktop, a sheet on a phone. */
-function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
+const ModelMenu = memo(function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
   const [data, setData] = useState<MenuData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sel, setSel] = useState<MenuPick | null>(null)
@@ -520,7 +537,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
   )
   // a phone's sheet covers the whole screen's bottom (the tab bar too), above the chat's own layer
   return phone ? createPortal(<div data-device="phone" className="isolate z-40 font-sans antialiased">{sheet}</div>, document.body) : sheet
-}
+})
 
 /** In the message box, as the window's model button: what its agent runs on ("Opus 5.5 · High"), a chevron; it opens
  *  the model menu */
