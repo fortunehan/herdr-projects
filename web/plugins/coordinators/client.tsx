@@ -421,11 +421,10 @@ function Tab({ place, t, on, i, drag }: { place: Place; t: BarTab; on: boolean; 
   )
 }
 
-/** 3.0's side panels' buttons, one style for all: the icon, its word where the bar has room (the open one keeps it),
- *  a count after it (Tasks': what needs you and what is Ready, everywhere). The open one pressed again hides it. */
+/** The side panel buttons keep the open panel's label. Pressing it again hides it. */
 type Panel = 'files' | 'changes' | 'tasks' | 'artifacts'
 
-function PanelButton({ place, id, label, Icon, roomy, badge }: { place: Place; id: Panel; label: string; Icon: (p: { className?: string }) => ReactNode; roomy: boolean; badge?: ReactNode }) {
+function PanelButton({ place, id, label, Icon, roomy }: { place: Place; id: Panel; label: string; Icon: (p: { className?: string }) => ReactNode; roomy: boolean }) {
   const on = useUI((u) => u.side === id && !u.sideShut)
   return (
     <button
@@ -436,11 +435,10 @@ function PanelButton({ place, id, label, Icon, roomy, badge }: { place: Place; i
         setUI(on ? { sideShut: true } : { side: id, sideShut: false })
         panels.save(place.id, on ? null : id)
       }}
-      className={clsx('press-dim flex h-7 shrink-0 items-center gap-1.5 rounded-full pl-2 text-[0.8125rem] coarse:h-9', roomy || on || badge ? 'pr-2.5' : 'pr-2', on ? 'bg-sel text-fg' : 'text-fg2 hover:bg-hover hover:text-fg')}
+      className={clsx('press-dim flex h-7 shrink-0 items-center gap-1.5 rounded-full pl-2 text-[0.8125rem] coarse:h-9', roomy || on ? 'pr-2.5' : 'pr-2', on ? 'bg-sel text-fg' : 'text-fg2 hover:bg-hover hover:text-fg')}
     >
       <Icon className={ic} />
       {roomy || on ? <span>{label}</span> : null}
-      {badge}
     </button>
   )
 }
@@ -454,13 +452,6 @@ const panels = {
   save(place: string, side: Panel | null) {
     try { localStorage.setItem(this.KEY, JSON.stringify({ ...this.all(), [place]: side })) } catch { /* private window: this time only */ }
   },
-}
-
-/** the Tasks button's count: everything that needs you and every Ready task, as the window's */
-function TasksCount() {
-  const snap = useSnap()!
-  const ready = snap.tasks.filter((t) => !t.archived && t.status === 'ready').length
-  return <AttentionBadge need={snap.needs.length} ready={ready} scope="everywhere" />
 }
 
 /** 3.0's tab bar, over the middle on a desktop and a tablet: the tabs (Settings › Window › Show tabs off: none), +, and
@@ -512,7 +503,7 @@ function TabBar({ place }: { place: Place }) {
       {/* Herdr's own Files and Changes, the shown space's folder (as shared "workspace.panels" has them) */}
       {herdr.includes('files') ? <PanelButton place={place} id="files" label="Files" Icon={FolderIcon} roomy={roomy} /> : null}
       {herdr.includes('changes') ? <PanelButton place={place} id="changes" label="Changes" Icon={DiffIcon} roomy={roomy} /> : null}
-      <PanelButton place={place} id="tasks" label="Tasks" Icon={TasksIcon} roomy={roomy} badge={<TasksCount />} />
+      <PanelButton place={place} id="tasks" label="Tasks" Icon={TasksIcon} roomy={roomy} />
       {registry.views.artifacts ? <PanelButton place={place} id="artifacts" label="Artifacts" Icon={PageIcon} roomy={roomy} /> : null}
     </div>
   )

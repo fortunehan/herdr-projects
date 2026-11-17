@@ -4,7 +4,7 @@ import { panes, run, openOverlay, theme, window, shared, setShared, layout, sett
 import { spacesWithChats as spaces, sweep } from "./parked.js";
 import { agentIn, isCoordinatorTab, closeTab, closeFocused, watchNewSpaces, newSpace, openCoordinator, renameTab, renameSpace, coordinatorTab, coordinatorIn } from "./coordinator.js";
 import { startTick, tickOnChange } from "./tick.js";
-import { startInbox, count as inboxCount, countsByTab, readyCount, readyByTab, showInbox, toAlert } from "./inbox.js";
+import { startInbox, countsByTab, readyByTab, showInbox, toAlert } from "./inbox.js";
 import { serveRemote } from "./secrets.js";
 import { watchService } from "./service.js";
 import { startBridge } from "./bridge.js";
@@ -201,7 +201,7 @@ export default class Tabs extends View {
       .on_mouse_down("left", stop).on_click(action).child(label);
     // What needs the person, per tab (the Inbox's items), and Tasks' Ready: a red and a green
     // count on the tab. Shepherdr settings' "Red counts" off (shared "counts.red" false): none
-    // here, nor on Tasks.
+    // here.
     const counts = shared("counts.red") !== false, greens = shared("counts.green") !== false;
     const needs = counts ? countsByTab() : new Map(), readies = greens ? readyByTab() : new Map();
     // Its "Tab bar" off (shared "tabbar.tabs" false): the bar keeps +, the panels and the window's
@@ -238,21 +238,18 @@ export default class Tabs extends View {
     const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "tasks", ...(addonOn("artifacts") ? ["artifacts"] : [])];
     this.syncPanel(space, panel, body, enabled);
     // The side panels' buttons, one style for all: icon first; the label when the bar has room
-    // (the open one keeps its label); a count after the icon (Tasks': what needs the person, red,
-    // and what's Ready, green: [need, ready]).
+    // (the open one keeps its label).
     const roomy = (this.width ?? 0) >= 1100;
-    const panelButton = (id, label, icon, [need, ready] = [0, 0]) => {
-      const badge = need + ready;
+    const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
-      return h_flex().id(`panel-${id}`).h(H.sm).pl(5).pr(roomy || on || badge ? 8 : 5).gap(5).flex_none().items_center().rounded(RADIUS.control)
+      return h_flex().id(`panel-${id}`).h(H.sm).pl(5).pr(roomy || on ? 8 : 5).gap(5).flex_none().items_center().rounded(RADIUS.control)
         .text_size(TEXT.label).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .cursor_pointer().hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14).flex_none())
-        .when(roomy || on, el => el.child(label))
-        .when(badge > 0, el => el.child(countBadge(need, ready, on ? t.selected : t.chrome)));
+        .when(roomy || on, el => el.child(label));
     };
     return h_flex().id("tabs-bar").size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_size_change((size, cx) => { this.width = size.width; cx.notify(); })
@@ -264,7 +261,7 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu-tasks", kind: "popup", width: 250, height: 543, props: { right: this.right } })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files-tasks/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .child(panelButton("tasks", "Tasks", "mods/tasks/tasks.svg", [counts ? inboxCount() : 0, greens ? readyCount() : 0]))
+      .child(panelButton("tasks", "Tasks", "mods/tasks/tasks.svg"))
       .when(enabled.includes("artifacts"), el => el.child(panelButton("artifacts", "Artifacts", "mods/artifacts/artifacts.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-tasks/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-tasks/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))

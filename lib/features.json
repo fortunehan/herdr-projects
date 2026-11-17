@@ -157,7 +157,8 @@
       "title": "Status bar",
       "core": [
         "needs",
-        "tasks"
+        "tasks",
+        "task-counts"
       ],
       "herdr": {
         "mods": [
@@ -166,14 +167,15 @@
       },
       "web": {
         "files": [
-          "src/attention.ts"
+          "src/attention.ts",
+          "src/TaskStatusBar.tsx"
         ]
       },
       "forms": {
-        "herdr": "Machine, branch, Needs you badge",
-        "desktop": "Header chips",
-        "tablet": "Header chips",
-        "phone": "Top-bar subtitle; badge on the Needs you tab"
+        "herdr": "Machine, branch; global Needs you, green Ready and Working totals",
+        "desktop": "Bottom status bar: global Needs you, green Ready and Working totals",
+        "tablet": "Same bottom status bar",
+        "phone": "Compact bottom status bar with all three totals"
       }
     },
     {

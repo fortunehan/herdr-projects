@@ -29,13 +29,14 @@ function hostFixture() {
   const exec = async (cmd, args, options) => {
     calls.push({ cmd, args });
     if (cmd === "git") return { code: 0, stdout: options.cwd };
+    if (cmd === "pwd") return { code: 0, stdout: options.cwd };
     if (cmd === "sh") return { code: 0, stdout: "/logs/source-conversation.jsonl" };
     throw new Error(`Unexpected real transport: ${cmd}`);
   };
   const deps = { exec, hc: async () => ({ code: 0, stdout: JSON.stringify(ts[0]) }), writeTextFile: () => { throw new Error("No writes allowed"); },
     openOverlay: (v) => { f.opened.push(v); return "overlay-host"; }, shared: f.io.read, setShared: f.io.write,
     panes: () => ps, terminals: () => ts, spaces: () => ss,
-    fs: { realpath: async (v) => v }, dirsReady: () => { throw new Error("No real storage allowed"); },
+    fs: {}, dirsReady: () => { throw new Error("No real storage allowed"); },
     DEFAULTS: "", menuFor: () => {}, parseDefaults: () => {}, sessionOf: () => source.conversation,
     FIND: "find-log", Conversation: class {}, cleanCommand: (cmd) => cmd, chatPane: (t) => t.labels?.["herdr.chat"],
     ChangesReview, completedMessage: () => {}, sourceMessages: () => {}, finished: () => {}, reportText: () => {}, sourceKey,
@@ -85,6 +86,14 @@ test("producer command opens only the existing pinned dialog through the actual 
     target: { cwd: source.root, mode: "ref", ref: "chosen/topic", workspace: "sp1", tab: "tab1", task: "TEST-1", binding: source,
       expected: { head, base: baseline, gitdir: "/checkout/.git/worktrees/task" } } } });
   expect(f.calls.some((c) => c.cmd === "hc" || c.args?.includes("run"))).toBe(false);
+});
+
+test("native source binding opens Review without Node-only filesystem methods", async () => {
+  const f = hostFixture(); f.reviewBridge.announce();
+  const r = request({ bridge: f.shared.get(REVIEW_BRIDGE).instance, at: Date.now() });
+  expect((await f.reviewBridge.handle(command(r))).status).toBe("opened");
+  expect(f.opened).toHaveLength(1);
+  expect(await f.io.sources({ root: source.root })).toMatchObject([source]);
 });
 
 test("duplicate in-flight and completed requests open once, conflicting ids fail", async () => {
