@@ -201,6 +201,16 @@ describe("Waiting to merge (as herdr-task's waiting_to_merge)", () => {
   });
 });
 
+// SHEP-64: Accept finishes in the background, and one that didn't is Needs you with Accept to try again.
+test("a background Accept: Accepting… while it runs, Accept again once it didn't finish", () => {
+  const task = { id: 1, state: "ready", ready_at: NOW - 60_000, pr: { number: 7, repo: "o/r" } };
+  expect(at({ ...task, accepting: NOW - 1000 })).toMatchObject({ section: "working", why: "Accepting…" });
+  expect(at({ ...task, accepting: NOW - 5 * 60_000 }).section).toBe("ready");
+  const failed = at({ ...task, attention: "Accept didn't finish: Couldn't reach pull request #7", attention_at: NOW - 60_000 });
+  expect(failed).toMatchObject({ section: "needs", needs: "attention" });
+  expect(acceptAgain(failed)).toBe(true);
+});
+
 // SHEP-38: a task that starts by itself at a time (herdr-task --at / --in) is Scheduled: its row says when ("Starts
 // Today 18:00"), its time until then under its mark ("6h"), the next to start first.
 test("a scheduled task says when it starts", () => {

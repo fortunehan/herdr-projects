@@ -683,7 +683,8 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     }
     case "accept": {
       const { ref, folder, machine } = taskOf(b);
-      const r = await task(["accept", ref], folder, machine);
+      // SHEP-64: answers at once; herdr-task finishes the merge in the background (a failure makes the task Needs you)
+      const r = await task(["accept", ref, "--background"], folder, machine);
       let out: any = null;
       try { out = JSON.parse(r.stdout); } catch {}
       if (r.code !== 0 || out?.error) throw new Error(out?.error || r.stderr.trim() || "herdr-task accept failed");

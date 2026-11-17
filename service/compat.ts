@@ -361,9 +361,6 @@ export class Compat {
     for (const k of (this as any).terminalsAll?.() ?? []) if (isHelper(k)) chats.set(`t:${k.address}`, k.address);
     this.tasks = new Map(rows.map((r) => [taskId(r), { ref: r.ref, folder: r.folder, machine: r.machine ?? null, key: `${r.slug}#${r.id}`, pin: r.key,
       where: { folder: r.worktree, machine: r.machine ?? null, base: r.base, start: r.start, branch: r.branch, pr: r.pr } }]));
-    // one older than 10 minutes was left by a quit (as the window reads it)
-    const acc = this.shared?.value("tasks.accepting") ?? {};
-    const accepting = (r: Row) => { const at = acc?.[`${r.machine ?? ""}:${r.folder}:${r.ref}`]; return typeof at === "number" && Date.now() - at < 600000; };
     const relationTargets = new Map(rows.map((r) => [r.key, r]));
     const relation = (d: any) => {
       const target = relationTargets.get(d.key);
@@ -383,8 +380,6 @@ export class Compat {
         ...(r.dependencies ? { dependencies: { waitsFor: r.dependencies.waitsFor.map(relation), unblocks: r.dependencies.unblocks.map(relation) } } : {}),
         // its worker's own helper agents (SHEP-54), named in its detail's header; each one's row is over its chat's box
         ...(r.subagents?.length ? { subagents: r.subagents.map((x: any) => ({ chat: `t:${x.address}`, title: x.title, status: x.status, at: x.at, ...(x.ended ? { ended: x.ended } : {}) })) } : {}),
-        // the window's Accept card accepting it now (shared "tasks.accepting", mods/accept-card): "Accepting…"
-        ...(accepting(r) ? { accepting: true } : {}),
         // the minutes left under a Working row's dot, as the window writes them (core/tasks.js leftOf: "6m", "<1m", "2h")
         ...(r.left ? { left: r.left } : {}),
         ...(r.scheduled_for ? { startsAt: r.scheduled_for } : {}),
