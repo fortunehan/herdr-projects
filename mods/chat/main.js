@@ -1582,7 +1582,7 @@ export default class Chat extends View {
   async endedWhy(addr) {
     if (!addr) return "";
     const r = await hc(["read", addr, "--lines", "8"]).catch(() => null);
-    const last = String(r?.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+    const last = String(r?.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("[hc] ")).pop() ?? "";
     return last ? `It said: ${last.slice(0, 200)}` : "";
   }
 

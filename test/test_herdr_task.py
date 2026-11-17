@@ -3590,6 +3590,42 @@ class CleanEnv(unittest.TestCase):
         self.assertEqual(line, L.CLEAN_ENV)
         self.assertEqual(self.agent_env(["sh", "-c", line + ' exec env']).keys() & self.MARKERS.keys(), set())
 
+    def test_login_settings_and_quoted_arguments_in_task_and_restart_commands(self):
+        import re
+        import shlex
+        sys.path.insert(0, BIN)
+        import herdr_task.launch as L
+        with tempfile.TemporaryDirectory() as d:
+            shell = os.path.join(d, "login-shell")
+            with open(shell, "w") as f:
+                f.write('#!/bin/sh\n[ "$1" = -lc ] || exit 99\n. "$HOME/.profile"\nshift\nexec /bin/sh -c "$@"\n')
+            os.chmod(shell, 0o755)
+            with open(os.path.join(d, ".profile"), "w") as f:
+                f.write('export HTTPS_PROXY=http://127.0.0.1:12345 SSL_CERT_FILE="$HOME/test-ca.crt"\n'
+                        'export CLAUDE_CODE_SESSION_ID=profile-session PATH=/usr/bin:/bin\n')
+            env = {"HOME": d, "PATH": "/usr/bin:/bin", "SHELL": shell, **self.MARKERS}
+            # Extract only declarations and the wrapper function; never run restart's hc commands.
+            with open(os.path.join(ROOT, "mods/coordinator/restart.sh")) as f:
+                restart = f.read()
+            declarations = restart[restart.index("\nclean="):restart.index("\ntpl=$HOME")]
+            generated = subprocess.run(["bash", "-c", declarations + '\nlogin_command "$clean $agent_path"\' exec "$@"\''],
+                                       env={**os.environ, "HOME": d}, capture_output=True, text=True, check=True).stdout
+            with open(os.path.join(ROOT, "core/clean-env.js")) as f:
+                js = f.read()
+            self.assertEqual(re.search(r"export const LOGIN_SHELL = `(.*?)`;", js).group(1).replace("\\$", "$"), L.LOGIN_SHELL)
+            self.assertEqual(re.search(r"export const AGENT_PATH = `(.*?)`;", js).group(1).replace("\\$", "$"), L.AGENT_PATH)
+            self.assertEqual(shlex.split(generated), shlex.split(L.login_command(L.CLEAN_ENV + " " + L.AGENT_PATH + ' exec "$@"')))
+            for command in [L.clean_env(["env"]), ["sh", "-c", generated, "restart", "env"]]:
+                r = subprocess.run(command, env=env, capture_output=True, text=True, check=True)
+                seen = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
+                self.assertEqual(seen["HTTPS_PROXY"], "http://127.0.0.1:12345")
+                self.assertEqual(seen["SSL_CERT_FILE"], os.path.join(d, "test-ca.crt"))
+                self.assertEqual(seen["PATH"], f"/usr/bin:/bin:{d}/.local/bin:/opt/homebrew/bin:/usr/local/bin")
+                self.assertFalse(seen.keys() & self.MARKERS.keys())
+            words = ["a'b", "$literal", "two words", "", "semi;colon"]
+            r = subprocess.run(L.clean_env(["/usr/bin/printf", "<%s>\n", *words]), env=env, capture_output=True, text=True, check=True)
+            self.assertEqual(r.stdout, "".join(f"<{w}>\n" for w in words))
+
 
 class Revive(unittest.TestCase):
     """SHEP-30:an Assistant or a task's agent the core gave a plain shell (a crash, a power loss, a

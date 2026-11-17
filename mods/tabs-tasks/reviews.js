@@ -4,7 +4,7 @@ import * as fs from "fs/promises";
 import { dirsReady } from "./dirs.js";
 import { DEFAULTS, menuFor, parseDefaults, sessionOf } from "./core/agents.js";
 import { FIND, Conversation } from "./core/chat-log.js";
-import { CLEAN_ENV, AGENT_PATH } from "./core/clean-env.js";
+import { cleanCommand } from "./core/clean-env.js";
 import { chatPane } from "./core/spaces.js";
 import { ChangesReview, completedMessage, sourceMessages, finished, reportText, sourceKey } from "./core/changes-review.js";
 import { capture } from "./core/review-target.js";
@@ -202,7 +202,7 @@ const io = {
     if (!space) throw new Error("The current local workspace is unavailable");
     const result = await hc(["run", "--bg", "--json", "--no-parent", "--no-notify", "--cwd", r.target.root,
       "--label", `herdr.review=${r.id}`, "--label", "herdr.role=reviewer", "--label", "herdr.agent=claude",
-      "--", "sh", "-c", `${CLEAN_ENV} ${AGENT_PATH} exec "$@"`, "review", ...argv]).catch((e) => ({ code: 1, stderr: String(e.message ?? e), stdout: "" }));
+      "--", "sh", "-c", cleanCommand('"$@"'), "review", ...argv]).catch((e) => ({ code: 1, stderr: String(e.message ?? e), stdout: "" }));
     let out = {};
     try { out = JSON.parse(result.stdout); } catch {}
     if (!out.address) {

@@ -304,9 +304,19 @@ CLEAN_ENV = ("for v in $(env | sed -nE 's/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A
              "grep -vE '^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'); do unset \"$v\"; done;")
 
 
+# Keep these shell steps equal to core/clean-env.js and coordinator/restart.sh.
+AGENT_PATH = 'PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
+LOGIN_SHELL = """if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '^SHELL='; then exec "$SHELL" -lc 'exec "$@"' herdr-login sh -c"""
+
+
+def login_command(cmd):
+    return LOGIN_SHELL + " " + shlex.quote(cmd) + ' "$0" "$@"; fi; ' + cmd
+
+
 def clean_env(argv):
-    """argv run without a parent Claude Code session's markers (CLEAN_ENV)."""
-    return ["sh", "-c", CLEAN_ENV + ' exec "$@"', "herdr-clean", *argv]
+    """Run argv with login settings and without inherited Claude session markers."""
+    cmd = CLEAN_ENV + " " + AGENT_PATH + ' exec "$@"'
+    return ["sh", "-c", login_command(cmd), "herdr-clean", *argv]
 
 
 def in_shell(argv):
