@@ -133,12 +133,13 @@ elif a[0] == "ls": print(json.dumps({"terminals": list(state.values())}))
 elif a[0] == "run":
     labels = dict(a[i+1].split("=", 1) for i, v in enumerate(a) if v == "--label")
     labels.pop(os.environ.get("DROP_LABEL", ""), None)
-    state["t9"] = {"address": "t9", "state": "live", "labels": labels, "cwd": "/tmp"}
+    new = "t" + str(max([8] + [int(k[1:]) for k in state if k[1:].isdigit()]) + 1)
+    state[new] = {"address": new, "state": "live", "labels": labels, "cwd": "/tmp"}
     (root / "state.json").write_text(json.dumps(state))
     for arg in a:
         if arg.startswith("herdr-handoff-"):
             (root / "handoff.txt").write_text((root / ".config/herdr-core/templates" / (arg + ".md")).read_text())
-    print(json.dumps({"address": "t9", "first_message": {"sent": not bool(os.environ.get("FAIL_SEND"))}}))
+    print(json.dumps({"address": new, "first_message": {"sent": not bool(os.environ.get("FAIL_SEND"))}}))
     if os.environ.get("FAIL_RUN"): sys.exit(1)
 elif a[0] == "send" and os.environ.get("FAIL_SEND"): sys.exit(1)
 elif a[0] == "label":
@@ -173,6 +174,7 @@ class AssistantIdentity(unittest.TestCase):
             (state_dir / "docs.json").write_text(json.dumps({"herdr-app": {"value": doc}}))
         env = {"PATH": f"{root}/bin:/usr/bin:/bin", "HOME": str(root), "HERDR_APP_HOME": str(root),
                "FAKE_DIR": str(root), "HERDR_RESTART_CHAT": "p7", "HERDR_RESTART_RESUME": "1", **(extra or {})}
+        self.env = env
         command = ["bash", SCRIPT, "t2"]
         if argv != "":
             command.append(json.dumps(argv or ["claude", "--resume", "s1"]))
@@ -196,16 +198,21 @@ class AssistantIdentity(unittest.TestCase):
         labels = {"herdr.role": "coordinator", "herdr.coordinator.space": "sp1", "herdr.coordinator.tab": "tb1",
                   "herdr.chat": "p7", "herdr.chat.slot": "slot1", "herdr.chat.origin": "slot:slot1",
                   "herdr.coordinator": "parent-tab"}
-        for _ in range(2):
-            result = self.restart(labels)
+        result = self.restart(labels)
+        for addr in ("t9", "t10"):
             self.assertEqual(result.returncode, 0, result.stderr)
-            labels = self.state["t9"]["labels"]
+            labels = self.state[addr]["labels"]
             self.assertEqual(labels["herdr.coordinator.space"], "sp1")
             self.assertEqual(labels["herdr.coordinator.tab"], "tb1")
             self.assertEqual(labels["herdr.chat.origin"], "slot:slot1")
             self.assertEqual(labels["herdr.chat.slot"], "slot1")
             self.assertEqual(labels["herdr.coordinator"], "parent-tab")
             self.assertEqual(json.loads(labels["herdr.launcher.argv"]), ["claude", "--resume", "s1"])
+            if addr == "t9":
+                result = subprocess.run(["bash", SCRIPT, addr, json.dumps(["claude", "--resume", "s1"])],
+                                        env=self.env, capture_output=True, text=True, timeout=30)
+                self.state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(list(self.state), ["t10"])
 
     def test_damaged_chat_recovers_from_unique_slot(self):
         result = self.restart({"herdr.role": "coordinator", "herdr.chat": "p7"},
