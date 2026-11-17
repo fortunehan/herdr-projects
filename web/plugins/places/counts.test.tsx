@@ -30,11 +30,15 @@ test('Working retains the ring, motion, cap and sizes in yellow', () => {
   expect(html).not.toContain('text-fg3')
 })
 
-test('only Spaces rows and folded headings use plain counts, after Working', () => {
+test('Spaces rows, folded headings and Panel tabs share plain counts', () => {
   const source = readFileSync(new URL('./client.tsx', import.meta.url), 'utf8')
   expect(source).toContain('<SpaceCounts need={c.ownNeed} ready={c.ownReady} scope="here" look={snap.look} />')
   expect(source).toContain('<SpaceCounts need={need} ready={ready} scope="in it" look={snap.look} />')
   expect(source.indexOf('<WorkingCount')).toBeLessThan(source.indexOf('<SpaceCounts'))
+  const tabs = readFileSync(new URL('../coordinators/client.tsx', import.meta.url), 'utf8')
+  expect(tabs).toContain('import { SpaceCounts } from')
+  expect(tabs).toContain('<SpaceCounts need={need} ready={ready} scope={t.name} />')
+  expect(tabs).not.toContain('AttentionBadge')
   const other = readFileSync(new URL('../../src/ui.tsx', import.meta.url), 'utf8')
   expect(other).toContain('attention-badge-split')
   expect(other).not.toContain('data-space-counts')

@@ -15,8 +15,9 @@ import { openWorktree } from '@client/screens/Worktree.tsx'
 import { act, definePlugin, getState, has, registry, removeSpace, setUI, useSnap, useStore, useUI } from '@client/kernel.ts'
 import { Dialog } from '@client/rowmenu.tsx'
 import { sectionOf, Switch } from '@client/Settings.tsx'
-import { AttentionBadge, DiffIcon, Dot, field, FolderIcon, ic, IconButton, KeyboardIcon, Menu, MenuItem, MenuLabel, MenuSeparator, ModelIcon, MoreIcon, PageIcon, PlanIcon, PlusIcon, Primary, RenameIcon, RestartIcon, SplitIcon, TasksIcon, TermIcon, XIcon } from '@client/ui.tsx'
+import { DiffIcon, Dot, field, FolderIcon, ic, IconButton, KeyboardIcon, Menu, MenuItem, MenuLabel, MenuSeparator, ModelIcon, MoreIcon, PageIcon, PlanIcon, PlusIcon, Primary, RenameIcon, RestartIcon, SplitIcon, TasksIcon, TermIcon, XIcon } from '@client/ui.tsx'
 import { openAddSpace } from '@plugins/places/add.tsx'
+import { SpaceCounts } from '@plugins/places/counts.tsx'
 import { toast } from '@plugins/alerts/toasts.tsx'
 import { openKeybinds } from '@plugins/keyboard/client.tsx'
 import { DiffView, FilesView } from '@plugins/worktree/client.tsx'
@@ -405,7 +406,7 @@ function Tab({ place, t, on, i, drag }: { place: Place; t: BarTab; on: boolean; 
       {t.agent ? <ModelIcon className={clsx(ic, 'text-fg3')} /> : t.assistant ? null : <TermIcon className={clsx(ic, 'text-fg3')} />}
       <span className="max-w-[170px] truncate">{t.name}</span>
       {t.state === 'working' ? <Spin /> : null}
-      {need || ready ? <AttentionBadge need={need} ready={ready} scope={t.name} /> : t.state === 'blocked' || t.state === 'done' ? <Dot s={t.state === 'blocked' ? 'need' : 'done'} className="shrink-0" /> : null}
+      {need || ready ? <SpaceCounts need={need} ready={ready} scope={t.name} /> : t.state === 'blocked' || t.state === 'done' ? <Dot s={t.state === 'blocked' ? 'need' : 'done'} className="shrink-0" /> : null}
       {on ? (
         <>
           {/* a touch screen has no right-click: the shown tab's menu is here */}

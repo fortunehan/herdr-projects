@@ -28,7 +28,7 @@ import { unreadSpaces, readShown, assistantOf } from "./unread.js";
 import { muted } from "./notify.js";
 import { MachinePopup, openMachine, openMachineSettings } from "./machine-popup.js";
 import { startPolling, allStats, healthMeters, bars } from "./machines.js";
-import { red, green, blue, H, TEXT, RADIUS, toast } from "./ui.js";
+import { red, green, blue, H, TEXT, RADIUS, toast, spaceCounts } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { spaceName, gitTail, tilde, sharedNames, inOrder, withOrder, machinesInOrder, machineOrderOf, withMachineOrder, isThinking, workingIn } from "./core/spaces.js";
 import { coordinatorTab } from "./coordinator.js";
@@ -98,14 +98,6 @@ function nameText(text, fresh, color, t) {
     .child(div().invisible().font_semibold().truncate().child(text))
     .child(div().absolute().top(0).left(0).right(0).truncate().text_color(fresh ? t.foreground : color)
       .when(fresh, (el) => el.font_semibold()).child(text));
-}
-
-function spaceCounts(need, ready) {
-  const cap = (n) => n > 9 ? "9+" : String(n);
-  return h_flex().h(16).flex_none().gap(8).items_center().text_size(TEXT.id).font_bold()
-    .role("image").accessibility_label(`${need} needs you, ${ready} ready`)
-    .when(need > 0, (el) => el.child(div().text_color(red()).child(cap(need))))
-    .when(ready > 0, (el) => el.child(div().text_color(green()).child(cap(ready))));
 }
 
 export default class Spaces extends View {
