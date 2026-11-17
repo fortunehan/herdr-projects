@@ -17,7 +17,7 @@ import time
 
 from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, unlocked, WORKTREES
 from . import local
-from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for
+from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for, worker_pick, ensure_launcher
 from .templates import instructions
 from .agents import detail, LINE_MAX, live_agents, SUMMARY_MAX
 from .github import finish, remote_of
@@ -189,7 +189,9 @@ def own_command(path, text, sandboxed=False):
 REVIEWERS = {"codex": (["codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "never"],
                        {"--disable": re.compile(r"hooks"), "-m": re.compile(r"[\w.:-]+"),
                         "-c": re.compile(r'projects=\{.*\}|model_reasoning_effort="?\w+"?', re.S)}),
-             "claude": (["claude", "--permission-mode", "plan"], {"--model": re.compile(r"[\w.:\[\]-]+"), "--effort": re.compile(r"\w+")})}
+             "claude": (["claude", "--permission-mode", "plan"], {"--model": re.compile(r"[\w./:\[\]-]+"), "--effort": re.compile(r"\w+")})}
+for command in ("claude-magpie", "claude-cdnd"):
+    REVIEWERS[command] = ([command, *REVIEWERS["claude"][0][1:]], REVIEWERS["claude"][1])
 HELPER = re.compile(r"[\w.-]+-(?:review|helper)(?:-[\w.-]+)?")
 
 
@@ -280,6 +282,17 @@ def cmd_allow(args):
 
 
 # ---- starting agents ------------------------------------------------------------------------
+
+
+MAGPIE_RUN = r'''if ! command -v "$1" >/dev/null 2>&1; then
+  printf 'Cannot start: %s is not installed on this machine.\n' "$1" >&2
+  exit 127
+fi
+exec "$@"'''
+
+
+def magpie_argv(argv):
+    return ["sh", "-c", MAGPIE_RUN, "herdr-magpie", *argv]
 
 
 def resume_argv(argv, session):
@@ -699,19 +712,26 @@ def folder_for(s, task):
     return path
 
 
-def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None):
+def launch(s, task, argv, space, message=None, parent=None, resume=None, role=None, custom=None):
     """Starts one agent for the task with no tab or pane of its own (a space can hold thousands
     of tasks): an hc child of `parent`, which parent_for() makes the space's coordinator, reached
     through the Tasks panel. Labels: herdr.task (its task), herdr.task.space (its space; never
     herdr.space, which Herdr gives a pane), herdr.agent, herdr.coordinator (its coordinator's tab,
     which keeps it under a restarted coordinator) and herdr.role=reviewer for a reviewer, kept
     apart from the task's agents. Returns its record."""
+    ensure_launcher(argv)
     key = s.key(task)
     cmd = list(resume or argv)
     if not role:
         cmd = own_argv(cmd, folder_for(s, task))
+    magpie = not role and os.path.basename(argv[0]) in ("claude-magpie", "claude-cdnd")
+    if custom is None:
+        custom = bool(magpie and worker_pick(s, task, space).get("argv") == argv)
+    magpie = magpie and not custom
     if message:
         cmd = cmd + [message]
+    if magpie:
+        cmd = magpie_argv(cmd)
     labels = ["--label", f"herdr.task={key}", "--label", f"herdr.task.space={bare(space)}",
               "--label", f"herdr.agent={agent_key(argv)}"]
     ctab = coordinator_tab(parent)
@@ -733,6 +753,10 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     if r.returncode != 0 or not out.get("address"):
         raise Fail((r.stderr or r.stdout).strip() or "hc run failed")
     a = {"address": out["address"], "agent": agent_key(argv), "argv": argv, "at": now()}
+    if not role:
+        a["launcher"] = {"claude-magpie": "magpie", "claude-cdnd": "cdnd"}.get(os.path.basename(argv[0]), "direct")
+        if custom:
+            a["custom_argv"] = True
     if parent:
         a["parent"] = parent
     s.dirty = True

@@ -789,12 +789,12 @@ function PageBody({ page, phone, set, refused, clear, hint }: { page: Page; phon
                 </div>
               ) : (
                 // on a phone, a row's segments fill a line of their own under its label
-                <div key={row.key || row.reveals || row.label} className={clsx(rowLook(phone), row.inherits && 'border-l-2 border-accent pl-3', phone && SEGMENTS.has(row.key) && 'flex-col items-stretch! gap-2.5 pb-3!')}>
+                <div key={row.key || row.reveals || row.label} className={clsx(rowLook(phone), row.inherits && 'border-l-2 border-accent pl-3', phone && (SEGMENTS.has(row.key) || row.agent?.role === 'worker') && 'flex-col items-stretch! gap-2.5 pb-3!')}>
                   <dt className="flex min-w-0 flex-1 flex-col">
                     {row.label}
                     {under(row)}
                   </dt>
-                  <dd className={clsx('flex min-w-0 shrink-0 flex-col', phone && SEGMENTS.has(row.key) ? 'items-stretch' : 'max-w-[65%] items-end')}>
+                  <dd className={clsx('flex min-w-0 shrink-0 flex-col', phone && (SEGMENTS.has(row.key) || row.agent?.role === 'worker') ? 'items-stretch' : 'max-w-[65%] items-end')}>
                     {row.reveals ? <Ghost onClick={() => setRevealed((r) => [...r, row.reveals!])}>{ST.MACHINES.own.button}</Ghost> : row.button ? <Ghost disabled={row.disabled} onClick={() => set(row.key, null)}>{row.button}</Ghost> : <Control row={row} phone={phone} level={page.level} set={(x) => set(row.key, follows(row, x))} edit={() => clear(row.key)} />}
                   </dd>
                 </div>

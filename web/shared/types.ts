@@ -1044,10 +1044,11 @@ export interface RoleAgent {
   unset?: boolean
   other?: boolean
 }
-export interface AgentPick { agent: string; model?: string | null; effort?: string | null; fast?: boolean; perm?: string | null }
+export interface AgentPick { agent: string; launcher?: 'direct' | 'magpie' | 'cdnd'; argv?: string[]; model?: string | null; effort?: string | null; fast?: boolean; perm?: string | null }
 
 /** Settings › Agents' model menu, as the window's (mods/chat-models, settings mode; core/agents.js menuFor) */
 export interface ModelMenus {
+  magpie?: ModelMenus['menus'][string]
   menus: Record<string, { name: string; models: { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean }[]; perms: { id: string; label: string }[] }>
   permDefault: Record<string, string>
 }

@@ -22,5 +22,8 @@ export const LOGIN_SHELL = `if [ -n "\${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "
 const quote = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
 export const loginCommand = (cmd) => `${LOGIN_SHELL} ${quote(cmd)} "$0" "$@"; fi; ${cmd}`;
 
+/** Probe a command in the same login environment used to start agents. */
+export const commandCheck = (command) => loginCommand(`${AGENT_PATH} command -v ${quote(command)} >/dev/null 2>&1`);
+
 /** A template's command loads login settings, clears session markers, and execs the agent. */
 export const cleanCommand = (cmd) => loginCommand(`${CLEAN_ENV} ${AGENT_PATH} exec ${String(cmd).trim().replace(/^exec\s+/, "")}`);

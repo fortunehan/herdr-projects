@@ -82,7 +82,7 @@ const KEEP = 2000;
 const COLUMN = 1100;
 // A message bubble's width at most, as a share of the column.
 const BUBBLE = 0.9;
-const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
+const KINDS = { "claude-code": "claude", claude: "claude", "claude-magpie": "claude", "claude-cdnd": "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 // The role templates' folder on the machine a command runs on (sh -c prefix: $dir).
 const TEMPLATE = 'dir="$HOME/.config/herdr-core/templates"; ';
@@ -1068,8 +1068,9 @@ export default class Chat extends View {
     if (this.lostTried.has(addr)) return false;
     this.lostTried.add(addr);
     if (!t) { try { t = JSON.parse((await hc(["get", addr, "--json"])).stdout || "null"); } catch {} }
-    const kind = cliOf({ agent: (t?.argv ?? []).map((a) => String(a).split("/").pop()).find((a) => /^(claude|codex)$/.test(a)) });
-    const fresh = kind ? agent.freshArgv(kind, t?.argv) : null;
+    const argv = agent.launchArgv(t);
+    const kind = cliOf({ agent: argv.map((a) => String(a).split("/").pop()).find((a) => /^(claude|claude-magpie|claude-cdnd|codex)$/.test(a)) });
+    const fresh = kind ? agent.freshArgv(kind, argv) : null;
     if (!fresh) return false;
     if (t.state !== "live" && (t.exit_code ?? 1) === 0) return false;
     const screen = (await hc(["read", addr, "--lines", "40"]).catch(() => null))?.stdout ?? "";
@@ -1162,7 +1163,7 @@ export default class Chat extends View {
     const pane = this.lastPane ?? (this.slot && this.slotRec()?.pane) ?? null;
     if (!this.thread && !this.inner && !this.swapping && !t.labels?.["herdr.chat"] && pane && !panes().some((p) => p.terminal === this.addr)
       && panes().some((p) => p.pane === pane && p.mod === "chat")) await hc(["label", this.addr, `herdr.chat=${chatLabel(pane)}`]);
-    const kind = KINDS[t.status?.app] ?? KINDS[t.foreground?.name];
+    const kind = KINDS[t.status?.app] ?? KINDS[String(t.foreground?.name ?? "").split("/").pop()];
     // Back at its shell because the session it resumed is gone: a new agent starts there.
     if (!kind) { if (!(await this.checkLost(this.addr, cx, t))) this.set("unsupported", cx); return; }
     this.t = t;
@@ -1787,15 +1788,23 @@ export default class Chat extends View {
       let launch = template, oneOff = null, words = "";
       const st = this.choice?.sel ?? props()?.settings;
       const on = machine ? { on: machine } : {};
-      const there = !machine || !st?.agent ? true : (await knownAgents(on).catch(() => []))
+      const there = !machine || !st?.agent || agent.choiceKey(st) !== agent.agentKey(st.agent) ? true : (await knownAgents(on).catch(() => []))
         .some((a) => (a.key === st.agent || (a.run ?? [])[0] === st.agent) && a.installed !== false);
+      const chosen = st?.agent ? (st.argv?.length ? { base: st.argv, argv: st.argv } : agent.argvFor(st, { agent: null, argv: [] })) : null;
+      try { if (chosen) await agent.requireLauncher(chosen.base, machine); }
+      catch (e) {
+        p.failed = String(e?.message ?? e);
+        toast({ title: "The Assistant didn't start", body: p.failed, level: "error" });
+        if (msg) { this.pending = this.pending.filter((x) => x !== p); if (!this.box.value().trim()) this.box.set_value(msg.text); }
+        this.phase = "fresh"; cx.notify(); return;
+      }
       {
         const q = (a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`);
         const src = (await exec("sh", ["-c", TEMPLATE + 'cat "$dir/$1.md"', "x", template], on).catch(() => null))?.stdout ?? "";
         const head = /^---\n([\s\S]*?)\n---\n?/.exec(src);
         const body = head ? src.slice(head[0].length) : src;
         const own = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
-        const cmd = st?.agent && there ? agent.argvFor(st, { agent: null, argv: [] }).argv.map(q).join(" ") : own;
+        const cmd = chosen && there ? chosen.argv.map(q).join(" ") : own;
         if (body.trim() && cmd) {
           words = body.trim();
           oneOff = `herdr-${template}-${Date.now().toString(36)}`;
@@ -1807,6 +1816,7 @@ export default class Chat extends View {
       const args = ["run", "--bg", "--json", "--no-parent", "--keep", ...(machine ? ["--on", machine] : []), ...(folder ? ["--cwd", folder] : []),
         "--label", `herdr.chat=${chatLabel(pane)}`, "--label", `herdr.chat.slot=${this.slot}`, "--label", `herdr.chat.origin=slot:${this.slot}`,
         "--label", `herdr.role=${this.role}`,
+        ...(chosen ? ["--label", `herdr.agent=${agent.agentKey(chosen.base[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(chosen.base)}`] : []),
         ...(space ? ["--label", `herdr.coordinator.space=${String(space.id).split("/").pop()}`] : []),
         ...(rec?.tab ? ["--label", `herdr.coordinator.tab=${String(rec.tab).split("/").pop()}`] : []),
         launch, ...(task ? [task] : [])];
@@ -2366,7 +2376,7 @@ export default class Chat extends View {
     const tab = panes().find((p) => p.pane === this.myPane())?.tab;
     const space = spaces().find((s) => s.tabs.some((x) => x.id === tab));
     const folder = this.t?.foreground?.cwd ?? this.t?.cwd ?? undefined;
-    run("tab.new", { space: space?.id, folder, argv: agent.forkArgv(this.kind, this.argv, session) });
+    run("tab.new", { space: space?.id, folder, argv: agent.forkArgv(this.kind, agent.launchArgv(this.t), session) });
   }
 
   // ---- dictation ----------------------------------------------------------------------------
@@ -2735,7 +2745,7 @@ export default class Chat extends View {
     if (!this.kind) return null;
     // A resumed conversation's log says what it ran on before: until this process writes,
     // its arguments and settings say what it runs on (core/agents.js current).
-    return agent.current(this.kind, this.argv, this.conv?.meta, this.dflt, this.t?.created_ms);
+    return { ...agent.current(this.kind, this.argv, this.conv?.meta, this.dflt, this.t?.created_ms), launcher: agent.launcherOf(agent.launchArgv(this.t)) };
   }
 
   // The model picker (mods/chat-models), as a popover just above the model button: the chat
@@ -2749,30 +2759,25 @@ export default class Chat extends View {
       try {
         const stale = !this.pickCache || Date.now() - this.pickCache.at > 60000 || this.pickCache.machine !== this.machine;
         if (stale) {
-          const [claude, codex, known] = await Promise.all([agent.defaults("claude", this.machine), agent.defaults("codex", this.machine),
-            knownAgents({ on: this.machine }).catch(() => [])]);
-          const prog = (key) => known.find((a) => a.key === key || (a.run ?? [])[0] === key);
-          this.pickCache = { at: Date.now(), machine: this.machine, dflts: { claude, codex },
-            icons: Object.fromEntries(["claude", "codex"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }])),
-            installed: Object.fromEntries(["claude", "codex"].map((k) => [k, prog(k) ? prog(k).installed !== false : true])) };
+          this.pickCache = { ...await choices.loadChoices(this.machine), at: Date.now(), machine: this.machine };
         }
-        const { dflts, icons, installed } = this.pickCache;
-        if (this.kind) dflts[this.kind] = this.dflt ?? dflts[this.kind];
+        const { icons, permDefault } = this.pickCache;
         // its machine out of reach now: the menu says so once a change is chosen (the restart waits for it)
         const offline = this.machine && !online(this.machine) ? this.machine : null;
         const currentRow = agent.rowFor(c.agent, c);
         // Installed agents only (and always the one running).
-        const menus = Object.fromEntries(["claude", "codex"].filter((k) => k === c.agent || installed[k])
-          .map((k) => [k, agent.menuFor(k, dflts[k], k === c.agent ? currentRow : null)]));
+        const selected = agent.viewPick({ ...c, model: currentRow });
+        const menus = { ...this.pickCache.menus };
+        if (selected.model && menus[selected.agent] && !menus[selected.agent].models.some((m) => m.id === selected.model))
+          menus[selected.agent] = { ...menus[selected.agent], models: [agent.typedModel(selected.agent, selected.model), ...menus[selected.agent].models] };
         // As tall as the menu can get (chat-models' sizes): border and padding, another machine's
         // offline line, agent tabs, search, the list (it scrolls past 8 rows), separator, Reasoning header
         // and levels, Fast, Permissions, the new conversation's two lines, Restart (two lines).
-        const W = 340, H = 2 + 10 + 20 + 34 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31 + 40 + 50;
+        const W = 340, H = 2 + 10 + 20 + 68 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31 + 40 + 50;
         openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H,
           at: at ? { x: Math.max(8, at.x - W + 90), y: Math.max(8, at.y - H - 10) } : "pointer",
           props: { pane: this.pickKey(), offline, width: W, height: H, select: name ? findModel(menus, name) : null,
-            current: { agent: c.agent, model: currentRow, effort: c.effort ?? null, fast: c.fast, perm: c.perm ?? null },
-            menus, icons, permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto" } } });
+            current: selected, menus, icons, permDefault } });
       } finally {
         this.picking = false;
         cx.notify();
@@ -2818,7 +2823,7 @@ export default class Chat extends View {
         this.swapping = true;
         const next = await agent.restart(t, built, mine);
         this.follow_to(next);
-        this.note = { id: `note-${Date.now()}`, text: built.resume ? "Restarted. The conversation continues." : `Started ${agent.NAMES[pick.agent]} with a handoff.` };
+        this.note = { id: `note-${Date.now()}`, text: built.resume ? "Restarted. The conversation continues." : `Started ${agent.CHOICE_NAMES[agent.choiceKey(pick)]} with a handoff.` };
         cx.timer.after(6000, (cx) => { this.note = null; cx.notify(); });
       } catch (e) {
         toast({ title: "The agent didn't restart", body: plainError(e), level: "error" });
@@ -3095,6 +3100,8 @@ export default class Chat extends View {
       out.push(this.queuedLine(`q:${q.id}`));
       block(from, `q:${q.id}`);
     }
+    const launcherNotice = this.t?.labels?.["herdr.launcher.notice"];
+    if (launcherNotice) out.push({ kind: "note", id: "launcher-fallback", text: launcherNotice });
     if (this.note) out.push({ kind: "note", id: this.note.id, text: this.note.text });
     if (out.length) out.push({ kind: "end", id: "end" });
     return this.spaced(out);

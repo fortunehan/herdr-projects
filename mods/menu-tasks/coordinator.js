@@ -11,6 +11,7 @@
 
 import { appHome, exec, hc, run, openOverlay, shared, setShared, home, machines, focused, readTextFile } from "herdr";
 import { dirs } from "./dirs.js";
+import { mergeWorker } from "./core/agents.js";
 import { isWorktreePath } from "./core/paths.js";
 import { terminals, panes, spaces as allSpaces } from "./live.js";
 import { chatPane, chatLabel } from "./core/spaces.js";
@@ -144,7 +145,7 @@ export function shepherdrLayers(cfg, scope = null) {
 export function shepherdrFor(cfg, scope = null) {
   const layers = shepherdrLayers(cfg, scope).reverse();
   const out = {};
-  for (const role of ["coordinator", "worker", "reviewer"]) out[role] = layers.reduce((v, l) => l.obj[role] ?? v, null);
+  for (const role of ["coordinator", "worker", "reviewer"]) out[role] = layers.reduce((v, l) => l.obj[role] ? mergeWorker(v, l.obj[role]) : v, null);
   // agents: Reactions set before they were for every agent (SHEP-42's assistant.reactions) count where a layer has no agents'
   const own = (l, k) => (k === "agents" && typeof l.obj.assistant?.reactions === "boolean" ? { reactions: l.obj.assistant.reactions, ...l.obj.agents } : l.obj[k] ?? {});
   for (const k of ["tasks", "automations", "agents"]) out[k] = Object.assign({ ...SHEPHERDR_DEFAULTS[k] }, ...layers.map((l) => own(l, k)));

@@ -3607,7 +3607,9 @@ class CleanEnv(unittest.TestCase):
             # Extract only declarations and the wrapper function; never run restart's hc commands.
             with open(os.path.join(ROOT, "mods/coordinator/restart.sh")) as f:
                 restart = f.read()
-            declarations = restart[restart.index("\nclean="):restart.index("\ntpl=$HOME")]
+            declarations = "\n".join(re.search(r"^" + name + r"=.*$", restart, re.M).group(0)
+                                     for name in ("clean", "agent_path", "login"))
+            declarations += "\n" + re.search(r"^login_command\(\) \{[\s\S]*?^\}", restart, re.M).group(0)
             generated = subprocess.run(["bash", "-c", declarations + '\nlogin_command "$clean $agent_path"\' exec "$@"\''],
                                        env={**os.environ, "HOME": d}, capture_output=True, text=True, check=True).stdout
             with open(os.path.join(ROOT, "core/clean-env.js")) as f:
@@ -5123,7 +5125,7 @@ class TaskFlow(unittest.TestCase):
         self.patch(self.commands, "parent_for", lambda parent, space: parent)
         self.patch(self.commands, "run", lambda argv, **k: events.append(("run", argv)))
 
-        def launch(s, t, argv, space, message=None, parent=None, resume=None, role=None):
+        def launch(s, t, argv, space, message=None, parent=None, resume=None, role=None, custom=False):
             events.append(("launch", resume, message))
             return {"address": "t2", "agent": "claude", "argv": argv}
         self.patch(self.commands, "launch", launch)

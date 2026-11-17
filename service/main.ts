@@ -655,11 +655,12 @@ async function doAction(body: any): Promise<Response> {
   if (body?.type === "role-info") {
     // Settings › Agents' model menu (the window's, settings mode): every installed CLI's models, levels, Fast and
     // permission modes, and the person's pinned and recent models
-    try { if (!settings.choices) await readDefaults(); return json({ ok: true, menus: settings.choices?.menus ?? {}, permDefault: settings.choices?.permDefault ?? {}, picks: (compat.agents as any).picks(), clis: await compat.agents!.choices(null) }); }
+    try { if (!settings.choices) await readDefaults(); return json({ ok: true, menus: settings.choices?.menus ?? {}, magpie: settings.choices?.magpie, permDefault: settings.choices?.permDefault ?? {}, picks: (compat.agents as any).picks(), clis: await compat.agents!.choices(null) }); }
     catch (err) { return json({ ok: false, error: (err as Error).message }); }
   }
   try {
     const r = await act(hub, body, compat);
+    if (body?.type === "restart") live.refreshFresh();
     // a switch flipped: shown at once, on another machine's space too (its file read again there)
     if (body?.type === "mode" && typeof body.place === "string") await model.readPilot(body.place);
     return json(r);

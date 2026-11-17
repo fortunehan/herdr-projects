@@ -32,6 +32,23 @@ if [[ "$old" == */* ]]; then
   echo "$on/$new"
   exit 0
 fi
+agent_key() { case "$(basename "$1")" in claude-magpie|claude-cdnd) echo claude ;; *) basename "$1" ;; esac; }
+agent_path='PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
+login='if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '"'"'^SHELL='"'"'; then exec "$SHELL" -lc '"'"'exec "$@"'"'"' herdr-login sh -c'
+login_command() {
+  local body=$1
+  printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
+}
+if [ -n "$argv" ]; then
+  command=$(jq -r '.[0] // empty' <<<"$argv")
+  case $(basename "$command") in
+    claude-magpie|claude-cdnd)
+      if ! sh -c "$(login_command "$agent_path"' command -v "$1" >/dev/null 2>&1')" launcher "$command"; then
+        echo "Cannot start: $(basename "$command") is not installed on this machine." >&2
+        exit 127
+      fi ;;
+  esac
+fi
 info=$(hc get "$old" --json) || exit 1
 get() { jq -r "$1 // empty" <<<"$info"; }
 space=$(get '.labels["herdr.space"]') tab=$(get '.labels["herdr.tab"]') role=$(get '.labels["herdr.role"]')
@@ -91,15 +108,10 @@ if [ -n "$chat" ]; then
   done
   [ "$role" = coordinator ] && labels+=(--label herdr.role=coordinator)
 fi
+if [ -n "$argv" ]; then labels+=(--label "herdr.launcher.argv=$argv"); fi
 # The new agent never inherits a parent Claude Code session's markers the holder may carry (SHEP-86):
 # the same line as core/clean-env.js CLEAN_ENV (test_repo keeps them equal).
 clean='for v in $(env | sed -nE '"'"'s/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_[A-Za-z0-9_]+)=.*/\1/p'"'"' | grep -vE '"'"'^CLAUDE_CODE_(USE|SKIP|DISABLE|ENABLE|MAX|OAUTH|CLIENT|API)_'"'"'); do unset "$v"; done;'
-agent_path='PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH;'
-login='if [ -n "${SHELL:-}" ] && [ -f "$SHELL" ] && [ -x "$SHELL" ] && env | grep -q '"'"'^SHELL='"'"'; then exec "$SHELL" -lc '"'"'exec "$@"'"'"' herdr-login sh -c'
-login_command() {
-  local body=$1
-  printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
-}
 tpl=$HOME/.config/herdr-core/templates/assistant.md
 # A coordinator restarted without an argv: the assistant template's own command and words.
 own=""
@@ -109,17 +121,17 @@ argv_cmd() { local a; cmd=(); while IFS= read -r a; do cmd+=("$a"); done < <(jq 
 if [ -n "${HERDR_RESTART_RESUME:-}" ] && [ -n "$argv" ]; then
   argv_cmd
   [ ${#cmd[@]} -gt 0 ] || exit 1
-  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(basename "${cmd[0]}")" -- sh -c "$(login_command "$clean $agent_path"' exec "$@"')" herdr-clean "${cmd[@]}" | jq -r '.address // empty')
+  new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" --label "herdr.agent=$(agent_key "${cmd[0]}")" -- sh -c "$(login_command "$clean $agent_path"' exec "$@"')" herdr-clean "${cmd[@]}" | jq -r '.address // empty')
 elif [ -z "$argv" ] && [ "$role" = coordinator ] && [ -z "$own" ]; then
   new=$(hc run --bg --json --no-parent --cwd "$cwd" "${labels[@]}" assistant "$handoff" | jq -r .address)
 else
   if [ -n "$own" ]; then
     own=${own#exec }
-    line=$own key=$(basename "${own%% *}")
+    line=$own key=$(agent_key "${own%% *}")
   else
     argv_cmd
     [ ${#cmd[@]} -gt 0 ] || exit 1
-    key=$(basename "${cmd[0]}")
+    key=$(agent_key "${cmd[0]}")
     # Codex runs its commands outside hc without --no-daemon.
     [ "$key" = codex ] && [[ " ${cmd[*]} " != *" --no-daemon "* ]] && cmd+=(--no-daemon)
     line=$(printf '%q ' "${cmd[@]}")

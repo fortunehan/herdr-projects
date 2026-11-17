@@ -13,7 +13,7 @@ import time
 from .base import ENTRY, Fail, git, guard, now, run, STORE, stop_note, VERSION
 from .settings import (
     agent_argv, agent_key, bare, merge_policy, review_limits, set_opts, settings_block, settings_for, space_base,
-    task_settings, worker_argv, worktrees_on,
+    task_settings, worker_argv, worker_pick, worktrees_on, ensure_launcher,
 )
 from .agents import (
     accepting, agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
@@ -105,8 +105,8 @@ def cmd_add(args):
         # The person's setting wins: worktrees off for this repo means in the folder, --worktree or not.
         mode = "here" if args.here or not worktrees_on(s) else "worktree"
         t = s.new(args.title.strip(), prompt, mode)
-        set_opts(t, args)
         space = bare(args.space) if args.space else caller_space()
+        set_opts(t, args, launcher=worker_pick(s, t, space).get("launcher"))
         set_base(s, t, args.base, space, new=True)
         set_branch(s, t, getattr(args, "branch", None))
         local.set_wid(s, t, getattr(args, "wid", None))
@@ -274,7 +274,7 @@ def cmd_show(args):
     say(args, v, "\n".join(text))
 
 
-def begin(s, t, argv, space, parent=None):
+def begin(s, t, argv, space, parent=None, custom=False):
     """Starts the task's first agent. Returns its record."""
     t["state"], t["started"] = "running", now()
     # Its brief teaches `reviewed`: ready waits for a review of its final commit (review_refusal).
@@ -289,7 +289,7 @@ def begin(s, t, argv, space, parent=None):
         # it changed nothing, so there is nothing to review (review_refusal, #744).
         t["folder_start"] = git(s.loc["folder"], "rev-parse", "HEAD")[1] or None
     parent = parent_for(parent, space)
-    return launch(s, t, argv, space, brief(s, t, parent, space, argv), parent=parent)
+    return launch(s, t, argv, space, brief(s, t, parent, space, argv), parent=parent, **({"custom": True} if custom else {}))
 
 
 def cmd_start(args):
@@ -307,10 +307,13 @@ def cmd_start(args):
         set_branch(s, t, getattr(args, "branch", None))
         q = t.get("queue") or {}
         space = bare(args.space) if args.space else (q.get("space") or default_space())
+        changed = any(getattr(args, k, None) is not None for k in ("launcher", "model", "effort", "set"))
+        if changed:
+            set_opts(t, args, launcher=worker_pick(s, t, space).get("launcher"))
         argv = agent_argv(None, args.argv) if args.argv else worker_argv(s, t, space, args.agent) if args.agent else \
-            (q.get("argv") or worker_argv(s, t, space))
+            (worker_argv(s, t, space) if changed else q.get("argv") or worker_argv(s, t, space))
         parent = args.parent or q.get("parent")
-        plan = {"argv": argv, "space": space, "parent": parent, **({"custom": True} if args.argv else {})}
+        plan = {"argv": argv, "space": space, "parent": parent, **({"custom": True} if args.argv or (not changed and not args.agent and q.get("custom")) else {})}
         at = scheduled_at(args)
         if at:
             # start --at / --in: it starts by itself then, as this start would now.
@@ -326,7 +329,7 @@ def cmd_start(args):
             s.dirty = True
             v = view(s, t)
         else:
-            a = begin(s, t, argv, space, parent)
+            a = begin(s, t, argv, space, parent, **({"custom": True} if args.argv or q.get("custom") else {}))
             v = view(s, t)
     # The scheduler starts queued tasks and tells the Assistant its tasks' news.
     try:
@@ -829,9 +832,9 @@ def cmd_edit(args):
         if args.prompt_file:
             with open(args.prompt_file) as f:
                 t["prompt"] = f.read()
-        pick = [t.get(k) for k in ("agent", "model", "effort")]
-        set_opts(t, args)
-        if [t.get(k) for k in ("agent", "model", "effort")] != pick:
+        pick = [t.get(k) for k in ("agent", "launcher", "model", "effort")]
+        set_opts(t, args, launcher=worker_pick(s, t, t.get("space")).get("launcher"))
+        if [t.get(k) for k in ("agent", "launcher", "model", "effort")] != pick:
             # The next agent started for it runs on the new choice (start_again), a queued one too.
             t["pick_at"] = now()
             q = t.get("queue") or {}
@@ -902,24 +905,26 @@ def last_agent(t):
     return t["agents"][-1] if t["agents"] else None
 
 
-def start_again(s, t, space, key=None, argv_json=None, message=None, parent=None, nudge=None):
+def start_again(s, t, space, key=None, argv_json=None, message=None, parent=None, nudge=None, current=False):
     """Starts an agent for the task: the last agent's own session when it's the same kind of agent
     and the session is known; else a fresh one with a handoff. `message` goes after either; `nudge`
     is a resumed session's first message when no `message` is given (a handoff needs none)."""
     unarchive(s, t)
     prev = last_agent(t)
     parent = parent_for(parent or (prev or {}).get("parent"), space)
-    # The last agent's argv again, unless the task's agent, model or effort changed since (edit).
-    keep = prev and prev.get("argv") and (t.get("pick_at") or 0) <= (prev.get("at") or 0)
+    # Only a switch picks today's settings; recovery keeps the worker's original launch.
+    keep = prev and prev.get("argv") and not current
     argv = agent_argv(None, argv_json) if argv_json else worker_argv(s, t, space, key) if key else \
         (prev["argv"] if keep else worker_argv(s, t, space))
+    custom = bool(argv_json or (prev.get("custom_argv") if keep and not key else worker_pick(s, t, space, key).get("argv") == argv))
+    extra = {"custom": custom}
     same = prev and agent_key(argv) == prev.get("agent")
     res = resume_argv(argv, prev["session"]) if same and prev.get("session") else None
     if res:
-        return launch(s, t, argv, space, message or nudge, parent=parent, resume=res), True
+        return launch(s, t, argv, space, message or nudge, parent=parent, resume=res, **extra), True
     text = handoff(s, t, prev, parent, argv) + (("\n\n" + message) if message else "")
     t["review_gate"] = True
-    return launch(s, t, argv, space, text, parent=parent), False
+    return launch(s, t, argv, space, text, parent=parent, **extra), False
 
 
 # SHEP-189: what a resumed agent hears first. Its session comes back with no message, so without this
@@ -975,6 +980,8 @@ def cmd_switch(args):
             t.setdefault("started", now())
             t.pop("queue", None)
             t.pop("scheduled_for", None)
+        chosen = agent_argv(None, args.argv) if args.argv else worker_argv(s, t, space, args.agent)
+        ensure_launcher(chosen)
         ended = []
         # An agent switching itself can't end first: that would end this command too.
         me = os.environ.get("HC_TERMINAL_ID")
@@ -986,7 +993,7 @@ def cmd_switch(args):
             end_agent(s, t, old["address"])
             ended.append(old["address"])
         try:
-            a, resumed = start_again(s, t, space, args.agent, args.argv, parent=args.parent, nudge=SWITCH_NUDGE)
+            a, resumed = start_again(s, t, space, args.agent, args.argv, parent=args.parent, nudge=SWITCH_NUDGE, current=True)
         except Fail as e:
             if ended:
                 raise Fail(f"{e} The old agent {ended[0]} already ended: its work is kept, `herdr-task resume "

@@ -43,6 +43,8 @@ import { dirs } from "./dirs.js";
 import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, STAR, starState, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
   EVERYWHERE, CHANGED_HERE, RESET, EDIT_INSTRUCTIONS, USE_OTHER_CLI, LOADING_AGENTS, SAVED, sameAs as sameAsWords,
   spacesOwn, otherCliWords, backupProblem, notifyMachineAbout, machineLabel, TASK_ROWS, LEVEL } from "./core/settings.js";
+import { workerChoices, roleSel } from "./core/settings.js";
+import { normalizePick } from "./core/agents.js";
 
 const I = (name) => `mods/shepherdr-settings/${name}.svg`;
 // A page's title, and a Tasks row's (by its key, section.field).
@@ -327,7 +329,8 @@ export default class ShepherdrSettings extends View {
         sel = { agent: o, model: this.data.menus[o].models[0]?.id ?? null, effort: null, fast: false, perm: this.data.permDefault?.[o] ?? null };
       }
       sel ??= this.data?.defaults ?? null;
-      this.roles[r.id] = { ...(this.roles[r.id] ?? {}), sel: sel ? { ...sel } : null, data: this.data, saved: JSON.stringify(sel), unset };
+      if (sel) sel = roleSel(r.id, sel, this.data, this.otherCli()).sel;
+      this.roles[r.id] = { ...(this.roles[r.id] ?? {}), sel: sel ? { ...sel } : null, data: r.id === "worker" ? workerChoices(this.data, sel) : this.data, saved: JSON.stringify(sel), unset };
     }
   }
 
@@ -340,7 +343,8 @@ export default class ShepherdrSettings extends View {
       if (now === c.saved) continue;
       c.saved = now;
       c.unset = false;
-      this.set(r.id, null, { ...c.sel }, cx);
+      if (r.id === "worker") c.data = workerChoices(this.data, c.sel);
+      this.set(r.id, null, normalizePick(c.sel), cx);
     }
   }
 

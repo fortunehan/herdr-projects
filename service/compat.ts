@@ -716,6 +716,8 @@ export class Compat {
     const under = st === "working" ? { doing: CV.doingWords(reader.conv, report) ?? "", ...(reader.conv?.waiting ? { waits: true } : {}) }
       : st === "blocked" && !cards ? { blocked: report.replace(/^answer:\s*/i, "") } : {};
     // a note under the conversation (a lost session being started again: service/watch.ts)
+    const launcherNotice = t?.labels?.["herdr.launcher.notice"];
+    if (launcherNotice) messages.push(quiet("launcher-fallback", t?.created_ms ?? Date.now(), launcherNotice));
     const note = addr ? watch?.notes?.get(addr)?.text : undefined;
     // instead of the conversation, the window's notice: still opening, not a chat agent, its log not found, ended
     const kind = kindOfTerm(t);

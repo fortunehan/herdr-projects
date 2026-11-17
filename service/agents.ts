@@ -11,11 +11,12 @@ import { SH } from "../core/paths.js";
 import { sh } from "./model.ts";
 import { layoutScript } from "./layout-scripts.ts";
 import * as AG from "../core/agents.js";
+import { commandCheck } from "../core/clean-env.js";
 import { chatLabel } from "../core/spaces.js";
 import { kindOf } from "../core/chat-reader.js";
 import * as LS from "../core/live-switch.js";
 
-const { DEFAULTS, parseDefaults, USAGE_FILE, parseUsage, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent } = AG as any;
+const { DEFAULTS, parseDefaults, USAGE_FILE, parseUsage, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent, choiceMenus, choiceKey, launcherOf, launchArgv, normalizePick } = AG as any;
 
 async function run(cmd: string[]) {
   const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
@@ -25,6 +26,26 @@ async function run(cmd: string[]) {
 
 export class Agents {
   constructor(private hub: Hub) {}
+  freshPicks = new Map<string, any>();
+
+  freshAgent(key: string) {
+    const pick = this.freshPicks.get(key);
+    if (!pick) return null;
+    const c = current(pick.agent, pick.argv ?? argvFor(pick, {}).base, {}, {});
+    return { kind: pick.agent, words: line(c).split(" · ").slice(1).join(" · "), model: c.model,
+      modelLabel: (AG as any).modelName(c.model), effort: c.effort };
+  }
+
+  async freshMenu(key: string, machine: string | null, configured: any) {
+    const dflt: any = await this.catalog(machine);
+    const choices = (await import("../core/settings.js") as any).choicesFrom(dflt);
+    const selected = normalizePick(this.freshPicks.get(key) ?? configured ?? choices.defaults);
+    this.freshPicks.set(key, selected);
+    const kind = (AG as any).agentKey(selected.agent);
+    const c = current(kind, selected.argv ?? argvFor(selected, {}).base, {}, dflt[kind]);
+    const pick = { ...selected, model: rowFor(kind, c), effort: c.effort ?? null, fast: !!c.fast, perm: c.perm ?? null };
+    return { current: { ...pick, agent: choiceKey(pick) }, menus: choiceMenus(dflt, pick), permDefault: choices.permDefault, picks: this.picks() };
+  }
 
   /** The person's pinned and recent models (core/agents.js PICKS_FILE), as the window's model menu keeps them here */
   private picksPath = where()["model-picks"];
@@ -80,15 +101,12 @@ export class Agents {
     if (!t) throw new Error("That agent isn't here any more.");
     const machine = addr.includes("/") ? addr.split("/")[0] : null;
     const kind = kindOf(t) ?? reader?.kind ?? "claude";
-    const [claude, codex, have] = await Promise.all([this.defaults("claude", machine), this.defaults("codex", machine),
-      sh(this.hub, 'for c in "$@"; do command -v "$c" >/dev/null 2>&1 && echo "$c"; done', ["agents", "claude", "codex"], machine).then((r: any) => new Set(String(r?.stdout ?? "").split("\n").filter(Boolean)), () => null)]);
-    const dflts: any = { claude, codex };
+    const dflts: any = await this.catalog(machine);
     // a resumed conversation's log names the model it ran on before: until this process writes, its arguments say
     const c = current(kind, t.foreground?.argv ?? t.argv ?? [], reader?.conv?.meta, dflts[kind], t.created_ms);
-    const row = rowFor(kind, c);
-    const menus = Object.fromEntries(["claude", "codex"].filter((k) => k === kind || !have || have.has(k)).map((k) => [k, menuFor(k, dflts[k], k === kind ? row : null)]));
-    return { current: { agent: kind, model: row, effort: c.effort ?? null, fast: !!c.fast, perm: c.perm ?? null }, menus,
-      permDefault: { claude: claude?.mode ?? "manual", codex: "auto" }, picks: this.picks(), offline: machine && !(await this.reachable(machine)) ? machine : null };
+    const chosen = { ...c, model: rowFor(kind, c), launcher: launcherOf(launchArgv(t)) };
+    return { current: { ...chosen, agent: choiceKey(chosen) }, menus: choiceMenus(dflts, chosen),
+      permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" }, picks: this.picks(), offline: machine && !(await this.reachable(machine)) ? machine : null };
   }
 
   /** whether another machine answers now (hc machine ls: connected) */
@@ -98,9 +116,17 @@ export class Agents {
   }
 
   /** Each CLI's own settings here (Settings › Agents' model menu: core/settings.js choicesFrom). */
-  async ownDefaults() {
-    const [claude, codex] = await Promise.all([this.defaults("claude", null), this.defaults("codex", null)]);
-    return { claude, codex };
+  async catalog(machine: string | null) {
+    const [claude, codex, magpie] = await Promise.all([this.defaults("claude", machine), this.defaults("codex", machine),
+      sh(this.hub, 'magpie models claude', [], machine).catch(() => null)]);
+    return { claude, codex, magpie: (AG as any).magpieModels(magpie?.code === 0 ? magpie.stdout : "") };
+  }
+  async ownDefaults() { return this.catalog(null); }
+
+  async requireLauncher(argv: string[], machine: string | null) {
+    if (!/^claude-(magpie|cdnd)$/.test(String(argv[0]).split("/").pop() ?? "")) return;
+    const r = await sh(this.hub, commandCheck(argv[0]), [], machine);
+    if (r.code !== 0) throw new Error(`Cannot start: ${argv[0]} is not installed on this machine.`);
   }
 
   /** What an unset role runs, in the window's words ("Opus 5.5 · 1M · High"): each CLI's own defaults here. */
@@ -115,13 +141,12 @@ export class Agents {
 
   /** What each CLI offers on a machine (null: here), as the restart sheet lists them. */
   async choices(machine: string | null) {
-    const [claude, codex] = await Promise.all([this.defaults("claude", machine), this.defaults("codex", machine)]);
-    const dflt: any = { claude, codex };
-    return ["claude", "codex"].map((k) => {
-      const m = menuFor(k, dflt[k], null);
+    const dflt: any = await this.catalog(machine);
+    return Object.entries(choiceMenus(dflt)).map(([k, value]) => {
+      const m: any = value;
       // its permission modes, and the one a new agent gets unless picked (the CLI's own: Claude Code's settings mode)
-      return { kind: k, name: NAMES[k], models: m.models.map((x: any) => ({ id: x.id, label: x.name, efforts: x.efforts, ...(x.defaultEffort ? { defaultEffort: x.defaultEffort } : {}) })),
-        speeds: m.models.some((x: any) => x.fast) ? ["normal", "fast"] : ["normal"], perms: m.perms ?? [], permDefault: k === "claude" ? dflt.claude?.mode ?? "manual" : "auto" };
+      return { kind: k, name: m.name, models: m.models.map((x: any) => ({ id: x.id, label: x.name, efforts: x.efforts, ...(x.defaultEffort ? { defaultEffort: x.defaultEffort } : {}) })),
+        speeds: m.models.some((x: any) => x.fast) ? ["normal", "fast"] : ["normal"], perms: m.perms ?? [], permDefault: AG.agentKey(k) === "claude" ? dflt.claude?.mode ?? "manual" : "auto" };
     });
   }
 
@@ -131,15 +156,10 @@ export class Agents {
     if (!t) throw new Error("That agent isn't here any more.");
     const machine = addr.includes("/") ? addr.split("/")[0] : null;
     const kind = kindOf(t) ?? "claude";
-    const [claude, codex] = await Promise.all([this.defaults("claude", machine), this.defaults("codex", machine)]);
-    const dflt: any = { claude, codex };
+    const dflt: any = await this.catalog(machine);
     const c = current(kind, t.foreground?.argv ?? t.argv ?? [], reader?.conv?.meta ?? {}, dflt[kind]);
-    const clis = ["claude", "codex"].map((k) => {
-      const m = menuFor(k, dflt[k], k === kind ? c.model : null);
-      return { kind: k, name: NAMES[k], models: m.models.map((x: any) => ({ id: x.id, label: x.name, efforts: x.efforts, ...(x.defaultEffort ? { defaultEffort: x.defaultEffort } : {}) })),
-        speeds: m.models.some((x: any) => x.fast) ? ["normal", "fast"] : ["normal"] };
-    });
-    const on = { kind, model: rowFor(kind, c) ?? undefined, effort: c.effort ?? undefined, speed: c.fast ? "fast" : "normal" };
+    const clis = await this.choices(machine);
+    const on = { kind: choiceKey({ ...c, launcher: launcherOf(launchArgv(t)) }), model: rowFor(kind, c) ?? undefined, effort: c.effort ?? undefined, speed: c.fast ? "fast" : "normal" };
     return { role: t.labels?.["herdr.task"] ? "task" : "coordinator", on, onKnown: true, onWords: line(c), want: on, clis, working: t.status?.state === "working" };
   }
 
@@ -154,7 +174,7 @@ export class Agents {
     let meta = reader?.conv?.meta ?? {};
     if (t.created_ms && meta.at && meta.at < t.created_ms) meta = { used: meta.used, window: meta.window };
     const c = current(kind, t.foreground?.argv ?? t.argv ?? [], meta, dflt);
-    const from = { agent: kind, model: rowFor(kind, c) ?? "", effort: c.effort ?? "", fast: !!c.fast, perm: c.perm ?? "" };
+    const from = { agent: choiceKey({ agent: kind, launcher: launcherOf(launchArgv(t)) }), model: rowFor(kind, c) ?? "", effort: c.effort ?? "", fast: !!c.fast, perm: c.perm ?? "" };
     const to = { agent: pick.kind, model: pick.model ?? "", effort: pick.effort ?? "", fast: pick.speed === "fast", perm: pick.perm ?? "" };
     if (!LS.liveOK(from, to)) return { terminal: await this.restart(addr, reader, pick) };
     const state = t.status?.state;
@@ -194,7 +214,8 @@ export class Agents {
     if (!t || t.state !== "live") throw new Error("That agent isn't running.");
     const kind = kindOf(t) ?? "claude";
     const old = { agent: kind, argv: t.foreground?.argv ?? t.argv ?? [], session: sessionOf(kind, reader?.path ?? null) };
-    const built = argvFor({ agent: pick.kind, model: pick.model, effort: pick.effort, fast: pick.speed === "fast", perm: pick.perm ?? current(kind, old.argv, {}, {}).perm }, old);
+    const built = argvFor(normalizePick({ agent: pick.kind, model: pick.model, effort: pick.effort, fast: pick.speed === "fast", perm: pick.perm ?? current(kind, old.argv, {}, {}).perm }), old);
+    await this.requireLauncher(built.base, addr.includes("/") ? addr.split("/")[0] : null);
     const pane = t.labels?.["herdr.chat"] ?? "";
     const task = t.labels?.["herdr.task"];
     if (task) {

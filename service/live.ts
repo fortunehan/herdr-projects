@@ -65,11 +65,21 @@ export class Live {
     for (const ws of this.pages) if (ws.getBufferedAmount() < 1 << 20) ws.send(text);
   }
 
+  /** A model picked before an Assistant starts still appears under its composer. */
+  refreshFresh() {
+    for (const ws of this.pages) for (const key of ws.data.keys ?? []) {
+      if (this.compat?.addrOf(key)) continue;
+      const agent = (this.compat?.agents as any)?.freshAgent?.(key);
+      if (agent && ws.readyState === 1) ws.send(JSON.stringify({ type: "chat", chat: { key, messages: [], working: false, cli: agent.kind, agent } }));
+    }
+  }
+
   /** The chats a page has open now (2.1 sends their keys): followed until it closes them. */
   private watch(ws: WS, keys: string[]) {
     const chats = this.chats, compat = this.compat;
     if (!chats || !compat) return;
     ws.data.keys = keys;
+    this.refreshFresh();
     const want = new Map<string, string>();
     for (const k of keys.slice(0, 40)) { const a = compat.addrOf(k); if (a) want.set(k, a); }
     ws.data.chats ??= new Map();

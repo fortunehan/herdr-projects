@@ -50,6 +50,36 @@ repos" without a third layer, and one less layer keeps "where does this value co
 genuinely differs in (its hardware, its home space, a key only it has) is already on Machines and Secrets. Agent and
 task values a machine set before (the old machine scope) still apply there until Reset, and say so on Machines.
 
+## Claude launchers
+
+Assistant and task composers, and all three roles in Settings > Agents, offer Claude Code, Codex, Claude Magpie,
+and Claude Cdnd. The Claude choices run `claude`, `claude-magpie`, and `claude-cdnd` respectively. The stored Agent
+stays Claude; its Launcher is `direct`, `magpie`, or `cdnd`.
+
+The magpie model picker reads `magpie models claude` and accepts a typed provider/model ID.
+Selecting magpie saves the Launcher with `copilot/claude-sonnet-5.5` selected. Its default effort is `high`.
+Changing the Launcher drops the previous model and keeps the effort. A model supplied with the change wins.
+Selecting the same Launcher keeps its model.
+
+Claude Code and Claude Cdnd share the model picker strategy: use `modelPicker.options` from
+`~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`), otherwise the built-in Claude models.
+These two lists are not fetched from a provider. A typed model ID is also accepted. For example:
+
+```json
+{"modelPicker":{"options":[{"model":"my-model-id","label":"My model"}]}}
+```
+
+Tasks override their space with `herdr-task add`, `edit`, or `start --launcher magpie|cdnd|direct`, or `--set launcher=...`.
+Worker settings also read the existing Everywhere and machine layers. A Codex task ignores an inherited Launcher;
+an explicit `agent=codex` and a wrapper Launcher on the same task or layer is refused.
+Custom argv runs as given, including either wrapper, without Launcher defaults.
+
+Automatic recovery and resume keep the worker's original Launcher, model, and effort. A new start or
+`herdr-task switch` uses current settings; a switch between Launchers resumes the same Claude session.
+A fork keeps the original Launcher, model, and effort.
+If a selected wrapper is missing on the target machine, starting reports an error. An explicit switch checks
+this before stopping the current worker. Install the wrapper on that machine or select another launcher.
+
 ## Where they're kept, and how they travel
 
 - `~/.config/shepherdr/settings.json`: `everywhere` and `spaces[<space id>]` (another machine's space as `<machine>/<id>`), each

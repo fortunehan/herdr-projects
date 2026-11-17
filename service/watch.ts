@@ -17,7 +17,7 @@ import { layoutScript } from "./layout-scripts.ts";
 
 const { ScreenWatch, starting, cliOf, readScreen, screenText, pressKeys, SCREEN } = SC as any;
 const { LOST, lostMessage, shellWord, WORDS, sessionStarted, sessionFailed } = CV as any;
-const { freshArgv } = AG as any;
+const { freshArgv, launchArgv } = AG as any;
 type Run = (args: string[]) => Promise<{ code: number; stdout: string; stderr?: string }>;
 /** an agent to watch: its address, and its task's id when it is a task's worker */
 export type Watched = { addr: string; ref?: string | null };
@@ -83,8 +83,9 @@ export class AgentWatch {
     this.tried.add(addr);
     let t: any = null;
     try { t = JSON.parse((await this.hc(["get", addr, "--json"])).stdout || "null"); } catch {}
-    const kind = cliOf({ agent: (t?.argv ?? []).map((a: string) => String(a).split("/").pop()).find((a: string) => /^(claude|codex)$/.test(a)) });
-    const fresh = kind ? freshArgv(kind, t?.argv) : null;
+    const argv = launchArgv(t);
+    const kind = cliOf({ agent: argv.map((a: string) => String(a).split("/").pop()).find((a: string) => /^(claude|claude-magpie|claude-cdnd|codex)$/.test(a)) });
+    const fresh = kind ? freshArgv(kind, argv) : null;
     if (!fresh || !t) return;
     if (t.state !== "live" && (t.exit_code ?? 1) === 0) return;
     const screen = (await this.hc(["read", addr, "--lines", "40"]).catch(() => null))?.stdout ?? "";

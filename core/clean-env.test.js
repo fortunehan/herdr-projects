@@ -1,13 +1,27 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { AGENT_PATH, CLEAN_ENV, cleanCommand, loginCommand } from "./clean-env.js";
+import { AGENT_PATH, CLEAN_ENV, cleanCommand, loginCommand, commandCheck } from "./clean-env.js";
 
 // SHEP-86: an Assistant's one-off template command runs under sh -c in the holder's environment. Fake values only.
 const spawn = (argv, options) => Bun.spawnSync(["/usr/bin/env", "-i", ...Object.entries(options.env).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`), ...argv]);
 
 const parent = { PATH: process.env.PATH, CLAUDECODE: "1", CLAUDE_PID: "4242", CLAUDE_CODE_CHILD_SESSION: "1", CLAUDE_CODE_SESSION_ID: "fake-session",
   CLAUDE_CODE_MESSAGING_TOKEN: "fake-token", CLAUDE_CONFIG_DIR: "/tmp/fake-claude", CLAUDE_CODE_USE_BEDROCK: "1", FAKE_OTHER: "x" };
+
+test("launcher probes find commands supplied by the login profile without starting them", () => {
+  const home = mkdtempSync(`${tmpdir()}/launcher-check-`);
+  try {
+    mkdirSync(`${home}/tools`);
+    const shell = `${home}/login-shell`;
+    writeFileSync(shell, '#!/bin/sh\nPATH="$HOME/tools:$PATH"; export PATH\nshift\nexec /bin/sh -c "$@"\n', { mode: 0o755 });
+    writeFileSync(`${home}/tools/claude-cdnd`, '#!/bin/sh\ntouch "$HOME/started"\n', { mode: 0o755 });
+    const env = { HOME: home, PATH: "/usr/bin:/bin", SHELL: shell };
+    expect(spawn(["/bin/sh", "-c", commandCheck("claude-cdnd")], { env }).exitCode).toBe(0);
+    expect(spawn(["/bin/sh", "-c", commandCheck(`${home}/missing/claude-cdnd`)], { env }).exitCode).not.toBe(0);
+    expect(existsSync(`${home}/started`)).toBe(false);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 test("an Assistant's command runs without a parent Claude Code session's markers, keeping the person's config", () => {
   const r = spawn(["sh", "-c", cleanCommand("env")], { env: parent });

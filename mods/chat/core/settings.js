@@ -3,7 +3,8 @@
 // web app's Settings say the same. herdr-task reads the file (herdr_task/settings.py: settings_for); its defaults are
 // DEFAULTS there and here.
 // Shared core: the source is core/settings.js; bin/sync-shared copies it into the mods in lib/COPIES.
-import { NAMES, levelName, current, rowFor, menuFor, permAcross } from "./agents.js";
+import { NAMES, CHOICE_NAMES, levelName, current, rowFor, menuFor, permAcross, MAGPIE_MODEL, magpieModels, choiceMenus, normalizePick, viewPick, choiceKey, mergeWorker } from "./agents.js";
+export { mergeWorker } from "./agents.js";
 import { SERVE } from "./host.js";
 
 // ---- the frame -------------------------------------------------------------------------------------------------
@@ -81,6 +82,19 @@ export const INSTRUCTIONS = {
 };
 export const USE_OTHER_CLI = "Use other CLI";
 export const LOADING_AGENTS = "Loading agents…";
+export const LAUNCHER = { title: "Launcher", choices: [["direct", "Direct"], ["magpie", "magpie"], ["cdnd", "Cdnd"]] };
+export function chooseLauncher(sel, launcher) {
+  if (launcher === (sel.launcher ?? "direct")) return sel;
+  const next = { ...sel, launcher, model: launcher === "magpie" ? MAGPIE_MODEL : null };
+  return next;
+}
+export const workerChoices = (data, _sel) => data;
+
+/** @param {string | null} space */
+export function rolePick(file, role, space = null, machine = "local") {
+  const layers = [file?.everywhere, file?.machines?.[machine], space ? file?.spaces?.[space] : null];
+  return layers.reduce((pick, layer) => layer?.[role] ? mergeWorker(pick, layer[role]) : pick, null);
+}
 // An unset Reviewer's button: what runs, the other CLI.
 export const otherCliWords = (cli) => `Other CLI (${NAMES[cli] ?? cli})`;
 export const otherCli = (worker) => (worker === "codex" ? "claude" : "codex");
@@ -148,25 +162,26 @@ export function backupProblem(checks, m, cli) {
 // The model menu's words (mods/chat-models, settings mode) and its button's: "Opus 5.5 · 1M · High".
 // the model list's headings come from core/agents.js modelSections (Pinned, Recent, Models)
 export const MODEL_MENU = { reasoning: "Reasoning", fast: "Fast", permissions: "Permissions" };
-const modelOf = (menus, sel) => menus?.[sel?.agent]?.models?.find((m) => m.id === sel.model) ?? null;
+const modelOf = (menus, sel) => menus?.[choiceKey(sel)]?.models?.find((m) => m.id === sel.model) ?? null;
 export function modelLabel(menus, sel) {
   const m = modelOf(menus, sel);
   const level = sel?.effort ?? m?.defaultEffort ?? null;
-  return [m?.name ?? sel?.model, levelName(level), sel?.fast ? "Fast" : null].filter(Boolean).join(" · ") || "Choose a model";
+  const key = choiceKey(sel), launcher = key === "claude-magpie" || key === "claude-cdnd" ? CHOICE_NAMES[key] : null;
+  return [launcher, m?.name ?? sel?.model, levelName(level), sel?.fast ? "Fast" : null].filter(Boolean).join(" · ") || "Choose a model";
 }
 // What the agents offer, from each CLI's own settings (agents.js parseDefaults) and which are installed:
 // { menus, permDefault, defaults } (defaults: the first installed CLI's own, what an unset role runs).
 export function choicesFrom(dflts, installed = { claude: true, codex: true }) {
-  const menus = Object.fromEntries(["claude", "codex"].filter((k) => installed[k]).map((k) => [k, menuFor(k, dflts[k])]));
-  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "auto" };
+  const menus = choiceMenus(dflts, null, installed);
+  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "auto", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" };
   const first = menus.claude ? "claude" : Object.keys(menus)[0] ?? "claude";
   const c = current(first, [], {}, dflts[first]);
   const model = rowFor(first, c) ?? menus[first]?.models?.[0]?.id ?? null;
-  return { menus, permDefault, defaults: { agent: first, model, effort: c.effort ?? null, fast: false, perm: permDefault[first] } };
+  return { menus, magpie: dflts.magpie ?? magpieModels(""), permDefault, defaults: { agent: first, model, effort: c.effort ?? null, fast: false, perm: permDefault[first] } };
 }
 // What a role's model button starts from: its own choice, else for the Reviewer the other CLI, else the defaults.
 export function roleSel(role, own, choices, worker) {
-  if (own) return { sel: { ...own }, unset: false };
+  if (own) return { sel: viewPick({ agent: "claude", ...own, model: own.model ?? (own.launcher === "magpie" ? MAGPIE_MODEL : null) }), unset: false };
   const o = otherCli(worker);
   if (role === "reviewer" && choices?.menus?.[o])
     return { sel: { agent: o, model: choices.menus[o].models[0]?.id ?? null, effort: null, fast: false, perm: choices.permDefault?.[o] ?? null }, unset: true };
@@ -180,11 +195,13 @@ export function chooseModel(menus, permDefault, sel, agent, id) {
   const next = { ...sel, agent, model: id };
   if (next.effort && !m.efforts.includes(next.effort)) next.effort = null;
   if (!m.fast) next.fast = false;
-  if (agent !== sel.agent) {
+  if (agent !== choiceKey(sel)) {
+    delete next.launcher;
+    if (agent === "claude") next.launcher = "direct";
     next.perm = permAcross(sel.perm, agent, permDefault);
     next.fast = false;
   }
-  return next;
+  return viewPick(normalizePick(next));
 }
 
 // ---- Tasks -----------------------------------------------------------------------------------------------------
