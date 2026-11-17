@@ -120,7 +120,7 @@ def compose(base, argv):
         if owned.get(name, "").lower() not in ("", "0", "false", "no", "off"):
             raise SettingsError("launcher route conflicts with provider selection: " + name)
         owned.setdefault(name, "")
-    result, rest, i = copy.deepcopy(base), [], 0
+    rest, i, caller = [], 0, None
     while i < len(argv):
         arg = argv[i]
         if arg == "--":
@@ -130,18 +130,20 @@ def compose(base, argv):
             i += 1
             if i >= len(argv):
                 raise SettingsError("--settings requires a file or JSON object")
-            overlay = read_settings(argv[i])
+            caller = argv[i]
         elif arg.startswith("--settings="):
-            overlay = read_settings(arg.split("=", 1)[1])
+            caller = arg.split("=", 1)[1]
         else:
             rest.append(arg)
             i += 1
             continue
-        for name, value in (overlay.get("env") or {}).items():
-            if name.upper() in ROUTE_KEYS and value != owned.get(name.upper(), ""):
-                raise SettingsError("caller settings conflict with the selected launcher: " + name.upper())
-        result = merge(result, overlay)
         i += 1
+    # Earlier caller flags are ignored by Claude, including their hooks and permissions.
+    overlay = read_settings(caller) if caller is not None else {}
+    for name, value in (overlay.get("env") or {}).items():
+        if name.upper() in ROUTE_KEYS and value != owned.get(name.upper(), ""):
+            raise SettingsError("caller settings conflict with the selected launcher: " + name.upper())
+    result = merge(base, overlay)
     result["env"] = {**result.get("env", {}), **owned}
     return result, rest
 
@@ -158,7 +160,10 @@ def run(base, command):
 
         def forward(sig, frame):
             if child is not None:
-                child.send_signal(sig)
+                try:
+                    child.send_signal(sig)
+                except ProcessLookupError:
+                    pass
 
         try:
             for sig in (signal.SIGTERM, signal.SIGHUP):

@@ -37,13 +37,17 @@ class Compose(unittest.TestCase):
         self.assertEqual(result["permissions"], ui["permissions"])
         self.assertEqual(argv, ["--model", "chosen/model", "--resume", "S1"])
 
-    def test_file_inline_equals_and_multiple_settings_are_folded_once(self):
+    def test_file_inline_equals_and_last_caller_settings_match_claude(self):
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory, "settings.json")
             p.write_text('{// comment\n"permissions":{"allow":["A"],"deny":["B"],},}')
+            result, _ = compose(BASE, ["--settings", str(p)])
+            self.assertEqual(result["permissions"], {"allow": ["A"], "deny": ["B"]})
             result, argv = compose(BASE, ["--settings", str(p), '--settings={"permissions":{"allow":["C"]}}', "hi"])
-        self.assertEqual(result["permissions"], {"allow": ["A", "C"], "deny": ["B"]})
+        self.assertEqual(result["permissions"], {"allow": ["C"]})
         self.assertEqual(argv, ["hi"])
+        result, _ = compose(BASE, ["--settings", "/ignored-missing-file", "--settings", "{}"])
+        self.assertNotIn("permissions", result)
 
     def test_conflicting_explicit_routes_auth_and_provider_switches_are_refused(self):
         for name, value in [("ANTHROPIC_BASE_URL", "https://another.example"),

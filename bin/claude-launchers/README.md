@@ -21,13 +21,15 @@ launcher tests when updating that build.
 
 The Cdnd wrapper keeps its existing source of route and authentication in
 `~/.zshenv`. It passes those values through the environment to the helper.
-Neither wrapper changes the user's global Claude settings.
+Neither wrapper writes route or authentication into the global Claude settings.
 
 Explicit caller settings that select a different route, authentication, or
 cloud provider cause an error before Claude starts. Unrelated environment
 settings, proxies, certificates, hooks, and permissions remain available.
 The helper accepts JSON comments, trailing commas, file arguments, inline
 JSON, and both forms of `--settings`.
+When callers provide multiple `--settings` flags, only the last applies, as
+in Claude. The helper does not reactivate earlier hooks or permissions.
 
 Run the fixture tests with:
 
