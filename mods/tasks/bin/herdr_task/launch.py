@@ -213,6 +213,10 @@ def helper_hc(words):
             j += 2
         else:
             return False
+    # Accept only the generated login wrapper, never arbitrary shell code.
+    wrapper = clean_env([])
+    if cmd[:len(wrapper)] == wrapper:
+        cmd = cmd[len(wrapper):]
     for base, flags in REVIEWERS.values():
         if cmd[:len(base)] != base:
             continue

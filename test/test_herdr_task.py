@@ -2700,10 +2700,12 @@ class ReviewAsAHelperAgent(unittest.TestCase):
             self.assertIn("codex --no-daemon --sandbox read-only", words)
             self.assertIn("claude --permission-mode plan", words)
             self.assertIn("exactly as the Reviewer line gives it", words)
+            self.assertIn("including its `sh -c` login-environment wrapper", words)
             self.assertIn("hc wait <its name>", words)
             self.assertNotIn("< /dev/null", words)
         self.assertIn(templates.WORKER_MD_BEFORE_SUBAGENTS, templates.OLD_WORKERS)
         self.assertIn(templates.WORKER_MD_BEFORE_COMMAND, templates.OLD_WORKERS)
+        self.assertIn(templates.WORKER_MD_BEFORE_LOGIN, templates.OLD_WORKERS)
         with open(os.path.join(ROOT, "templates", "reviewer.md")) as f:
             self.assertIn(templates.REVIEWER_MD.strip(), f.read())
 
@@ -2767,13 +2769,15 @@ class ReviewerLine(unittest.TestCase):
     def test_codex_runs_on_its_own_server(self):
         r = self.line("ready")
         self.assertEqual(r["value"]["agent"], "codex")
-        self.assertTrue(r["value"]["command"].startswith("codex --no-daemon --sandbox read-only --ask-for-approval never"))
-        self.assertIn("(the other CLI); start it as `codex --no-daemon", r["text"])
+        self.assertIn("codex --no-daemon --sandbox read-only --ask-for-approval never", r["value"]["command"])
+        self.assertTrue(r["value"]["command"].startswith("sh -c "))
+        self.assertIn("(the other CLI); start it as `sh -c", r["text"])
 
     def test_signed_out_codex_never_reviews(self):
         r = self.line("signed-out")
         self.assertEqual(r["value"]["agent"], "claude")
-        self.assertTrue(r["value"]["command"].startswith("claude --permission-mode plan"))
+        self.assertIn("claude --permission-mode plan", r["value"]["command"])
+        self.assertTrue(r["value"]["command"].startswith("sh -c "))
         self.assertIn("Codex isn't signed in here", r["text"])
         self.assertIn("`codex login`", r["text"])
 
@@ -2790,7 +2794,8 @@ class ReviewerLine(unittest.TestCase):
         subprocess.run(["git", "-C", main, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q",
                         "--allow-empty", "-m", "x"], check=True)
         subprocess.run(["git", "-C", main, "worktree", "add", "-q", wt, "-b", "t1"], check=True)
-        cmd = shlex.split(self.settings.reviewer_command("codex", folder=wt))
+        from herdr_task.launch import clean_env
+        cmd = shlex.split(self.settings.reviewer_command("codex", folder=wt))[len(clean_env([])):]
         self.assertIn("--disable", cmd)
         self.assertEqual(cmd[cmd.index("--disable") + 1], "hooks")
         trust = cmd[cmd.index("-c") + 1]

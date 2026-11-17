@@ -416,7 +416,7 @@ def trust_roots(folder):
 
 
 def reviewer_command(who, model=None, effort=None, folder=None, launcher=None):
-    """The command a worker starts its reviewer with (the brief's Reviewer line): read-only, and for
+    """The login-wrapped command in the brief's Reviewer line: read-only, and for
     Codex on its own app server (--no-daemon, as task agents run: a shared one can keep a sign-in
     since replaced, and every turn then fails, #745). Codex would first stop on its own screens,
     nobody at the keys (#798, #753): "Trust this folder?" in a folder it hasn't seen (the task's
@@ -439,7 +439,8 @@ def reviewer_command(who, model=None, effort=None, folder=None, launcher=None):
         a += ["--effort", effort] if effort else []
     else:
         return None
-    return shlex.join(a)
+    from .launch import clean_env
+    return shlex.join(clean_env(a))
 
 
 def task_settings(s, t, space=None, argv=None):

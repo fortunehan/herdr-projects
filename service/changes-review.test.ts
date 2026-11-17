@@ -20,6 +20,36 @@ const run = (cmd: string, args: string[], cwd?: string) => {
   return { code: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 };
 
+for (const stale of [false, true]) test(`Changes reviewer reloads login networking at the hc boundary (stale=${stale})`, async () => {
+  const f = await fixture();
+  await f.start();
+  const launch = f.state.launches[0];
+  const home = join(f.top, "login-home");
+  mkdirSync(join(home, "bin"), { recursive: true });
+  const configured = {
+    HTTP_PROXY: "http://127.0.0.1:12345", HTTPS_PROXY: "http://127.0.0.1:12345", ALL_PROXY: "http://127.0.0.1:12345",
+    http_proxy: "http://127.0.0.1:12345", https_proxy: "http://127.0.0.1:12345", all_proxy: "http://127.0.0.1:12345",
+    NO_PROXY: "localhost,internal.test", no_proxy: "localhost,internal.test", SSL_CERT_FILE: `${home}/ca with spaces.crt`,
+    NODE_EXTRA_CA_CERTS: `${home}/node.crt`, REQUESTS_CA_BUNDLE: `${home}/requests.crt`,
+  };
+  writeFileSync(join(home, ".profile"), Object.entries(configured).map(([k, v]) => `export ${k}='${v}'`).join("\n")
+    + '\nexport PATH="$HOME/bin:/usr/bin:/bin" CLAUDE_CODE_SESSION_ID=profile-marker\n');
+  const shell = join(home, "login shell");
+  writeFileSync(shell, '#!/bin/sh\n[ "$1" = -lc ] || exit 99\n. "$HOME/.profile"\nshift\nexec /bin/sh -c "$@"\n', { mode: 0o755 });
+  writeFileSync(join(home, "bin/claude"), '#!/bin/sh\n/usr/bin/env\nprintf "\\nARGS\\n"\nprintf "<%s>" "$@"\n', { mode: 0o755 });
+  const payload = launch.slice(launch.indexOf("--") + 1);
+  const args = ["a'b", "$literal", "two words", "", "semi;colon", "`text`", "two\nlines"];
+  const env = { HOME: home, SHELL: shell, PATH: "/usr/bin:/bin", CLAUDE_CODE_SESSION_ID: "holder-marker",
+    ...(stale ? Object.fromEntries(Object.keys(configured).map((k) => [k, "stale-holder-value"])) : {}) };
+  const result = Bun.spawnSync(["/usr/bin/env", "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`), ...payload, ...args]);
+  expect(result.exitCode).toBe(0);
+  const [output, argv] = result.stdout.toString().split("\nARGS\n");
+  const seen = Object.fromEntries(output.split("\n").map((l) => l.split(/=(.*)/s).slice(0, 2)));
+  for (const [k, v] of Object.entries(configured)) expect(seen[k]).toBe(v);
+  expect(seen.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+  expect(argv).toBe([...payload.slice(payload.indexOf("claude") + 1), ...args].map((a) => `<${a}>`).join(""));
+});
+
 /** The real window adapter and feature engine, with controlled process/Herdr boundaries and real Git/storage. */
 async function fixture() {
   const top = mkdtempSync(join(tmpdir(), "review-boundary-")); roots.push(top);
