@@ -23,10 +23,10 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, VirtualListScrollHandle, v_virtual_list, Scrollbar } from "gpui-base";
 import { theme, props, setShared, closeOverlay, home, readTextFile, writeTextFile } from "herdr";
-import { modelSections, parsePicks, pickKey, withPin, withRecent, PICKS_FILE, permAcross } from "./core/agents.js";
+import { modelSections, parsePicks, pickKey, withPin, withRecent, PICKS_FILE, permAcross, CHOICES, agentKey, normalizePick, viewPick } from "./core/agents.js";
 import { dirs } from "./dirs.js";
 
-const AGENTS = ["claude", "codex"];
+const AGENTS = CHOICES;
 const LEVEL = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", none: "None" };
 // Sizes, as the chat counts them for the overlay's height (mods/chat openPicker): the model list
 // scrolls past LIST; NOTE is a quiet line (an offline machine's; a new conversation's, two lines).
@@ -38,7 +38,7 @@ export default class ModelMenu extends View {
     const p = props() ?? {};
     this.p = p;
     if (p.pick) { this.handle = cx.focus_handle(); cx.timer.after(0, () => this.handle.focus()); return; }
-    const c = p.current ?? {};
+    const c = viewPick(p.current ?? {});
     this.was = { agent: c.agent, model: c.model, effort: c.effort ?? null, fast: Boolean(c.fast), perm: c.perm ?? null, ...(c.launcher ? { launcher: c.launcher } : {}) };
     this.sel = { ...this.was };
     // Typed as /model <name> in the chat: that model comes chosen, Restart ready.
@@ -116,7 +116,7 @@ export default class ModelMenu extends View {
     if (!m.fast) next.fast = false;
     if (m.agent !== was.agent) {
       delete next.launcher;
-      if (this.p.directMenus) this.p.menus = this.p.directMenus;
+      if (m.agent === "claude") next.launcher = "direct";
       // Another agent: its own permission modes, the nearest to the one chosen.
       next.perm = permAcross(was.perm, m.agent, this.p.permDefault);
       next.fast = false;
@@ -137,7 +137,7 @@ export default class ModelMenu extends View {
 
   restart(cx) {
     const s = this.sel;
-    setShared("chat.restartreq", { pane: this.p.pane, at: Date.now(), pick: { agent: s.agent, model: s.model, effort: this.level(s), fast: s.fast, perm: s.perm } });
+    setShared("chat.restartreq", { pane: this.p.pane, at: Date.now(), pick: normalizePick({ agent: s.agent, model: s.model, effort: this.level(s), fast: s.fast, perm: s.perm }) });
     // first among the recent ones, here and in the web's menu
     if (s.model) cx.spawn(async () => {
       const now = parsePicks(await readTextFile(picksPath()).catch(() => ""));
@@ -217,7 +217,7 @@ export default class ModelMenu extends View {
   tell() {
     if (!this.settingsMode) return;
     const s = this.sel;
-    setShared("newspace.pick", { key: this.p.key, field: "settings", value: { agent: s.agent, model: s.model, effort: s.effort, fast: s.fast, perm: s.perm, ...(s.launcher ? { launcher: s.launcher } : {}) }, at: Date.now() });
+    setShared("newspace.pick", { key: this.p.key, field: "settings", value: normalizePick({ agent: s.agent, model: s.model, effort: s.effort, fast: s.fast, perm: s.perm, ...(s.launcher ? { launcher: s.launcher } : {}) }), at: Date.now() });
   }
 
   render(cx) {
@@ -241,7 +241,7 @@ export default class ModelMenu extends View {
     const rows = sections.flatMap((s) => s.rows);
     this.cursor = Math.max(0, Math.min(this.cursor, rows.length - 1));
     const cur = rows[this.cursor];
-    const newChat = changes.length > 0 && this.sel.agent !== this.was.agent;
+    const newChat = changes.length > 0 && agentKey(this.sel.agent) !== agentKey(this.was.agent);
     const quiet = (text, h = NOTE) => div().min_h(h).flex_none().px(9).py(3).text_size(11.5).text_color(t.dim).child(text);
     // The list's items, each its height and how it draws: headings, models, "N more" lines.
     const items = sections.flatMap((s) => [
@@ -258,9 +258,10 @@ export default class ModelMenu extends View {
     };
     const box = v_flex().id("model-menu").relative().w_full().flex_none().p(5).rounded(8).bg(t.popover).border_1().border_color(t.border).shadow_md()
       .text_size(12.8).text_color(t.foreground)
-      .when(agents.length > 1, (el) => el.child(h_flex().h(TABS).flex_none().px(4).pb(4).items_center()
-        .child(h_flex().w_full().h(28).p(2).gap(2).rounded(14).bg(t.raised)
+      .when(agents.length > 1, (el) => el.child(h_flex().h(TABS * (agents.length > 2 ? 2 : 1)).flex_none().px(4).pb(4).items_center()
+        .child(h_flex().w_full().h(agents.length > 2 ? 60 : 28).flex_wrap().p(2).gap(2).rounded(8).bg(t.raised)
           .children(agents.map((a) => h_flex().id(`tab-${a}`).flex_1().min_w(0).h_full().px(8).gap(6).justify_center().items_center().rounded(12)
+            .when(agents.length > 2, (el) => el.flex_none().w(((this.p.width ?? 340) - 28) / 2).h(26))
             .text_size(12)
             .when(this.tab === a, (el) => el.bg(t.background).text_color(t.foreground).font_medium())
             .when(this.tab !== a, (el) => el.text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))

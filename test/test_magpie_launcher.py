@@ -101,6 +101,7 @@ class MagpieLauncher(unittest.TestCase):
         argv = settings.argv_for({"agent": "claude", "launcher": "magpie"})
         task = {"id": 1, "agents": [], "title": "Try", "mode": "here"}
         with patch.object(launch, "folder_for", return_value="/repo"), \
+                patch.object(launch, "ensure_launcher"), \
                 patch.object(launch, "agent_name", return_value="app-1-try"), \
                 patch.object(launch, "coordinator_tab", return_value=None), \
                 patch.object(launch, "track"), patch.object(launch.local, "with_setup", side_effect=lambda t, f, a: a), \
@@ -160,7 +161,7 @@ class MagpieLauncher(unittest.TestCase):
             k["labels"][revive.LABEL] = json.dumps(rec)
             self.assertEqual(revive.record_of(k)["argv"], rec["argv"])
 
-    def test_fallback_executes_plain_claude_without_model_and_retries_magpie(self):
+    def test_missing_launcher_errors_without_running_plain_claude(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             for name in ["claude", "hc"]:
@@ -170,9 +171,9 @@ class MagpieLauncher(unittest.TestCase):
             argv = ["claude-magpie", "--model", "copilot/sonnet", "--model=other/model", "--effort", "high", "--resume", "S1", "words with spaces"]
             cmd = ["/bin/sh", *launch.magpie_argv(argv)[1:]]
             fallback = subprocess.run(cmd, env=env, capture_output=True, text=True)
-            self.assertEqual(fallback.returncode, 0, fallback.stderr)
-            self.assertEqual(fallback.stdout.splitlines(), ["--effort", "high", "--resume", "S1", "words with spaces"])
-            self.assertEqual(fallback.stderr.count("This machine has no claude-magpie"), 1)
+            self.assertEqual(fallback.returncode, 127)
+            self.assertEqual(fallback.stdout, "")
+            self.assertIn("claude-magpie is not installed", fallback.stderr)
             (root / "claude-magpie").write_text("#!/bin/sh\nprintf 'magpie\\n'; printf '%s\\n' \"$@\"\n")
             (root / "claude-magpie").chmod(0o755)
             retried = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -182,6 +183,45 @@ class MagpieLauncher(unittest.TestCase):
     def test_reviewer_does_not_use_worker_launcher(self):
         self.layers[2] = {"worker": {"agent": "claude", "launcher": "magpie"}}
         self.assertEqual(settings.reviewer_command("claude", "sonnet", "high"), "claude --permission-mode plan --model sonnet --effort high")
+
+    def test_cdnd_settings_and_reviewer_commands(self):
+        for role in ("coordinator", "worker", "reviewer"):
+            self.layers[2] = {role: {"agent": "claude", "launcher": "cdnd", "model": "custom/model", "effort": "max"}}
+            pick = settings.settings_for(self.store, "sp1")[role]
+            argv = settings.argv_for(pick)
+            self.assertEqual(argv[:5], ["claude-cdnd", "--model", "custom/model", "--effort", "max"])
+            self.assertEqual(settings.agent_key(argv), "claude")
+        self.assertEqual(settings.reviewer_command("claude", "custom/model", "high", launcher="cdnd"), "claude-cdnd --permission-mode plan --model custom/model --effort high")
+        self.assertIn("--model copilot/claude-sonnet-5.5", settings.reviewer_command("claude", launcher="magpie"))
+        self.assertTrue(launch.helper_hc(["hc", "run", "--bg", "--name", "shep-1-review", "--label", "herdr.agent=claude", "--",
+                                         "claude-magpie", "--permission-mode", "plan", "--model", "copilot/claude-sonnet-5.5", "--effort", "high", "Review it"]))
+        with patch.object(settings.shutil, "which", return_value=None):
+            for command in ("claude-magpie", "claude-cdnd"):
+                with self.assertRaisesRegex(Fail, "is not installed"):
+                    settings.ensure_launcher([command])
+
+    def test_missing_launcher_is_checked_before_ending_current_worker(self):
+        from contextlib import nullcontext
+        task = {"id": 1, "state": "running", "agents": []}
+        self.store.find = lambda _: task
+        args = argparse.Namespace(id="1", space=None, agent=None, argv=None, parent=None, keep=False)
+        with patch.object(commands, "open_store", return_value=nullcontext(self.store)), \
+                patch.object(commands, "live_agents", return_value=[{"address": "t1", "labels": {}}]), \
+                patch.object(commands, "detail", side_effect=lambda x: x), patch.object(commands, "agent_running", return_value=True), \
+                patch.object(commands, "refresh_sessions"), patch.object(commands, "default_space", return_value="sp1"), \
+                patch.object(commands, "worker_argv", return_value=["claude-cdnd"]), patch.object(settings.shutil, "which", return_value=None), \
+                patch.object(commands, "end_agent") as end:
+            with self.assertRaisesRegex(Fail, "claude-cdnd is not installed"):
+                commands.cmd_switch(args)
+            end.assert_not_called()
+
+    def test_assistant_recovery_keeps_declared_cdnd_launcher(self):
+        argv = ["claude-cdnd", "--model", "custom/model", "--effort", "high"]
+        terminal = {"argv": ["sh", "-c", "template"], "pid": 1, "foreground": {"pid": 2, "argv": ["claude"]},
+                    "labels": {"herdr.launcher.argv": json.dumps(argv), "herdr.role": "coordinator"}}
+        with patch.object(revive, "session_of", return_value=("S1", "log")):
+            record = revive.record_of(terminal)
+        self.assertEqual((record["kind"], record["argv"]), ("claude", argv))
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP
   EVERYWHERE, CHANGED_HERE, RESET, EDIT_INSTRUCTIONS, USE_OTHER_CLI, LOADING_AGENTS, SAVED, sameAs as sameAsWords,
   spacesOwn, otherCliWords, backupProblem, notifyMachineAbout, machineLabel, TASK_ROWS, LEVEL } from "./core/settings.js";
 import { LAUNCHER, chooseLauncher, workerChoices, roleSel } from "./core/settings.js";
+import { normalizePick } from "./core/agents.js";
 
 const I = (name) => `mods/shepherdr-settings/${name}.svg`;
 // A page's title, and a Tasks row's (by its key, section.field).
@@ -328,7 +329,7 @@ export default class ShepherdrSettings extends View {
         sel = { agent: o, model: this.data.menus[o].models[0]?.id ?? null, effort: null, fast: false, perm: this.data.permDefault?.[o] ?? null };
       }
       sel ??= this.data?.defaults ?? null;
-      if (r.id === "worker" && sel) sel = roleSel(r.id, sel, this.data, this.otherCli()).sel;
+      if (sel) sel = roleSel(r.id, sel, this.data, this.otherCli()).sel;
       this.roles[r.id] = { ...(this.roles[r.id] ?? {}), sel: sel ? { ...sel } : null, data: r.id === "worker" ? workerChoices(this.data, sel) : this.data, saved: JSON.stringify(sel), unset };
     }
   }
@@ -343,7 +344,7 @@ export default class ShepherdrSettings extends View {
       c.saved = now;
       c.unset = false;
       if (r.id === "worker") c.data = workerChoices(this.data, c.sel);
-      this.set(r.id, null, { ...c.sel }, cx);
+      this.set(r.id, null, normalizePick(c.sel), cx);
     }
   }
 
@@ -512,14 +513,6 @@ export default class ShepherdrSettings extends View {
     const c = this.roles[r.id];
     const label = r.id === "reviewer" && c?.unset ? otherCliWords(this.otherCli()) : undefined;
     const control = h_flex().gap(8).items_center()
-      .when(r.id === "worker" && c?.sel?.agent === "claude", (el) => el
-        .child(div().text_size(TEXT.label).text_color(t.dim).child(LAUNCHER.title))
-        .child(segmented("worker-launcher", LAUNCHER.choices, c.sel.launcher ?? "direct", (value, _e, cx) => {
-          c.sel = chooseLauncher(c.sel, value);
-          c.data = workerChoices(this.data, c.sel);
-          this.saveRoles(cx);
-          cx.notify();
-        })))
       .child(c?.sel ? models.modelButton(t, c, { label }, cx) : div().text_size(TEXT.label).text_color(t.dim).child(LOADING_AGENTS))
       .when(!this.scope && r.id === "reviewer" && c && !c.unset,
         (el) => el.child(button("reviewer-other", USE_OTHER_CLI, { kind: "plain", onClick: (_e, cx) => this.reset("reviewer", null, cx) })))

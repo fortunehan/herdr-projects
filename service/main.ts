@@ -660,6 +660,7 @@ async function doAction(body: any): Promise<Response> {
   }
   try {
     const r = await act(hub, body, compat);
+    if (body?.type === "restart") live.refreshFresh();
     // a switch flipped: shown at once, on another machine's space too (its file read again there)
     if (body?.type === "mode" && typeof body.place === "string") await model.readPilot(body.place);
     return json(r);

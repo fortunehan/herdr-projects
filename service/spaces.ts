@@ -12,6 +12,9 @@ import { exec } from "./model.ts";
 import * as NS from "../core/newspace.js";
 import * as SP from "../core/spaces.js";
 import { cleanCommand } from "../core/clean-env.js";
+import * as AG from "../core/agents.js";
+import { rolePick } from "../core/settings.js";
+import { readSettings } from "./settings.ts";
 
 export const withWindow = () => existsSync(join(process.env.HERDR_APP_HOME || join(HOME, ".config", "herdr-app"), "mods", "spaces-chat"));
 
@@ -65,18 +68,33 @@ export async function newSpaceInfo(hub: Hub, machine: string | null, at: string 
  *  markers the holder may carry (SHEP-86, core/clean-env.js), then execs it: hc runs a template's command under sh -c,
  *  and where sh is dash (Debian, Ubuntu) the shell would stay the terminal's program, so no chat would know its CLI.
  *  words: the template's own words (its first message), when read. Unreadable: the template itself. */
-export async function execTemplate(hub: Hub, name: string, machine: string | null): Promise<{ name: string; words: string; done: () => void }> {
+export async function execTemplate(hub: Hub, name: string, machine: string | null, pick?: any): Promise<{ name: string; words: string; done: () => void; argv?: string[] }> {
   const plain = { name, words: "", done: () => {} };
   const DIR = 'dir="$HOME/.config/herdr-core/templates"; ';
   const src = (await exec(hub, ["sh", "-c", DIR + 'cat "$dir/$1.md"', "x", name], machine).catch(() => null))?.stdout ?? "";
   const head = /^---\n([\s\S]*?)\n---\n?/.exec(src);
-  const cmd = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
-  if (!head || !cmd) return plain;
+  let cmd = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
+  let argv: string[] | undefined;
+  if (pick?.agent || pick?.argv?.length) {
+    argv = pick.argv?.length ? pick.argv : (AG as any).argvFor(pick, {}).base;
+    if (/^claude-(magpie|cdnd)$/.test(String(argv?.[0]).split("/").pop() ?? "")) {
+      const check = await exec(hub, ["sh", "-c", 'command -v "$1" >/dev/null 2>&1', "launcher", argv![0]], machine);
+      if (check.code !== 0) throw new Error(`Cannot start: ${argv![0]} is not installed on this machine.`);
+    }
+    cmd = argv!.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ");
+  }
+  if (!head || !cmd) {
+    if (pick) throw new Error("The Assistant template could not be read.");
+    return plain;
+  }
   const one = `herdr-${name}-${Date.now().toString(36)}`;
   const file = `---\nname: ${one}\ndescription: A one-off ${name} start that execs its command (Shepherdr's service), removed after use.\ncommand: ${cleanCommand(cmd)}\n---\n${src.slice(head[0].length)}`;
   const w = await exec(hub, ["sh", "-c", DIR + 'printf "%s" "$2" > "$dir/$1.md"', "x", one, file], machine).catch(() => null);
-  if (w?.code !== 0) return plain;
-  return { name: one, words: src.slice(head[0].length).trim(), done: () => void exec(hub, ["sh", "-c", DIR + 'rm -f "$dir/$1.md"', "x", one], machine).catch(() => null) };
+  if (w?.code !== 0) {
+    if (pick) throw new Error("The Assistant could not be prepared with the selected launcher.");
+    return plain;
+  }
+  return { name: one, words: src.slice(head[0].length).trim(), ...(argv ? { argv } : {}), done: () => void exec(hub, ["sh", "-c", DIR + 'rm -f "$dir/$1.md"', "x", one], machine).catch(() => null) };
 }
 
 /** The web's id for the space the window made: Herdr already answers another machine's as "<machine>/<id>" (its
@@ -126,9 +144,10 @@ export async function newSpace(hub: Hub, opts: { machine: string | null; path: s
   await iconOf(machine ? `${machine}/${id}` : id);
   // Settings › Window › Assistant in new spaces off: it opens without one
   if (opts.store.value("coordinator.auto") === false) return machine ? `${machine}/${id}` : id;
-  const t = await execTemplate(hub, "assistant", machine);
+  const t = await execTemplate(hub, "assistant", machine, rolePick(readSettings(), "coordinator", machine ? `${machine}/${id}` : id, machine ?? "local"));
   await run(["hc", "run", "--bg", "--keep", "--no-parent", ...(machine ? ["--on", machine] : []), "--cwd", abs,
-    "--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${id}`, "--label", `herdr.space=${id}`, t.name]);
+    "--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${id}`, "--label", `herdr.space=${id}`,
+    ...(t.argv ? ["--label", `herdr.agent=${(AG as any).agentKey(t.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(t.argv)}`] : []), t.name]);
   t.done();
   return machine ? `${machine}/${id}` : id;
 }

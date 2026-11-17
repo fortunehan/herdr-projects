@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { agentKey, argvFor, freshArgv, forkArgv, launchArgv, magpieArgv, magpieModels, MAGPIE_MODEL, MAGPIE_RUN, current, line } from "./agents.js";
+import { agentKey, argvFor, freshArgv, forkArgv, launchArgv, magpieArgv, magpieModels, MAGPIE_MODEL, MAGPIE_RUN, current, line, normalizePick, viewPick, choiceKey, choiceMenus, parseDefaults, launcherOf } from "./agents.js";
+import { liveOK } from "./live-switch.js";
 import { chooseLauncher, chooseModel, choicesFrom, mergeWorker, roleSel, workerChoices } from "./settings.js";
 import { kindOf } from "./chat-reader.js";
 import { cliOf, starting } from "./screens.js";
@@ -58,17 +59,50 @@ test("magpie model catalog uses provider IDs, supports nested IDs and falls back
   expect(catalog.models[0].efforts).toEqual(["low", "medium", "high", "max"]);
   const choices = choicesFrom({ claude: {}, codex: {}, magpie: catalog });
   const pick = roleSel("worker", { launcher: "magpie" }, choices, "claude").sel;
-  expect(pick).toMatchObject({ agent: "claude", launcher: "magpie", model: MAGPIE_MODEL });
-  expect(workerChoices(choices, pick).menus.claude).toBe(catalog);
+  expect(pick).toMatchObject({ agent: "claude-magpie", launcher: "magpie", model: MAGPIE_MODEL });
+  expect(workerChoices(choices, pick).menus["claude-magpie"].models).toEqual(catalog.models);
   expect(choices.menus.claude.models[0].id).toBe("opus");
   expect(magpieModels("").models[0].id).toBe(MAGPIE_MODEL);
   const codexMenu = { ...choices.menus, codex: { models: [{ id: "gpt-x", efforts: ["high"] }] } };
   expect(chooseModel(codexMenu, {}, pick, "codex", "gpt-x").launcher).toBeUndefined();
 });
 
-test("Python and JavaScript use the same fallback program, valid under bash", () => {
+test("Python and JavaScript use the same missing-command error program, valid under bash", () => {
   const src = readFileSync(new URL("../mods/tasks/bin/herdr_task/launch.py", import.meta.url), "utf8");
   expect(src.match(/MAGPIE_RUN = r'''([\s\S]*?)'''/)[1]).toBe(MAGPIE_RUN);
   const result = Bun.spawnSync(["bash", "-n"], { stdin: new TextEncoder().encode(MAGPIE_RUN) });
   expect(result.exitCode).toBe(0);
+});
+
+test("four picker choices preserve two underlying agents and separate model catalogs", () => {
+  const claude = parseDefaults("claude", 'picker\t[{"model":"custom/claude","label":"Custom Claude"}]');
+  const menus = choiceMenus({ claude, codex: {}, magpie: magpieModels("  copilot/other    Other  low/high\n") });
+  expect(Object.keys(menus)).toEqual(["claude", "codex", "claude-magpie", "claude-cdnd"]);
+  expect(menus["claude-cdnd"].models.map((m) => m.id)).toEqual(["custom/claude"]);
+  expect(menus["claude-magpie"].models.map((m) => m.id)).toContain("copilot/other");
+  expect(choiceMenus({ claude: {}, codex: {} })["claude-cdnd"].models).toEqual(choiceMenus({ claude: {}, codex: {} }).claude.models);
+  for (const launcher of ["magpie", "cdnd"]) {
+    const pick = normalizePick({ agent: `claude-${launcher}`, model: "custom/model", effort: "high" });
+    expect(pick).toEqual({ agent: "claude", launcher, model: "custom/model", effort: "high" });
+    expect(choiceKey(pick)).toBe(`claude-${launcher}`);
+    expect(viewPick(pick).agent).toBe(`claude-${launcher}`);
+    const a = argvFor(viewPick(pick), { agent: "claude", argv: ["claude"], session: "S1" });
+    expect(a.resume).toBe(true);
+    expect(a.argv[0]).toBe(`claude-${launcher}`);
+    expect(a.argv.slice(-2)).toEqual(["--resume", "S1"]);
+    expect(forkArgv("claude", a.base, "S1")[0]).toBe(`claude-${launcher}`);
+    expect(agentKey(`claude-${launcher}`)).toBe("claude");
+    expect(liveOK({ agent: "claude" }, { agent: `claude-${launcher}` })).toBe(false);
+    expect(liveOK(pick, viewPick(pick))).toBe(true);
+  }
+});
+
+test("a declared Assistant launcher survives a template and its real Claude foreground process", () => {
+  const argv = ["claude-cdnd", "--model", "custom/model", "--effort", "high"];
+  const t = { argv: ["sh", "-c", "a template command"], foreground: { argv: ["claude"] }, labels: { "herdr.launcher.argv": JSON.stringify(argv) } };
+  expect(launchArgv(t)).toEqual(argv);
+  expect(launcherOf(launchArgv(t))).toBe("cdnd");
+  expect(kindOf({ foreground: { name: "claude-cdnd" } })).toBe("claude");
+  expect(subagentCli({ argv: ["claude-cdnd"] })).toBe("claude");
+  expect(freshArgv("claude", [...argv, "--resume", "S1", "old prompt"])).toEqual(argv);
 });

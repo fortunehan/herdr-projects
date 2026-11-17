@@ -25,8 +25,13 @@ test("worker launcher and model save together; provider IDs and typed models sur
   expect(row.agent?.sel).toMatchObject({ launcher: "magpie", model: "openrouter/vendor/typed-model" });
   expect(row.value).toContain("openrouter/vendor/typed-model");
   expect(() => s.set("role.worker", JSON.stringify({ agent: "codex", launcher: "magpie" }))).toThrow();
-  expect(() => s.set("role.reviewer", JSON.stringify({ agent: "claude", launcher: "magpie" }))).toThrow();
-  expect(() => s.set("role.coordinator", JSON.stringify({ agent: "claude", launcher: "magpie" }))).toThrow();
+  for (const role of ["reviewer", "coordinator"]) {
+    s.set(`role.${role}`, JSON.stringify({ agent: "claude-magpie" }));
+    expect(JSON.parse(readFileSync(file, "utf8")).everywhere[role]).toMatchObject({ agent: "claude", launcher: "magpie", model: "copilot/claude-sonnet-5.5" });
+    s.set(`role.${role}`, JSON.stringify({ agent: "claude-cdnd", model: "custom/model" }));
+    expect(JSON.parse(readFileSync(file, "utf8")).everywhere[role]).toMatchObject({ agent: "claude", launcher: "cdnd", model: "custom/model" });
+    s.set(`role.${role}`, null);
+  }
   s.set("role.worker", JSON.stringify(CORE.chooseLauncher(worker, "direct")));
   expect(JSON.parse(readFileSync(file, "utf8")).everywhere.worker).toMatchObject({ launcher: "direct", model: null, effort: "max" });
   s.set("role.worker", JSON.stringify({ ...worker, argv: ["claude-magpie", "--model", "custom/model"] }));

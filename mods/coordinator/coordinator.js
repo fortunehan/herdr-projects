@@ -145,8 +145,7 @@ export function shepherdrLayers(cfg, scope = null) {
 export function shepherdrFor(cfg, scope = null) {
   const layers = shepherdrLayers(cfg, scope).reverse();
   const out = {};
-  for (const role of ["coordinator", "worker", "reviewer"]) out[role] = layers.reduce((v, l) => l.obj[role] ?? v, null);
-  out.worker = layers.reduce((v, l) => l.obj.worker ? mergeWorker(v, l.obj.worker) : v, null);
+  for (const role of ["coordinator", "worker", "reviewer"]) out[role] = layers.reduce((v, l) => l.obj[role] ? mergeWorker(v, l.obj[role]) : v, null);
   // agents: Reactions set before they were for every agent (SHEP-42's assistant.reactions) count where a layer has no agents'
   const own = (l, k) => (k === "agents" && typeof l.obj.assistant?.reactions === "boolean" ? { reactions: l.obj.assistant.reactions, ...l.obj.agents } : l.obj[k] ?? {});
   for (const k of ["tasks", "automations", "agents"]) out[k] = Object.assign({ ...SHEPHERDR_DEFAULTS[k] }, ...layers.map((l) => own(l, k)));

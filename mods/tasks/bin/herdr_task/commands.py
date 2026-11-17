@@ -13,7 +13,7 @@ import time
 from .base import Fail, git, guard, now, run, STORE, stop_note, VERSION
 from .settings import (
     agent_argv, agent_key, bare, merge_policy, review_limits, set_opts, settings_block, settings_for, space_base,
-    task_settings, worker_argv, worker_pick, worktrees_on,
+    task_settings, worker_argv, worker_pick, worktrees_on, ensure_launcher,
 )
 from .agents import (
     agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
@@ -980,6 +980,8 @@ def cmd_switch(args):
             t.setdefault("started", now())
             t.pop("queue", None)
             t.pop("scheduled_for", None)
+        chosen = agent_argv(None, args.argv) if args.argv else worker_argv(s, t, space, args.agent)
+        ensure_launcher(chosen)
         ended = []
         # An agent switching itself can't end first: that would end this command too.
         me = os.environ.get("HC_TERMINAL_ID")

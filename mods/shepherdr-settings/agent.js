@@ -9,7 +9,7 @@
 
 import { exec, hc, appHome } from "herdr";
 // The rules (names, menus, argv) are core/agents.js, shared with the web app.
-import { DEFAULTS, parseDefaults } from "./core/agents.js";
+import { DEFAULTS, parseDefaults, LAUNCHER_COMMANDS } from "./core/agents.js";
 import { chatLabel } from "./core/spaces.js";
 export * from "./core/agents.js";
 
@@ -18,9 +18,16 @@ export async function defaults(kind, machine) {
   return parseDefaults(kind, r?.stdout ?? "");
 }
 
+export async function requireLauncher(argv, machine = null) {
+  if (!Object.values(LAUNCHER_COMMANDS).slice(1).includes(String(argv?.[0]).split("/").pop())) return;
+  const r = await exec("sh", ["-c", 'command -v "$1" >/dev/null 2>&1', "launcher", argv[0]], { on: machine });
+  if (r.code !== 0) throw new Error(`Cannot start: ${argv[0]} is not installed on this machine.`);
+}
+
 // Restarts the agent `t` (hc get's record) with `argv`, parked behind chat pane `pane`.
 // Resolves with the new agent's address.
 export async function restart(t, built, pane) {
+  await requireLauncher(built.base, t.address?.includes("/") ? t.address.split("/")[0] : null);
   const task = t.labels?.["herdr.task"];
   if (task) {
     // herdr-task resumes its own session when the agent stays the same.

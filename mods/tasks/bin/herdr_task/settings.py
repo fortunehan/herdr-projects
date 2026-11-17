@@ -13,7 +13,8 @@ from .base import Fail, git, HOME, MAX_RUNNING, WHERE
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
 AGENTS = {"claude": ["claude"], "codex": ["codex", "--no-daemon"]}
 MAGPIE_MODEL = "copilot/claude-sonnet-5.5"
-LAUNCHERS = {"direct", "magpie"}
+LAUNCHERS = {"direct", "magpie", "cdnd"}
+LAUNCHER_COMMANDS = {"direct": "claude", "magpie": "claude-magpie", "cdnd": "claude-cdnd"}
 
 
 def merge_worker(parent, own):
@@ -30,9 +31,9 @@ def merge_worker(parent, own):
 
 def validate_launcher(pick):
     if pick.get("launcher") not in (None, *LAUNCHERS):
-        raise Fail("launcher is direct or magpie.")
-    if pick.get("agent") == "codex" and pick.get("launcher") == "magpie":
-        raise Fail("Codex cannot use the magpie launcher. Choose Claude or the direct launcher.")
+        raise Fail("launcher is direct, magpie or cdnd.")
+    if pick.get("agent") == "codex" and pick.get("launcher") in ("magpie", "cdnd"):
+        raise Fail("Codex cannot use a Claude launcher. Choose Claude or the direct launcher.")
 
 
 # ---- the person's settings ------------------------------------------------------------------
@@ -151,7 +152,7 @@ def settings_for(s, space=None):
     def merge(part):
         for k, v in (part or {}).items():
             if isinstance(v, dict) and isinstance(out.get(k), dict):
-                if k == "worker":
+                if k in ("worker", "reviewer", "coordinator"):
                     validate_launcher(v)
                     out[k] = merge_worker(out[k], v)
                 else:
@@ -198,7 +199,7 @@ def argv_for(pick):
     agent = pick.get("agent")
     if agent == "claude":
         magpie = pick.get("launcher") == "magpie"
-        a = ["claude-magpie" if magpie else "claude"]
+        a = [LAUNCHER_COMMANDS.get(pick.get("launcher"), "claude")]
         model = pick.get("model") or (MAGPIE_MODEL if magpie else None)
         effort = pick.get("effort") or ("high" if magpie else None)
         if model:
@@ -343,7 +344,7 @@ def set_task(t, key, value):
         if field in ("effort", "reviewer_effort") and low not in EFFORTS:
             raise Fail(f"{field.replace('_', ' ')} is one of {', '.join(sorted(EFFORTS))} (or default).")
         if field == "launcher" and low not in LAUNCHERS:
-            raise Fail("launcher is direct or magpie.")
+            raise Fail("launcher is direct, magpie or cdnd.")
         sets.pop(field, None)
         t[field] = low if field == "launcher" else v
     if not sets:
@@ -409,7 +410,7 @@ def trust_roots(folder):
     return out
 
 
-def reviewer_command(who, model=None, effort=None, folder=None):
+def reviewer_command(who, model=None, effort=None, folder=None, launcher=None):
     """The command a worker starts its reviewer with (the brief's Reviewer line): read-only, and for
     Codex on its own app server (--no-daemon, as task agents run: a shared one can keep a sign-in
     since replaced, and every turn then fails, #745). Codex would first stop on its own screens,
@@ -426,7 +427,9 @@ def reviewer_command(who, model=None, effort=None, folder=None):
         a += ["-m", model] if model else []
         a += ["-c", f'model_reasoning_effort="{effort}"'] if effort else []
     elif who == "claude":
-        a = ["claude", "--permission-mode", "plan"]
+        a = [LAUNCHER_COMMANDS.get(launcher, "claude"), "--permission-mode", "plan"]
+        model = model or (MAGPIE_MODEL if launcher == "magpie" else None)
+        effort = effort or ("high" if launcher == "magpie" else None)
         a += ["--model", model] if model else []
         a += ["--effort", effort] if effort else []
     else:
@@ -483,7 +486,7 @@ def task_settings(s, t, space=None, argv=None):
         elif not rv.get("agent"):
             text += " (the other CLI)" if who != agent else " (your own CLI: no other is installed)"
         folder = t.get("worktree") or getattr(s, "loc", {}).get("folder")
-        cmd = reviewer_command(who, rv.get("model"), rv.get("effort"), folder)
+        cmd = reviewer_command(who, rv.get("model"), rv.get("effort"), folder, rv.get("launcher"))
         if cmd:
             text += f"; start it as `{cmd}`"
         add("Reviewer", text, {"agent": who, "model": rv.get("model"), "effort": rv.get("effort"), "command": cmd}, rv_by)
@@ -595,7 +598,13 @@ def agent_argv(key, argv_json=None):
 
 def agent_key(argv):
     name = os.path.basename(argv[0])
-    return "claude" if name == "claude-magpie" else name
+    return "claude" if name in ("claude-magpie", "claude-cdnd") else name
+
+
+def ensure_launcher(argv):
+    command = argv[0] if argv else ""
+    if os.path.basename(command) in ("claude-magpie", "claude-cdnd") and not shutil.which(command):
+        raise Fail(f"Cannot start: {os.path.basename(command)} is not installed on this machine.")
 
 
 def bare(i):

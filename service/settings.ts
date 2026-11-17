@@ -7,6 +7,7 @@ import { existsSync, readFileSync, renameSync, watch, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { HOME, settingsFile, where, writableSettings } from "./paths.ts";
 import * as C from "../core/settings.js";
+import { normalizePick } from "../core/agents.js";
 import { SH } from "../core/paths.js";
 import * as M from "../core/machines.js";
 import * as HC from "../core/host.js";
@@ -114,7 +115,7 @@ export class Settings {
     const m = scope ? (scope.includes("/") ? scope.split("/")[0] : LOCAL) : null;
     const own = scope ? at(this.layer(scope)) : undefined, mach = m ? at(this.file.machines?.[m]) : undefined, every = at(this.file.everywhere);
     const dflt = field ? DEFAULTS[section]?.[field] ?? null : null;
-    const worker = section === "worker" && !field && (own != null || mach != null || every != null);
+    const worker = ["worker", "coordinator", "reviewer"].includes(section) && !field && (own != null || mach != null || every != null);
     const parent = worker ? (C as any).mergeWorker(every, mach) : mach ?? every ?? dflt;
     return { value: worker ? (scope ? (C as any).mergeWorker(parent, own) : every ?? dflt) : scope ? own ?? parent : every ?? dflt, own: own !== undefined, parent, level: mach !== undefined ? "machine" : "everywhere", machine: m };
   }
@@ -444,18 +445,19 @@ export class Settings {
       let v: any = null;
       if (word !== null) {
         try { v = JSON.parse(word); } catch { throw new Error("Not an agent."); }
+        v = normalizePick(v);
         const ok = (x: unknown) => x == null || (typeof x === "string" && /^[\w.\[\]-]{1,60}$/.test(x));
         const modelOK = v?.model == null || (typeof v.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(v.model));
         if (!["claude", "codex"].includes(v?.agent) || !modelOK || !ok(v.effort)) throw new Error("Pick Claude Code or Codex.");
-        if (v.launcher != null && (field !== "worker" || !["direct", "magpie"].includes(v.launcher) || (v.agent === "codex" && v.launcher === "magpie"))) throw new Error("Only Claude workers can use the magpie launcher.");
+        if (v.launcher != null && (!["direct", "magpie", "cdnd"].includes(v.launcher) || (v.agent === "codex" && v.launcher !== "direct"))) throw new Error("Only Claude can use a Claude launcher.");
         if (field === "worker" && v.argv != null && (!Array.isArray(v.argv) || !v.argv.length || !v.argv.every((x: unknown) => typeof x === "string"))) throw new Error("Custom argv must be a list of words.");
         // its permission mode, as the window's Permissions pick (one of the CLI's modes; none: the CLI's own default)
         const PERM: Record<string, string[]> = { claude: ["manual", "auto", "acceptEdits", "plan", "bypassPermissions"], codex: ["read-only", "auto", "full"] };
         if (v.perm != null && !PERM[v.agent].includes(v.perm)) throw new Error("Not one of its permission modes.");
         const launcher = v.launcher;
         const previous = this.pick(space, field, null).value;
-        if (field === "worker" && launcher && launcher !== (previous?.launcher ?? "direct") && !v.model) v = (C as any).chooseLauncher({ ...v, launcher: previous?.launcher }, launcher);
-        if (field === "worker" && launcher === "magpie" && !v.model) v.model = (C as any).chooseLauncher({ ...v, launcher: "direct" }, "magpie").model;
+        if (launcher && launcher !== (previous?.launcher ?? "direct") && !v.model) v = (C as any).chooseLauncher({ ...v, launcher: previous?.launcher }, launcher);
+        if (launcher === "magpie" && !v.model) v.model = (C as any).chooseLauncher({ ...v, launcher: "direct" }, "magpie").model;
         v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}), ...(field === "worker" && v.argv ? { argv: v.argv } : {}) };
       }
       put(field, null, v);

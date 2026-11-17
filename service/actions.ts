@@ -19,6 +19,8 @@ import { worktreeAct } from "./worktrees.ts";
 import { layoutScript } from "./layout-scripts.ts";
 import { noteFailed, once } from "./send-once.ts";
 import { execTemplate } from "./spaces.ts";
+import { readSettings } from "./settings.ts";
+import { rolePick } from "../core/settings.js";
 import * as MA from "../core/machine-add.js";
 import { exec } from "./model.ts";
 import { closeSaved, renameSaved, orderSaved, withoutSpace, splitId } from "./saved-spaces.ts";
@@ -360,9 +362,26 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop() || "Autopilot didn't change.");
     return { ok: true };
   }
-  if (b?.type === "model-pin" && compat.agents && ["claude", "codex"].includes(b.agent) && typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model)) {
+  if (b?.type === "model-pin" && compat.agents && (AGa as any).CHOICES.includes(b.agent) && typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model)) {
     // the model menu's star: pinned to the top of its agent's list (core/agents.js PICKS_FILE, as the window's)
     return { ok: true, picks: (compat.agents as any).pin(b.agent, b.model) };
+  }
+  if ((b?.type === "restart-info" || b?.type === "model-menu" || b?.type === "restart") && typeof b.chat === "string" && b.chat.startsWith("p:") && !compat.addrOf(b.chat) && compat.agents) {
+    const space = b.chat.slice(2).replace(":", "/"), sp = compat.spaceOf(space);
+    if (!sp) throw new Error("That space isn't here any more.");
+    const agents = compat.agents as any;
+    const menu = await agents.freshMenu(b.chat, sp.machine ?? null, rolePick(readSettings(), "coordinator", sp.id, sp.machine ?? "local"));
+    if (b.type === "model-menu") return { ok: true, menu };
+    if (b.type === "restart-info") {
+      const on = { kind: menu.current.agent, model: menu.current.model, effort: menu.current.effort, speed: menu.current.fast ? "fast" : "normal" };
+      return { ok: true, info: { role: "coordinator", onKnown: false, on, want: on, onWords: "Not started", working: false, clis: await agents.choices(sp.machine ?? null) } };
+    }
+    if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick one of the available agent launchers.");
+    const pick = (AGa as any).normalizePick({ agent: b.kind, model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : null,
+      effort: typeof b.effort === "string" && /^[\w-]{1,20}$/.test(b.effort) ? b.effort : null, fast: b.speed === "fast", perm: b.perm });
+    await agents.requireLauncher((AGa as any).argvFor(pick, {}).base, sp.machine ?? null);
+    agents.freshPicks.set(b.chat, pick);
+    return { ok: true, live: true };
   }
   if ((b?.type === "restart-info" || b?.type === "model-menu" || b?.type === "restart") && typeof b.chat === "string" && compat.agents) {
     // the model menu: what it runs on and its choices (model-menu: the window's, mods/chat-models); a restart on
@@ -370,9 +389,9 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     const a = chat(b.chat), reader = compat.reader?.(a);
     if (b.type === "restart-info") return compat.agents.info(a, reader);
     if (b.type === "model-menu") return { ok: true, menu: await (compat.agents as any).menu(a, reader) };
-    if (!["claude", "codex"].includes(b.kind)) throw new Error("Pick Claude Code or Codex.");
+    if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick one of the available agent launchers.");
     const opt = (v: unknown) => (typeof v === "string" && /^[\w.\[\]-]{1,60}$/.test(v) ? v : undefined);
-    const pick = { kind: b.kind, model: opt(b.model), effort: opt(b.effort), speed: opt(b.speed), perm: opt(b.perm) };
+    const pick = { kind: b.kind, model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : undefined, effort: opt(b.effort), speed: opt(b.speed), perm: opt(b.perm) };
     // the model menu (live): in place when only the model, level or Fast changes; the restart sheet restarts
     if (b.live === true) return { ok: true, ...(await (compat.agents as any).change(a, reader, pick)) };
     const next = await compat.agents.restart(a, reader, pick);
@@ -572,7 +591,9 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       ? ["--label", `herdr.chat=${SP.chatLabel(rec.pane)}`, "--label", `herdr.chat.slot=${slot}`, "--label", `herdr.chat.origin=slot:${slot}`, "--label", "herdr.role=coordinator",
         "--label", `herdr.coordinator.space=${bare}`, ...(rec.tab ? ["--label", `herdr.coordinator.tab=${String(rec.tab).split("/").pop()}`] : [])]
       : ["--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${bare}`, "--label", `herdr.space=${bare}`];
-    const tpl = await execTemplate(hub, "assistant", sp.machine ?? null);
+    const pick = (compat.agents as any)?.freshPicks?.get(b.chat) ?? rolePick(readSettings(), "coordinator", sp.id, sp.machine ?? "local");
+    const tpl = await execTemplate(hub, "assistant", sp.machine ?? null, pick);
+    if (tpl.argv) labels.push("--label", `herdr.agent=${(AGa as any).agentKey(tpl.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(tpl.argv)}`);
     const r = await hc(["run", "--bg", "--json", "--no-parent", "--keep", ...(sp.machine ? ["--on", sp.machine] : []), ...(sp.folder ? ["--cwd", sp.folder] : []), ...labels, tpl.name, task]);
     tpl.done();
     let out: any = {};

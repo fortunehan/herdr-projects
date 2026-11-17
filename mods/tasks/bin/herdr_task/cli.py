@@ -171,7 +171,7 @@ def main():
         c.add_argument("--finish-notes", help="this task's own \"When a task finishes\" notes, replacing the folder's (\"\": the folder's)")
 
     def task_opts(c):
-        c.add_argument("--launcher", choices=["direct", "magpie"], help="how a Claude worker starts (default: Settings' worker launcher)")
+        c.add_argument("--launcher", choices=["direct", "magpie", "cdnd"], help="how a Claude worker starts (default: Settings' worker launcher)")
         c.add_argument("--agent", help="the CLI its agent runs (claude, codex, ...; default: Settings' Workers)")
         c.add_argument("--model", help="its agent's model, an id or alias (default: Settings'; \"default\": the CLI's own)")
         c.add_argument("--effort", help="its agent's effort: low, medium, high, xhigh, max... (default: Settings')")
@@ -220,7 +220,7 @@ def main():
     c.add_argument("--evidence", action="store_true", help="with what its Accept card shows: commits, changed files, checks and its proof")
     c = cmd("start", cmd_start, "start a task's agent (no tab: an hc child of the space's coordinator)")
     agent_opts(c)
-    c.add_argument("--launcher", choices=["direct", "magpie"])
+    c.add_argument("--launcher", choices=["direct", "magpie", "cdnd"])
     c.add_argument("--model")
     c.add_argument("--effort")
     c.add_argument("--set", action="append", metavar="KEY=VALUE")

@@ -33,7 +33,7 @@ export async function loadChoices(machine = null) {
     knownAgents({ on: machine }).catch(() => []), exec("magpie", ["models", "claude"], { on: machine }).catch(() => null)]);
   const prog = (k) => known.find((a) => a.key === k || (a.run ?? [])[0] === k);
   const installed = Object.fromEntries(["claude", "codex"].map((k) => [k, prog(k) ? prog(k).installed !== false : k === "claude"]));
-  const icons = Object.fromEntries(["claude", "codex"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }]));
+  const icons = Object.fromEntries(agent.CHOICES.map((k) => [k, { icon: prog(agent.agentKey(k))?.icon ?? null, tint: Boolean(prog(agent.agentKey(k))?.tint) }]));
   const data = choicesFrom({ claude, codex, magpie: agent.magpieModels(magpie?.code === 0 ? magpie.stdout : "") }, installed);
   return { ...data, icons, installed };
 }
@@ -43,19 +43,20 @@ export async function loadChoices(machine = null) {
 export async function lastUsed(data) {
   let s = null;
   try { s = JSON.parse(await fs.readFile(LAST(), "utf8")); } catch {}
+  s = agent.viewPick(s);
   const m = s && data.menus[s.agent]?.models?.find((x) => x.id === s.model);
-  return m ? { agent: s.agent, model: s.model, effort: m.efforts.includes(s.effort) ? s.effort : null, fast: Boolean(s.fast && m.fast),
+  return m ? { ...s, effort: m.efforts.includes(s.effort) ? s.effort : null, fast: Boolean(s.fast && m.fast),
     perm: data.menus[s.agent].perms.some((p) => p.id === s.perm) ? s.perm : data.permDefault[s.agent] } : { ...data.defaults };
 }
 
 export async function saveLastUsed(sel) {
   try {
     await fs.mkdir(`${appHome()}/data`, { recursive: true });
-    await fs.writeFile(LAST(), JSON.stringify(sel));
+    await fs.writeFile(LAST(), JSON.stringify(agent.normalizePick(sel)));
   } catch {}
 }
 
-const modelOf = (data, sel) => data?.menus?.[sel?.agent]?.models?.find((m) => m.id === sel.model) ?? null;
+const modelOf = (data, sel) => data?.menus?.[agent.choiceKey(sel)]?.models?.find((m) => m.id === sel.model) ?? null;
 
 // A model picked: the effort and speed stay where it has them; another agent brings its own
 // permission modes, the nearest to the one chosen (core/agents.js permAcross).
@@ -66,7 +67,11 @@ function choose(coord, agentKey, id) {
   const next = { ...sel, agent: agentKey, model: id };
   if (next.effort && !m.efforts.includes(next.effort)) next.effort = null;
   if (!m.fast) next.fast = false;
-  if (agentKey !== sel.agent) next.perm = permAcross(sel.perm, agentKey, data.permDefault);
+  if (agentKey !== agent.choiceKey(sel)) {
+    delete next.launcher;
+    if (agentKey === "claude") next.launcher = "direct";
+    next.perm = permAcross(sel.perm, agentKey, data.permDefault);
+  }
   coord.sel = next;
 }
 
@@ -78,7 +83,7 @@ export function settingsRows(t, coord, opts = {}, cx = null) {
   const off = Boolean(opts.disabled);
   // A dropdown's answer (shared "newspace.pick"): applied once, after this render.
   applyReply(coord, cx);
-  const menu = data.menus[sel.agent];
+  const menu = data.menus[agent.choiceKey(sel)];
   const m = modelOf(data, sel);
   const icon = (a) => {
     const ic = data.icons?.[a];
@@ -122,7 +127,7 @@ function applyReply(coord, cx) {
   if (!reply || reply.key !== coord.key || reply.at === coord.pickAt || !cx) return;
   coord.pickAt = reply.at;
   cx.timer.after(0, (cx) => {
-    if (reply.field === "settings" && reply.value?.agent) coord.sel = { ...reply.value, ...(coord.sel?.argv ? { argv: coord.sel.argv } : {}) };
+    if (reply.field === "settings" && reply.value?.agent) coord.sel = agent.viewPick({ ...reply.value, ...(coord.sel?.argv ? { argv: coord.sel.argv } : {}) });
     if (reply.field === "model") { const [a, ...id] = String(reply.value).split(":"); choose(coord, a, id.join(":")); }
     if (reply.field === "perm") coord.sel = { ...coord.sel, perm: reply.value };
     cx.notify();
@@ -158,12 +163,12 @@ export function openMenu(coord, select = null) {
   const { sel, data } = coord;
   // border and padding, agent tabs, search, the list (it scrolls past 8 rows), separator,
   // Reasoning header and levels, Fast, Permissions (chat-models' sizes)
-  const W = 340, H = 2 + 10 + 34 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31;
+  const W = 340, H = 2 + 10 + 68 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31;
   const b = coord.at;
   const at = b ? { x: Math.max(8, b.x + b.width - W), y: b.y - H - 6 >= 8 ? b.y - H - 6 : b.y + b.height + 6 } : "pointer";
   openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H, at,
     props: { mode: "settings", key: coord.key, width: W, height: H, remote: null, select,
-      current: { agent: sel.agent, model: sel.model, effort: sel.effort ?? null, fast: Boolean(sel.fast), perm: sel.perm ?? null, ...(sel.launcher ? { launcher: sel.launcher } : {}) },
+      current: { agent: agent.choiceKey(sel), model: sel.model, effort: sel.effort ?? null, fast: Boolean(sel.fast), perm: sel.perm ?? null, ...(sel.launcher ? { launcher: sel.launcher } : {}) },
       menus: data.menus, directMenus: data.directMenus, icons: data.icons, permDefault: data.permDefault } });
 }
 

@@ -9,6 +9,8 @@
 // `io` is where it runs: { send(text), keys(...names), screen(), readFile(rel), writeFile(rel, text), sleep(ms) }, rel
 // under the agent's machine's home.
 
+import { choiceKey } from "./agents.js";
+
 export const CLAUDE_SETTINGS = ".claude/settings.json";
 export const CODEX_CONFIG = ".codex/config.toml";
 const CLAUDE_KEYS = ["model", "effortLevel", "fastMode", "modelSettings"];
@@ -18,7 +20,7 @@ const LEVEL = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", 
 /** Whether the change from what runs (`from`: { agent, model, effort, fast, perm }) to `to` can happen in place:
  *  the same CLI and the same permission mode. */
 export function liveOK(from, to) {
-  return !!from && !!to && from.agent === to.agent && (!to.perm || !from.perm || to.perm === from.perm);
+  return !!from && !!to && choiceKey(from) === choiceKey(to) && (!to.perm || !from.perm || to.perm === from.perm);
 }
 
 /** What changes: { model, effort, fast } (each only when it differs; model/effort '' for the CLI's default). A new

@@ -42,17 +42,9 @@ const withTyped = (menus: ModelMenus['menus'], x: { agent: string; id: string; t
 export function ModelButton({ row, level }: { row: SettingRow; level: string }) {
   const [open, setOpen] = useState(false)
   const [up, setUp] = useState(false)
-  const [error, setError] = useState('')
   const ref = useRef<HTMLSpanElement>(null)
   const sel = row.agent?.sel ?? null
   const worker = row.agent?.role === 'worker'
-  const launcher = (value: string) => {
-    if (!sel) return
-    setOpen(false)
-    setError('')
-    void act({ type: 'setting', key: row.key, value: JSON.stringify(ST.chooseLauncher(sel, value)), place: level } as never)
-      .then((r: any) => r?.ok === false && setError(r.error ?? 'It did not save.'), (e: Error) => setError(e.message))
-  }
   const toggle = () => {
     const r = ref.current?.getBoundingClientRect()
     const below = r ? innerHeight - r.bottom : 999
@@ -61,14 +53,6 @@ export function ModelButton({ row, level }: { row: SettingRow; level: string }) 
   }
   return (
     <span ref={ref} className="relative flex max-w-full flex-wrap items-center justify-end gap-1.5">
-      {worker && sel?.agent === 'claude' ? <label className="inline-flex items-center gap-1.5 text-fg3">
-        <span>{ST.LAUNCHER.title}</span>
-        <select aria-label="Worker launcher" value={sel.launcher ?? 'direct'} className="rounded-row bg-raised px-2 py-1 text-fg"
-          onChange={(e) => launcher(e.target.value)}>
-          {ST.LAUNCHER.choices.map(([value, label]: string[]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-      </label> : null}
-      {error ? <span role="alert" className="w-full text-need-fg">{error}</span> : null}
       <button
         type="button"
         aria-haspopup="menu"
@@ -81,7 +65,7 @@ export function ModelButton({ row, level }: { row: SettingRow; level: string }) 
         <span className="truncate">{row.value}</span>
         <DownIcon className={clsx(ic, 'size-3.5')} />
       </button>
-      {open && sel ? <ModelMenu start={sel} worker={worker} up={up} onClose={() => setOpen(false)} save={(next) => act({ type: 'setting', key: row.key, value: JSON.stringify(next), place: level } as never)} /> : null}
+      {open && sel ? <ModelMenu start={sel} worker={worker} up={up} onClose={() => setOpen(false)} save={(next) => act({ type: 'setting', key: row.key, value: JSON.stringify(AG.normalizePick(next)), place: level } as never)} /> : null}
     </span>
   )
 }
@@ -102,7 +86,7 @@ function ModelMenu({ start, worker, up, onClose, save }: { start: AgentPick; wor
     setError('')
     void save(next).then((r: any) => r?.ok === false && setError(r.error ?? 'It did not save.'), (e: Error) => setError(e.message))
   }
-  const choices = worker ? ST.workerChoices(data, sel) as ModelMenus | null : data
+  const choices = data
   const menu = choices?.menus[sel.agent]
   const model = menu?.models.find((m) => m.id === sel.model)
   const level = sel.effort ?? model?.defaultEffort ?? null
@@ -114,7 +98,7 @@ function ModelMenu({ start, worker, up, onClose, save }: { start: AgentPick; wor
       {!data ? <p className={clsx('px-3 py-2 text-fg3', error && 'text-need-fg')}>{error || ST.LOADING_AGENTS}</p> : (
         <>
           <ModelList menus={choices!.menus as never} agent={sel.agent} picks={picks} chosen={{ agent: sel.agent, model: sel.model ?? null }} autoFocus={!coarse}
-            onPick={(x) => { if (x.agent === sel.agent && x.id === sel.model) return; const menus = withTyped(choices!.menus, x); if (menus !== choices!.menus) setData(sel.launcher === 'magpie' && x.agent === 'claude' ? { ...data, magpie: menus.claude } : { ...data, menus }); change(chooseModel(menus, data.permDefault, sel, x.agent, x.id)) }}
+            onPick={(x) => { if (x.agent === sel.agent && x.id === sel.model) return; const menus = withTyped(choices!.menus, x); if (menus !== choices!.menus) setData({ ...data, menus }); change(chooseModel(menus, data.permDefault, sel, x.agent, x.id)) }}
             onPin={(agent, id) => void act({ type: 'model-pin', agent, model: id } as never).then((r: any) => r?.picks && setPicks(r.picks), () => undefined)} />
           <MenuSeparator />
           <MenuLabel>{MODEL_MENU.reasoning}</MenuLabel>

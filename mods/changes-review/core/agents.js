@@ -3,31 +3,46 @@
 // settings and restarting it run where each side runs commands (lib/agent.js, service/agents.ts).
 // Shared core: the source is core/agents.js; bin/sync-shared copies it into the mods in lib/COPIES.
 export const NAMES = { claude: "Claude Code", codex: "Codex" };
+export const CHOICE_NAMES = { ...NAMES, "claude-magpie": "Claude Magpie", "claude-cdnd": "Claude Cdnd" };
+export const CHOICES = Object.keys(CHOICE_NAMES);
+export const LAUNCHER_COMMANDS = { direct: "claude", magpie: "claude-magpie", cdnd: "claude-cdnd" };
 export const MAGPIE_MODEL = "copilot/claude-sonnet-5.5";
-export const MAGPIE_RUN = `if command -v "$1" >/dev/null 2>&1; then
-  [ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" herdr.launcher.notice= >/dev/null 2>&1
-  exec "$@"
+export const MAGPIE_RUN = `if ! command -v "$1" >/dev/null 2>&1; then
+  printf 'Cannot start: %s is not installed on this machine.\\n' "$1" >&2
+  exit 127
 fi
-notice="This machine has no claude-magpie, so it runs on plain Claude."
-[ -z "$HC_TERMINAL_ID" ] || hc label "$HC_TERMINAL_ID" "herdr.launcher.notice=$notice" >/dev/null 2>&1
-printf '%s\\n' "$notice" >&2
-shift
-left=$#
-while [ "$left" -gt 0 ]; do
-  word=$1; shift; left=$((left - 1))
-  case "$word" in
-    --model) [ "$left" -eq 0 ] || { shift; left=$((left - 1)); } ;;
-    --model=*) ;;
-    *) set -- "$@" "$word" ;;
-  esac
-done
-exec claude "$@"`;
+exec "$@"`;
 
 export const agentKey = (word) => {
   const name = String(word ?? "").split("/").pop();
-  return name === "claude-magpie" || name === "claude-code" ? "claude" : name;
+  return name === "claude-magpie" || name === "claude-cdnd" || name === "claude-code" ? "claude" : name;
 };
 export const magpieArgv = (argv) => ["sh", "-c", MAGPIE_RUN, "herdr-magpie", ...argv];
+
+// Picker entries distinguish launchers; persisted agent identities remain Claude or Codex.
+export function normalizePick(pick) {
+  if (!pick) return pick;
+  const launcher = pick.agent === "claude-magpie" ? "magpie" : pick.agent === "claude-cdnd" ? "cdnd" : null;
+  return launcher ? { ...pick, agent: "claude", launcher } : { ...pick };
+}
+export function choiceKey(pick) {
+  if (typeof pick === "string") return pick;
+  return pick?.agent === "claude" ? LAUNCHER_COMMANDS[pick.launcher] ?? "claude" : pick?.agent;
+}
+export const viewPick = (pick) => pick ? { ...pick, agent: choiceKey(pick) } : pick;
+export function launcherOf(argv) {
+  const command = (argv ?? []).map((a) => String(a).split("/").pop()).find((a) => /^claude-(magpie|cdnd)$/.test(a));
+  return command === "claude-magpie" ? "magpie" : command === "claude-cdnd" ? "cdnd" : "direct";
+}
+export function choiceMenus(dflts, current = null, installed = { claude: true, codex: true }) {
+  return Object.fromEntries(CHOICES.filter((k) => !["claude", "codex"].includes(k) || installed[k] || k === choiceKey(current)).map((k) => {
+    const model = k === choiceKey(current) ? current?.model : null;
+    const menu = k === "claude-magpie" ? { ...(dflts.magpie ?? magpieModels("")) }
+      : menuFor(agentKey(k), dflts[agentKey(k)], model);
+    if (model && !menu.models.some((m) => m.id === model)) menu.models = [typedModel(k, model), ...menu.models];
+    return [k, { ...menu, name: CHOICE_NAMES[k] }];
+  }));
+}
 
 export function mergeWorker(parent, own) {
   let out = { ...parent };
@@ -41,12 +56,16 @@ export function mergeWorker(parent, own) {
 export function launchArgv(t) {
   const argv = t?.argv ?? [];
   if (argv.includes("herdr-magpie")) return argv;
-  const at = argv.findIndex((a) => String(a).split("/").pop() === "claude-magpie");
+  const at = argv.findIndex((a) => /^claude-(magpie|cdnd)$/.test(String(a).split("/").pop()));
   if (at >= 0) return argv.slice(at);
   try {
     const rec = JSON.parse(t?.labels?.["herdr.resume"] ?? "null");
-    if (rec?.argv?.includes("herdr-magpie") || rec?.argv?.some((a) => String(a).split("/").pop() === "claude-magpie"))
+    if (rec?.argv?.includes("herdr-magpie") || rec?.argv?.some((a) => /^claude-(magpie|cdnd)$/.test(String(a).split("/").pop())))
       return rec.session ? [...rec.argv, "--resume", rec.session] : rec.argv;
+  } catch {}
+  try {
+    const declared = JSON.parse(t?.labels?.["herdr.launcher.argv"] ?? "null");
+    if (Array.isArray(declared) && launcherOf(declared) !== "direct") return declared;
   } catch {}
   return t?.foreground?.argv ?? argv;
 }
@@ -87,6 +106,7 @@ const PERM_ACROSS = {
   codex: { plan: "read-only", auto: "auto", acceptEdits: "auto", bypassPermissions: "full" },
 };
 export function permAcross(perm, agent, permDefault) {
+  agent = agentKey(agent);
   return PERM_ACROSS[agent]?.[perm] ?? (PERMS[agent]?.some((p) => p.id === perm) ? perm : null) ?? permDefault?.[agent] ?? null;
 }
 
@@ -324,7 +344,7 @@ export function menuFor(agent, dflt, current = null) {
 
 // The levels a model typed by id gets: its agent's usual ones.
 export function typedModel(agent, id) {
-  return { id, name: agent === "claude" ? modelName(id) : id, efforts: agent === "claude" ? CLAUDE_EFFORTS : ["low", "medium", "high", "xhigh"], defaultEffort: null, fast: false, typed: true };
+  return { id, name: agentKey(agent) === "claude" ? modelName(id) : id, efforts: agentKey(agent) === "claude" ? CLAUDE_EFFORTS : ["low", "medium", "high", "xhigh"], defaultEffort: null, fast: false, typed: true };
 }
 
 // The person's picks in the model menus (the window's and the web's alike), in PICKS_FILE under the
@@ -456,7 +476,7 @@ function kept(kind, argv) {
 // first message), or null when argv resumed none: for a fresh start once that session is gone.
 export function freshArgv(kind, argv) {
   argv = argv ?? [];
-  const at = argv.findIndex((a, i) => (i === 0 || !a.startsWith("-")) && /^(claude|claude-magpie|codex)$/.test(String(a).split("/").pop()));
+  const at = argv.findIndex((a, i) => (i === 0 || !a.startsWith("-")) && /^(claude|claude-magpie|claude-cdnd|codex)$/.test(String(a).split("/").pop()));
   if (at < 0) return null;
   const marker = argv.indexOf("herdr-magpie");
   const rest = argv.slice(at + 1), out = marker >= 0 && marker < at ? [...magpieArgv([]), argv[at]] : [argv[at]];
@@ -487,11 +507,12 @@ export const STATUS_LINE = { type: "command", command: '"$HOME/.local/bin/shephe
 // How to start the chosen agent: { argv, resume } (resume: argv already continues the session).
 // `session`: the old conversation's id when it can be resumed (same agent only).
 export function argvFor(pick, old) {
-  const same = pick.agent === old.agent;
+  pick = normalizePick(pick);
+  const same = pick.agent === agentKey(old.agent);
   const flags = same ? kept(pick.agent, old.argv ?? []) : [];
   if (pick.agent === "claude") {
     const magpie = pick.launcher === "magpie";
-    const a = [magpie ? "claude-magpie" : "claude", ...flags];
+    const a = [LAUNCHER_COMMANDS[pick.launcher] ?? "claude", ...flags];
     const model = pick.model || (magpie ? MAGPIE_MODEL : null), effort = pick.effort || (magpie ? "high" : null);
     if (model) a.push("--model", model);
     if (effort) a.push("--effort", effort);
@@ -527,7 +548,7 @@ export function forkArgv(kind, argv, session) {
   argv = argv ?? [];
   const marker = argv.indexOf("herdr-magpie");
   if (marker >= 0) return magpieArgv(forkArgv(kind, argv.slice(marker + 1), session));
-  const command = kind === "claude" && String(argv[0]).split("/").pop() === "claude-magpie" ? argv[0] : "claude";
+  const command = kind === "claude" && /^claude-(magpie|cdnd)$/.test(String(argv[0]).split("/").pop()) ? argv[0] : "claude";
   // The same model, effort and speed as the original.
   const same = kind === "claude"
     ? ["--model", "--effort", "--settings"].flatMap((f) => { const v = flag(argv, f); return v ? [f, v] : []; })

@@ -179,14 +179,23 @@ def record_of(k):
     launch = k.get("argv") or []
     shell = any(os.path.basename(str(a)) in SHELLS for a in launch[:launch.index(argv[0])]) if kind else True
     if not kind:
+        try:
+            declared = json.loads((k.get("labels") or {}).get("herdr.launcher.argv") or "null")
+        except ValueError:
+            declared = None
+        if isinstance(declared, list):
+            kind, argv = base_argv(declared)
+            if kind:
+                shell = False
+    if not kind:
         saved = read_record(k)
         saved_argv = (saved or {}).get("argv") or []
-        if "herdr-magpie" in saved_argv or any(os.path.basename(str(a)) == "claude-magpie" for a in saved_argv):
+        if "herdr-magpie" in saved_argv or any(os.path.basename(str(a)) in ("claude-magpie", "claude-cdnd") for a in saved_argv):
             kind, argv = base_argv(saved["argv"])
     if not kind:
         kind, argv = base_argv(fg.get("argv"))
         if kind:
-            argv[0] = "claude-magpie" if os.path.basename(argv[0]) == "claude-magpie" else kind
+            argv[0] = os.path.basename(argv[0]) if os.path.basename(argv[0]) in ("claude-magpie", "claude-cdnd") else kind
     if not kind:
         return None
     sid, log = session_of(pid)
@@ -215,7 +224,7 @@ def task_record(k, t):
         return None
     if (k.get("labels") or {}).get("herdr.role") != "reviewer":
         argv = own_argv(argv, k.get("cwd"))
-        if a.get("launcher") == "magpie" and not a.get("custom_argv"):
+        if a.get("launcher") in ("magpie", "cdnd") and not a.get("custom_argv"):
             argv = magpie_argv(argv)
     return {"kind": kind, "session": a.get("session"), "log": a.get("log"), "argv": argv, "cwd": k.get("cwd"),
             "pid": None, "working": t.get("state") == "running", "shell": True}

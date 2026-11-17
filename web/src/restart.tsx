@@ -226,7 +226,7 @@ function SpeedWords({ speed }: { speed: Worn }) {
 
 export type MenuModel = { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean }
 export type AgentMenu = { name: string; models: MenuModel[]; perms?: { id: string; label: string }[] }
-type MenuPick = { agent: string; model: string | null; effort: string | null; fast: boolean; perm: string | null }
+type MenuPick = { agent: string; launcher?: string; model: string | null; effort: string | null; fast: boolean; perm: string | null }
 type MenuData = { current: MenuPick; menus: Record<string, AgentMenu>; permDefault: Record<string, string>; picks?: Picks; offline?: string | null }
 /** a stretch of the model list (core/agents.js modelSections): Pinned, Recent, All models, or an agent's matches */
 type Picks = { pinned: string[]; recent: string[] }
@@ -290,11 +290,11 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
     <div onKeyDown={keys} className="flex flex-col">
       {agents.length > 1 ? (
         <div className="px-1 pt-1 pb-1.5">
-          <Tabs label="Agent" className="flex w-full">
+          <Tabs label="Agent" className={clsx('w-full', agents.length > 2 ? 'grid! grid-cols-2' : 'flex')}>
             {agents.map((a) => (
               <Tab key={a} fill on={tab === a} onClick={() => { setTab(a); setQ('') }} className="text-[0.75rem]! coarse:text-[0.875rem]! phone:text-[0.875rem]!">
                 <span className="inline-flex items-center gap-1.5 align-middle">
-                  <img src={`agents/${a}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
+                  <img src={`agents/${AGc.agentKey(a)}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
                   {menus[a].name}
                 </span>
               </Tab>
@@ -326,7 +326,7 @@ export function ModelList({ menus, agent, picks, chosen, disabled, phone, onPick
                 <div key={`${x.agent}-${x.id}`} className="group relative flex items-center">
                   <button type="button" role="menuitemradio" aria-checked={on} disabled={disabled} className={clsx(row, onPin && 'pr-9')} onClick={() => pick(x)}>
                     {/* the agent's own mark, Herdr's icon (web/public/agents, from the window's icons) */}
-                    <img src={`agents/${x.agent}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
+                    <img src={`agents/${AGc.agentKey(x.agent)}.svg`} alt="" aria-hidden className="size-3.5 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">{x.typed ? <>Use <span className="font-medium">{x.id}</span></> : x.name}</span>
                     {x.typed ? <span className="shrink-0 text-[0.6875rem] text-fg3">{menus[x.agent]?.name} id</span> : null}
                     <span className="grid size-3.5 shrink-0 place-items-center">{on ? <CheckIcon className="size-3.5" /> : null}</span>
@@ -368,6 +368,8 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
     if (next.effort && !m.efforts.includes(next.effort)) next.effort = null
     if (!m.fast) next.fast = false
     if (m.agent !== was.agent) {
+      delete next.launcher
+      if (m.agent === 'claude') next.launcher = 'direct'
       // another agent: its own permission modes, the nearest to the one chosen
       next.perm = AGc.permAcross(was.perm, m.agent, d.permDefault)
       next.fast = false
@@ -428,7 +430,7 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
   const perm = sel ? menu?.perms?.find((x) => x.id === sel.perm) : undefined
   const ch = changes()
   // only another agent or permission mode needs a restart: the rest changes in place, the conversation going on
-  const restarts = !!data && !!sel && (sel.agent !== data.current.agent || (!!sel.perm && sel.perm !== data.current.perm))
+  const restarts = !!data && !!sel && (AGc.choiceKey(sel) !== AGc.choiceKey(data.current) || (!!sel.perm && sel.perm !== data.current.perm))
   const row = 'flex min-h-[31px] w-full items-center gap-2.5 rounded-[7px] px-[9px] text-left enabled:hover:bg-hover focus-visible:bg-hover focus-visible:outline-none disabled:text-fg3 coarse:min-h-11 phone:min-h-11'
   const head = (t: string) => <div className="px-[9px] pt-2 pb-1 text-[0.6875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">{t}</div>
   const sheet = (
@@ -493,13 +495,13 @@ function ModelMenu({ chat, typed }: { chat: string; typed?: string }) {
               {ch.length ? (
                 <div className="flex flex-col gap-1 pt-[5px]">
                   {/* another agent can't carry this conversation on: said before the press, not after */}
-                  {sel.agent !== data.current.agent ? (
+                  {AGc.agentKey(sel.agent) !== AGc.agentKey(data.current.agent) ? (
                     <p className="px-[9px] text-pretty text-[0.71875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">
                       {data.menus[sel.agent]?.name} starts a new conversation. This one stays in {data.menus[data.current.agent]?.name ?? 'its old agent'}’s history.
                     </p>
                   ) : null}
                   {/* a permission mode is set when the agent starts: said before the press too */}
-                  {restarts && sel.agent === data.current.agent ? (
+                  {restarts && AGc.agentKey(sel.agent) === AGc.agentKey(data.current.agent) ? (
                     <p className="px-[9px] text-pretty text-[0.71875rem] text-fg3 coarse:text-[0.8125rem] phone:text-[0.8125rem]">
                       A new permission mode restarts the agent. The conversation carries on.
                     </p>
