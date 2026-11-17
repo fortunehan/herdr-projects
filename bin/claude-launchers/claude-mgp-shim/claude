@@ -1,0 +1,15 @@
+#!/bin/sh
+# Started by `magpie claude run` as: claude --settings <magpie file> <caller args>
+fail() { printf 'claude-mgp shim: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+[ "$#" -ge 2 ] && [ "$1" = "--settings" ] || fail 'expected --settings <file> as the first arguments; Magpie changed its launch order'
+[ -n "$SHEPHERDR_CLAUDE_REAL" ] && [ -x "$SHEPHERDR_CLAUDE_REAL" ] || fail 'the real Claude executable is missing' 127
+[ -n "$SHEPHERDR_CLAUDE_SETTINGS_HELPER" ] && [ -x "$SHEPHERDR_CLAUDE_SETTINGS_HELPER" ] || fail 'the settings helper is missing' 127
+
+me=$(cd -P "$(dirname "$0")" && pwd)/claude
+real_dir=$(cd -P "$(dirname "$SHEPHERDR_CLAUDE_REAL")" && pwd)
+[ "$real_dir/$(basename "$SHEPHERDR_CLAUDE_REAL")" = "$me" ] && fail 'the real Claude is this shim (recursion)'
+
+base="$2"
+shift 2
+exec "$SHEPHERDR_CLAUDE_SETTINGS_HELPER" magpie --base "$base" -- "$SHEPHERDR_CLAUDE_REAL" "$@"

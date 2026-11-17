@@ -153,37 +153,6 @@ time.sleep(30)
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait()
 
-    @unittest.skipUnless(shutil.which("zsh"), "Cdnd launcher requires zsh")
-    def test_cdnd_launcher_pins_route_with_bare_file_and_equals_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            helper = root / "shepherdr-claude-settings"
-            shutil.copyfile(SCRIPT, helper)
-            helper.chmod(0o700)
-            (root / ".zshenv").write_text("export ANTHROPIC_BASE_URL=https://cdnd.example\n"
-                                          "export ANTHROPIC_AUTH_TOKEN=fixture-credential\n")
-            capture = root / "capture.py"
-            capture.write_text('''import json,sys
-a=sys.argv[1:];assert a.count('--settings')==1
-d=json.load(open(a[a.index('--settings')+1]))
-assert d['env']['ANTHROPIC_BASE_URL']=='https://cdnd.example'
-assert d['env']['ANTHROPIC_API_KEY']==''
-assert 'fixture-credential' not in ' '.join(a)
-print('cdnd')
-''')
-            child = root / "claude"
-            child.write_text("#!/bin/sh\nexec " + sys.executable + " " + str(capture) + ' "$@"\n')
-            child.chmod(0o700)
-            file = root / "caller.json"
-            file.write_text('{"fastMode":false}')
-            env = dict(os.environ, HOME=str(root), SHEPHERDR_CLAUDE_LAUNCHERS=str(root),
-                       CLAUDE_CDND_CLAUDE=str(child), ANTHROPIC_BASE_URL="https://magpie.example")
-            wrapper = SCRIPT.parent / "claude-launchers/claude-cdnd"
-            for argv in ([], ["--settings", str(file)], ['--settings={"fastMode":false}']):
-                with self.subTest(argv=argv):
-                    result = subprocess.run([str(wrapper), *argv], env=env, capture_output=True, text=True)
-                    self.assertEqual((result.returncode, result.stdout.strip()), (0, "cdnd"), result.stderr)
-
     def test_old_duplicate_flags_hit_cdnd_and_composed_settings_hit_magpie(self):
         hits, servers = [], []
 
@@ -236,6 +205,214 @@ urllib.request.urlopen(urllib.request.Request(url,data=b'{}'),timeout=3).read()
             for server in servers:
                 server.shutdown()
                 server.server_close()
+
+
+LAUNCHERS = SCRIPT.parent / "claude-launchers"
+CAPTURE = """import json,os,sys
+a=sys.argv[1:]
+v=a[a.index('--settings')+1] if '--settings' in a else None
+d=(json.loads(v) if v.startswith('{') else json.load(open(v))) if v else None
+print(json.dumps({'argv':a,'settings':d,'url':os.environ.get('ANTHROPIC_BASE_URL'),
+ 'token':os.environ.get('ANTHROPIC_AUTH_TOKEN')}))
+"""
+FAKE_MAGPIE = """#!/bin/sh
+[ "$1" = claude ] && [ "$2" = run ] || exit 64
+shift 2
+d=$(mktemp -d)
+printf '{"env":{"ANTHROPIC_BASE_URL":"%s","ANTHROPIC_AUTH_TOKEN":"fixture-credential"}}' "$FAKE_MAGPIE_URL" > "$d/settings.json"
+claude --settings "$d/settings.json" "$@"
+status=$?
+rm -f "$d/settings.json"
+rmdir "$d"
+exit $status
+"""
+
+
+def script(path, text):
+    path.write_text(text)
+    path.chmod(0o700)
+
+
+class Scratch(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        script(self.bin / "capture.py", CAPTURE)
+        script(self.bin / "claude", "#!/bin/sh\nexec " + sys.executable + " " + str(self.bin / "capture.py") + ' "$@"\n')
+        self.env = dict(os.environ, HOME=str(self.root), PATH=str(self.bin) + ":/usr/bin:/bin",
+                        FAKE_MAGPIE_URL="https://gateway.example/anthropic")
+        for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+            self.env.pop(name, None)
+
+    def run_script(self, argv, **extra):
+        return subprocess.run(argv, env={**self.env, **extra}, capture_output=True, text=True)
+
+
+class Mgp(Scratch):
+    def setUp(self):
+        super().setUp()
+        self.launchers = self.root / "launchers"
+        (self.launchers / "claude-mgp-shim").mkdir(parents=True)
+        for name in ("claude-mgp", "claude-mgp-shim/claude"):
+            shutil.copy(LAUNCHERS / name, self.launchers / name)
+        shutil.copy(SCRIPT, self.launchers / "shepherdr-claude-settings")
+        for path in (self.launchers / "claude-mgp", self.launchers / "claude-mgp-shim/claude",
+                     self.launchers / "shepherdr-claude-settings"):
+            path.chmod(0o700)
+        script(self.bin / "magpie", FAKE_MAGPIE)
+        self.env["SHEPHERDR_CLAUDE_LAUNCHERS"] = str(self.launchers)
+        self.mgp = str(self.launchers / "claude-mgp")
+
+    def test_herdr_settings_after_magpie_keep_route_and_ui(self):
+        ui = {"fastMode": False, "statusLine": {"type": "command", "command": "status"},
+              "hooks": {"PermissionRequest": [{"hooks": [{"type": "command", "command": "ask"}]}]}}
+        result = self.run_script([self.mgp, "--model", "m", "--settings", json.dumps(ui), "--resume", "S1"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["argv"][0], "--settings")
+        self.assertEqual(data["argv"].count("--settings"), 1)
+        self.assertEqual(data["argv"][2:], ["--model", "m", "--resume", "S1"])
+        env = data["settings"]["env"]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://gateway.example/anthropic")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fixture-credential")
+        for key, value in ui.items():
+            self.assertEqual(data["settings"][key], value)
+        self.assertNotIn("fixture-credential", " ".join(data["argv"]))
+
+    def test_shim_receives_magpie_file_first_then_caller_args(self):
+        script(self.launchers / "shepherdr-claude-settings", '#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        result = self.run_script([self.mgp, "--settings", '{"fastMode":false}', "hi"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[:2], ["magpie", "--base"])
+        self.assertTrue(lines[2].endswith("settings.json"))
+        self.assertEqual(lines[3:5], ["--", str(self.bin / "claude")])
+        self.assertEqual(lines[5:], ["--settings", '{"fastMode":false}', "hi"])
+
+    def test_caller_route_conflict_still_errors_without_secrets(self):
+        result = self.run_script([self.mgp, "--settings",
+                                  json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://other.example"}})])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("ANTHROPIC_BASE_URL", result.stderr)
+        self.assertNotIn("fixture-credential", result.stderr + result.stdout)
+
+    def test_exit_status_passes_through(self):
+        script(self.bin / "claude", "#!/bin/sh\nexit 9\n")
+        self.assertEqual(self.run_script([self.mgp]).returncode, 9)
+
+    def test_requests_reach_magpie_route_not_process_env_route(self):
+        hits = []
+
+        class Receiver(BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append(self.server.route)
+                self.rfile.read(int(self.headers.get("content-length", "0")))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        servers = []
+        try:
+            for name in ("cdnd", "magpie"):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+                server.route = name
+                servers.append(server)
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+            cdnd, magpie = ("http://127.0.0.1:" + str(s.server_port) for s in servers)
+            script(self.bin / "request.py", "import json,sys,urllib.request\n"
+                   "a=sys.argv[1:];s=json.load(open(a[a.index('--settings')+1]))\n"
+                   "urllib.request.urlopen(urllib.request.Request(s['env']['ANTHROPIC_BASE_URL'],data=b'{}'),timeout=3).read()\n")
+            script(self.bin / "claude", "#!/bin/sh\nexec " + sys.executable + " " + str(self.bin / "request.py") + ' "$@"\n')
+            result = self.run_script([self.mgp, "--settings", '{"fastMode":false}'],
+                                     FAKE_MAGPIE_URL=magpie, ANTHROPIC_BASE_URL=cdnd, NO_PROXY="127.0.0.1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(hits, ["magpie"])
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+
+    def test_fails_loudly_when_settings_is_not_first(self):
+        for body in ('claude --model x --settings "$d/settings.json" "$@"', 'claude "$@"', 'claude --settings'):
+            with self.subTest(body=body):
+                script(self.bin / "magpie", "#!/bin/sh\nshift 2\nd=x\n" + body + "\n")
+                result = self.run_script([self.mgp, "hi"])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--settings", result.stderr)
+                self.assertNotIn("fixture-credential", result.stderr)
+
+    def test_fails_when_real_claude_or_magpie_is_missing(self):
+        (self.bin / "claude").unlink()
+        result = self.run_script([self.mgp])
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("Claude", result.stderr)
+        script(self.bin / "claude", "#!/bin/sh\nexit 0\n")
+        (self.bin / "magpie").unlink()
+        result = self.run_script([self.mgp])
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("magpie", result.stderr)
+
+    def test_recursion_is_refused(self):
+        (self.bin / "claude").unlink()
+        result = self.run_script([self.mgp], PATH=str(self.launchers / "claude-mgp-shim") + ":" + self.env["PATH"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("recursion", result.stderr)
+        shim = str(self.launchers / "claude-mgp-shim/claude")
+        result = self.run_script([shim, "--settings", "x"], SHEPHERDR_CLAUDE_REAL=shim,
+                                 SHEPHERDR_CLAUDE_SETTINGS_HELPER=str(self.launchers / "shepherdr-claude-settings"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("recursion", result.stderr)
+
+    def test_magpie_path_can_be_overridden(self):
+        script(self.root / "other-magpie", "#!/bin/sh\necho other\n")
+        result = self.run_script([self.mgp], SHEPHERDR_MAGPIE=str(self.root / "other-magpie"))
+        self.assertEqual(result.stdout.strip(), "other")
+
+    def test_launcher_scripts_parse_in_bash(self):
+        for name in ("claude-mgp", "claude-mgp-shim/claude"):
+            self.assertEqual(subprocess.run(["bash", "-n", str(LAUNCHERS / name)]).returncode, 0)
+
+
+@unittest.skipUnless(shutil.which("zsh"), "Cdnd launcher requires zsh")
+class Cdnd(Scratch):
+    def setUp(self):
+        super().setUp()
+        self.file = self.root / "cdnd.env"
+        self.file.write_text("export ANTHROPIC_BASE_URL=https://cdnd.example\n"
+                             "ANTHROPIC_AUTH_TOKEN='fixture-credential'\n")
+        self.file.chmod(0o600)
+        self.env["CLAUDE_CDND_ENV"] = str(self.file)
+        self.env["CLAUDE_CDND_CLAUDE"] = str(self.bin / "claude")
+        self.cdnd = str(LAUNCHERS / "claude-cdnd")
+
+    def test_process_env_route_is_kept_and_settings_pass_through_untouched(self):
+        caller = '{"fastMode":false}'
+        result = self.run_script([self.cdnd, "--settings", caller, "hi"],
+                                 ANTHROPIC_BASE_URL="https://wrong.example")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["url"], data["token"]), ("https://cdnd.example", "fixture-credential"))
+        self.assertEqual(data["argv"], ["--settings", caller, "hi"])
+
+    def test_missing_unreadable_or_incomplete_file_errors_without_secrets(self):
+        for text in ("ANTHROPIC_AUTH_TOKEN=fixture-credential\n", "ANTHROPIC_BASE_URL=https://cdnd.example\n"):
+            self.file.write_text(text)
+            result = self.run_script([self.cdnd])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN", result.stderr)
+            self.assertNotIn("fixture-credential", result.stderr)
+        self.file.unlink()
+        result = self.run_script([self.cdnd])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot read", result.stderr)
+
+    def test_script_parses_in_zsh(self):
+        self.assertEqual(subprocess.run(["zsh", "-n", self.cdnd]).returncode, 0)
 
 
 if __name__ == "__main__":

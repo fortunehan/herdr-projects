@@ -181,18 +181,9 @@ def run(base, command):
 
 
 def main(argv):
-    if len(argv) < 4 or argv[0] not in ("magpie", "cdnd"):
-        raise SettingsError("usage: provider (--base file | --from-env) -- executable [args]")
-    provider, source = argv[:2]
-    if source == "--base" and len(argv) >= 5 and argv[3] == "--":
-        base, command = read_settings(argv[2]), argv[4:]
-    elif provider == "cdnd" and source == "--from-env" and argv[2] == "--":
-        base = {"env": {name: os.environ.get(name, "") for name in
-                        ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")}}
-        command = argv[3:]
-    else:
-        raise SettingsError("invalid launcher settings arguments")
-    return run(base, command)
+    if len(argv) < 5 or argv[0] != "magpie" or argv[1] != "--base" or argv[3] != "--":
+        raise SettingsError("usage: magpie --base file -- executable [args]")
+    return run(read_settings(argv[2]), argv[4:])
 
 
 if __name__ == "__main__":
