@@ -1,0 +1,9 @@
+#!/bin/sh
+root="${SHEPHERDR_CLAUDE_LAUNCHERS:-$HOME/.local/share/shepherdr/claude-launchers}"
+helper="$root/shepherdr-claude-settings"
+if [ ! -x "$helper" ] || [ ! -x "$root/magpie" ]; then
+  printf '%s\n' 'claude-magpie: the private launcher build is not installed' >&2
+  exit 127
+fi
+export SHEPHERDR_CLAUDE_SETTINGS_HELPER="$helper"
+exec "$root/magpie" claude run "$@"

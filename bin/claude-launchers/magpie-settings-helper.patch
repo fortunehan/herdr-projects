@@ -1,0 +1,17 @@
+--- a/internal/cli/claude_launch_cli.go
++++ b/internal/cli/claude_launch_cli.go
+@@ -92,7 +92,13 @@
+ 	}
+ 	mark := agent.ClaudeLaunchBefore(home)
+ 	claudeLetGo()
+-	runErr := claudeRunExec(bin, append([]string{"--settings", path}, args...), os.Environ())
++	runBin, runArgs := bin, append([]string{"--settings", path}, args...)
++	if helper := os.Getenv("SHEPHERDR_CLAUDE_SETTINGS_HELPER"); helper != "" {
++		// Compose caller settings after the gateway's address and authentication refresh.
++		runBin = helper
++		runArgs = append([]string{"magpie", "--base", path, "--", bin}, args...)
++	}
++	runErr := claudeRunExec(runBin, runArgs, os.Environ())
+ 	if err := agent.ClaudeLaunchAfter(home, mark); err != nil {
+ 		fmt.Fprintln(os.Stderr, "magpie: putting your settings.json's model back:", err)
+ 	}

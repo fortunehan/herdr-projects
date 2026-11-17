@@ -1,0 +1,16 @@
+#!/bin/zsh
+if [[ -r "$HOME/.zshenv" ]]; then
+  eval "$(grep -E '^[[:space:]]*(export[[:space:]]+)?ANTHROPIC_[A-Za-z0-9_]+=' "$HOME/.zshenv")"
+fi
+if [[ -z "$ANTHROPIC_BASE_URL" || -z "$ANTHROPIC_AUTH_TOKEN" ]]; then
+  print -ru2 -- 'claude-cdnd: route or authentication is missing from ~/.zshenv'
+  exit 1
+fi
+export ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
+claude_bin="${CLAUDE_CDND_CLAUDE:-$commands[claude]}"
+if [[ -z "$claude_bin" || ! -x "$claude_bin" ]]; then
+  print -ru2 -- 'claude-cdnd: no Claude executable is available'
+  exit 127
+fi
+root="${SHEPHERDR_CLAUDE_LAUNCHERS:-$HOME/.local/share/shepherdr/claude-launchers}"
+exec "$root/shepherdr-claude-settings" cdnd --from-env -- "$claude_bin" "$@"

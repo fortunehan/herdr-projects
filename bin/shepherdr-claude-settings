@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Compose one private settings file before starting a Claude launcher child."""
+import copy
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+from urllib.parse import urlsplit
+
+
+CLOUD_SELECTORS = (
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_GATEWAY",
+)
+ROUTE_KEYS = {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", *CLOUD_SELECTORS}
+
+
+class SettingsError(ValueError):
+    pass
+
+
+def jsonc(text):
+    """Read comments and trailing commas without changing quoted strings."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == '"':
+            start = i
+            i += 1
+            while i < len(text):
+                if text[i] == "\\":
+                    i += 2
+                elif text[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            out.append(text[start:i])
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                raise SettingsError("unterminated settings comment")
+            out.append(" ")
+            i = end + 2
+        elif text[i] == ",":
+            tail = text[i + 1:].lstrip()
+            while tail.startswith(("//", "/*")):
+                end = tail.find("\n") if tail.startswith("//") else tail.find("*/", 2)
+                if end < 0:
+                    break
+                tail = tail[end + (1 if tail.startswith("//") else 2):].lstrip()
+            if not tail.startswith(("}", "]")):
+                out.append(",")
+            i += 1
+        else:
+            out.append(text[i])
+            i += 1
+    try:
+        value = json.loads("".join(out))
+    except ValueError:
+        raise SettingsError("settings must contain valid JSON") from None
+    if not isinstance(value, dict):
+        raise SettingsError("settings must be an object")
+    if "env" in value and (not isinstance(value["env"], dict)
+                           or any(not isinstance(v, str) for v in value["env"].values())):
+        raise SettingsError("settings env must be an object of strings")
+    return value
+
+
+def read_settings(value):
+    if value.lstrip().startswith("{"):
+        return jsonc(value)
+    try:
+        return jsonc(Path(value).expanduser().read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError):
+        raise SettingsError("settings file cannot be read") from None
+
+
+def merge(base, overlay, key=None):
+    if key == "modelPicker":
+        return copy.deepcopy(overlay)
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        result = copy.deepcopy(base)
+        for name, value in overlay.items():
+            if key in ("extraKnownMarketplaces", "managedMcpServers") or name not in result:
+                result[name] = copy.deepcopy(value)
+            else:
+                result[name] = merge(result[name], value, name)
+        return result
+    if isinstance(base, list) and isinstance(overlay, list) and key != "fallbackModel":
+        result = copy.deepcopy(base)
+        result.extend(copy.deepcopy(v) for v in overlay if v not in result)
+        return result
+    return copy.deepcopy(overlay)
+
+
+def compose(base, argv):
+    owned = {name: value for name, value in (base.get("env") or {}).items() if name in ROUTE_KEYS}
+    endpoint = owned.get("ANTHROPIC_BASE_URL", "")
+    try:
+        url = urlsplit(endpoint)
+        valid = url.scheme in ("http", "https") and url.hostname and not url.username and not url.password
+    except ValueError:
+        valid = False
+    if not valid:
+        raise SettingsError("launcher route is missing or invalid")
+    if not (owned.get("ANTHROPIC_AUTH_TOKEN") or owned.get("ANTHROPIC_API_KEY")):
+        raise SettingsError("launcher authentication is missing")
+    if owned.get("ANTHROPIC_AUTH_TOKEN") and owned.get("ANTHROPIC_API_KEY"):
+        raise SettingsError("launcher has competing authentication fields")
+    if owned.get("ANTHROPIC_AUTH_TOKEN"):
+        owned.setdefault("ANTHROPIC_API_KEY", "")
+    for name in CLOUD_SELECTORS:
+        if owned.get(name, "").lower() not in ("", "0", "false", "no", "off"):
+            raise SettingsError("launcher route conflicts with provider selection: " + name)
+        owned.setdefault(name, "")
+    result, rest, i = copy.deepcopy(base), [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            rest.extend(argv[i:])
+            break
+        if arg == "--settings":
+            i += 1
+            if i >= len(argv):
+                raise SettingsError("--settings requires a file or JSON object")
+            overlay = read_settings(argv[i])
+        elif arg.startswith("--settings="):
+            overlay = read_settings(arg.split("=", 1)[1])
+        else:
+            rest.append(arg)
+            i += 1
+            continue
+        for name, value in (overlay.get("env") or {}).items():
+            if name.upper() in ROUTE_KEYS and value != owned.get(name.upper(), ""):
+                raise SettingsError("caller settings conflict with the selected launcher: " + name.upper())
+        result = merge(result, overlay)
+        i += 1
+    result["env"] = {**result.get("env", {}), **owned}
+    return result, rest
+
+
+def run(base, command):
+    settings, argv = compose(base, command[1:])
+    with tempfile.TemporaryDirectory(prefix="shepherdr-claude-") as directory:
+        path = os.path.join(directory, "settings.json")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(settings, f)
+        child = None
+        previous = {}
+
+        def forward(sig, frame):
+            if child is not None:
+                child.send_signal(sig)
+
+        try:
+            for sig in (signal.SIGTERM, signal.SIGHUP):
+                previous[sig] = signal.signal(sig, forward)
+            # Interactive Ctrl+C already reaches the child in this process group.
+            previous[signal.SIGINT] = signal.signal(signal.SIGINT, lambda sig, frame: None)
+            child = subprocess.Popen([command[0], "--settings", path, *argv])
+            status = child.wait()
+            return status if status >= 0 else 128 - status
+        except OSError:
+            raise SettingsError("Claude executable could not be started") from None
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+
+def main(argv):
+    if len(argv) < 4 or argv[0] not in ("magpie", "cdnd"):
+        raise SettingsError("usage: provider (--base file | --from-env) -- executable [args]")
+    provider, source = argv[:2]
+    if source == "--base" and len(argv) >= 5 and argv[3] == "--":
+        base, command = read_settings(argv[2]), argv[4:]
+    elif provider == "cdnd" and source == "--from-env" and argv[2] == "--":
+        base = {"env": {name: os.environ.get(name, "") for name in
+                        ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")}}
+        command = argv[3:]
+    else:
+        raise SettingsError("invalid launcher settings arguments")
+    return run(base, command)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except SettingsError as e:
+        print("claude launcher: " + str(e), file=sys.stderr)
+        sys.exit(2)
