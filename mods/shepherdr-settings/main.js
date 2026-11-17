@@ -43,7 +43,7 @@ import { dirs } from "./dirs.js";
 import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, STAR, starState, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
   EVERYWHERE, CHANGED_HERE, RESET, EDIT_INSTRUCTIONS, USE_OTHER_CLI, LOADING_AGENTS, SAVED, sameAs as sameAsWords,
   spacesOwn, otherCliWords, backupProblem, notifyMachineAbout, machineLabel, TASK_ROWS, LEVEL } from "./core/settings.js";
-import { LAUNCHER, chooseLauncher, workerChoices, roleSel } from "./core/settings.js";
+import { workerChoices, roleSel } from "./core/settings.js";
 import { normalizePick } from "./core/agents.js";
 
 const I = (name) => `mods/shepherdr-settings/${name}.svg`;

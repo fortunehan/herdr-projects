@@ -1816,7 +1816,7 @@ export default class Chat extends View {
       const args = ["run", "--bg", "--json", "--no-parent", "--keep", ...(machine ? ["--on", machine] : []), ...(folder ? ["--cwd", folder] : []),
         "--label", `herdr.chat=${chatLabel(pane)}`, "--label", `herdr.chat.slot=${this.slot}`, "--label", `herdr.chat.origin=slot:${this.slot}`,
         "--label", `herdr.role=${this.role}`,
-        ...(chosen ? ["--label", `herdr.agent=${agent.agentKey(st.agent)}`, "--label", `herdr.launcher.argv=${JSON.stringify(chosen.base)}`] : []),
+        ...(chosen ? ["--label", `herdr.agent=${agent.agentKey(chosen.base[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(chosen.base)}`] : []),
         ...(space ? ["--label", `herdr.coordinator.space=${String(space.id).split("/").pop()}`] : []),
         ...(rec?.tab ? ["--label", `herdr.coordinator.tab=${String(rec.tab).split("/").pop()}`] : []),
         launch, ...(task ? [task] : [])];
