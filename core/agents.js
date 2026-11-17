@@ -58,14 +58,15 @@ export function launchArgv(t) {
   if (argv.includes("herdr-magpie")) return argv;
   const at = argv.findIndex((a) => /^claude-(magpie|cdnd)$/.test(String(a).split("/").pop()));
   if (at >= 0) return argv.slice(at);
+  // The declared launch is current; a recovery record may still name the previous launcher.
+  try {
+    const declared = JSON.parse(t?.labels?.["herdr.launcher.argv"] ?? "null");
+    if (Array.isArray(declared) && declared.length) return declared;
+  } catch {}
   try {
     const rec = JSON.parse(t?.labels?.["herdr.resume"] ?? "null");
     if (rec?.argv?.includes("herdr-magpie") || rec?.argv?.some((a) => /^claude-(magpie|cdnd)$/.test(String(a).split("/").pop())))
       return rec.session ? [...rec.argv, "--resume", rec.session] : rec.argv;
-  } catch {}
-  try {
-    const declared = JSON.parse(t?.labels?.["herdr.launcher.argv"] ?? "null");
-    if (Array.isArray(declared) && launcherOf(declared) !== "direct") return declared;
   } catch {}
   return t?.foreground?.argv ?? argv;
 }
@@ -449,12 +450,13 @@ const CODEX_VALUE = new Set(["-c", "--config", "-m", "--model", "-p", "--profile
 
 // The old agent's flags worth keeping (permissions, folders, ...), without what is chosen again
 // or a first message.
-function kept(kind, argv) {
+function kept(kind, argv, acrossLauncher = false) {
   const out = [];
   const rest = argv.slice(1);
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (kind === "claude") {
+      if (acrossLauncher && (a === "--fallback-model" || a.startsWith("--fallback-model="))) { if (a === "--fallback-model") i++; continue; }
       if (CLAUDE_BARE.has(a)) continue;
       if (CLAUDE_DROP.has(a)) { if (rest[i + 1] && !rest[i + 1].startsWith("-")) i++; continue; }
       if ([...CLAUDE_DROP].some((f) => a.startsWith(f + "="))) continue;
@@ -505,11 +507,12 @@ export function freshArgv(kind, argv) {
 export const STATUS_LINE = { type: "command", command: '"$HOME/.local/bin/shepherdr-statusline"' };
 
 // How to start the chosen agent: { argv, resume } (resume: argv already continues the session).
-// `session`: the old conversation's id when it can be resumed (same agent only).
+// `session`: the old conversation's id when it can be resumed (same agent and launcher only).
 export function argvFor(pick, old) {
   pick = normalizePick(pick);
   const same = pick.agent === agentKey(old.agent);
-  const flags = same ? kept(pick.agent, old.argv ?? []) : [];
+  const sameLauncher = (pick.launcher ?? "direct") === (old.launcher ?? launcherOf(old.argv));
+  const flags = same ? kept(pick.agent, old.argv ?? [], !sameLauncher) : [];
   if (pick.agent === "claude") {
     const magpie = pick.launcher === "magpie";
     const a = [LAUNCHER_COMMANDS[pick.launcher] ?? "claude", ...flags];
@@ -519,7 +522,7 @@ export function argvFor(pick, old) {
     a.push("--settings", JSON.stringify({ fastMode: Boolean(pick.fast), statusLine: STATUS_LINE }));
     if (pick.perm === "bypassPermissions") a.push("--dangerously-skip-permissions");
     else if (pick.perm) a.push("--permission-mode", pick.perm === "manual" ? "default" : pick.perm);
-    if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };
+    if (same && sameLauncher && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };
     return { argv: a, resume: false, base: a };
   }
   // Codex runs its commands outside hc without --no-daemon (as herdr-task and restart.sh add).

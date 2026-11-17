@@ -213,7 +213,7 @@ export class Agents {
     const t: any = this.hub.terminals.get(addr);
     if (!t || t.state !== "live") throw new Error("That agent isn't running.");
     const kind = kindOf(t) ?? "claude";
-    const old = { agent: kind, argv: t.foreground?.argv ?? t.argv ?? [], session: sessionOf(kind, reader?.path ?? null) };
+    const old = { agent: kind, argv: t.foreground?.argv ?? t.argv ?? [], launcher: launcherOf(launchArgv(t)), session: sessionOf(kind, reader?.path ?? null) };
     const built = argvFor(normalizePick({ agent: pick.kind, model: pick.model, effort: pick.effort, fast: pick.speed === "fast", perm: pick.perm ?? current(kind, old.argv, {}, {}).perm }), old);
     await this.requireLauncher(built.base, addr.includes("/") ? addr.split("/")[0] : null);
     const pane = t.labels?.["herdr.chat"] ?? "";
@@ -231,7 +231,7 @@ export class Agents {
     const script = layoutScript("restart.sh");
     if (!script) throw new Error("This install can't restart an Assistant: update Shepherdr on that machine.");
     const p = Bun.spawn(["bash", script, addr, JSON.stringify(built.argv)], { stdout: "pipe", stderr: "pipe", stdin: "ignore",
-      env: { ...process.env, HERDR_RESTART_CHAT: pane, ...(built.resume ? { HERDR_RESTART_RESUME: "1" } : {}) } });
+      env: { ...process.env, HERDR_RESTART_CHAT: pane, HERDR_RESTART_RESUME: built.resume ? "1" : "" } });
     const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
     const next = out.trim().split("\n").pop();
     if ((await p.exited) !== 0 || !next) throw new Error(err.trim() || "The agent didn't restart.");

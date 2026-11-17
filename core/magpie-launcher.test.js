@@ -87,9 +87,9 @@ test("four picker choices preserve two underlying agents and separate model cata
     expect(choiceKey(pick)).toBe(`claude-${launcher}`);
     expect(viewPick(pick).agent).toBe(`claude-${launcher}`);
     const a = argvFor(viewPick(pick), { agent: "claude", argv: ["claude"], session: "S1" });
-    expect(a.resume).toBe(true);
+    expect(a.resume).toBe(false);
     expect(a.argv[0]).toBe(`claude-${launcher}`);
-    expect(a.argv.slice(-2)).toEqual(["--resume", "S1"]);
+    expect(a.argv).not.toContain("--resume");
     expect(forkArgv("claude", a.base, "S1")[0]).toBe(`claude-${launcher}`);
     expect(agentKey(`claude-${launcher}`)).toBe("claude");
     expect(liveOK({ agent: "claude" }, { agent: `claude-${launcher}` })).toBe(false);

@@ -1,15 +1,107 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act } from "./actions.ts";
 import { Agents } from "./agents.ts";
 import { execTemplate } from "./spaces.ts";
-import { magpieModels } from "../core/agents.js";
+import { LAUNCHER_COMMANDS, MAGPIE_MODEL, magpieModels } from "../core/agents.js";
 import { Live } from "./live.ts";
+
+const launchers = ["cdnd", "magpie", "direct"] as const;
 
 test("the settings picker can pin provider-qualified magpie models", async () => {
   const pinned: string[] = [];
   const compat = { agents: { pin(agent: string, model: string) { pinned.push(`${agent}:${model}`); return { pinned, recent: [] }; } } };
   const result = await act({} as never, { type: "model-pin", agent: "claude", model: "openrouter/vendor/model" }, compat as never);
   expect(result).toEqual({ ok: true, picks: { pinned: ["claude:openrouter/vendor/model"], recent: [] } });
+});
+
+test("composer selection uses the declared Cdnd launch instead of a stale Magpie resume record", async () => {
+  const hub = fakeHub(() => ({}));
+  const sent: string[] = [];
+  Object.assign(hub, { send: async (_addr: string, text: string) => {
+    sent.push(text);
+    throw new Error("API Error: 400 model: copilot/claude-sonnet-5.5 is not a Claude model; cdnd serves Claude models only.");
+  } });
+  hub.terminals.set("t1", { state: "live", argv: ["sh", "-c", "template"], status: { state: "idle" },
+    foreground: { name: "claude", argv: ["claude", "--model", "sonnet"] }, labels: {
+      "herdr.launcher.argv": JSON.stringify(["claude-cdnd", "--model", "sonnet"]),
+      "herdr.resume": JSON.stringify({ argv: ["claude-magpie"], session: "old" }),
+    } });
+  const agents = new Agents(hub as never);
+  let restarted = false;
+  agents.restart = async () => { restarted = true; return "t2"; };
+  const result = await act(hub as never, JSON.parse(JSON.stringify({ type: "restart", live: true, chat: "t1",
+    kind: "claude-magpie", model: "copilot/claude-sonnet-5.5", effort: "high", perm: "manual" })),
+    { agents, addrOf: () => "t1", reader: () => ({ kind: "claude" }) } as never);
+  expect(result).toEqual({ ok: true, terminal: "t2" });
+  expect(restarted).toBe(true);
+  expect(sent).toEqual([]);
+});
+
+test("serialized web launcher changes restart task workers and Assistants without live model commands", async () => {
+  const calls: { cmd: string[]; options: any }[] = [];
+  const spawn = spyOn(Bun, "spawn").mockImplementation(((cmd: string[], options: any) => {
+    calls.push({ cmd, options });
+    const output = cmd[0] === "herdr-task" ? '{"terminal":"t2"}' : "t2\n";
+    return { stdout: new Response(output).body, stderr: new Response("").body, exited: Promise.resolve(0) };
+  }) as any);
+  try {
+    for (const from of launchers) for (const to of launchers) {
+      if (from === to) continue;
+      for (const task of [false, true]) for (const model of ["", to === "magpie" ? MAGPIE_MODEL : "sonnet"]) {
+        calls.length = 0;
+        const hub = fakeHub(() => ({}));
+        const sent: string[] = [];
+        Object.assign(hub, { send: async (_a: string, text: string) => { sent.push(text); throw new Error("must restart"); } });
+        hub.terminals.set("t1", { state: "live", cwd: "/repo", argv: ["sh", "-c", "template"],
+          status: { state: "idle" }, foreground: { name: "claude", argv: ["claude", "--model=old/provider", "--fallback-model", "old/fallback", "--permission-mode", "plan", "--add-dir", "/extra"] },
+          labels: { "herdr.chat": "p1", "herdr.chat.origin": "t0", "herdr.role": "coordinator",
+            "herdr.launcher.argv": JSON.stringify([LAUNCHER_COMMANDS[from]]), ...(task ? { "herdr.task": "repo#1" } : {}) } });
+        const agents = new Agents(hub as never);
+        (agents as any).used = () => {};
+        const compat = { agents, addrOf: () => "t1", reader: () => ({ kind: "claude", path: "/logs/11111111-1111-1111-1111-111111111111.jsonl" }) };
+        const result = await act(hub as never, JSON.parse(JSON.stringify({ type: "restart", live: true, chat: "t1", kind: "claude", launcher: to,
+          model, effort: "max", perm: "plan" })), compat as never);
+        expect(result).toEqual({ ok: true, terminal: "t2" });
+        expect(sent).toEqual([]);
+        const start = calls.find((c) => c.cmd[0] === (task ? "herdr-task" : "bash"))!;
+        const argv = JSON.parse(task ? start.cmd[start.cmd.indexOf("--argv") + 1] : start.cmd[3]);
+        expect(argv[0]).toBe(LAUNCHER_COMMANDS[to]);
+        expect(argv.includes("--resume")).toBe(false);
+        expect(argv).not.toContain("old/provider");
+        expect(argv).not.toContain("old/fallback");
+        expect(argv.slice(argv.indexOf("--permission-mode"), argv.indexOf("--permission-mode") + 2)).toEqual(["--permission-mode", "plan"]);
+        expect(argv).toContain("/extra");
+        if (model || to === "magpie") expect(argv[argv.indexOf("--model") + 1]).toBe(model || MAGPIE_MODEL);
+        else expect(argv).not.toContain("--model");
+        if (task) {
+          expect(start.cmd.slice(1, 5)).toEqual(["switch", "repo#1", "--folder", "/repo"]);
+          expect(calls.some((c) => c.cmd.includes("herdr.chat.origin=t0"))).toBe(true);
+        } else {
+          expect(start.options.env.HERDR_RESTART_RESUME).toBe("");
+          expect(start.options.env.HERDR_RESTART_CHAT).toBe("p1");
+        }
+      }
+    }
+  } finally { spawn.mockRestore(); }
+});
+
+test("models and effort within each unchanged launcher still switch live", async () => {
+  let screen = "";
+  const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({ stdout: new Response(screen).body, stderr: new Response("").body, exited: Promise.resolve(0) })) as any);
+  try {
+    for (const launcher of launchers) {
+      const hub = fakeHub(() => ({}));
+      const sent: string[] = [];
+      Object.assign(hub, { send: async (_addr: string, text: string) => { sent.push(text); screen += `\n❯ ${text}\nSet model to selected\nSet effort level to high\n`; return { code: 0 }; } });
+      hub.terminals.set("t1", { state: "live", foreground: { name: "claude", argv: ["claude", "--model", "old"] },
+        labels: { "herdr.launcher.argv": JSON.stringify([LAUNCHER_COMMANDS[launcher]]) } });
+      const agents = new Agents(hub as never);
+      (agents as any).used = () => {};
+      agents.restart = async () => { throw new Error("must stay live"); };
+      expect(await agents.change("t1", {}, { kind: LAUNCHER_COMMANDS[launcher], model: launcher === "magpie" ? MAGPIE_MODEL : "sonnet", effort: "high" })).toEqual({ live: true });
+      expect(sent).toEqual([`/model ${launcher === "magpie" ? MAGPIE_MODEL : "sonnet"}`, "/effort high"]);
+    }
+  } finally { spawn.mockRestore(); }
 });
 
 function fakeHub(reply: (argv: string[], on?: string) => { code?: number; stdout?: string; stderr?: string }) {

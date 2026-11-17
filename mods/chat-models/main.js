@@ -137,7 +137,7 @@ export default class ModelMenu extends View {
 
   restart(cx) {
     const s = this.sel;
-    setShared("chat.restartreq", { pane: this.p.pane, at: Date.now(), pick: normalizePick({ agent: s.agent, model: s.model, effort: this.level(s), fast: s.fast, perm: s.perm }) });
+    setShared("chat.restartreq", { pane: this.p.pane, at: Date.now(), pick: normalizePick({ ...s, effort: this.level(s) }) });
     // first among the recent ones, here and in the web's menu
     if (s.model) cx.spawn(async () => {
       const now = parsePicks(await readTextFile(picksPath()).catch(() => ""));
