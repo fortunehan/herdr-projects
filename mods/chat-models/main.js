@@ -48,13 +48,17 @@ export default class ModelMenu extends View {
     this.permOpen = false;
     this.settingsMode = p.mode === "settings";
     this.tab = this.sel.agent;
-    this.cursor = 0; // the row ↑/↓ are on, among the list's models
+    // The row ↑/↓ are on, among the list's models; none until a key or a search moves it, so no row but the
+    // chosen one looks picked as the menu opens (row 0 did, and drew as if hovered).
+    this.cursor = null;
+    this.reveal = true; // the first render scrolls the chosen model into view
     this.picks = parsePicks("");
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: Object.keys(p.menus ?? {}).length > 1 ? "Search every agent’s models" : "Search models" });
     this.scroll = VirtualListScrollHandle.new();
-    this.input.on("change", (_e, cx) => { this.cursor = 0; this.scroll.scroll_to_item(0, "top"); cx.notify(); });
-    this.input.on("submit", (_e, cx) => { const r = this.rows()[this.cursor]; if (r) this.pickRow(r); cx.notify(); });
+    // a search's first match is what Enter takes, so it shows as the cursor's
+    this.input.on("change", (_e, cx) => { this.cursor = this.input.value() ? 0 : null; this.scroll.scroll_to_item(0, "top"); cx.notify(); });
+    this.input.on("submit", (_e, cx) => { const r = this.cursor === null ? null : this.rows()[this.cursor]; if (r) this.pickRow(r); cx.notify(); });
     const focus = () => this.input.focus();
     focus();
     cx.timer.after(0, focus);
@@ -66,9 +70,14 @@ export default class ModelMenu extends View {
 
   close() { this.input?.release(); this.scroll?.release(); }
 
-  // The list as shown now: sections of rows (core/agents.js modelSections).
+  // The list as shown now: sections of rows (core/agents.js modelSections), worked out again only when the tab, the
+  // search, the picks or the menus change: render runs on every change of Herdr's live data and every hover.
   sections() {
-    return modelSections(this.p.menus ?? {}, this.tab, this.picks, this.input?.value() ?? "");
+    const q = this.input?.value() ?? "", m = this.memo;
+    if (m && m.tab === this.tab && m.q === q && m.picks === this.picks && m.menus === this.p.menus) return m.out;
+    const out = modelSections(this.p.menus ?? {}, this.tab, this.picks, q);
+    this.memo = { tab: this.tab, q, picks: this.picks, menus: this.p.menus, out };
+    return out;
   }
   rows() {
     return this.sections().flatMap((s) => s.rows);
@@ -79,11 +88,12 @@ export default class ModelMenu extends View {
     if (r.typed) {
       const menu = this.p.menus?.[r.agent];
       if (menu && !menu.models.some((m) => m.id === r.id)) menu.models = [r, ...menu.models];
+      this.memo = null;
     }
     this.choose(r);
     this.tab = r.agent;
     this.input.set_value("");
-    this.cursor = 0;
+    this.cursor = null;
   }
 
   // The star: pinned to the top of its agent's list, or not any more, in the file the web reads too.
@@ -233,8 +243,10 @@ export default class ModelMenu extends View {
     const agents = Object.keys(this.p.menus ?? {});
     const sections = this.sections();
     const rows = sections.flatMap((s) => s.rows);
-    this.cursor = Math.max(0, Math.min(this.cursor, rows.length - 1));
-    const cur = rows[this.cursor];
+    if (this.cursor !== null) this.cursor = rows.length ? Math.max(0, Math.min(this.cursor, rows.length - 1)) : null;
+    const cur = this.cursor === null ? null : rows[this.cursor];
+    // ↑/↓ start from the chosen model when it is in the list
+    const chosenAt = rows.findIndex((x) => x.agent === this.sel.agent && x.id === this.sel.model);
     const newChat = changes.length > 0 && agentKey(this.sel.agent) !== agentKey(this.was.agent);
     const quiet = (text, h = NOTE) => div().min_h(h).flex_none().px(9).py(3).text_size(11.5).text_color(t.dim).child(text);
     // The list's items, each its height and how it draws: headings, models, "N more" lines.
@@ -248,8 +260,13 @@ export default class ModelMenu extends View {
     // ↑/↓ keep their row in view (its heading too, going up)
     const show = (i) => {
       const at = items.findIndex((x) => x.row === rows[i]);
-      if (at >= 0) this.scroll.scroll_to_item(at > 0 && items[at - 1].row === undefined && i < this.cursor ? at - 1 : at);
+      if (at >= 0) this.scroll.scroll_to_item(at > 0 && items[at - 1].row === undefined && this.cursor !== null && i < this.cursor ? at - 1 : at);
     };
+    if (this.reveal) {
+      this.reveal = false;
+      if (chosenAt > 0) show(chosenAt);
+    }
+    const start = chosenAt >= 0 ? chosenAt : 0;
     const box = v_flex().id("model-menu").relative().w_full().flex_none().p(5).rounded(8).bg(t.popover).border_1().border_color(t.border).shadow_md()
       .text_size(12.8).text_color(t.foreground)
       .when(agents.length > 1, (el) => el.child(h_flex().h(TABS * (agents.length > 2 ? 2 : 1)).flex_none().px(4).pb(4).items_center()
@@ -259,7 +276,7 @@ export default class ModelMenu extends View {
             .text_size(12)
             .when(this.tab === a, (el) => el.bg(t.background).text_color(t.foreground).font_medium())
             .when(this.tab !== a, (el) => el.text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
-              .on_click((_e, cx) => { cx.stop_propagation(); this.tab = a; this.input.set_value(""); this.cursor = 0; cx.notify(); }))
+              .on_click((_e, cx) => { cx.stop_propagation(); this.tab = a; this.input.set_value(""); this.cursor = null; cx.notify(); }))
             .child(div().truncate().child(this.p.menus[a].name)))))))
       .child(h_flex().h(SEARCH).flex_none().px(4).pb(4).items_center()
         .child(h_flex().w_full().h(30).px(10).gap(8).rounded(7).bg(t.raised).items_center()
@@ -309,9 +326,9 @@ export default class ModelMenu extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape") { cx.stop_propagation(); if (this.permOpen) { this.permOpen = false; cx.notify(); } else closeOverlay(this.p.overlay); return; }
-        if (e.key === "down") { const i = Math.min(rows.length - 1, this.cursor + 1); show(i); this.cursor = i; }
-        else if (e.key === "up") { const i = Math.max(0, this.cursor - 1); show(i); this.cursor = i; }
-        else if (e.key === "tab" && agents.length > 1) { this.tab = agents[(agents.indexOf(this.tab) + (e.modifiers?.shift ? agents.length - 1 : 1)) % agents.length]; this.input.set_value(""); this.cursor = 0; }
+        if (e.key === "down" && rows.length) { const i = this.cursor === null ? start : Math.min(rows.length - 1, this.cursor + 1); show(i); this.cursor = i; }
+        else if (e.key === "up" && rows.length) { const i = this.cursor === null ? start : Math.max(0, this.cursor - 1); show(i); this.cursor = i; }
+        else if (e.key === "tab" && agents.length > 1) { this.tab = agents[(agents.indexOf(this.tab) + (e.modifiers?.shift ? agents.length - 1 : 1)) % agents.length]; this.input.set_value(""); this.cursor = null; }
         else return;
         cx.stop_propagation();
         cx.notify();
@@ -320,13 +337,14 @@ export default class ModelMenu extends View {
       .child(box);
   }
 
-  // One model in the list: its name (a typed id: "Use <id>"), the check on the one
-  // chosen, and its star at the right end (bright when pinned, faint else; the list's click on that
-  // place pins). No handlers of its own: the virtual list takes the clicks.
+  // One model in the list: its name (a typed id: "Use <id>"), the chosen one in medium weight with its check (no
+  // background: that is the pointer's and the keys' row), and its star at the right end (bright when pinned, faint
+  // else; the list's click on that place pins). No handlers of its own: the virtual list takes the clicks.
   modelRow(t, x, at) {
     const chosen = x.agent === this.sel.agent && x.id === this.sel.model;
     return h_flex().w_full().h(ROW).px(9).gap(10).rounded(7).items_center()
       .text_color(t.foreground)
+      .when(chosen, (el) => el.font_medium())
       .cursor_pointer().hover((s) => s.bg(t.selected))
       .when(at, (el) => el.bg(t.selected))
       .child(div().flex_1().min_w(0).truncate().child(x.typed ? `Use ${x.id}` : x.name))
