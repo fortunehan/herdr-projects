@@ -5,7 +5,7 @@
 // spaces in no section, then its sections. A space's row: its # (or emoji), its name (bold with a blue dot while its
 // Assistant has something new, a small spinner while it thinks, dimmed with a crossed-out bell when muted), after it only
 // what's unusual (its machine in Pinned, its folder where another space there has its name, its repo and branch), its
-// tasks at work (a dim count) and its red and green counts.
+// tasks at work (a yellow count) and its red and green counts.
 // Worktree spaces nest under their repo's own. A folded section (Pinned too) still shows the space you're in and its
 // unread ones, and adds up its counts on its heading. Menus are core/menus.js's, the window's too: a right click (or a
 // finger held) opens them, no ⋯ on the rows. Spaces drag among their own, into a section or Pinned, or back to their machine's
@@ -15,7 +15,7 @@ import { openWorktree } from '@client/screens/Worktree.tsx'
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type LiHTMLAttributes, type ReactNode } from 'react'
 import { act, counts, definePlugin, getState, goPlace, manyMachines, openSplit, placeOf, removeSpace, setUI, splitClick, useSnap, useUI, type Pane, type UI } from '@client/kernel.ts'
 import { Dialog, RowMenu, useRowMenu } from '@client/rowmenu.tsx'
-import { AutopilotIcon, BackIcon, BellIcon, CogIcon, BellSlashIcon, AttentionBadge, attentionWords, DeleteIcon, DownIcon, HashIcon, ic, IconButton, List, MenuItem, MenuLabel, MenuSeparator, MenuSetting, Meta, ModelIcon, MonitorIcon, NextIcon, PinnedIcon, PinTaskIcon, PlusIcon, Primary, ReadIcon, MoveDownIcon, RemoveProjectIcon, RenameIcon, rowClass, RowText, SectionIcon, ServerIcon, SplitIcon, TasksIcon, UnpinIcon, UpIcon } from '@client/ui.tsx'
+import { AutopilotIcon, BackIcon, BellIcon, CogIcon, BellSlashIcon, attentionWords, DeleteIcon, DownIcon, HashIcon, ic, IconButton, List, MenuItem, MenuLabel, MenuSeparator, MenuSetting, Meta, ModelIcon, MonitorIcon, NextIcon, PinnedIcon, PinTaskIcon, PlusIcon, Primary, ReadIcon, MoveDownIcon, RemoveProjectIcon, RenameIcon, rowClass, RowText, SectionIcon, ServerIcon, SplitIcon, TasksIcon, UnpinIcon, UpIcon } from '@client/ui.tsx'
 import { HealthDot, MachineMeter } from '@plugins/health/client.tsx'
 import { toast } from '@plugins/alerts/toasts.tsx'
 import { MarkRead, markPlaceRead, muted, placeUnread } from '@client/unread.ts'
@@ -25,6 +25,7 @@ import { kept, PINNED, sectionsIn, TOP, type PlaceOrder } from '@shared/order.ts
 import { machineName, NAME_MAX, nameProblem, slugify, type Machine, type Place, type Section, type Snapshot } from '@shared/types.ts'
 import { AddSpace, asTyped, openAddSpace } from './add.tsx'
 import { dragging, press } from './drag.ts'
+import { SpaceCounts, WorkingCount } from './counts.tsx'
 import { openNewSection, openRename, SectionDialogs } from './section.tsx'
 import * as MN from '@core/menus.js'
 import * as CF from '@core/confirm.js'
@@ -307,7 +308,7 @@ function sharedNames(snap: Snapshot) {
 /** what every space's row shows, as the window's (mods/spaces-chat main.js row): its name, bold and bright with a small
  *  blue dot while its Assistant has something new (unread), a small spinner after it while its Assistant thinks, bright
  *  where it is open; dimmed when muted (Notify: Off), a crossed-out bell after it, its counts still showing; then how
- *  many of its tasks are at work (dim, a turning ring), what needs you there (red) and its tasks in Ready (green) */
+ *  many of its tasks are at work (yellow, a turning ring), what needs you there (red) and its tasks in Ready (green) */
 function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: string }) {
   const sel = useUI((u) => u.place === p.id)
   const c = counts(snap, p.id)
@@ -361,7 +362,7 @@ function usePlaceRow({ p, snap, where }: { p: Place; snap: Snapshot; where?: str
         ) : null}
         {quiet ? <BellSlashIcon aria-hidden className={clsx(ic, 'text-fg3')} /> : null}
         {working ? <WorkingCount n={working} /> : null}
-        <AttentionBadge need={c.ownNeed} ready={c.ownReady} scope="here" />
+        <SpaceCounts need={c.ownNeed} ready={c.ownReady} scope="here" look={snap.look} />
       </>
     ),
   }
@@ -374,18 +375,6 @@ function ThinkingSpin() {
       <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
       <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
-  )
-}
-
-/** SHEP-17: how many of a space's tasks are at work, dim, with a small turning ring, before its red and green badge */
-function WorkingCount({ n }: { n: number }) {
-  return (
-    <span aria-hidden data-working={n} className="flex shrink-0 items-center gap-0.5 text-[0.75rem] text-fg3 tabular-nums phone:text-[0.8125rem]">
-      <svg viewBox="0 0 16 16" className="size-2.5 shrink-0 animate-spin motion-reduce:animate-none">
-        <path d="M14 8A6 6 0 1 1 8 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-      {n > 9 ? '9+' : n}
-    </span>
   )
 }
 
@@ -837,7 +826,7 @@ function SpacesHeading() {
 function Inside({ snap, spaces }: { snap: Snapshot; spaces: Place[] }) {
   const need = spaces.reduce((n, p) => n + counts(snap, p.id).ownNeed, 0)
   const ready = spaces.reduce((n, p) => n + counts(snap, p.id).ownReady, 0)
-  return <AttentionBadge need={need} ready={ready} scope="in it" />
+  return <SpaceCounts need={need} ready={ready} scope="in it" look={snap.look} />
 }
 
 /** a section's Delete (its menu), as the window's: at once, then a toast whose tap puts it back */
