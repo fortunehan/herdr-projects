@@ -1,0 +1,27 @@
+#!/bin/sh
+fail() { printf 'claude-mgp: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+self="$0"
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
+done
+here=$(cd -P "$(dirname "$self")" 2>/dev/null && pwd) || fail 'cannot locate its own folder'
+shim_dir="$here/claude-mgp-shim"
+[ -x "$shim_dir/claude" ] || fail "the shim is missing: $shim_dir/claude" 127
+
+root="${SHEPHERDR_CLAUDE_LAUNCHERS:-$HOME/.local/share/shepherdr/claude-launchers}"
+helper="$root/shepherdr-claude-settings"
+[ -x "$helper" ] || fail "the settings helper is not installed: $helper" 127
+
+real=$(command -v claude) || fail 'no Claude executable is on PATH' 127
+case "$real" in /*) ;; *) fail 'claude does not resolve to an executable file' 127 ;; esac
+real_dir=$(cd -P "$(dirname "$real")" 2>/dev/null && pwd)
+[ "$real_dir" = "$(cd -P "$shim_dir" && pwd)" ] && fail 'claude resolves to the claude-mgp shim (recursion)'
+
+magpie=$(command -v "${SHEPHERDR_MAGPIE:-magpie}") || fail 'no magpie executable is on PATH' 127
+
+export SHEPHERDR_CLAUDE_REAL="$real" SHEPHERDR_CLAUDE_SETTINGS_HELPER="$helper"
+PATH="$shim_dir:$PATH"
+export PATH
+exec "$magpie" claude run "$@"

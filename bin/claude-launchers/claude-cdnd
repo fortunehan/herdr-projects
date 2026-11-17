@@ -1,0 +1,27 @@
+#!/bin/zsh
+env_file="${CLAUDE_CDND_ENV:-$HOME/.config/shepherdr/claude-cdnd.env}"
+if [[ ! -r "$env_file" ]]; then
+  print -ru2 -- "claude-cdnd: cannot read $env_file"
+  exit 1
+fi
+url="" token=""
+while read -r line || [[ -n "$line" ]]; do
+  line="${line#export }"
+  case "$line" in
+    ANTHROPIC_BASE_URL=*) url="${line#*=}" ;;
+    ANTHROPIC_AUTH_TOKEN=*) token="${line#*=}" ;;
+  esac
+done < "$env_file"
+url="${url#[\"\']}"; url="${url%[\"\']}"
+token="${token#[\"\']}"; token="${token%[\"\']}"
+if [[ -z "$url" || -z "$token" ]]; then
+  print -ru2 -- "claude-cdnd: $env_file must set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN"
+  exit 1
+fi
+export ANTHROPIC_BASE_URL="$url" ANTHROPIC_AUTH_TOKEN="$token"
+claude_bin="${CLAUDE_CDND_CLAUDE:-$commands[claude]}"
+if [[ -z "$claude_bin" || ! -x "$claude_bin" ]]; then
+  print -ru2 -- 'claude-cdnd: no Claude executable is available'
+  exit 127
+fi
+exec "$claude_bin" "$@"
