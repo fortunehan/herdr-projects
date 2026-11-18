@@ -2660,7 +2660,7 @@ class NewWorktrees(unittest.TestCase):
         _, path = self.new_worktree()
         self.assertEqual(self.git(path, "rev-parse", "HEAD"), here)
 
-    def test_default_branch_name_stays(self):
+    def test_default_branch_name(self):
         t, _ = self.new_worktree(self.task("Fix the login page"))
         self.assertEqual(t["branch"], "task/1-fix-login-page")
 
