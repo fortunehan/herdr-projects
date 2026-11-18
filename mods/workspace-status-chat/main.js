@@ -51,7 +51,7 @@ export default class WorkspaceStatus extends View {
         .child(total("status-ready", "Ready", counts.ready, green()))
         .child(total("status-working", "Working", counts.working, t.working))
         .when(elsewhere.count > 0, el => el.child(div().id("status-elsewhere").text_size(TEXT.id).text_color(t.dim).cursor_pointer()
-          .tooltip(elsewhereLabel).accessibility_label(elsewhereLabel).on_click(() => showInbox())
+          .accessibility_label(elsewhereLabel).on_click(() => showInbox())
           .child(`+${elsewhere.count} elsewhere`))))
       .when(!roomy, el => el.child(div().flex_1()))
       .when(roomy, el => el.child(div().id("palette").px(6).h(20).flex().items_center().rounded(RADIUS.control).text_color(t.dim).cursor_pointer()

@@ -166,7 +166,7 @@ describe("space and bottom bar status totals (SHEP-79)", () => {
       const extra = byId(rendered, "status-elsewhere");
       expect(words(extra)).toEqual(["+2 elsewhere"]);
       expect(extra.style.text_color).toBe("dim");
-      expect(extra.style.tooltip).toContain("2: Space is unavailable");
+      expect(extra.style.accessibility_label).toContain("2: Space is unavailable");
       expect(extra.style.accessibility_label).toContain("1 needs you, 1 ready, 0 working outside spaces");
       extra.style.on_click();
       expect(opened).toBe(true);
