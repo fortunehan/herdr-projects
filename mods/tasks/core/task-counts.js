@@ -1,5 +1,18 @@
 import { isWorkingTask, taskInSpace } from "./spaces.js";
 
+// Task list totals for consumers without space rows.
+export function taskCounts(needs = [], tasks = []) {
+  const seen = new Set();
+  let ready = 0, working = 0;
+  for (const task of tasks) {
+    if (task.archived || seen.has(task.key)) continue;
+    seen.add(task.key);
+    if (task.status === "ready") ready++;
+    if (task.status === "working" || task.status === "work") working++;
+  }
+  return { need: new Set(needs.map((n) => n.key)).size, ready, working };
+}
+
 const empty = () => ({ need: 0, ready: 0, working: 0 });
 const identity = (item) => item.key ?? JSON.stringify([item.machine ?? null, item.folder, item.ref]);
 

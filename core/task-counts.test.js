@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { spaceTaskCounts } from "./task-counts.js";
+import { spaceTaskCounts, taskCounts } from "./task-counts.js";
 import { chatPane } from "./spaces.js";
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
@@ -39,6 +39,15 @@ function inboxReplay() {
 }
 
 describe("space and bottom bar status totals (SHEP-79)", () => {
+  test("the web attention API keeps task list totals independent of space placement", () => {
+    const working = { key: "local:work", status: "working", live: [{ address: "worker" }, { address: "reviewer" }] };
+    expect(taskCounts([{ key: "ask:1" }, { key: "ask:1" }, { key: "blocked:other" }], [working, working,
+      { key: "remote:work", status: "work" }, { key: "ready", status: "ready" },
+      { key: "archived", status: "ready", archived: true }, { key: "merging", status: "merging" },
+    ])).toEqual({ need: 2, ready: 1, working: 2 });
+    expect(taskCounts()).toEqual({ need: 0, ready: 0, working: 0 });
+  });
+
   test("All spaces excludes unplaced items and respects the row count switches (SHEP-79)", () => {
     const state = new Map([
       ["inbox.tasks", [
