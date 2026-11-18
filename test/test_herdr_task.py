@@ -7002,6 +7002,110 @@ class ReadyMergeGit(unittest.TestCase):
         self.assertEqual(t["start"], self.git(self.main, "rev-parse", "main"))
 
 
+class ForkPullRequests(unittest.TestCase):
+    """SHEP-84: a fork's pull requests go to the repo its branches are pushed to (origin), never to gh's default
+    (often the upstream, someone else's repo). TaskFlow's throwaway repo with origin and upstream remotes; gh faked."""
+    setUp, patch, git, commit, args = TaskFlow.setUp, TaskFlow.patch, TaskFlow.git, TaskFlow.commit, TaskFlow.args
+
+    def fork(self, origin="https://github.com/me/fork.git", upstream="https://github.com/them/up.git", branch_there=True):
+        import herdr_task.github as github
+        self.github = github
+        self.git(self.main, "remote", "add", "origin", origin)
+        self.git(self.main, "remote", "add", "upstream", upstream)
+        self.store.loc["kind"] = "repo"
+        self.patch(github.shutil, "which", lambda x: "/usr/bin/gh")
+        self.patch(github, "pr_push", lambda s, t, repo: None)
+        self.calls = []
+
+        def gh(*a, **k):
+            self.calls.append(a)
+            if a[:2] == ("repo", "view"):
+                # an explicit repo is that one; none: gh's default here, set to the upstream (gh repo set-default)
+                return True, (a[2] if not a[2].startswith("-") else "them/up"), ""
+            if a[:1] == ("api",) and "/git/ref/heads/" in a[1]:
+                return (True, "refs/heads/task/1", "") if branch_there else (False, "", "gh: Not Found (HTTP 404)")
+            if a[:2] == ("pr", "create"):
+                repo = a[a.index("--repo") + 1]
+                return True, f"https://github.com/{repo}/pull/5", ""
+            return True, "[]", ""
+        self.patch(github, "gh", gh)
+        return github
+
+    def created(self):
+        return [c[c.index("--repo") + 1] for c in self.calls if c[:2] == ("pr", "create")]
+
+    def test_gh_default_upstream_still_opens_on_origin(self):
+        github = self.fork()
+        repo = github.github(self.store)
+        self.assertEqual(repo, "me/fork")
+        self.assertEqual(github.pr_open(self.store, self.task, repo)["url"], "https://github.com/me/fork/pull/5")
+        self.assertEqual(self.created(), ["me/fork"])
+        self.assertNotIn(("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"), self.calls)
+
+    def test_ssh_and_https_remote_urls(self):
+        import herdr_task.github as github
+        for url in ("https://github.com/me/fork.git", "https://github.com/me/fork", "https://user@github.com/me/fork.git/",
+                    "git@github.com:me/fork.git", "git@github.com:me/fork", "ssh://git@github.com/me/fork.git",
+                    "ssh://git@ssh.github.com:443/me/fork.git", "git://github.com/me/fork.git", "HTTPS://GitHub.com/me/fork.git"):
+            self.assertEqual(github.parse_github(url), "me/fork", url)
+        for url in ("https://gitlab.com/me/fork.git", "git@my-alias:me/fork.git", "/srv/fork.git",
+                    "https://github.com/me", "https://dev.azure.com/o/p/_git/r", ""):
+            self.assertIsNone(github.parse_github(url), url)
+        self.fork(origin="git@github.com:me/fork.git", upstream="git@github.com:them/up.git")
+        self.assertEqual(self.github.github(self.store), "me/fork")
+
+    def test_the_push_remote_is_the_first_one_without_origin(self):
+        github = self.fork()
+        self.git(self.main, "remote", "remove", "origin")
+        self.git(self.main, "remote", "add", "aaa", "https://github.com/me/other.git")
+        self.assertEqual(github.github(self.store), "me/other")
+
+    def test_a_cached_wrong_repo_is_asked_again(self):
+        github = self.fork()
+        self.store.data["github"] = {"repo": "them/up", "at": github.now()}
+        self.assertEqual(github.github(self.store), "me/fork")
+        self.assertEqual(self.store.data["github"]["repo"], "me/fork")
+        # the right one stays remembered: no gh call within the hour
+        self.calls.clear()
+        self.assertEqual(github.github(self.store), "me/fork")
+        self.assertEqual(self.calls, [])
+
+    def test_never_opens_on_another_repo_than_the_push_remotes(self):
+        github = self.fork()
+        with self.assertRaises(github.Fail) as e:
+            github.pr_open(self.store, self.task, "them/up")
+        self.assertIn("pushed to origin, which is me/fork", str(e.exception))
+        self.assertEqual(self.created(), [])
+        self.assertNotIn("pr", self.task)
+
+    def test_branch_missing_on_the_target_no_create(self):
+        github = self.fork(branch_there=False)
+        with self.assertRaises(github.Fail) as e:
+            github.pr_open(self.store, self.task, "me/fork")
+        self.assertIn("task/1 isn't on me/fork", str(e.exception))
+        self.assertEqual(self.created(), [])
+        self.assertNotIn("pr", self.task)
+
+    def test_ready_says_why_on_the_task(self):
+        """The refusal reaches the person as Needs you, in plain words."""
+        github = self.fork(branch_there=False)
+        self.store.data["tasks"] = [self.task]
+        self.commit(self.task["worktree"], "work", "a.txt")
+        self.patch(self.commands, "github", github.github)
+        self.patch(self.commands, "merge_policy", lambda s, t: "ask")
+        self.commands.finalize(self.store, self.task)
+        self.assertIn("task/1 isn't on me/fork", self.task.get("attention") or "")
+        self.assertEqual(self.created(), [])
+
+    def test_azure_devops_unchanged(self):
+        import herdr_task.github as github
+        self.git(self.main, "remote", "add", "origin", "https://dev.azure.com/org/proj/_git/repo")
+        self.git(self.main, "remote", "add", "upstream", "https://github.com/them/up.git")
+        self.store.loc["kind"] = "repo"
+        self.patch(github, "gh", lambda *a, **k: self.fail("gh asked about an Azure DevOps folder"))
+        self.assertEqual(github.github(self.store), "ado:org/proj/repo")
+
+
 class ProcessTable(unittest.TestCase):
     """GitHub #1013: finding an agent's session walked its process tree with a `pgrep -P` per process (each one
     reading every process), per agent, per task, from every tracker and list. One read of the process table now

@@ -28,21 +28,72 @@ def github(s):
     again after an hour. None: tasks merge locally. gh failing on a repo whose remote is on GitHub
     (a network blip, its sign-in lapsed) is never remembered as "not on GitHub" (#988: that hour of
     None merged a task locally while its pull request stayed open): None, with why in
-    github_unreachable(s). On Azure DevOps: "ado:<org>/<project>/<repo>" (ado.py)."""
+    github_unreachable(s). On Azure DevOps: "ado:<org>/<project>/<repo>" (ado.py).
+    SHEP-84: the repo is the one tasks' branches are pushed to (push_repo()), never gh's default,
+    which in a fork is often its upstream (gh repo set-default); a remembered repo that isn't it is
+    asked again. gh's own guess only when the push remote's URL isn't a github.com one."""
     if (repo := ado.repo_of(s)):
         return repo
     if s.loc["kind"] != "repo" or not shutil.which(GH):
         return None
+    folder = s.loc["folder"]
+    pushed = push_repo(folder)
     g = s.data.get("github") or {}
-    if g and now() - g.get("at", 0) < 3600000:
+    stale = pushed and g.get("repo") and not same_repo(g["repo"], pushed)
+    if g and not stale and now() - g.get("at", 0) < 3600000:
         return g.get("repo")
-    ok, out, err = gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=s.loc["folder"])
-    if not (ok and out) and not settled(err) and on_github(s.loc["folder"]):
+    if pushed:
+        ok, out, err = gh("repo", "view", pushed, "--json", "nameWithOwner", "-q", ".nameWithOwner")
+        found = pushed if ok and out else None
+    else:
+        ok, out, err = gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=folder)
+        found = out if ok and out else None
+    if not found and not settled(err) and on_github(folder):
         s.github_error = err or "gh couldn't read the repo"
         return None
-    s.data["github"] = {"repo": out if ok and out else None, "at": now()}
+    s.data["github"] = {"repo": found, "at": now()}
     s.dirty = True
-    return s.data["github"]["repo"]
+    return found
+
+
+GITHUB_REMOTES = (
+    r"(?:https?|git)://(?:[^@/]+@)?github\.com(?::\d+)?/([^/]+)/([^/]+?)(?:\.git)?/?",
+    r"ssh://(?:[^@/]+@)?(?:ssh\.)?github\.com(?::\d+)?/([^/]+)/([^/]+?)(?:\.git)?/?",
+    r"(?:[^@/:]+@)?github\.com:/?([^/]+)/([^/]+?)(?:\.git)?/?",
+)
+
+
+def parse_github(url):
+    """"owner/name" of a github.com remote URL (https, ssh, or scp-like git@github.com:owner/name),
+    else None. GitHub Enterprise hosts and ssh host aliases aren't parsed: herdr-task names a GitHub
+    repo by owner/name alone, which gh reads as github.com's."""
+    url = (url or "").strip()
+    for pattern in GITHUB_REMOTES:
+        m = re.fullmatch(pattern, url, re.I)
+        if m and all(re.fullmatch(r"[\w.-]+", x) for x in m.groups()):
+            return "/".join(m.groups())
+    return None
+
+
+def push_repo(folder):
+    """The github.com repo ("owner/name") of the remote tasks' branches are pushed to (remote_of()),
+    from its push URL (insteadOf rules applied); None when that isn't a github.com URL."""
+    ok, url, _ = git(folder, "remote", "get-url", "--push", remote_of(folder))
+    return parse_github(url) if ok else None
+
+
+def same_repo(a, b):
+    return (a or "").lower() == (b or "").lower()
+
+
+def branch_on(repo, branch):
+    """Whether the repo on GitHub has the branch: (True, None), else (False, why in plain words)."""
+    ok, _, err = gh("api", f"repos/{repo}/git/ref/heads/{branch}", "--jq", ".ref")
+    if ok:
+        return True, None
+    if "not found" in (err or "").lower() or "http 404" in (err or "").lower():
+        return False, f"{branch} isn't on {repo}"
+    return False, f"couldn't check that {branch} is on {repo}: {err or 'gh api failed'}"
 
 
 # gh's answers that say for sure it won't work here (never signed in, no such repo or no access): tasks
@@ -133,6 +184,15 @@ def pr_open(s, task, repo, summary=None):
     if done:
         raise Fail(f"Pull request #{done['number']} for {br} is already merged, and {br} has commits since. "
                    f"Put them on a new branch (a new task) rather than a second pull request.")
+    # SHEP-84: only on the repo the branch was pushed to, and with the branch there (a fork's gh
+    # default is often its upstream, someone else's repo).
+    main = s.loc["folder"]
+    pushed = push_repo(main)
+    if pushed and not same_repo(pushed, repo):
+        raise Fail(f"Won't open a pull request on {repo}: {br} is pushed to {remote_of(main)}, which is {pushed}.")
+    there, why = branch_on(repo, br)
+    if not there:
+        raise Fail(f"Won't open a pull request on {repo}: {why}.")
     ok, out, err = gh("pr", "create", "--repo", repo, "--head", br, "--base", task.get("base") or "main",
                       "--title", pr_title(s, task), "--body", pr_body(s, task, summary))
     if not ok or not out:
