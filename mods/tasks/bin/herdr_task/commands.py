@@ -105,7 +105,7 @@ def cmd_add(args):
         # The person's setting wins: worktrees off for this repo means in the folder, --worktree or not.
         mode = "here" if args.here or not worktrees_on(s) else "worktree"
         t = s.new(args.title.strip(), prompt, mode)
-        space = bare(args.space) if args.space else caller_space()
+        space = bare(args.space) or caller_space()
         set_opts(t, args, launcher=worker_pick(s, t, space).get("launcher"))
         set_base(s, t, args.base, space, new=True)
         set_branch(s, t, getattr(args, "branch", None))
@@ -115,7 +115,7 @@ def cmd_add(args):
             set_after(s, t, *parse_after(s, args.after))
         if at:
             # Started later by the scheduler, with no caller to ask: its space is kept now.
-            schedule(s, t, at, {"space": space or default_space()})
+            schedule(s, t, at, {"space": space or default_space(s.loc["folder"])})
         v = view(s, t)
     if at:
         ensure_scheduler_quietly()
@@ -306,7 +306,7 @@ def cmd_start(args):
             t["mode"] = "worktree"
         set_branch(s, t, getattr(args, "branch", None))
         q = t.get("queue") or {}
-        space = bare(args.space) if args.space else (q.get("space") or default_space())
+        space = bare(args.space) or bare(q.get("space")) or default_space(s.loc["folder"], parent=args.parent or q.get("parent"))
         changed = any(getattr(args, k, None) is not None for k in ("launcher", "model", "effort", "set"))
         if changed:
             set_opts(t, args, launcher=worker_pick(s, t, space).get("launcher"))
@@ -943,7 +943,7 @@ def cmd_resume(args):
             raise Fail(f"{s.ref(t)} still has an agent ({live[0]['address']}). Use switch to replace it.")
         if t["state"] in ("todo", "scheduled", "queued"):
             raise Fail(f"{s.ref(t)} hasn't started. Use start.")
-        space = bare(args.space) if args.space else (t.get("space") or default_space())
+        space = bare(args.space) or bare(t.get("space")) or default_space(s.loc["folder"], parent=args.parent)
         if t["state"] == "done":
             t["state"] = "running"
         back_to_work(s, t, "resumed")
@@ -975,8 +975,8 @@ def cmd_switch(args):
         old = live[-1] if live else None
         labels = (old or {}).get("labels") or {}
         # A given --space wins: the task moves there (#837); else the old agent's own space.
-        space = ((bare(args.space) if args.space else None) or labels.get("herdr.task.space") or labels.get("herdr.space")
-                 or t.get("space") or default_space())
+        space = (bare(args.space) or bare(labels.get("herdr.task.space")) or bare(labels.get("herdr.space"))
+                 or bare(t.get("space")) or default_space(s.loc["folder"], parent=args.parent))
         if t["state"] in ("todo", "scheduled", "queued", "done"):
             t["state"] = "running"
             t.setdefault("started", now())
@@ -1026,7 +1026,8 @@ def tell(s, t, msg, args):
         if not send_or_hold(live[-1]["address"], msg):
             raise Fail(f"hc send to {live[-1]['address']} failed")
         return live[-1]["address"], False
-    space = bare(args.space) if getattr(args, "space", None) else (t.get("space") or default_space())
+    space = (bare(getattr(args, "space", None)) or bare(t.get("space"))
+             or default_space(s.loc["folder"], parent=getattr(args, "parent", None)))
     a, _ = start_again(s, t, space, getattr(args, "agent", None), getattr(args, "argv", None), message=msg)
     return a["address"], True
 

@@ -3168,7 +3168,7 @@ class Scheduled(unittest.TestCase):
                    mock.patch.dict(os.environ, {"HC_TERMINAL_ID": ""}),
                    mock.patch.object(commands, "begin", begin), mock.patch.object(tick, "begin", begin),
                    mock.patch.object(commands, "ensure_scheduler", lambda quiet=False: {}),
-                   mock.patch.object(commands, "default_space", lambda: "sp1"),
+                   mock.patch.object(commands, "default_space", lambda *a, **k: "sp1"),
                    mock.patch.object(commands, "caller_space", lambda: None),
                    mock.patch.object(commands, "worker_argv", lambda s, t, space, key=None: ["claude"]),
                    mock.patch.object(tick, "worker_argv", lambda s, t, space, key=None: ["claude"]),
@@ -3893,7 +3893,7 @@ class AutomationFromAnotherMachine(unittest.TestCase):
                    mock.patch.object(au, "begin", begin), mock.patch.object(au, "queue_reason", lambda s, t: None),
                    mock.patch.object(au, "worker_argv", lambda s, t, space: ["claude"]),
                    mock.patch.object(au, "ensure_scheduler", lambda quiet=False: {}),
-                   mock.patch.object(au, "default_space", lambda: "sp1"),
+                   mock.patch.object(au, "default_space", lambda *a, **k: "sp1"),
                    mock.patch.object(au, "live_agents", lambda key: []),
                    mock.patch.object(machines, "connected_machines", lambda: [{"name": "vmb", "state": "connected"}]),
                    mock.patch.object(ap, "autopilot_pass", lambda r: None), mock.patch.object(home, "home_pass", lambda r: None),
@@ -5698,3 +5698,102 @@ class StoreMerge(unittest.TestCase):
         self.merge(ours, base, theirs)
         self.assertEqual(ours["tasks"], [{"id": 1, "x": 1}, {"id": 3, "title": "theirs"}, {"id": 4, "title": "mine"}])
         self.assertEqual(ours["next"], 5)
+
+
+class SpaceValues(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        from herdr_task import commands, launch, store
+        self.c, self.l, self.st, self.mock = commands, launch, store, mock
+
+    def test_start_resume_and_fix_ignore_empty_space_values(self):
+        import argparse
+        for command in ("start", "resume", "switch", "fix"):
+            for value in (None, "", "null", "undefined", "  null  ", "sp-explicit", "vm/sp-explicit"):
+                with self.subTest(command=command, value=value):
+                    task = {"id": 1, "title": "Task", "state": "todo" if command == "start" else "running",
+                            "mode": "here", "agents": [], "space": "null"}
+                    st = Store([task])
+                    got = []
+                    args = argparse.Namespace(id="SHEP-1", space=value, parent="t9", here=True, worktree=False,
+                                              argv=None, agent=None, branch=None, now=True, at=None, in_=None,
+                                              message="Please fix it", folder=None, json=True, keep=False)
+                    with self.mock.patch.object(self.c, "open_store", lambda a: st), \
+                         self.mock.patch.object(self.c, "live_agents", lambda k: []), \
+                         self.mock.patch.object(self.c, "default_space", lambda *a, **k: "sp-parent"), \
+                         self.mock.patch.object(self.c, "worker_argv", lambda *a: ["claude"]), \
+                         self.mock.patch.object(self.c, "refresh_sessions", lambda *a: None), \
+                         self.mock.patch.object(self.c, "begin", lambda s, t, argv, sp, *a, **k: got.append(sp) or {"address": "t2"}), \
+                         self.mock.patch.object(self.c, "start_again", lambda s, t, sp, *a, **k: (got.append(sp) or {"address": "t2", "agent": "claude"}, False)), \
+                         self.mock.patch.object(self.c, "back_to_work", lambda *a: None), \
+                         self.mock.patch.object(self.c, "unarchive", lambda *a: None), \
+                         self.mock.patch.object(self.c, "ensure_scheduler", lambda **k: None), \
+                         self.mock.patch.object(self.c, "view", lambda *a: {}), \
+                         self.mock.patch.object(self.c, "say", lambda *a: None):
+                        if command == "fix":
+                            self.c.tell(st, task, "Please fix it", args)
+                        else:
+                            getattr(self.c, "cmd_" + command)(args)
+                    self.assertEqual(got, ["sp-explicit" if value in ("sp-explicit", "vm/sp-explicit") else "sp-parent"])
+
+    def test_old_space_values_read_as_missing_and_save_as_json_null(self):
+        with tempfile.TemporaryDirectory() as root:
+            loc = {"folder": root, "kind": "folder", "name": "app", "common": None}
+            with self.mock.patch.object(self.st, "STORE", os.path.join(root, "tasks")):
+                with self.st.Store(loc) as s:
+                    path = s.path
+                    s.new("Task")
+                with open(path) as f:
+                    data = json.load(f)
+                data["tasks"][0].update(space="null", queue={"space": "undefined"})
+                with open(path, "w") as f:
+                    json.dump(data, f)
+                with self.st.Store(loc, write=False) as s:
+                    self.assertIsNone(s.find(1)["space"])
+                    self.assertIsNone(s.find(1)["queue"]["space"])
+                with open(path) as f:
+                    self.assertEqual(json.load(f)["tasks"][0]["space"], "null")
+                self.assertIsNone(self.st.read_list(path)["tasks"][0]["space"])
+                with self.st.Store(loc) as s:
+                    s.find(1)["space"] = "undefined"
+                    s.dirty = True
+                with open(path) as f:
+                    self.assertIsNone(json.load(f)["tasks"][0]["space"])
+
+    def test_missing_space_uses_parent_then_caller_then_matching_folder(self):
+        parent = {"labels": {"herdr.space": "null", "herdr.coordinator.space": "sp-parent"}}
+        with self.mock.patch.object(self.l, "hc_json", lambda *a: parent), \
+             self.mock.patch.object(self.l, "caller_labels", lambda: {"herdr.coordinator.space": "sp-caller"}):
+            self.assertEqual(self.l.default_space(folder="/app", parent="t9"), "sp-parent")
+            self.assertEqual(self.l.default_space(folder="/app"), "sp-caller")
+        from herdr_task import autopilot
+        spaces = [{"id": "sp-folder", "folder": "/app"}, {"id": "vm/sp-other", "folder": "/app", "machine": "vm"}]
+        with self.mock.patch.object(self.l, "caller_labels", lambda: {"herdr.space": "undefined"}), \
+             self.mock.patch.object(autopilot, "window_spaces", lambda: spaces):
+            self.assertEqual(self.l.default_space(folder="/app"), "sp-folder")
+            self.assertIsNone(self.l.default_space(folder="/unknown"))
+            spaces.append({"id": "sp-ambiguous", "folder": "/app"})
+            self.assertIsNone(self.l.default_space(folder="/app"))
+
+    def test_launch_omits_unknown_space_label_and_preserves_explicit_space(self):
+        task = {"id": 1, "title": "Task", "agents": []}
+        st = Store([task])
+        calls = []
+        with self.mock.patch.object(self.l, "default_space", lambda *a, **k: None), \
+             self.mock.patch.object(self.l, "ensure_launcher", lambda *a: None), \
+             self.mock.patch.object(self.l, "own_argv", lambda argv, folder: argv), \
+             self.mock.patch.object(self.l, "folder_for", lambda *a: "/app"), \
+             self.mock.patch.object(self.l, "coordinator_tab", lambda *a: None), \
+             self.mock.patch.object(self.l, "agent_name", lambda *a: "task-1"), \
+             self.mock.patch.object(self.l, "track", lambda *a: None), \
+             self.mock.patch.object(self.l, "low_priority", lambda argv, name: argv), \
+             self.mock.patch.object(self.l.local, "with_setup", lambda t, folder, argv: argv), \
+             self.mock.patch.object(self.l, "run", lambda argv: calls.append(argv) or subprocess.CompletedProcess(argv, 0, '{"address":"t2"}', "")):
+            for space in ("null", "undefined", "", None):
+                self.l.launch(st, task, ["claude"], space)
+                self.assertIsNone(task["space"])
+                self.assertFalse(any(a.startswith("herdr.task.space=") for a in calls[-1]))
+            self.l.launch(st, task, ["claude"], "vm/sp-explicit")
+            self.assertEqual(task["space"], "sp-explicit")
+            self.assertIn("herdr.task.space=sp-explicit", calls[-1])

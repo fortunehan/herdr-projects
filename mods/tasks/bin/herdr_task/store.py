@@ -9,7 +9,7 @@ import re
 import time
 
 from .base import Fail, git, hc_json, HELD, HOME, LEGACY, MAX_RUNNING, now, run, STORE
-from .settings import settings_for
+from .settings import bare, settings_for
 from .agents import agent_running
 from .sessions import session_of
 from .launch import retag_tabs
@@ -304,7 +304,7 @@ class Store:
         except FileNotFoundError:
             return {}, {}, None
         try:
-            return json.loads(text), json.loads(text), seen
+            return normalize_spaces(json.loads(text)), normalize_spaces(json.loads(text)), seen
         except ValueError:
             raise Fail(f"{self.path} isn't valid JSON. Fix it first.")
 
@@ -337,7 +337,7 @@ class Store:
             if kind is None and self.write and self.dirty:
                 tmp = f"{self.path}.{os.getpid()}.tmp"
                 with open(tmp, "w") as f:
-                    json.dump(self.data, f, indent=2)
+                    json.dump(normalize_spaces(self.data), f, indent=2)
                     f.write("\n")
                 os.replace(tmp, self.path)
         finally:
@@ -410,7 +410,7 @@ class Store:
                         # Still running: label it so it shows as this task's agent.
                         run(["hc", "label", o["terminal"], f"herdr.task={self.key(t)}"])
                         labels = k.get("labels") or {}
-                        t["space"], t["tab"] = labels.get("herdr.space"), labels.get("herdr.tab")
+                        t["space"], t["tab"] = bare(labels.get("herdr.space")), labels.get("herdr.tab")
                         pid = (k.get("foreground") or {}).get("pid")
                         sid, log = session_of(pid) if pid and agent_running(k) else (None, None)
                         if sid:
@@ -451,6 +451,16 @@ def store_files(folder=None):
 def read_list(p):
     try:
         with open(p) as f:
-            return json.load(f)
+            return normalize_spaces(json.load(f))
     except (OSError, ValueError):
         return None
+
+
+def normalize_spaces(data):
+    """Normalize task and launch-plan spaces on reads and before writes."""
+    if is_task_list(data):
+        for record in data["tasks"] + (data.get("automations") or []):
+            for value in (record, record.get("queue") or {}):
+                if "space" in value:
+                    value["space"] = bare(value["space"])
+    return data
