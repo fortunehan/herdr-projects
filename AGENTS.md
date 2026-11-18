@@ -60,6 +60,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
+- On a busy dev Mac, Bun tests can pass the default 5 s timeout: rerun the failed files with `bun test --timeout 60000`.
 
 ## Trying a change
 
