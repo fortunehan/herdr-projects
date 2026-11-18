@@ -64,6 +64,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - A quick before/after of herdr-task settings logic without a second worktree: a `python3 -I` script that puts each tree's
   `mods/tasks/bin` on `sys.path`, sets `HERDR_TASK_SETTINGS` to a scratch file and stubs `herdr_task.autopilot.window_spaces`.
 
+- Upstream sync after a squash-merged sync: re-merge each conflicted file with `git merge-file` using the last synced
+  upstream tag as base (`--diff-algorithm=histogram` for test_herdr_task.py); upstream's node-harness tests need the fork's names stubbed.
+
 ## Trying a change
 
 - A fresh worktree: `bun install && bun web/build-plugins.ts` before `bunx tsc` or a build (else missing types and
