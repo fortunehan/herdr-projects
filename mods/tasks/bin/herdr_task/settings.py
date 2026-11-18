@@ -53,7 +53,7 @@ OLD_INSTRUCTIONS = os.path.join(HOME, ".herdr", "instructions")
 ASSISTANT_TEMPLATES = ("assistant", "coordinator")  # "coordinator": Assistants started before the rename
 DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "max_running": MAX_RUNNING, "worktrees": True,
                       "start_notes": "", "finish_notes": "", "archive_after": 7, "proof": True, "base": "", "branch": "",
-                      "worktree_root": ""},
+                      "slug_max": 40, "worktree_root": ""},
             "automations": {"enabled": True}, "worker": {}, "reviewer": {}, "coordinator": {}, "backup": {},
             "agents": {"reactions": True, "suggestions": True, "feedback": True, "feedback_repo": "eliasstravik/shepherdr"}}
 LEVELS = ["blocker", "major", "minor"]
@@ -684,6 +684,38 @@ def space_base(s, space=None):
 # Shepherdr settings > Tasks > Branch names (tasks.branch, #570): a folder's new task branches.
 # {n}: the task's number, {key}: its id (SHEP-4), {slug}: its title's words. Unset: this.
 BRANCH_PATTERN = "task/{n}-{slug}"
+# Shepherdr settings > Tasks > Branch name length (tasks.slug_max, SHEP-82): the most characters
+# {slug} takes; it also names the worktree's folder, so it stays short (core/settings.js SLUG_MAX).
+SLUG_MAX, SLUG_MIN, SLUG_TOP = 40, 20, 80
+# Words a branch name reads as well without (SHEP-82): dropped from {slug} unless they are all it has.
+FILLER = frozenset("a an the and or of to for in on at by with from into its is are be as".split())
+
+
+def slug_max(value):
+    """A Branch name length setting as a number of characters: SLUG_MIN..SLUG_TOP, else SLUG_MAX."""
+    try:
+        n = int(str(value).strip()) if not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        n = None
+    return n if n is not None and SLUG_MIN <= n <= SLUG_TOP else SLUG_MAX
+
+
+def title_slug(title, limit=SLUG_MAX):
+    """{slug}: a title's words, lower case and joined by "-", without filler words, as many whole
+    words as fit in limit characters. Versions (3.1.42) stay one word; only a first word longer than
+    the limit is cut."""
+    words = re.findall(r"\d+(?:\.\d+)+|[a-z0-9]+", re.sub(r"['\u2019]", "", str(title or "").lower()))
+    words = [w.replace(".", "-") for w in words]
+    words = [w for w in words if w not in FILLER] or words
+    out = ""
+    for w in words:
+        nxt = f"{out}-{w}" if out else w
+        if len(nxt) > limit:
+            break
+        out = nxt
+    if not out and words:
+        out = words[0][:limit].strip("-")
+    return out or "task"
 
 
 def branch_pattern_problem(pattern):

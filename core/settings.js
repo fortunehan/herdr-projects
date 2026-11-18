@@ -228,6 +228,17 @@ export const BRANCH = {
   about: "New tasks' branches. {n} is its number, {key} its id (SHEP-4), {slug} its title.",
   pattern: "task/{n}-{slug}",
 };
+// Branch name length (tasks.slug_max, SHEP-82): the most characters {slug} takes, whole words only; it also names the
+// task's worktree folder. herdr-task's slug_max says the same: a value outside min..max is the default.
+export const SLUG_MAX = {
+  title: "Branch name length",
+  about: "Most characters of a new branch's title part. Whole words only, filler words left out.",
+  min: 20, max: 80, step: 5, default: 40,
+};
+export const slugMax = (v) => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= SLUG_MAX.min && n <= SLUG_MAX.max ? n : SLUG_MAX.default;
+};
 // Why a Branch names pattern can't be used, or "" (herdr-task's branch_pattern_problem says the same).
 export function branchPattern(pattern) {
   const p = String(pattern ?? "").trim();
@@ -297,7 +308,7 @@ export const MACHINES = {
 export const OLD_NAMES = { coordinator: "Assistant", worker: "Workers", reviewer: "Reviewer", backup: "Backup agent",
   automations: "Run automations", merge: "Merge", review_rounds: "Review", must_fix: "Must fix", proof: "Proof",
   max_running: "Tasks at once", archive_after: "Archive Done after", worktrees: "Worktrees",
-  start_notes: "When a task starts", finish_notes: "When a task finishes", base: "Base branch", branch: "Branch names", agents: "Reactions" };
+  start_notes: "When a task starts", finish_notes: "When a task finishes", base: "Base branch", branch: "Branch names", slug_max: "Branch name length", agents: "Reactions" };
 // Home Assistant's line: on or off, and what herdr-task's home round last found there (~/.local/share/shepherdr/tasks/.home.json).
 export function homeAbout(on, st) {
   return !on ? "Off: nobody watches its disk, load and processes."
@@ -360,7 +371,7 @@ export const ROUNDS = [[0, "Off"], [1, "1 round"], [2, "2 rounds"], [3, "3 round
 export const ARCHIVE = [[0, "Off"], [1, "1 day"], [3, "3 days"], [7, "1 week"], [30, "1 month"]];
 export const ONOFF = [[true, "On"], [false, "Off"]];
 
-export const DEFAULTS = { tasks: { merge: "ask", review_rounds: 0, must_fix: "major", max_running: 10, worktrees: true, archive_after: 7, proof: true }, automations: { enabled: true },
+export const DEFAULTS = { tasks: { merge: "ask", review_rounds: 0, must_fix: "major", max_running: 10, worktrees: true, archive_after: 7, proof: true, slug_max: 40 }, automations: { enabled: true },
   agents: { reactions: true, suggestions: true, feedback: true, feedback_repo: "" } };
 
 // [section, field, label, choices | { min, max }]

@@ -115,14 +115,14 @@ function folderOf(space) {
 //   spaces: { <space id>: { folder, name, machine, ...SETTINGS } } }
 // with SETTINGS = { coordinator, worker, reviewer: { agent, model, effort, fast, perm },
 //   tasks: { merge: "auto"|"checks"|"ask", review_rounds, must_fix: "blocker"|"major"|"minor", max_running,
-//            archive_after (days Done tasks stay in the lists; 0: never archived) },
+//            archive_after (days Done tasks stay in the lists; 0: never archived), slug_max (Branch name length) },
 //   automations: { enabled }, agents: { reactions, feedback, feedback_repo } }, every key optional. A machine is "local" (this computer) or its
 // name; a space on another machine is "<machine>/<id>". The settings window pushes each other
 // machine its share (with "here": its name) for its herdr-task. Settings edits only Everywhere and
 // spaces now; a machine's layer holds its machine-only rows (machine, home) and is still read for
 // anything it set for all its spaces before machine scope went.
 export const SHEPHERDR_FILE = () => dirs().settings;   // ~/.config/shepherdr/settings.json (lib/dirs.js)
-export const SHEPHERDR_DEFAULTS = { tasks: { merge: "ask", review_rounds: 0, must_fix: "major", max_running: 10, archive_after: 7 }, automations: { enabled: true },
+export const SHEPHERDR_DEFAULTS = { tasks: { merge: "ask", review_rounds: 0, must_fix: "major", max_running: 10, archive_after: 7, slug_max: 40 }, automations: { enabled: true },
   agents: { reactions: true, suggestions: true, feedback: true, feedback_repo: "" } };
 export const LOCAL_MACHINE = "local";
 export async function readShepherdr() {
