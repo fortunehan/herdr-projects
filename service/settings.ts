@@ -14,7 +14,7 @@ import * as HC from "../core/host.js";
 import * as APc from "../core/autopilot.js";
 import type { SettingRow, SettingSection } from "../web/shared/types.ts";
 
-const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, MACHINES, OLD_NAMES, SECTIONS,
+const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, MACHINES, OLD_NAMES, SECTIONS,
   WEB, modelLabel, roleSel, otherCli, otherCliWords, backupProblem, homeAbout, webState, fromWord, LOADING_AGENTS, RESET, machineLabel } = C as any;
 const AP = APc as any;
 /** Autopilot as Everywhere has it now (herdr-task's view: what Settings keeps, else what it kept before, else the
@@ -265,6 +265,11 @@ export class Settings {
       const at = rows.findIndex((r) => r.key === "automations.enabled");
       rows.splice(at, 0, { label: BRANCH.title, key: "tasks.branch", value: String(p.value ?? "").trim(), text: true, hint: BRANCH.about,
         placeholder: BRANCH.pattern, ...this.follows(s, p, (v) => v || BRANCH.pattern, "tasks", "branch") });
+      // Branch name length (SHEP-82): the most characters of its {slug}, in steps of 5; one off the steps (set by hand) shows as it is
+      const n = this.pick(scope, "tasks", "slug_max");
+      const word = (v: unknown) => String(slugMax(v));
+      rows.splice(at + 1, 0, { label: SLUG_MAX.title, key: "tasks.slug_max", value: word(n.value), hint: SLUG_MAX.about,
+        steps: range(SLUG_MAX.min, SLUG_MAX.max, SLUG_MAX.step, String), stepFrom: String(SLUG_MAX.default), ...this.follows(s, n, word, "tasks", "slug_max") });
     }
     for (const n of NOTES) {
       const p = this.pick(scope, "tasks", `${n.id}_notes`);
@@ -439,6 +444,11 @@ export class Settings {
       const why = branchPattern(v);
       if (why) throw new Error(why);
       put("tasks", "branch", v || null);
+    } else if (key === "tasks.slug_max") {
+      // a number of characters in SLUG_MAX's range (herdr-task's slug_max reads anything else as the default)
+      const n = word === null ? null : Number(word.trim());
+      if (n !== null && (!Number.isInteger(n) || n < SLUG_MAX.min || n > SLUG_MAX.max)) throw new Error(`Pick ${SLUG_MAX.min} to ${SLUG_MAX.max}.`);
+      put("tasks", "slug_max", n);
     } else if (section === "tasks" && /^(start|finish)_notes$/.test(field)) {
       put("tasks", field, word === null ? null : word.slice(0, 8000));
     } else if (section === "role" && ROLES.some((r) => r.id === field)) {

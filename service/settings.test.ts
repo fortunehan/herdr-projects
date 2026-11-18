@@ -91,6 +91,28 @@ test("Branch names (#570): Everywhere's or a space's own pattern, checked before
   expect(JSON.parse(readFileSync(file, "utf8")).spaces.sp6.tasks).toBeUndefined();
 });
 
+test("Branch name length (SHEP-82): a stepper under Branch names, Everywhere's or a space's own, kept in range", () => {
+  const s = new Settings();
+  s.start();
+  const scope = { id: "sp7", name: "api", machine: null, folder: "/api" };
+  const rows = (level: string) => s.sections(null, [scope]).find((x) => x.name === "Tasks" && x.level === level)!.rows;
+  const row = (level: string) => rows(level).find((r) => r.key === "tasks.slug_max")!;
+  expect(row("all")).toMatchObject({ label: "Branch name length", value: "40" });
+  expect(row("all").steps).toEqual(["20", "25", "30", "35", "40", "45", "50", "55", "60", "65", "70", "75", "80"]);
+  const keys = rows("all").map((r) => r.key);
+  expect(keys.indexOf("tasks.slug_max")).toBe(keys.indexOf("tasks.branch") + 1);
+  s.set("tasks.slug_max", "50", "all");
+  s.set("tasks.slug_max", "25", "sp7", scope);
+  const f = JSON.parse(readFileSync(file, "utf8"));
+  expect(f.everywhere.tasks.slug_max).toBe(50);
+  expect(f.spaces.sp7.tasks.slug_max).toBe(25);
+  expect(row("sp7")).toMatchObject({ value: "25", inherits: { value: "50", from: "Everywhere" } });
+  expect(() => s.set("tasks.slug_max", "90", "all")).toThrow("Pick 20 to 80");
+  expect(() => s.set("tasks.slug_max", "lots", "all")).toThrow("Pick 20 to 80");
+  s.set("tasks.slug_max", null, "sp7", scope);
+  expect(JSON.parse(readFileSync(file, "utf8")).spaces.sp7.tasks).toBeUndefined();
+});
+
 test("Autopilot: Everywhere's unless a space sets its own, kept with the rest and sent to its machine", async () => {
   const { pushBody } = await import("./settings.ts");
   const s = new Settings();

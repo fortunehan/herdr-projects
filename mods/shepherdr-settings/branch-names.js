@@ -5,7 +5,7 @@
 import { div } from "gpui-kit";
 import { v_flex, InputState, Input } from "gpui-base";
 import { shepherdrFor } from "./coordinator.js";
-import { BRANCH, branchPattern } from "./core/settings.js";
+import { BRANCH, branchPattern, SLUG_MAX, slugMax } from "./core/settings.js";
 
 // Made in the window's init (an input needs a live host call).
 export function branchInit(view) {
@@ -59,4 +59,15 @@ export function branchRow(view, t) {
     view.reset("tasks", "branch", cx);
   };
   return view.row(t, BRANCH.title, BRANCH.about, control, view.scoped("tasks", "branch", reset));
+}
+
+// Tasks > Branch name length (SHEP-82): the most characters of {slug}, in steps of 5 (one set by hand steps onto them).
+export function slugRow(view, t) {
+  const id = view.scope ?? null;
+  if (id && id.startsWith("m:")) return null;
+  const n = slugMax(shepherdrFor(view.cfg, view.scope).tasks?.slug_max);
+  const { min, max, step } = SLUG_MAX;
+  const down = Math.max(min, Math.ceil(n / step) * step - step), up = Math.min(max, Math.floor(n / step) * step + step);
+  const go = (to) => (_e, cx) => (to === n ? cx.notify() : view.set("tasks", "slug_max", to, cx));
+  return view.row(t, SLUG_MAX.title, SLUG_MAX.about, view.stepper(t, "slugmax", n, go(down), go(up)), view.scoped("tasks", "slug_max"));
 }
