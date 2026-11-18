@@ -413,24 +413,29 @@ def caller_space():
     """The caller's own space from its labels (a pane's, a coordinator's behind a chat, a task
     agent's), or None."""
     labels = caller_labels()
-    return labels.get("herdr.space") or labels.get("herdr.coordinator.space") or labels.get("herdr.task.space") or None
+    return next((bare(labels.get(k)) for k in ("herdr.space", "herdr.coordinator.space", "herdr.task.space")
+                 if bare(labels.get(k))), None)
 
 
-def default_space():
-    """The caller's space: its pane's, a coordinator's behind a chat, or a pane-less task agent's."""
-    labels = caller_labels()
-    sp = labels.get("herdr.space") or labels.get("herdr.coordinator.space") or labels.get("herdr.task.space")
+def default_space(folder=None, parent=None):
+    """Use the parent's or caller's labels, then an unambiguous space at the task's folder."""
+    if parent:
+        labels = (hc_json("get", parent) or {}).get("labels") or {}
+        sp = next((bare(labels.get(k)) for k in ("herdr.space", "herdr.coordinator.space", "herdr.task.space")
+                   if bare(labels.get(k))), None)
+        if sp:
+            return sp
+    sp = caller_space()
     if sp:
         return sp
-    if shutil.which("herdr-app"):
-        r = run(["herdr-app", "status"])
-        try:
-            sp = json.loads(r.stdout).get("space")
-        except ValueError:
-            sp = None
-        if sp and "/" not in sp:
-            return sp
-    raise Fail("Which space? Pass --space <space id>.")
+    if folder:
+        from .autopilot import window_spaces
+        matches = {bare(s.get("id")) for s in window_spaces() or []
+                   if not s.get("machine") and "/" not in (s.get("id") or "") and s.get("folder")
+                   and os.path.realpath(os.path.expanduser(s["folder"])) == os.path.realpath(folder)}
+        matches.discard(None)
+        return next(iter(matches)) if len(matches) == 1 else None
+    return None
 
 
 def tab_title(s, task):
@@ -725,6 +730,7 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     herdr.space, which Herdr gives a pane), herdr.agent, herdr.coordinator (its coordinator's tab,
     which keeps it under a restarted coordinator) and herdr.role=reviewer for a reviewer, kept
     apart from the task's agents. Returns its record."""
+    space = bare(space) or default_space(s.loc["folder"], parent=parent)
     ensure_launcher(argv)
     key = s.key(task)
     cmd = list(resume or argv)
@@ -738,8 +744,9 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
         cmd = cmd + [message]
     if magpie:
         cmd = magpie_argv(cmd)
-    labels = ["--label", f"herdr.task={key}", "--label", f"herdr.task.space={bare(space)}",
-              "--label", f"herdr.agent={agent_key(argv)}"]
+    labels = ["--label", f"herdr.task={key}", "--label", f"herdr.agent={agent_key(argv)}"]
+    if space:
+        labels += ["--label", f"herdr.task.space={space}"]
     ctab = coordinator_tab(parent)
     if ctab:
         labels += ["--label", f"herdr.coordinator={ctab}"]

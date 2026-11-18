@@ -252,7 +252,7 @@ def set_auto_fields(s, a, args, adding=False):
         if args.worktree and s.loc["kind"] != "repo":
             raise Fail("Worktrees need a git repo.")
         a["mode"] = "here" if args.here else "worktree"
-    if args.space:
+    if bare(args.space):
         a["space"] = bare(args.space)
     if args.parent:
         a["parent"] = args.parent
@@ -298,7 +298,7 @@ def cmd_auto(args):
                  "mode": "worktree" if s.loc["kind"] == "repo" else "here", "runs": []}
             set_auto_fields(s, a, args, adding=True)
             if not a.get("space"):
-                a["space"] = default_space()
+                a["space"] = default_space(s.loc["folder"], parent=a.get("parent"))
             if not a.get("parent") and os.environ.get("HC_TERMINAL_ID"):
                 a["parent"] = os.environ["HC_TERMINAL_ID"]
             s.data["auto_next"] = a["id"] + 1
