@@ -1798,8 +1798,12 @@ class BackToWork(unittest.TestCase):
         self.assertEqual(calls, [("pr", "ready", "593", "--repo", "o/r")])
         self.assertEqual((t["state"], t["auto_merge"]), ("ready", "checks"))
         self.assertNotIn("attention", t)
-        # SHEP-81: its checks' clock (#1044) starts at the publish, not at its earlier Ready
-        self.assertGreaterEqual(t["pr"]["head_at"], t.get("ready_at") or 0)
+        # SHEP-81: its checks' clock (#1044) starts at the publish, not at its earlier Ready, also on the next poll
+        import herdr_task.github as github
+        published = t["pr"]["head_at"]
+        self.assertGreaterEqual(published, t.get("ready_at") or 0)
+        self.assertEqual(github.checks_since(self.store, t, draft), max(published, t.get("ready_at") or 0))
+        self.assertEqual(t["pr"]["head_at"], published)
 
     def test_a_merge_policy_never_publishes_a_draft(self):
         t = self.pr_task()

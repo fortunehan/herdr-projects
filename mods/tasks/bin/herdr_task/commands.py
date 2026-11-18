@@ -1129,7 +1129,7 @@ def merge_now(s, t, publish=False):
                 return merge_failed(t, v, f"couldn't publish the draft: {err}")
             # Its reviewers and policies start on the published one: merged by a later tick. Its checks start
             # now (checks_since()), not at its earlier Ready: the head is unchanged, so say so here.
-            t["pr"]["head_at"] = now()
+            t["pr"]["head_at"], t["pr"]["head_sha"] = now(), v.get("headRefOid")
             return CHECKS_RUNNING
         # #1044: no checks yet while some will come is never "none set up": it merges once they ran.
         if pr_pending(v) or checks_missing(v, checks_since(s, t, v), expected_checks(s, t, v.get("headRefOid"))) == "waiting":

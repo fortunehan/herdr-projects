@@ -86,7 +86,9 @@ export async function execTemplate(hub: Hub, name: string, machine: string | nul
     const want: string[] = pick.argv?.length ? pick.argv : argvFor(pick, { agent: null, argv: [] }).base;
     // A magpie or cdnd launcher (SHEP-65/76) is never swapped for the template's own command: it must be there.
     if (/^claude-(magpie|cdnd)$/.test(String(want[0]).split("/").pop() ?? "")) {
-      if (!(await has(want[0]))) throw new Error(`Cannot start: ${want[0]} is not installed on this machine.`);
+      // the probe's own failure (the machine unreachable) says so, never "not installed"
+      const check = await exec(hub, ["sh", "-c", commandCheck(want[0])], machine);
+      if (check.code !== 0) throw new Error(`Cannot start: ${want[0]} is not installed on this machine.`);
       argv = want;
     } else if (await has(want[0])) argv = want;
     else if (!own || !(await has(own.split(/\s+/)[0]))) {
