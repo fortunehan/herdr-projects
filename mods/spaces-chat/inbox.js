@@ -41,7 +41,7 @@ import { toast, toastWho as whoOf } from "./ui.js";
 import { exec, appHome, home, focused, shared, setShared, watchFolder, readTextFile, writeTextFile, playSound, settings, run, layout } from "herdr";
 import { terminals, agents, panes, spaces } from "./live.js";
 import { chatPane } from "./core/spaces.js";
-import { taskCounts } from "./core/task-counts.js";
+import { spaceTaskCounts } from "./core/task-counts.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 export const ASKS = () => `${appHome()}/data/chat-asks`;
@@ -242,6 +242,7 @@ async function readTasksNow() {
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
       // Derived by herdr-task, including Ready work on checks, helpers, or a resumed turn.
       statuses.push({ key: JSON.stringify([machine, g.folder, x.ref ?? `#${x.id}`]), status: x.status, archived: Boolean(x.archived) });
+      if (x.archived) continue;
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
       // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
       if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
@@ -326,7 +327,9 @@ export function items() {
 }
 
 export const count = () => items().length;
-export const statusCounts = () => taskCounts(items(), shared("inbox.statuses") ?? []);
+export const spaceStatusCounts = () => spaceTaskCounts({ spaces: spaces(), needs: items(), ready: ready(),
+  running: shared("inbox.running") ?? [], tabOf, red: shared("counts.red") !== false, green: shared("counts.green") !== false });
+export const statusCounts = () => spaceStatusCounts().total;
 
 // The tab an item is in, for the red counts on tabs and spaces: its agent's (where its chat
 // shows it, else its pane), or its task's. Task agents have no tab (herdr-task runs them with no

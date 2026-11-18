@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, run, window, keys, shared } from "herdr";
 import { spaces, inRender } from "./live.js";
-import { statusCounts } from "./inbox.js";
+import { spaceStatusCounts, showInbox } from "./inbox.js";
 import { red, green, TEXT, RADIUS } from "./ui.js";
 
 // A machine as the sidebar shows it (mods/spaces-chat sections.js machineLook): the name it was
@@ -30,7 +30,9 @@ export default class WorkspaceStatus extends View {
   draw() {
     const t = theme();
     const space = spaces().find(s => s.active);
-    const counts = statusCounts();
+    const { total: counts, elsewhere } = spaceStatusCounts();
+    const elsewhereLabel = `${elsewhere.need} needs you, ${elsewhere.ready} ready, ${elsewhere.working} working outside spaces. `
+      + elsewhere.reasons.map(({ reason, count }) => `${count}: ${reason}`).join("; ");
     const roomy = (this.width ?? 1000) >= 700;
     const label = (icon, text) => h_flex().min_w(0).gap(6).items_center()
       .child(svg(`mods/workspace-chrome/${icon}.svg`).size(14).flex_none()).child(div().truncate().child(text));
@@ -47,7 +49,10 @@ export default class WorkspaceStatus extends View {
         .when(roomy, el => el.child(div().text_color(t.dim).child("All spaces")))
         .child(total("status-needs", "Needs you", counts.need, red()))
         .child(total("status-ready", "Ready", counts.ready, green()))
-        .child(total("status-working", "Working", counts.working, t.working)))
+        .child(total("status-working", "Working", counts.working, t.working))
+        .when(elsewhere.count > 0, el => el.child(div().id("status-elsewhere").text_size(TEXT.id).text_color(t.dim).cursor_pointer()
+          .tooltip(elsewhereLabel).accessibility_label(elsewhereLabel).on_click(() => showInbox())
+          .child(`+${elsewhere.count} elsewhere`))))
       .when(!roomy, el => el.child(div().flex_1()))
       .when(roomy, el => el.child(div().id("palette").px(6).h(20).flex().items_center().rounded(RADIUS.control).text_color(t.dim).cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
