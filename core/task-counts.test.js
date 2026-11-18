@@ -28,13 +28,14 @@ function inboxReplay() {
     spaceTaskCounts, shared: (k) => state.get(k), setShared: (k, v) => state.set(k, v), appHome: () => "/app",
     terminals: () => [], agents: () => [], panes: () => [], spaces: () => [{ id: "sp1", tabs: [{ id: "tab1" }] }], SH: "",
     dirsReady: async () => ({ tasks: "/tasks" }), readTextFile: async () => "{}",
+    pullCard: () => "Could not pull",
     exec: async (cmd, args) => ({ code: 0, stdout: cmd === "sh" ? "" : args[0] === "list" ? JSON.stringify(groups) : "[]" }),
-  }, "({ readTasks, statusCounts })");
-  return async (tasks) => {
+  }, "({ readTasks, statusCounts, items })");
+  return Object.assign(async (tasks) => {
     groups = [{ folder: "/work/demo", tasks: tasks.map((t) => ({ space: "sp1", tab: "tab1", ...t })) }];
     await inbox.readTasks();
     return inbox.statusCounts();
-  };
+  }, { items: inbox.items });
 }
 
 describe("space and bottom bar status totals (SHEP-79)", () => {
@@ -87,7 +88,8 @@ describe("space and bottom bar status totals (SHEP-79)", () => {
     expect(await refresh([{ ...task, status: "working" }, { ...task, status: "working" }])).toEqual({ need: 0, ready: 0, working: 1 });
     expect(await refresh([{ ...task, status: "ready" }])).toEqual({ need: 0, ready: 1, working: 0 });
     expect(await refresh([{ ...task, state: "running", status: "stopped", needs: "stopped" }])).toEqual({ need: 1, ready: 0, working: 0 });
-    expect(await refresh([{ ...task, status: "ready", archived: true }])).toEqual({ need: 0, ready: 0, working: 0 });
+    expect(await refresh([{ ...task, state: "done", status: "done", archived: true, pull: { at: 1 } }])).toEqual({ need: 0, ready: 0, working: 0 });
+    expect(refresh.items().map((item) => item.kind)).toEqual(["pull"]);
     expect(await refresh([])).toEqual({ need: 0, ready: 0, working: 0 });
   });
 

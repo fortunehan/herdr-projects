@@ -242,7 +242,6 @@ async function readTasksNow() {
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
       // Derived by herdr-task, including Ready work on checks, helpers, or a resumed turn.
       statuses.push({ key: JSON.stringify([machine, g.folder, x.ref ?? `#${x.id}`]), status: x.status, archived: Boolean(x.archived) });
-      if (x.archived) continue;
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
       // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
       if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
