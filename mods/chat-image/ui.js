@@ -159,8 +159,17 @@ export function dialogFooter({ onCancel, primary, cancelLabel = "Cancel", note =
       { kind: "primary", size: "lg", disabled: primary.disabled, onClick: primary.onClick })));
 }
 
+// Plain status counts shared by Spaces and the tab bar.
+export function spaceCounts(need, ready) {
+  const cap = (n) => n > 9 ? "9+" : String(n);
+  return h_flex().h(16).flex_none().gap(8).items_center().text_size(TEXT.id).font_bold()
+    .role("image").accessibility_label(`${need} needs you, ${ready} ready`)
+    .when(need > 0, (el) => el.child(div().text_color(red()).child(cap(need))))
+    .when(ready > 0, (el) => el.child(div().text_color(green()).child(cap(ready))));
+}
+
 // Count badge ------------------------------------------------------------------------------
-// The count badge on Tasks, tabs and spaces, as Shepherdr's AttentionBadge: Needs you alone a red
+// The filled count badge, as Shepherdr's AttentionBadge: Needs you alone a red
 // dot, Ready alone a green one, both one oval split down the middle (red Needs you left, green
 // Ready right, a 1px line between in `line`, the color behind the badge). Always 16 tall, so a
 // row never jumps when the badge changes kind; each count stops at 9+. 11px digits are an even

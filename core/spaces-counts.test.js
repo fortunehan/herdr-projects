@@ -33,7 +33,7 @@ function fixture() {
     readyByTab: () => new Map([["a", 1], ["b", 2], ["other", 20]]),
     muted: () => false, iconOf: () => null, data: () => state.get("spaces-chat") ?? {},
   };
-  deps.countBadge = load("lib/ui.js", { div: deps.div, h_flex: deps.h_flex, settings: deps.settings }, "countBadge");
+  deps.spaceCounts = load("lib/ui.js", { div: deps.div, h_flex: deps.h_flex, settings: () => ({ dark: true }) }, "spaceCounts");
   const Spaces = load("mods/spaces-chat/main.js", deps, "Spaces");
   const s = new Spaces();
   Object.assign(s, { unread: new Set(), pressed: null });
@@ -51,7 +51,7 @@ function plain(root) {
   expect(c.style.font_bold).toBe(true);
   expect(c.style.role).toBe("image");
   expect(c.style.flex_none).toBe(true);
-  expect(c.children.map((n) => n.style.text_color)).toEqual(["red", "green"]);
+  expect(c.children.map((n) => n.style.text_color)).toEqual(["#ff6369", "#3dd68c"]);
   expect(nodes(c).some((n) => "bg" in n.style || "rounded" in n.style)).toBe(false);
 }
 
