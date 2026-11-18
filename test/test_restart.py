@@ -343,6 +343,16 @@ class NoTab(unittest.TestCase):
             self.assertIn(label, args)
         self.assertFalse(any(a.startswith("herdr.tab=") for a in args), "no empty tab label")
 
+    def test_a_space_alone_with_conflicting_or_remote_space_labels_is_refused(self):
+        """SHEP-81: #980's space-only restart takes no space the identity check (SHEP-70) would refuse."""
+        for labels in ({"herdr.space": "sp1", "herdr.coordinator.space": "sp2", "herdr.role": "coordinator"},
+                       {"herdr.space": "vm/sp1", "herdr.role": "coordinator"}):
+            with self.subTest(labels=labels):
+                r, args = self.restart(labels)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("previous Assistant was kept", r.stderr)
+                self.assertIsNone(args)
+
     def test_nowhere_to_go_says_why(self):
         r, args = self.restart({"herdr.role": "coordinator"})
         self.assertEqual(r.returncode, 1)

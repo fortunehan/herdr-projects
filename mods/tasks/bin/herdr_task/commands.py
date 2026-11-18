@@ -1127,7 +1127,9 @@ def merge_now(s, t, publish=False):
             ok, err = publish_pr(t)
             if not ok:
                 return merge_failed(t, v, f"couldn't publish the draft: {err}")
-            # Its reviewers and policies start on the published one: merged by a later tick.
+            # Its reviewers and policies start on the published one: merged by a later tick. Its checks start
+            # now (checks_since()), not at its earlier Ready: the head is unchanged, so say so here.
+            t["pr"]["head_at"] = now()
             return CHECKS_RUNNING
         # #1044: no checks yet while some will come is never "none set up": it merges once they ran.
         if pr_pending(v) or checks_missing(v, checks_since(s, t, v), expected_checks(s, t, v.get("headRefOid"))) == "waiting":
@@ -1170,11 +1172,22 @@ def own_open_pr(s, t):
     """#988: a task with no pull request on record, in a GitHub repo: the open one for its branch (its
     agent opened it, ready never knew) is recorded on the task, so it merges there, never here behind
     it. Refused (nothing merged) when GitHub can't be asked, or when that pull request isn't at the
-    branch's newest commit here (merging it would leave work out). None when there is none, and on
-    Azure DevOps (gh can't list its pull requests; ready records the one it opens or adopts)."""
+    branch's newest commit here (merging it would leave work out). None when there is none. On Azure
+    DevOps the same, asked of Azure DevOps (ado.listed())."""
     repo = github(s)
     if repo and ado.owns(repo):
-        return None
+        try:
+            found = next(iter(ado.listed(repo, t, "active")), None)
+        except ado.AdoError as e:
+            raise Fail(f"Couldn't ask Azure DevOps whether {s.ref(t)} has a pull request ({e}); nothing merged. Try again.")
+        if not found:
+            return None
+        if found.get("headRefOid") != branch_tip(s, t):
+            raise Fail(f"{s.ref(t)} has pull request #{found['number']} open on Azure DevOps, but not at its branch's newest "
+                       f"commit here; nothing merged. Its agent pushes it (herdr-task ready), then try again.")
+        t["pr"] = {"number": found["number"], "url": found["url"], "repo": repo}
+        s.dirty = True
+        return t["pr"]
     if not repo:
         why = github_unreachable(s)
         if why:

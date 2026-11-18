@@ -11,7 +11,7 @@ import { HOME } from "./paths.ts";
 import { exec } from "./model.ts";
 import * as NS from "../core/newspace.js";
 import * as SP from "../core/spaces.js";
-import { AGENT_PATH, cleanCommand, commandCheck } from "../core/clean-env.js";
+import { cleanCommand, commandCheck } from "../core/clean-env.js";
 import { agentKey, argvFor, NAMES } from "../core/agents.js";
 import { rolePick } from "../core/settings.js";
 import { readSettings } from "./settings.ts";
@@ -78,15 +78,15 @@ export async function execTemplate(hub: Hub, name: string, machine: string | nul
   const src = (await exec(hub, ["sh", "-c", DIR + 'cat "$dir/$1.md"', "x", name], machine).catch(() => null))?.stdout ?? "";
   const head = /^---\n([\s\S]*?)\n---\n?/.exec(src);
   const own = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
-  const has = async (prog: string) => (await exec(hub, ["sh", "-c", `${AGENT_PATH} command -v "$1" >/dev/null 2>&1`, "x", prog], machine).catch(() => null))?.code === 0;
+  // the login shell's PATH, as the launch itself (cleanCommand) has it
+  const has = async (prog: string) => (await exec(hub, ["sh", "-c", commandCheck(prog)], machine).catch(() => null))?.code === 0;
   let cmd = own;
   let argv: string[] | undefined;
   if (pick?.agent || pick?.argv?.length) {
     const want: string[] = pick.argv?.length ? pick.argv : argvFor(pick, { agent: null, argv: [] }).base;
     // A magpie or cdnd launcher (SHEP-65/76) is never swapped for the template's own command: it must be there.
     if (/^claude-(magpie|cdnd)$/.test(String(want[0]).split("/").pop() ?? "")) {
-      const check = await exec(hub, ["sh", "-c", commandCheck(want[0])], machine);
-      if (check.code !== 0) throw new Error(`Cannot start: ${want[0]} is not installed on this machine.`);
+      if (!(await has(want[0]))) throw new Error(`Cannot start: ${want[0]} is not installed on this machine.`);
       argv = want;
     } else if (await has(want[0])) argv = want;
     else if (!own || !(await has(own.split(/\s+/)[0]))) {

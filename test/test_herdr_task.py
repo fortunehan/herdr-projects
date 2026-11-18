@@ -1798,6 +1798,8 @@ class BackToWork(unittest.TestCase):
         self.assertEqual(calls, [("pr", "ready", "593", "--repo", "o/r")])
         self.assertEqual((t["state"], t["auto_merge"]), ("ready", "checks"))
         self.assertNotIn("attention", t)
+        # SHEP-81: its checks' clock (#1044) starts at the publish, not at its earlier Ready
+        self.assertGreaterEqual(t["pr"]["head_at"], t.get("ready_at") or 0)
 
     def test_a_merge_policy_never_publishes_a_draft(self):
         t = self.pr_task()
@@ -6782,6 +6784,40 @@ class ReadyMergeGit(unittest.TestCase):
         self.patch(self.commands, "merge_now", lambda s, t, **k: merged.append(t["pr"]["number"]))
         self.commands.cmd_accept(self.args())
         self.assertEqual(merged, [12])
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), base)
+
+    def test_accept_on_azure_devops_merges_its_open_pull_request_not_here(self):
+        """SHEP-81 (#988 on Azure DevOps): no pull request on record, one open for the branch there: Accept merges that
+        one through Azure DevOps, the base here untouched; Azure DevOps unreachable or a stale head: nothing merged."""
+        import herdr_task.ado as ado
+        tip = self.own_commit()
+        base = self.git(self.main, "rev-parse", "main")
+        repo = "ado:org/proj/repo"
+        self.patch(self.commands, "github", lambda s: repo)
+        found = [{"number": 7, "url": "https://dev.azure.com/org/proj/_git/repo/pullrequest/7", "headRefOid": tip}]
+        self.patch(ado, "listed", lambda r, t, status: found if status == "active" else [])
+        merged = []
+        self.patch(self.commands, "merge_now", lambda s, t, **k: merged.append((t["pr"]["number"], t["pr"]["repo"])))
+        self.commands.cmd_accept(self.args())
+        self.assertEqual(merged, [(7, repo)])
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), base)
+
+    def test_accept_on_azure_devops_never_merges_here_unasked_or_behind(self):
+        import herdr_task.ado as ado
+        self.own_commit()
+        base = self.git(self.main, "rev-parse", "main")
+        self.patch(self.commands, "github", lambda s: "ado:org/proj/repo")
+
+        def down(*a):
+            raise ado.AdoError("http", "HTTP 503")
+        self.patch(ado, "listed", down)
+        with self.assertRaises(self.commands.Fail) as e:
+            self.commands.cmd_accept(self.args())
+        self.assertIn("HTTP 503", str(e.exception))
+        self.patch(ado, "listed", lambda r, t, status: [{"number": 7, "url": "u", "headRefOid": "0" * 40}])
+        with self.assertRaises(self.commands.Fail) as e:
+            self.commands.cmd_accept(self.args())
+        self.assertIn("#7", str(e.exception))
         self.assertEqual(self.git(self.main, "rev-parse", "main"), base)
 
     def test_accept_never_merges_here_when_github_cant_be_asked(self):

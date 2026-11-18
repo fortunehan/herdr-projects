@@ -138,7 +138,9 @@ def facts(s, t, report):
             pr["needs_approval"] = True
         else:
             pr.pop("needs_approval", None)
-        since, expect = checks_since(s, t, v), expected_checks(s, t, v.get("headRefOid"))
+        # Azure DevOps runs its own policies, never the repo's GitHub workflows.
+        since = checks_since(s, t, v)
+        expect = None if ado.owns(pr["repo"]) else expected_checks(s, t, v.get("headRefOid"))
         # #1044, #1018: no checks yet (at its newest commit) while some will come is never "all passed".
         missing = checks_missing(v, since, expect)
         # A draft merges only through the person's Accept, which publishes it first.

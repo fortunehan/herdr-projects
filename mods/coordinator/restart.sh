@@ -73,6 +73,14 @@ chat=${chat##*/}
 placed=$(get '.labels["herdr.tab"] // .labels["herdr.coordinator.tab"] // .labels["herdr.chat.slot"] // .labels["herdr.chat.origin"]')
 identity=""
 [ -n "$space" ] || space=$(get '.labels["herdr.coordinator.space"]')
+if [ "$role" = coordinator ] && [ -z "$chat" ] && [ -z "$placed" ]; then
+  # #980's space alone: its space labels must agree and be this machine's, as the identity check asks of the rest.
+  s1=$(get '.labels["herdr.space"]') s2=$(get '.labels["herdr.coordinator.space"]')
+  if { [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" != "$s2" ]; } || [[ "$s1$s2" == */* ]]; then
+    echo "conflicting or nonlocal Assistant space labels; the previous Assistant was kept." >&2
+    exit 1
+  fi
+fi
 if [ "$role" = coordinator ] && { [ -n "$chat" ] || [ -n "$placed" ]; }; then
   IFS= read -r -d '' identity_code <<'PY_IDENTITY' || :
 # ---- ASSISTANT IDENTITY ----

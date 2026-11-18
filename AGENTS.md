@@ -95,7 +95,6 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   sub line with `place()` and `secondLine()`. For whole rendered rows, build main's dist in a git-archive copy with
   node_modules symlinked from the worktree, and make each stub's snapshot with that tree's own `service/compat.ts`
   `Compat().snapshot({host,user,machines,spaces,sections,rows})`, rows placed by that tree's `core/tasks.js`.
-  screenshot quiet rows without a real log.
 - Two throwaway cores on one VM: `herdr-task --on <it>` installs its bundle into the real `~/.local/bin/herdr-task` unless
   `$HERDR_TASK_STORE/.remote/<machine>` already says `source`; write that first.
 - A cross-machine send without ssh: two throwaway cores (`HC_SESSION=a`/`b`, clean `env -i`) and
