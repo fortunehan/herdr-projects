@@ -61,6 +61,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 - On a busy dev Mac, Bun tests can pass the default 5 s timeout: rerun the failed files with `bun test --timeout 60000`.
+- A quick before/after of herdr-task settings logic without a second worktree: a `python3 -I` script that puts each tree's
+  `mods/tasks/bin` on `sys.path`, sets `HERDR_TASK_SETTINGS` to a scratch file and stubs `herdr_task.autopilot.window_spaces`.
 
 ## Trying a change
 
