@@ -303,6 +303,13 @@ export const MACHINES = {
   own: { title: "Limits", about: "Same as all machines.", button: "Set its own" },
   old: { title: "Set before for its spaces", about: (names) => `${names.join(", ")}. These still apply to its spaces unless a space sets its own.` },
   home: { title: "Home Assistant", make: "Make home space" },
+  // SHEP-83: machines[key].self_update (herdr-task's self_update.py); only its Shepherdr checkout, never other repos
+  selfUpdate: {
+    title: "Update after a Shepherdr task merges",
+    about: (on) => (on
+      ? "A few minutes after a task in the checkout Shepherdr was installed from merges, it merges the base branch there, installs and runs doctor. Anything odd stops it and tells you."
+      : "Off: the Assistant updates it by hand after a merge."),
+  },
 };
 // What the old machine scope could hold, as the person knows it.
 export const OLD_NAMES = { coordinator: "Assistant", worker: "Workers", reviewer: "Reviewer", backup: "Backup agent",

@@ -188,6 +188,10 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   checkout: `git fetch`, `git merge --no-edit origin/main` (a merge commit, never a rebase), then `./install.sh --yes`
   on this machine only. Report the installed version. Stop and ask on a merge conflict. Never push, and never install
   on another machine.
+- When Settings > Machines > Update after a Shepherdr task merges is on for this machine, herdr-task does these steps
+  itself a few minutes after the merge ([docs/self-update.md](docs/self-update.md)). Skip them once its
+  `self-update` news says it updated, and only pass on the version. If it says it stopped, tell the person and follow
+  its finish-by-hand command once they say yes. `herdr-task self-update` shows how the last update ended.
 
 ## README
 
