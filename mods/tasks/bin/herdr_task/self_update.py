@@ -161,6 +161,12 @@ def self_update_pass(report):
         return
     deliver(report)
     st = read_state()
+    r = st.get("running")
+    if r and not running() and now() - (r.get("at") or 0) > SPAWN_GRACE_MS:
+        # its worker ended without a word (killed, the machine slept through a restart): a stop like any other
+        conclude(r, {"folder": r.get("folder") or "?", "base": r.get("base"), "refs": r.get("refs") or [], "at": now(), "ok": False,
+                     "step": "cut off", "why": "the update ended before it finished", "by_hand": FINISH_BY_HAND.format(**r)})
+        return
     p = st.get("pending")
     if not p or now() < (p.get("due") or 0) or running() or now() - (st.get("spawned") or 0) < SPAWN_GRACE_MS:
         return
@@ -202,6 +208,9 @@ def in_progress(folder):
         if ok and os.path.isdir(p if os.path.isabs(p) else os.path.join(folder, p)):
             return "rebase"
     return None
+
+
+FINISH_BY_HAND = "cd {folder} && git status, then: git fetch && git merge --no-edit origin/{base} && ./install.sh --yes && shepherdr doctor"
 
 
 def tail(text, lines=12):
@@ -358,23 +367,29 @@ def run_worker():
             st.pop("spawned", None)
             if not p:
                 return None
-            st["running"] = {"at": now(), "pid": os.getpid(), "refs": p.get("refs") or []}
+            st["running"] = {"at": now(), "pid": os.getpid(), "refs": p.get("refs") or [], "folder": p["folder"], "base": p.get("base") or "main",
+                             "space": p.get("space")}
         try:
             res = steps(p)
         except Exception as e:  # noqa: BLE001 - a crash is a stop the person hears of, never a silent one
             res = {"folder": p["folder"], "base": p.get("base"), "refs": p.get("refs") or [], "at": now(), "ok": False,
                    "step": "error", "why": f"the update stopped with an error: {e}", "by_hand": None}
-        with state() as st:
-            st.pop("running", None)
-            st["last"] = res
-            if not res["ok"]:
-                st.pop("pending", None)
-            st["notice"] = {"text": notice_text(res), "space": p.get("space"), "at": now()}
-        log_line(LOG, "ok" if res["ok"] else "stopped", **{k: v for k, v in res.items() if k != "at"})
-        if not res["ok"]:
-            alert(res)
-        deliver({})
+        conclude(p, res)
         return res
+
+
+def conclude(p, res):
+    """A run's end: kept as the last, the Assistant's notice, and on a stop the alert (merges armed meanwhile dropped)."""
+    with state() as st:
+        st.pop("running", None)
+        st["last"] = res
+        if not res["ok"]:
+            st.pop("pending", None)
+        st["notice"] = {"text": notice_text(res), "space": p.get("space"), "at": now()}
+    log_line(LOG, "ok" if res["ok"] else "stopped", **{k: v for k, v in res.items() if k != "at"})
+    if not res["ok"]:
+        alert(res)
+    deliver({})
 
 
 def cmd_self_update(args):

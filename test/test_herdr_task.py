@@ -7560,3 +7560,18 @@ class SelfUpdate(unittest.TestCase):
         with open(self.settings, "w") as f:
             json.dump({"here": "mini", "machines": {"local": {"self_update": True}}}, f)
         self.assertFalse(self.su.enabled())
+
+    def test_a_run_cut_off_is_a_stop_the_person_hears_of(self):
+        self.turn(True)
+        with self.su.state() as st:
+            st["running"] = {"at": self.clock[0], "refs": ["SHEP-1"], "folder": self.checkout, "base": "main", "space": "sp1"}
+        self.tick()
+        self.assertEqual(self.alerts, [], "a worker just started gets its grace")
+        self.later(self.su.SPAWN_GRACE_MS + 1)
+        self.tick()
+        self.assertEqual(len(self.alerts), 1)
+        st = self.su.read_state()
+        self.assertNotIn("running", st)
+        self.assertEqual((st["last"]["ok"], st["last"]["step"]), (False, "cut off"))
+        self.assertIn('event="self-update-stopped"', self.sent[-1][1])
+        self.assertIn("./install.sh --yes", self.sent[-1][1])
