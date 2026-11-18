@@ -315,6 +315,62 @@ class AssistantIdentity(unittest.TestCase):
                                   {"FAIL_RUN": "1", "HERDR_RESTART_RESUME": resume})
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("t2", self.state)
+class NoTab(unittest.TestCase):
+    """GitHub #980: an Assistant the service started without the window (a web-only install, service/spaces.ts) has
+    a space but no tab or chat. restart.sh quit at its first guard without a word, and the remote side dropped its
+    stderr: all anyone saw was "It didn't restart". It restarts in the background under its space now, and a
+    restart that can't says why, across machines too."""
+
+    def restart(self, labels, env=None, argv=("claude", "--resume", "s1")):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "bin"))
+        hc = os.path.join(d, "bin", "hc")
+        rec = json.dumps({"address": "t2", "cwd": "/tmp", "template": "assistant", "labels": labels})
+        with open(hc, "w") as f:
+            f.write(LOCAL_HC.replace(LOCAL_HC.split("\n")[5], f"    else echo '{rec}'; fi ;;"))
+        os.chmod(hc, 0o755)
+        e = {"PATH": f"{d}/bin:/usr/bin:/bin", "HOME": d, "HERDR_APP_HOME": d, "FAKE_DIR": d, "HERDR_RESTART_RESUME": "1", **(env or {})}
+        r = subprocess.run(["bash", SCRIPT, "t2", json.dumps(list(argv))], env=e, capture_output=True, text=True, timeout=30)
+        p = os.path.join(d, "run-args")
+        return r, (read(p).split("\n") if os.path.exists(p) else None)
+
+    def test_a_space_alone_restarts_in_the_background(self):
+        r, args = self.restart({"herdr.space": "sp1", "herdr.coordinator.space": "sp1", "herdr.role": "coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "t9")
+        self.assertIn("--keep", args)
+        for label in ("herdr.space=sp1", "herdr.coordinator.space=sp1", "herdr.role=coordinator"):
+            self.assertIn(label, args)
+        self.assertFalse(any(a.startswith("herdr.tab=") for a in args), "no empty tab label")
+
+    def test_a_space_alone_with_conflicting_or_remote_space_labels_is_refused(self):
+        """SHEP-81: #980's space-only restart takes no space the identity check (SHEP-70) would refuse."""
+        for labels in ({"herdr.space": "sp1", "herdr.coordinator.space": "sp2", "herdr.role": "coordinator"},
+                       {"herdr.space": "vm/sp1", "herdr.role": "coordinator"}):
+            with self.subTest(labels=labels):
+                r, args = self.restart(labels)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("previous Assistant was kept", r.stderr)
+                self.assertIsNone(args)
+
+    def test_nowhere_to_go_says_why(self):
+        r, args = self.restart({"herdr.role": "coordinator"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("t2 has no space, tab or chat to restart into.", r.stderr)
+        self.assertIsNone(args)
+
+    def test_the_other_machine_says_why(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "bin"))
+        hc = os.path.join(d, "bin", "hc")
+        with open(hc, "w") as f:
+            f.write(FAKE_HC.replace("    echo t9 ;;", '    [ -n "$FAKE_WHY" ] && { echo "$FAKE_WHY" >&2; exit 1; }\n    echo t9 ;;'))
+        os.chmod(hc, 0o755)
+        e = {"PATH": f"{d}/bin:/usr/bin:/bin", "HOME": d, "FAKE_DIR": d, "FAKE_STATE": "connected",
+             "FAKE_WHY": "t2 has no space, tab or chat to restart into."}
+        r = subprocess.run(["bash", SCRIPT, "vmb/t2", "[]"], env=e, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.strip(), "It didn't restart on vmb: t2 has no space, tab or chat to restart into.")
 
 
 class Bash32(unittest.TestCase):

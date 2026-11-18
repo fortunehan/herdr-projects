@@ -1,5 +1,172 @@
 # Changelog
 
+## 3.1.42
+
+A tiny fix: the Tasks panel lists only tasks again.
+
+### Needs you
+
+- Assistants' new messages no longer show in the Tasks panel, its badge or the phone and watch app's Needs you. They
+  stay in Chat, with its own unread dots. Tasks that wait on you and an Assistant's question cards still show.
+
+## 3.1.41
+
+A small release: what needs you is the same everywhere, and a call keeps going when your phone locks.
+
+### Needs you
+
+- The Tasks panel, the counts in the sidebar and header, the app icon's number and the phone and watch app now all use
+  one rule for what needs you, so a "2 need you" on your phone always matches what the Tasks panel lists.
+
+### Voice
+
+- A call can carry on in your pocket: hand it from the web page to the Shepherdr Wake app and keep talking with the
+  phone locked. The page shows Carrying on in your pocket, with Take it back.
+- On a locked phone the call is for talking only: the agent can still pass on messages for you, but it takes no actions
+  and shows no secrets or settings. Unlock the phone for those.
+
+## 3.1.40
+
+A tiny fix for the phone and watch app: the number by each section now always matches what it lists.
+
+### Phone and watch
+
+- The Needs you number in the phone and watch app now counts everything listed under it, including an Assistant's
+  unread message and an agent's alert, so the number and the list never disagree.
+- The app shows its sections in the same order and with the same names as the web app's Tasks panel.
+
+## 3.1.39
+
+A small release for the phone and watch app: it stays up to date with little data, and an alert never buzzes twice.
+
+### Phone and watch
+
+- The phone and watch app gets a small live feed of what needs you, what's ready and what's working, sent only when
+  that changes. It uses a tiny part of the data the full web page needs.
+- A device that shows Shepherdr's alerts itself no longer also gets the web page's notification, so one alert buzzes
+  once. If that app loses its link for more than 2 minutes, the web notifications take over again.
+- Tapping an alert in the app can open it right in the Shepherdr page you already have open on that device.
+
+### Alerts
+
+- In the phone and watch app, an agent's alert shows for 15 minutes at most, and goes once its task is done.
+- A low-memory alert clears itself once the machine has enough memory again, instead of staying for days.
+- Tapping a notification about a task that's ready opens its Accept card in the page you have open.
+
+## 3.1.38
+
+A small release: answer your agents straight from a notification on your phone or watch, and fewer false alarms from
+automations that watch another machine.
+
+### Notifications
+
+- A notification can carry one button: Accept on a task that's ready, the first choice on an agent's question (like
+  "Yes"), or Reply to type an answer to an Assistant or an agent. Tap the notification itself for everything else.
+- After a button, the notification says what happened: Accepted, Answered, Sent, or Already handled if you did it
+  elsewhere first.
+- An Assistant's new message shows its own words in the notification instead of "Tap to read it".
+- Notifications are short enough to read on a watch.
+- A phone that turns notifications on now also hears when a task is ready for you, not only what needs you.
+
+### Automations
+
+- An automation that watches another machine no longer flags a short hiccup. Only when that machine hasn't answered
+  for 15 minutes does it need you, and it says so plainly: "Can't reach vm-b since 23:03".
+
+## 3.1.37
+
+A small release: your phone's wake word now starts the call in the Shepherdr page you already have open on it.
+
+### Voice
+
+- Saying your phone's wake word starts a voice call with your Assistant in the Shepherdr page already open on that
+  phone, instead of opening a new one. If no page is open yet, the call starts in the one you open within 15 seconds.
+- Only the phone you spoke to starts the call: Shepherdr open on your other devices stays as it was.
+
+## 3.1.36
+
+A small release: your phone's wake word can open Shepherdr straight into a voice call.
+
+### Voice
+
+- Saying your phone's wake word (or opening the web app's link with `?voice=1`) opens Shepherdr straight into a voice
+  call with your Assistant. If a call is already on, it shows that one.
+- If Shepherdr is already open, it reuses that window instead of opening a second one.
+- When the browser wants a tap before it can use the microphone, a big Start voice call button asks for it.
+
+## 3.1.35
+
+The 15 November fixes from GitHub: Shepherdr no longer tries SSH to machines you never linked, tasks stop getting stuck
+on Working, Accept and merge behave, and updates finish again.
+
+### Privacy and other machines
+
+- Shepherdr no longer tries SSH to hosts you never linked, in the background or otherwise. Finding new machines is now a
+  Find machines button in Settings → Machines that runs only when you press it and says first what it will try. If you
+  reached an Assistant on a plain-SSH machine, link it with Add machine.
+- Accept, start, merge and other actions on another machine finish even if the link drops for a moment, and say plainly
+  whether anything ran when it stays down.
+- With a window on two linked machines, only the hub's Home gets task news; each machine still sends its own health
+  alerts, once.
+- The sidebar shows the Autopilot rocket for spaces on your other machines too.
+- Moving secrets to this computer (Secrets → Kept on) works instead of saying the machine isn't linked.
+
+### Updates and install
+
+- Updates and `shepherdr doctor` finish again when you have published artifacts; they used to end Not done and hold
+  settings sync.
+- An update leaves a Nix home-manager service file alone, and the web service finds `hc` and `herdr-app` wherever they
+  live.
+- Shepherdr checks on its agents with far less work: one read of the process list instead of a command per process.
+
+### Tasks
+
+- Tasks no longer stay on Working from finished background jobs, Codex tool servers, an agent's leftover shell or idle
+  tidying, and finished Claude tasks stop flipping back to Working every hour.
+- A task whose agent asks a question shows Needs you, also when it asks between two checks.
+- Ready no longer freezes the other tasks while it pushes, updates the pull request's text and its one comment each
+  time instead of adding new ones, and shows a failed push's own message.
+- Starting, resuming or messaging a task right after it starts no longer launches a second agent.
+- A task restarted after a crash reuses its folder, and a repo set up as bare says so when you add a task.
+- When Codex's sandbox can't start on a machine, the task says why and how to fix that machine.
+
+### Accept and merge
+
+- The Accept card says Accept and merge when it will merge, and plain Accept when it only marks the task done.
+- Accept and merge through a merge queue keep the pull request open until it merges, and a queue timeout is tried again
+  once by itself.
+- Merge when checks pass waits for the checks to really start (up to 20 minutes, then it asks you) instead of merging
+  before they run.
+- Accept always merges through the branch's open pull request, and refuses rather than merging on this machine when
+  GitHub can't be reached. A reopened task stays open for its fix.
+- When Accept can't start, it says so in one plain line.
+
+### Agents and models
+
+- Fable 5.2 is in the model menu.
+- A switched Claude agent keeps your permission mode, and an Assistant started from the web or a phone uses the agent,
+  model and permissions from Settings → Agents.
+- Restarting a Codex worker no longer shows a broken message, and Codex workers skip the hook-trust prompt.
+- A Codex reviewer that isn't signed in or can't use its model is caught before the review, with why.
+- Forking a running task's chat asks first.
+- An Assistant whose agent ended keeps its tab and offers Restart Assistant, on this machine and linked ones.
+- A task out of review rounds reaches its Assistant at once, and the Assistant adds a round for a last-round fix.
+
+### Artifacts and proof pages
+
+- Code in artifacts in the window has a Copy button, also inside text, lists and callouts.
+- Forms publish, previews update by themselves and never hang on Loading, and pictures keep their shape.
+- The task browser saves screenshots where you asked and opens pages reliably; new `herdr-artifact check` and
+  `herdr-artifact crop` commands re-check a page's drawing and crop pictures without extra tools.
+
+### Window and web
+
+- The Enjoying Shepherdr star prompt is gone.
+- Coming back to a space puts the keyboard in its chat box again.
+- The voice call button sits beside Search in the top bar.
+- Settings menus (level picker, Secrets) are no longer painted over by the rows under them.
+- The memory warning shows at most once every 30 minutes.
+
 ## 3.1.34
 
 A small release: creating a new space works again, and finished Codex tasks show Ready.

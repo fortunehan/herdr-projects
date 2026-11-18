@@ -33,6 +33,7 @@ import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, m
   acceptAgain, dependencies } from "./core/tasks.js";
 import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
+import { settle } from "./core/pending.js";
 import { dirs } from "./dirs.js";
 import { TEXT, H, RADIUS, red, green, amber, toast } from "./ui.js";
 import { followSpace, switched } from "./core/thread-space.js";
@@ -70,7 +71,8 @@ const placeName = (list) => spaceOf(list).name;
 // herdr-task, here or (through its --on) on the machine that holds the folder. Resolves with its
 // JSON output; rejects with its error.
 async function cli(machine, [command, ...args], folder) {
-  const r = await exec(CLI(), [...(machine ? ["--on", machine] : []), command, "--json", "--folder", folder, ...args]);
+  // still running there after a slow or dropped link: its real result, followed (core/pending.js)
+  const r = await settle((a) => exec(CLI(), a), await exec(CLI(), [...(machine ? ["--on", machine] : []), command, "--json", "--folder", folder, ...args]));
   let out = null;
   try { out = JSON.parse(r.stdout || "null"); } catch {}
   if (r.code !== 0 || !out || out.error) throw new Error(out?.error || r.stderr?.trim() || "herdr-task failed");
@@ -724,7 +726,8 @@ export default class Tasks extends View {
     // One set off by another folder's task events (--from) says by what and where, unless something is wrong.
     const src = a.from?.folder ? { machine: a.from.machine ?? list.machine ?? null, folder: a.from.folder } : null;
     const from = src ? fromLine(a.on, `${machineName(src.machine)} · ${spaceOf(src).name ?? String(src.folder).split("/").filter(Boolean).pop()}`) : null;
-    const sub = err ? "Didn't start" : a.paused ? "Paused" : from;
+    // A --from source down for a while says so in its own words ("Can't reach vm-b since 23:03").
+    const sub = err ? (a.last_error.kind === "from" ? err : "Didn't start") : a.paused ? "Paused" : from;
     const when = !err && !a.paused && a.next_run ? day(a.next_run) : null;
     // Where it is: its machine (with more than one) and space whatever the grouping, as the Automations group sits
     // under no machine or space heading; none with "Where on task rows" off.
@@ -762,7 +765,7 @@ export default class Tasks extends View {
       case "stopped": return v(needDot(), x.title ?? x.ref, () => this.openNeed(x));
       // An automation goes by its name, with no id.
       case "auto": return v(svg("mods/tasks/repeat.svg").size(14).flex_none().text_color(red()),
-        x.title ?? x.ref, () => this.fold("automations", false), null, x.error?.kind === "fire" ? "Didn't run" : "Didn't start its task");
+        x.title ?? x.ref, () => this.fold("automations", false), null, x.error?.kind === "fire" ? "Didn't run" : x.error?.kind === "from" ? x.error.message : "Didn't start its task");
     }
     return null;
   }

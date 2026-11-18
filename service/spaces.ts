@@ -12,7 +12,7 @@ import { exec } from "./model.ts";
 import * as NS from "../core/newspace.js";
 import * as SP from "../core/spaces.js";
 import { cleanCommand, commandCheck } from "../core/clean-env.js";
-import * as AG from "../core/agents.js";
+import { agentKey, argvFor, NAMES } from "../core/agents.js";
 import { rolePick } from "../core/settings.js";
 import { readSettings } from "./settings.ts";
 
@@ -67,21 +67,34 @@ export async function newSpaceInfo(hub: Hub, machine: string | null, at: string 
  *  one-off copy, removed by done() once it has started, whose command first clears a parent Claude Code session's
  *  markers the holder may carry (SHEP-86, core/clean-env.js), then execs it: hc runs a template's command under sh -c,
  *  and where sh is dash (Debian, Ubuntu) the shell would stay the terminal's program, so no chat would know its CLI.
+ *  pick: the agent Shepherdr settings choose for it ({ agent, model, effort, fast, perm }, as the window's chat starts
+ *  it): its command in place of the template's own (#1051: the web started the stock `claude`), unless that agent
+ *  isn't installed there (then the template's own, as the window). Neither installed: refused in plain words, never a
+ *  start that ends at once ("exec: claude: not found") and leaves the chat on Starting.
  *  words: the template's own words (its first message), when read. Unreadable: the template itself. */
-export async function execTemplate(hub: Hub, name: string, machine: string | null, pick?: any): Promise<{ name: string; words: string; done: () => void; argv?: string[] }> {
+export async function execTemplate(hub: Hub, name: string, machine: string | null, pick: any = null): Promise<{ name: string; words: string; done: () => void; argv?: string[] }> {
   const plain = { name, words: "", done: () => {} };
   const DIR = 'dir="$HOME/.config/herdr-core/templates"; ';
   const src = (await exec(hub, ["sh", "-c", DIR + 'cat "$dir/$1.md"', "x", name], machine).catch(() => null))?.stdout ?? "";
   const head = /^---\n([\s\S]*?)\n---\n?/.exec(src);
-  let cmd = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
+  const own = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
+  // the login shell's PATH, as the launch itself (cleanCommand) has it
+  const has = async (prog: string) => (await exec(hub, ["sh", "-c", commandCheck(prog)], machine).catch(() => null))?.code === 0;
+  let cmd = own;
   let argv: string[] | undefined;
   if (pick?.agent || pick?.argv?.length) {
-    argv = pick.argv?.length ? pick.argv : (AG as any).argvFor(pick, {}).base;
-    if (/^claude-(magpie|cdnd)$/.test(String(argv?.[0]).split("/").pop() ?? "")) {
-      const check = await exec(hub, ["sh", "-c", commandCheck(argv![0])], machine);
-      if (check.code !== 0) throw new Error(`Cannot start: ${argv![0]} is not installed on this machine.`);
+    const want: string[] = pick.argv?.length ? pick.argv : argvFor(pick, { agent: null, argv: [] }).base;
+    // A magpie or cdnd launcher (SHEP-65/76) is never swapped for the template's own command: it must be there.
+    if (/^claude-(magpie|cdnd)$/.test(String(want[0]).split("/").pop() ?? "")) {
+      // the probe's own failure (the machine unreachable) says so, never "not installed"
+      const check = await exec(hub, ["sh", "-c", commandCheck(want[0])], machine);
+      if (check.code !== 0) throw new Error(`Cannot start: ${want[0]} is not installed on this machine.`);
+      argv = want;
+    } else if (await has(want[0])) argv = want;
+    else if (!own || !(await has(own.split(/\s+/)[0]))) {
+      throw new Error(`${(NAMES as Record<string, string>)[pick.agent] ?? pick.agent} isn't installed on ${machine ?? "this computer"}. Install it, or pick another agent for the Assistant in Settings › Agents.`);
     }
-    cmd = argv!.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ");
+    if (argv) cmd = argv.map(shellWord).join(" ");
   }
   if (!head || !cmd) {
     if (pick) throw new Error("The Assistant template could not be read.");
@@ -97,6 +110,9 @@ export async function execTemplate(hub: Hub, name: string, machine: string | nul
   return { name: one, words: src.slice(head[0].length).trim(), ...(argv ? { argv } : {}), done: () => void exec(hub, ["sh", "-c", DIR + 'rm -f "$dir/$1.md"', "x", one], machine).catch(() => null) };
 }
 
+/** One word of a command line for sh, quoted only when it needs it (as mods/chat's). */
+export const shellWord = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`);
+
 /** The web's id for the space the window made: Herdr already answers another machine's as "<machine>/<id>" (its
  *  ids are qualified, as its tabs'); kept as it is, never "<machine>/<machine>/<id>" (SHEP-56: the page then waited
  *  for a space that never came). */
@@ -106,7 +122,7 @@ export const placeId = (space: string, machine: string | null) => (!machine || s
  *  createSpace): a missing folder is made, makeRepo makes a folder outside git a repo (main, an empty first commit), it
  *  is named as Herdr names it ("Home" at home, else its repo's or folder's name; unnamed: left to follow its folder, as
  *  a worktree's), and `icon` is kept as the sidebar's Rename keeps it. */
-export async function newSpace(hub: Hub, opts: { machine: string | null; path: string; name?: string; unnamed?: boolean; makeRepo?: boolean; icon?: string | null; store: { value(k: string): any; set(k: string, v: unknown): Promise<unknown> } }) {
+export async function newSpace(hub: Hub, opts: { machine: string | null; path: string; name?: string; unnamed?: boolean; makeRepo?: boolean; icon?: string | null; pick?: ((space: string) => any) | null; store: { value(k: string): any; set(k: string, v: unknown): Promise<unknown> } }) {
   const { machine } = opts;
   if (!opts.path || opts.path.includes("\0")) throw new Error("Pick a folder.");
   const home = (await homeOf(hub, machine)) ?? "";
@@ -144,10 +160,12 @@ export async function newSpace(hub: Hub, opts: { machine: string | null; path: s
   await iconOf(machine ? `${machine}/${id}` : id);
   // Settings › Window › Assistant in new spaces off: it opens without one
   if (opts.store.value("coordinator.auto") === false) return machine ? `${machine}/${id}` : id;
-  const t = await execTemplate(hub, "assistant", machine, rolePick(readSettings(), "coordinator", machine ? `${machine}/${id}` : id, machine ?? "local"));
+  // A caller without the service's settings (a worktree's new space) still starts the Assistant its settings choose.
+  const key = machine ? `${machine}/${id}` : id;
+  const t = await execTemplate(hub, "assistant", machine, (opts.pick ? opts.pick(key) : rolePick(readSettings(), "coordinator", key, machine ?? "local")) ?? null);
   await run(["hc", "run", "--bg", "--keep", "--no-parent", ...(machine ? ["--on", machine] : []), "--cwd", abs,
     "--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${id}`, "--label", `herdr.space=${id}`,
-    ...(t.argv ? ["--label", `herdr.agent=${(AG as any).agentKey(t.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(t.argv)}`] : []), t.name]);
+    ...(t.argv ? ["--label", `herdr.agent=${agentKey(t.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(t.argv)}`] : []), t.name]);
   t.done();
   return machine ? `${machine}/${id}` : id;
 }

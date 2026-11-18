@@ -120,11 +120,11 @@ describe("space and bottom bar status totals (SHEP-79)", () => {
         { ref: "T-4", machine: "vm", folder: "/demo", status: "working" },
         { ref: "T-5", space: "missing", status: "working" }]],
     ]);
-    const inbox = load("lib/inbox.js", { spaceTaskCounts, chatPane, shared: (k) => state.get(k), terminals: () => terminals,
+    const inbox = load("lib/inbox.js", { spaceTaskCounts, chatPane, SH: "", shared: (k) => state.get(k), terminals: () => terminals,
       spaces: () => spaces, panes: () => [{ terminal: "assistant", pane: "pane1", tab: "tab1" }],
     }, "({ spaceStatusCounts })");
     const deps = { View: class {}, Menu: class {}, IconPicker: class {}, Rename: class {}, MachinePopup: class {},
-      WORKTREE_RE: /worktrees/, spacesWithChats: () => spaces, ...inbox };
+      WORKTREE_RE: /worktrees/, SH: "", spacesWithChats: () => spaces, ...inbox };
     const Rows = load("mods/spaces-chat/main.js", deps, "Spaces");
     const rows = new Rows();
     const Status = load("mods/workspace-status-chat/main.js", { ...deps, div: tree, h_flex: tree, svg: tree,

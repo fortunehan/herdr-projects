@@ -33,7 +33,7 @@ function fixture() {
       needs: Array.from({ length: 5 }, (_, key) => ({ key, tab: key < 2 ? "a" : "b" })),
       ready: Array.from({ length: 3 }, (_, key) => ({ key, tab: key < 1 ? "a" : "b" })),
       running: state.get("inbox.running") ?? [], red: state.get("counts.red") !== false, green: state.get("counts.green") !== false }),
-    muted: () => false, iconOf: () => null, data: () => state.get("spaces-chat") ?? {},
+    muted: () => false, iconOf: () => null, data: () => state.get("spaces-chat") ?? {}, SH: "",
   };
   deps.spaceCounts = load("lib/ui.js", { div: deps.div, h_flex: deps.h_flex, settings: () => ({ dark: true }) }, "spaceCounts");
   const Spaces = load("mods/spaces-chat/main.js", deps, "Spaces");

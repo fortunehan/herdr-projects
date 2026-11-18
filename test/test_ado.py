@@ -687,6 +687,12 @@ class WaitingToMerge(Base):
             self.tick.tick_store(self.store, {"attention": [], "done": [], "started": []})
         self.assertEqual((f.sent("PATCH", r".*"), self.task["state"]), ([], "ready"))
 
+    def test_github_workflows_never_hold_an_azure_devops_pull_request(self):
+        """SHEP-81: upstream's #1044 reads .github/workflows for whether checks will come; Azure DevOps has its own."""
+        auto = {"autoCompleteSetBy": {"id": ME}}
+        with mock.patch.object(self.tick, "expected_checks", side_effect=AssertionError("GitHub workflows read for Azure DevOps")):
+            self.assertEqual(self.look(pr(**auto), BUILT), ("merging", None, "Azure DevOps is completing it"))
+
     def test_problems_while_waiting_need_you_and_its_ready_again_is_the_persons(self):
         auto = {"autoCompleteSetBy": {"id": ME}}
         for d, ev, said in ((pr(reviewers=[{"displayName": "Ann", "vote": -10}], **auto), BUILT, "Review by Ann: rejected"),
