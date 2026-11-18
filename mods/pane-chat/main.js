@@ -258,11 +258,21 @@ export default class Pane extends View {
     const terminal = p.terminal;
     cx.spawn(async (cx) => {
       try {
+        const k = terminals().find((k) => k.address === terminal), route = [];
+        if (k?.labels?.["herdr.role"] === "coordinator" || ["assistant", "coordinator"].includes(k?.template)) {
+          const tab = panes().find((x) => x.pane === p.pane)?.tab;
+          const space = spaces().find((s) => s.tabs.some((t) => t.id === tab));
+          const machine = terminal.includes("/") ? terminal.split("/")[0] : null;
+          if (!space || (space.machine ?? null) !== machine) throw new Error("The Assistant's space wasn't found.");
+          // Parking removes the pane labels; keep the Assistant's route before that happens.
+          route.push(`herdr.coordinator.space=${chatLabel(space.id)}`, `herdr.coordinator.tab=${chatLabel(tab)}`);
+        }
         const out = await app("pane.split", { direction: "right", pane: p.pane, mod: CHAT, props: { terminal } });
         if (!out.pane) throw new Error("Herdr didn't open the chat");
         // The agent knows its chat: if that pane goes with its tab or space, the agents list
         // ends the agent (parked.js sweep), as closing its own pane would have.
-        await hc(["label", terminal, `${LABEL}=${chatLabel(out.pane)}`]);
+        const labelled = await hc(["label", terminal, `${LABEL}=${chatLabel(out.pane)}`, ...route]);
+        if (labelled.code !== 0) throw new Error("The agent's chat link couldn't be saved.");
         run("pane.focus", { pane: out.pane });
         // Last: parking removes this pane, and this header with it. The chat turns core keep
         // back on once the park has gone through (mods/chat).
