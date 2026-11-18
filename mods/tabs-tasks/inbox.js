@@ -41,7 +41,7 @@ import { toast, toastWho as whoOf } from "./ui.js";
 import { exec, appHome, home, focused, shared, setShared, watchFolder, readTextFile, writeTextFile, playSound, settings, run, layout } from "herdr";
 import { terminals, agents, panes, spaces } from "./live.js";
 import { chatPane } from "./core/spaces.js";
-import { taskCounts } from "./core/task-counts.js";
+import { spaceTaskCounts } from "./core/task-counts.js";
 
 const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 export const ASKS = () => `${appHome()}/data/chat-asks`;
@@ -326,7 +326,9 @@ export function items() {
 }
 
 export const count = () => items().length;
-export const statusCounts = () => taskCounts(items(), shared("inbox.statuses") ?? []);
+export const spaceStatusCounts = () => spaceTaskCounts({ spaces: spaces(), needs: items(), ready: ready(),
+  running: shared("inbox.running") ?? [], tabOf, red: shared("counts.red") !== false, green: shared("counts.green") !== false });
+export const statusCounts = () => spaceStatusCounts().total;
 
 // The tab an item is in, for the red counts on tabs and spaces: its agent's (where its chat
 // shows it, else its pane), or its task's. Task agents have no tab (herdr-task runs them with no
