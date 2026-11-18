@@ -87,7 +87,7 @@ export function magpieModels(stdout) {
 const CLAUDE_MODELS = [
   { id: "opus", name: "Opus 5.5", match: ["opus", "claude-opus-5-5"] },
   { id: "opus[1m]", name: "Opus 5.5 · 1M", match: ["opus[1m]", "claude-opus-5-5[1m]"] },
-  { id: "claude-fable-5-1", name: "Fable 5.1", match: ["fable", "claude-fable-5-1"] },
+  { id: "claude-fable-5-2", name: "Fable 5.2", match: ["fable", "claude-fable-5-2"] },
   { id: "sonnet", name: "Sonnet 5.5", match: ["sonnet", "claude-sonnet-5-5"] },
   { id: "haiku", name: "Haiku 5.5", match: ["haiku", "claude-haiku-5-5"] },
 ];
@@ -448,11 +448,17 @@ const CLAUDE_VALUE = new Set(["--add-dir", "--mcp-config", "--append-system-prom
 const CODEX_VALUE = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval",
   "-C", "--cd", "--add-dir", "-i", "--image", "--enable", "--disable", "--local-provider", "--oss"]);
 
+// Where the agent's own word (claude, a claude-magpie/claude-cdnd launcher, codex) is in argv: a terminal's argv starts with what launched it (nice,
+// sh -c, env, the person's `bash -ic`), whose words are no agent flags (#1001: its -ic was Codex's `-i c`, an image).
+function agentAt(argv) {
+  return argv.findIndex((a, i) => (i === 0 || !String(a).startsWith("-")) && /^(claude|claude-magpie|claude-cdnd|codex)$/.test(String(a).split("/").pop()));
+}
+
 // The old agent's flags worth keeping (permissions, folders, ...), without what is chosen again
 // or a first message.
 function kept(kind, argv, acrossLauncher = false) {
   const out = [];
-  const rest = argv.slice(1);
+  const rest = argv.slice(Math.max(agentAt(argv), 0) + 1);
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (kind === "claude") {
@@ -477,8 +483,15 @@ function kept(kind, argv, acrossLauncher = false) {
 // The same agent, model and flags as `argv`, without what resumed a conversation (and without a
 // first message), or null when argv resumed none: for a fresh start once that session is gone.
 export function freshArgv(kind, argv) {
+  const s = stripSession(kind, argv);
+  return s?.resumed ? s.out : null;
+}
+
+// argv without its session (a resume, fork, session id or first message): { out, resumed }, or null when no
+// claude/codex word is in it.
+function stripSession(kind, argv) {
   argv = argv ?? [];
-  const at = argv.findIndex((a, i) => (i === 0 || !a.startsWith("-")) && /^(claude|claude-magpie|claude-cdnd|codex)$/.test(String(a).split("/").pop()));
+  const at = agentAt(argv);
   if (at < 0) return null;
   const marker = argv.indexOf("herdr-magpie");
   const rest = argv.slice(at + 1), out = marker >= 0 && marker < at ? [...magpieArgv([]), argv[at]] : [argv[at]];
@@ -499,7 +512,7 @@ export function freshArgv(kind, argv) {
     // A word that isn't a flag or a flag's value: the session's id or a first message.
     if (a.startsWith("-")) out.push(a);
   }
-  return resumed ? out.filter((x) => x !== undefined) : null;
+  return { out: out.filter((x) => x !== undefined), resumed };
 }
 
 // The status line of every Claude agent Shepherdr starts (its --settings): bin/shepherdr-statusline keeps the
@@ -546,6 +559,13 @@ export function sessionOf(kind, path) {
   return m ? m[1] : null;
 }
 
+// The same conversation again, after its agent ended (an Assistant's /exit, GitHub #1039): its own flags, model, effort
+// and speed, resuming `session`.
+export function resumeArgv(kind, argv, session) {
+  const out = stripSession(kind, argv)?.out ?? [kind];
+  return kind === "claude" ? [...out, "--resume", session] : [out[0], "resume", ...out.slice(1), session];
+}
+
 // A copy of the conversation in a new tab beside this one, through the CLI's own fork.
 export function forkArgv(kind, argv, session) {
   argv = argv ?? [];
@@ -563,3 +583,23 @@ export function forkArgv(kind, argv, session) {
   const flags = [...kept(kind, argv), ...same];
   return kind === "claude" ? [command, ...flags, "--resume", session, "--fork-session"] : ["codex", "fork", ...flags, session];
 }
+
+// #1050: a fork of a task's conversation while the task's agent runs works in the same folder, so two agents would
+// edit one worktree. The task's live agent (a terminal record from `all`, reviewers and helpers aside) when `t` is a
+// task's terminal, else null: the fork then asks first (FORK_LIVE).
+const AGENT_APPS = new Set(["claude-code", "claude", "codex"]);
+export function liveTaskAgent(t, all) {
+  const task = t?.labels?.["herdr.task"];
+  if (!task) return null;
+  return [...(all ?? [])].find((k) => k?.state === "live" && k.labels?.["herdr.task"] === task
+    && !["reviewer", "helper"].includes(k.labels?.["herdr.role"])
+    // an agent runs there (a record that doesn't say what runs counts: better to ask once too often)
+    && (AGENT_APPS.has(k.status?.app) || AGENT_APPS.has(k.foreground?.name) || (!k.status?.app && !k.foreground))) ?? null;
+}
+// The ask, in the window's confirm and the web's alike: keep the live agent (Cancel) or fork anyway.
+export const FORK_LIVE = {
+  title: "This task's agent is still running",
+  detail: "A fork starts a second agent in the task's folder, and both would edit the same files. Keep working with the live one, or fork anyway.",
+  verb: "Fork anyway",
+  cancel: "Keep the live one",
+};

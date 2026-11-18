@@ -20,6 +20,13 @@ test('global totals include unopened spaces and deduplicate task/agent represent
   expect(html).toContain('1</span> Working')
 })
 
+test('Needs you is the Tasks panel rule: a working task with a standing alert counts there, not as Working', () => {
+  const at = Date.now()
+  const s = { ...snap([task('t1', 'work', 'open'), task('t2', 'ready', 'open')]), needs: [],
+    alerts: [{ id: 'a1', chat: 't1/claude', notify: true, at }] } as unknown as Snapshot
+  expect(globalTaskCounts(s)).toEqual({ need: 1, ready: 1, working: 0 })
+})
+
 test('zero totals keep explicit labels and change when a fresh snapshot arrives', () => {
   const s = { ...snap(), needs: [] }
   const html = renderToStaticMarkup(<TaskStatusBar snap={s} />)

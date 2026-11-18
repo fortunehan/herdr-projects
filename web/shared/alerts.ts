@@ -4,6 +4,7 @@
 import { excerpt } from './excerpt.ts'
 import { machineName, splitFacts, taskChatId, type Alert, type Chat, type Message, type Question, type Snapshot } from './types.ts'
 import * as T from '../../core/toasts.js'
+import { needsYou, waitingTasks, type NeedsSnap } from './needs-you.ts'
 
 /** about what an iPhone's lock screen shows of a title (one line) and of a body (a few lines) */
 export const TITLE_MAX = 40
@@ -27,20 +28,22 @@ export function taskWho(snap: Pick<Snapshot, 'machines'>, id: string): string {
 /** the tag of a coordinator's open question: one alert per coordinator, as one per task */
 export const askTag = (place: string) => `ask:${place}`
 
-/** what waits on you everywhere: the count the app icon shows (the sidebar's own counts added up: every need, and each
- *  Ready task) and the tag of each thing, so alerts about what no longer waits can go */
-export function waiting(snap: Pick<Snapshot, 'places' | 'tasks' | 'asks' | 'needs'>): { count: number; tags: string[] } {
+/** what waits on you everywhere: the count the app icon shows (Needs you's items, web/shared/needs-you.ts, and each Ready
+ *  task not in it: the glance feed's needs and ready counts added up) and the tag of each thing, so alerts about what no
+ *  longer waits can go */
+export function waiting(snap: NeedsSnap & Pick<Snapshot, 'asks'>, now = Date.now()): { count: number; tags: string[] } {
   const places = new Set(snap.places.map((p) => p.id))
   const tasks = snap.tasks.filter((t) => places.has(t.place) && !t.archived && (t.status === 'need' || t.status === 'ready')).map((t) => t.id)
-  const asks = Object.keys(snap.asks).filter((p) => places.has(p) && snap.asks[p]).map(askTag)
-  const needs = snap.needs.filter((n) => places.has(n.place))
-  const ready = snap.tasks.filter((t) => places.has(t.place) && !t.archived && t.status === 'ready')
+  const asks = Object.keys(snap.asks ?? {}).filter((p) => places.has(p) && snap.asks[p]).map(askTag)
+  const needs = needsYou(snap, now)
+  const held = waitingTasks(needs)
+  const ready = snap.tasks.filter((t) => !t.archived && t.status === 'ready' && !held.has(t.id))
   return { count: needs.length + ready.length, tags: [...tasks, ...asks] }
 }
 
 /** the tags of the alerts that may stay: what still waits on you, less the chats on screen right now (a task's, a
  *  coordinator's: you opened its card) */
-export function keptTags(snap: Pick<Snapshot, 'places' | 'tasks' | 'asks' | 'needs'>, onScreen: string[]) {
+export function keptTags(snap: NeedsSnap & Pick<Snapshot, 'asks'>, onScreen: string[]) {
   const seen = new Set(onScreen.map((k) => taskChatId(k) ?? askTag(k)))
   return waiting(snap).tags.filter((t) => !seen.has(t))
 }
@@ -130,6 +133,47 @@ export function taskAlert(
   if (reply !== undefined) return { title: clip(`${t.id} · Waits for your reply`, TITLE_MAX), body: clip(reply || t.title, BODY_MAX), go: { ...go, focus }, tag, task: true }
   return { title: clip(`${t.id} · Needs you`, TITLE_MAX), body: clip(sub, BODY_MAX), go: { ...go, focus }, tag, task: true }
 }
+
+/* ---------- a push alert's buttons (SHEP-243): answered from the phone's or the watch's notification ---------- */
+
+/** what a watch shows of a push alert's title and body (Wear OS mirrors the phone's notifications) */
+export const WATCH_TITLE = 30
+export const WATCH_BODY = 80
+
+/** a "<who> · <what>" title cut to a watch's line: what it needs kept whole, who shortened first (an Assistant by its
+ *  space's name alone) */
+export function watchTitle(title: string): string {
+  if (title.length <= WATCH_TITLE) return title
+  const at = title.lastIndexOf(' · ')
+  const what = at < 0 ? '' : title.slice(at + 3)
+  if (!what || what.length > 18) return clip(title, WATCH_TITLE)
+  const who = title.slice(0, at).replace(/ Assistant$/, '')
+  return `${who.length + what.length + 3 <= WATCH_TITLE ? who : clip(who, WATCH_TITLE - what.length - 3)} · ${what}`
+}
+
+/** a button on a push alert: a choice's index ("0", "1"), accept, or reply (typed in, where the browser lets one). One
+ *  per alert: Chrome on Android (149, SHEP-243) hands every site button's tap to the service worker as the last
+ *  button's action, so with two, "Yes" would arrive as "No". A tap on the alert itself opens the app for the rest. */
+export type PushAction = { action: string; title: string; type?: 'text'; placeholder?: string }
+export const REPLY: PushAction = { action: 'reply', title: 'Reply', type: 'text', placeholder: 'Reply…' }
+export const ACCEPT: PushAction = { action: 'accept', title: 'Accept' }
+
+/** a card answered from a button, as on its card: never a plan, a merge or a form, which stay a deliberate pick in the
+ *  app (sendsOnTap's rule) */
+const quick = (q: Question) => q.kind !== 'Plan' && !(q.parts && q.parts.length > 1) && !/^merge\b/i.test(q.title) && !(q as { evidence?: unknown }).evidence
+
+/** a question's button: its first choice a button may send (quickChoices' rule: not a pick of several, a note, a grant
+ *  for good or a terminal menu, so "Yes" on a permission); the other choices are a tap on the alert away */
+export function choiceButtons(q: Question): PushAction[] {
+  if (!q?.choices?.length || !quick(q) || q.multi || String(q.id ?? '').startsWith('menu:')) return []
+  const first = q.choices.findIndex((_, i) => i !== q.noteRequiredFor && i !== q.always)
+  return first < 0 ? [] : [{ action: String(first), title: clip(short(q, first), ACTION_MAX) }]
+}
+
+/** what came of a button, said on the notification in its place: done, already done elsewhere, or why it didn't go */
+export const PUSH_DONE = { accepted: 'Accepted ✓', answered: 'Answered ✓', sent: 'Sent ✓', handled: 'Already handled', failed: "Didn't go through" } as const
+/** a refusal that only means it was done already (accepted, answered, gone): nothing to fix */
+export const alreadyHandled = (error: string) => /isn't ready|answered already|isn't here any more|no longer waiting|only a ready task/i.test(error)
 
 /* ---------- Notify: what buzzes from a place, as in Slack's channel settings ---------- */
 
@@ -224,8 +268,9 @@ export const PUSH_TOPICS = [
   { id: 'autopilot', label: 'Autopilot updates', about: 'What an Assistant did when its Autopilot woke it' },
 ] as const
 export type PushTopic = (typeof PUSH_TOPICS)[number]['id']
-/** a device turned on now: only what needs you */
-export const DEFAULT_TOPICS: PushTopic[] = ['needs']
+/** a device turned on now: what needs you (its questions among them) and a task ready for its Accept; never routine
+ *  progress (SHEP-243) */
+export const DEFAULT_TOPICS: PushTopic[] = ['needs', 'ready']
 /** a device turned on before it could choose: what it got then */
 export const LEGACY_TOPICS: PushTopic[] = ['needs', 'ready']
 export const pushTopics = (v: unknown): PushTopic[] => (Array.isArray(v) ? PUSH_TOPICS.map((t) => t.id).filter((id) => v.includes(id)) : [...LEGACY_TOPICS])

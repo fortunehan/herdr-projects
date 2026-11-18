@@ -9,9 +9,10 @@ import { homedir } from "node:os";
 import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag } from "../core/send.js";
 import { kindOf } from "../core/chat-reader.js";
 import { WORDS } from "../core/chat-view.js";
+import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
-const { sessionOf, forkArgv, launchArgv } = AGa as any;
+const { sessionOf, forkArgv, launchArgv, liveTaskAgent, FORK_LIVE } = AGa as any;
 import * as SP from "../core/spaces.js";
 const { READ, withMove, withSection, withoutSection, withSectionName, withIcon, withMachineLook, withOrder, withMachineOrder, DELETED, deletedSection, withRestoredSection } = SP as any;
 import type { Compat } from "./compat.ts";
@@ -19,8 +20,6 @@ import { worktreeAct } from "./worktrees.ts";
 import { layoutScript } from "./layout-scripts.ts";
 import { noteFailed, once } from "./send-once.ts";
 import { execTemplate } from "./spaces.ts";
-import { readSettings } from "./settings.ts";
-import { rolePick } from "../core/settings.js";
 import * as MA from "../core/machine-add.js";
 import { exec } from "./model.ts";
 import { closeSaved, renameSaved, orderSaved, withoutSpace, splitId } from "./saved-spaces.ts";
@@ -157,6 +156,14 @@ async function run(cmd: string[]) {
 
 export const hc = (args: string[]) => run([process.env.SHEPHERDR_HC || "hc", ...args]);
 
+/** Settings › Machines › Find machines (#967): what it would try (go false: contacts nothing), or one run now, as
+ *  herdr-task machines find gives it on this machine; its refusals (add-on off, ran recently) come back as error */
+export async function findMachines(go: boolean) {
+  const r = await run(["herdr-task", "machines", "find", "--json", ...(go ? ["--go"] : [])]);
+  try { return JSON.parse(r.stdout.trim().split("\n").pop() || ""); }
+  catch { return { hosts: [], last: null, wait_ms: 0, error: r.stderr.trim().split("\n").pop() || "Find machines failed." }; }
+}
+
 // hc for core/send.js, its sends as the person's (Hub.send: no <hc from=…> tag on another machine)
 const asPerson = (hub: Hub) => (args: string[]) => args[0] === "send" ? hub.send(args[1], args[2]) : hc(args);
 
@@ -165,8 +172,9 @@ async function addedMachines() {
   const r = await hc(["machine", "ls", "--json"]).catch(() => null);
   try { return r?.code === 0 ? (JSON.parse(r.stdout).machines ?? []).filter((m: any) => !m.temporary) : []; } catch { return []; }
 }
-const task = (args: string[], folder: string, machine: string | null) =>
-  run(["herdr-task", ...(machine ? ["--on", machine] : []), ...args, "--folder", folder, "--json"]);
+// still running there after a slow or dropped link: its real result, followed (core/pending.js, SHEP-227)
+const task = async (args: string[], folder: string, machine: string | null) =>
+  settle((a: string[]) => run(["herdr-task", ...a]), await run(["herdr-task", ...(machine ? ["--on", machine] : []), ...args, "--folder", folder, "--json"]));
 
 function str(v: unknown, max = 100_000) {
   if (typeof v !== "string" || v.length > max) throw new Error("bad input");
@@ -375,7 +383,7 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     const space = b.chat.slice(2).replace(":", "/"), sp = compat.spaceOf(space);
     if (!sp) throw new Error("That space isn't here any more.");
     const agents = compat.agents as any;
-    const menu = await agents.freshMenu(b.chat, sp.machine ?? null, rolePick(readSettings(), "coordinator", sp.id, sp.machine ?? "local"));
+    const menu = await agents.freshMenu(b.chat, sp.machine ?? null, compat.assistantPick?.(sp.id) ?? null);
     if (b.type === "model-menu") return { ok: true, menu };
     if (b.type === "restart-info") {
       const on = { kind: menu.current.agent, model: menu.current.model, effort: menu.current.effort, speed: menu.current.fast ? "fast" : "normal" };
@@ -561,6 +569,8 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     const a = chat(b.chat), t: any = hub.terminals.get(a), r = compat.reader?.(a);
     const kind = kindOf(t) ?? "claude", session = sessionOf(kind, r?.path ?? null);
     if (!session) throw new Error("This conversation has no saved session to fork.");
+    // #1050: the task's agent still runs in that folder: the person says first whether a second agent should
+    if (!b.force && liveTaskAgent(t, hub.terminals.values())) return { ok: false, ask: FORK_LIVE };
     const space = ["herdr.space", "herdr.task.space", "herdr.coordinator.space"].map((k) => t?.labels?.[k]).find(Boolean);
     const res = await run(["herdr-app", "do", "tab.new", ...(space ? ["--space", space] : []), "--folder", t?.foreground?.cwd ?? t?.cwd ?? "", "--argv", JSON.stringify(forkArgv(kind, launchArgv(t), session))]);
     if (res.code !== 0) throw new Error("A fork opens as a tab in the Herdr window: it needs the window open.");
@@ -594,7 +604,7 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       ? ["--label", `herdr.chat=${SP.chatLabel(rec.pane)}`, "--label", `herdr.chat.slot=${slot}`, "--label", `herdr.chat.origin=slot:${slot}`, "--label", "herdr.role=coordinator",
         "--label", `herdr.coordinator.space=${bare}`, ...(rec.tab ? ["--label", `herdr.coordinator.tab=${String(rec.tab).split("/").pop()}`] : [])]
       : ["--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${bare}`, "--label", `herdr.space=${bare}`];
-    const pick = (compat.agents as any)?.freshPicks?.get(b.chat) ?? rolePick(readSettings(), "coordinator", sp.id, sp.machine ?? "local");
+    const pick = (compat.agents as any)?.freshPicks?.get(b.chat) ?? compat.assistantPick?.(sp.id) ?? null;
     const tpl = await execTemplate(hub, "assistant", sp.machine ?? null, pick);
     if (tpl.argv) labels.push("--label", `herdr.agent=${(AGa as any).agentKey(tpl.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(tpl.argv)}`);
     const r = await hc(["run", "--bg", "--json", "--no-parent", "--keep", ...(sp.machine ? ["--on", sp.machine] : []), ...(sp.folder ? ["--cwd", sp.folder] : []), ...labels, tpl.name, task]);

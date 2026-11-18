@@ -8,19 +8,20 @@ const NAMES = [
   "window", "writeTextFile",
 ] as const;
 
-type Given = Partial<Record<(typeof NAMES)[number], unknown>>;
+// A mod's module may keep a name's function itself (lib/live.js's once(spaces)), so it would keep the first file's
+// stand-in for the whole run: each name is one function for the run that calls the latest file's.
+const latest: Record<string, unknown> = {};
+const calls: Record<string, (...a: unknown[]) => unknown> = {};
 
-// A mod that imports "herdr" binds the functions of the stand-in that was current when the mod first loaded, and Bun
-// does not rebind them when a later test file mocks "herdr" again. So each name is one function for the whole process,
-// forwarding to whichever test file's stand-in was installed last (SHEP-61: spaces-chat/live.js kept emoji-pick's
-// empty spaces() and the sidebar test saw no spaces).
-const latest: Given = {};
-const stable = Object.fromEntries(NAMES.map((n) => [n, (...args: unknown[]) => {
-  const f = latest[n];
-  return typeof f === "function" ? f(...args) : undefined;
-}]));
-
-export function fakeHerdr(given: Given): Record<string, unknown> {
-  for (const n of NAMES) latest[n] = given[n];
-  return { ...stable };
+export function fakeHerdr(given: Partial<Record<(typeof NAMES)[number], unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const n of NAMES) {
+    latest[n] = given[n] ?? (() => undefined);
+    calls[n] ??= function (this: unknown, ...a: unknown[]) {
+      const f = latest[n];
+      return typeof f === "function" ? f.apply(this, a) : f;
+    };
+    out[n] = typeof latest[n] === "function" ? calls[n] : latest[n];
+  }
+  return out;
 }

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import * as tasks from "./tasks.js";
 import { workingIn } from "./spaces.js";
 import * as accept from "./accept.js";
+import { settle } from "./pending.js";
 import fixture from "../test/fixtures/codex-ready.json";
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
@@ -86,7 +87,7 @@ describe("SHEP-44: one status for list, detail and space counts", () => {
   test("an open native Accept card refreshes eligibility and refuses resumed work", async () => {
     let next = { state: "ready", status: "ready", evidence: { summary: "Finished" } };
     const calls = [];
-    const Card = load("mods/accept-card/main.js", { ...accept, View: class {}, props: () => ({ ref: "SHEP-43", folder: "/work/demo" }),
+    const Card = load("mods/accept-card/main.js", { ...accept, settle, View: class {}, props: () => ({ ref: "SHEP-43", folder: "/work/demo" }),
       appHome: () => "/app", exec: async (_cmd, args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(next) }; },
     }, "AcceptCard");
     const card = Object.create(Card.prototype), cx = { notify() {}, spawn() { throw new Error("must not accept resumed work"); } };

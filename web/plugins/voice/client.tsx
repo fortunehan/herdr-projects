@@ -6,7 +6,7 @@
 // always Send). Where neither shows (a shut sidebar, a task open on a phone) a strip sits at the top. Whatever the voice opens gets an "Opened by voice" tag for a moment.
 import clsx from 'clsx'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { act, definePlugin, getState, goChat, goPlace, listView, openArtifact, openItem, openTask, placeOf, placesDrawn, registry, setFilter, setUI, shownItem, taskInMiddle, useStore, useUI, visibleChats, type UI } from '@client/kernel.ts'
+import { act, definePlugin, getState, launchHref, goChat, goPlace, listView, openArtifact, openItem, openTask, placeOf, placesDrawn, registry, setFilter, setUI, shownItem, taskInMiddle, useStore, useUI, visibleChats, type UI } from '@client/kernel.ts'
 import { EndCallIcon, FitIcon, ic, IconButton, MicIcon, MicOffIcon, RoundButton, UnfitIcon, useElapsed, WaveIcon, Waves, XIcon } from '@client/ui.tsx'
 import { useWindowWidth } from '@client/Frame.tsx'
 import { cancelDictation } from '@plugins/chat/client.tsx'
@@ -14,6 +14,7 @@ import { pageNames, sectionLike, sectionOf } from '@client/Settings.tsx'
 import { openAccept } from '@client/screens/Accept.tsx'
 import { callDoing, callPhase, callSample, muteCall, sendWhere, startCall, stepsAside, stopCall, type Nav, type NavAck } from './call.ts'
 import { key, press, resetScreen, screenAction, type Head } from './screen.ts'
+import { launcher } from './launch.ts'
 
 /** a task's tab as the side panel names it */
 const ITEM: Record<string, string> = { terminal: 'terminal', pr: 'pr', browser: 'browser' }
@@ -206,10 +207,11 @@ function CallWhere() {
 }
 
 /** Start a call with Shepherdr (from: the chat whose call button started it, its "here" while the screen shows no
- *  chat), or end the one on. */
-export function toggleCall(from: string | null = null) {
+ *  chat), or end the one on. resume: a call this page handed on to Shepherdr Wake, taken back (SHEP-251). */
+export function toggleCall(from: string | null = null, resume: string | null = null) {
   const ui = getState().ui
   if (ui.call) return endCall()
+  setHanded(null)
   if (ui.dict) cancelDictation()
   // the keyboard goes down: the call is listening
   ;(document.activeElement as HTMLElement | null)?.blur?.()
@@ -237,8 +239,20 @@ export function toggleCall(from: string | null = null) {
     title: 'Shepherdr',
     hangUp: () => { if (mine()) endCall() },
     mute: (on) => { if (!mine()) return; muteCall(on); setUI({ callMuted: on }) },
-  }).catch(() => { endCall(); setUI({ callError: 'Audio could not start on this device.' }) })
+  }, (id) => {
+    if (!mine()) return
+    // SHEP-251: the phone locked and Shepherdr Wake carries the call on: this page lets go, and can take it back
+    const was = getState().ui
+    setUI({ call: false, callFull: false, callFrom: null, callMuted: false })
+    act({ type: 'call', chat: was.callFrom ?? '', on: false })
+    setHanded({ id, from })
+  }, resume).catch(() => { endCall(); setUI({ callError: 'Audio could not start on this device.' }) })
 }
+
+/** SHEP-251: the call this page handed on to Shepherdr Wake (the phone locked), until taken back or closed */
+let handed: { id: string; from: string | null } | null = null
+const handedWatch = new Set<() => void>()
+function setHanded(h: typeof handed) { handed = h; handedWatch.forEach((f) => f()) }
 
 /** the chat the last call started from (Call again starts there) */
 let lastFrom: string | null = null
@@ -648,6 +662,88 @@ function CallError() {
   )
 }
 
+/** SHEP-251: the call goes on in Shepherdr Wake (the phone locked): says so at the top, with Take it back */
+function CallHanded() {
+  const [, tick] = useState(0)
+  useEffect(() => { const f = () => tick((x) => x + 1); handedWatch.add(f); return () => void handedWatch.delete(f) }, [])
+  const on = useUI((u) => u.call)
+  if (!handed || on) return null
+  const h = handed
+  return (
+    <div data-topbar data-call-handed role="status" className={clsx(callPill, 'text-ready-fg', callTint)}>
+      <span className="min-w-0 flex-1 text-pretty">Carrying on in your pocket (Shepherdr Wake)</span>
+      <button type="button" data-take-back onClick={() => toggleCall(h.from, h.id)}
+        className="press-dim h-7 shrink-0 rounded-full bg-bg px-3 text-[0.78125rem] font-medium text-fg shadow-[inset_0_0_0_1px_var(--line2)] phone:h-9 phone:text-[0.875rem]">
+        Take it back
+      </button>
+      <IconButton label="Close" className="rounded-full!" onClick={() => setHanded(null)}>
+        <XIcon className={ic} />
+      </IconButton>
+    </div>
+  )
+}
+
+/* ---------- opened into a call (SHEP-238) ---------- */
+
+/** the browser lets a call's sound and microphone start now, with no tap: a tap just happened, or a new audio runs
+ *  at once (an installed app may play by itself) */
+function mayStart() {
+  if ((navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive) return true
+  try {
+    const c = new AudioContext()
+    const ok = c.state === 'running'
+    c.close().catch(() => undefined)
+    return ok
+  } catch { return false }
+}
+
+/** the big Start voice call button is up: the launch wanted a call the browser wouldn't start without a tap */
+let asking = false
+const askers = new Set<() => void>()
+function setAsking(on: boolean) { asking = on; askers.forEach((f) => f()) }
+
+const launch = launcher({
+  inCall: () => getState().ui.call,
+  start: () => { setAsking(false); toggleCall(null) },
+  show: () => { setAsking(false); setUI({ callFull: true }) },
+  mayStart,
+  ask: () => setAsking(true),
+  replace: (url) => history.replaceState(history.state, '', url),
+  here: () => location.href,
+  now: () => Date.now(),
+})
+
+/** launches into this page: its own address, and (manifest launch_handler focus-existing) each later one the window
+ *  that is already open takes in place of opening another */
+function watchLaunches() {
+  launch(launchHref)
+  const q = (window as { launchQueue?: { setConsumer: (f: (p: { targetURL?: string }) => void) => void } }).launchQueue
+  q?.setConsumer((p) => { if (p.targetURL) launch(p.targetURL) })
+}
+
+/** One big Start voice call button over everything, as the call's own screen: the tap the browser wants first */
+function StartAsk() {
+  const [, tick] = useState(0)
+  useEffect(() => { const f = () => tick((x) => x + 1); askers.add(f); return () => void askers.delete(f) }, [])
+  const on = useUI((u) => u.call)
+  if (!asking || on) return null
+  return (
+    <div data-start-call data-theme="dark" role="dialog" aria-label="Start voice call"
+      className="call-screen-in fixed inset-0 z-70 flex flex-col items-center justify-center gap-8 bg-[#08090a] px-6 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-fg antialiased scheme-only-dark">
+      <div className="absolute top-[calc(env(safe-area-inset-top)+12px)] right-3">
+        <IconButton label="Close" className="rounded-full!" onClick={() => setAsking(false)}><XIcon className={ic} /></IconButton>
+      </div>
+      <h2 className="text-base/6 font-semibold">Shepherdr</h2>
+      <button type="button" onClick={() => { setAsking(false); toggleCall(null) }}
+        className="press-dim flex flex-col items-center gap-4 rounded-[28px] px-10 py-8 text-lg/7 font-medium text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg">
+        <span className="grid size-28 place-items-center rounded-full bg-ready text-[#08090a]"><WaveIcon className="size-10" /></span>
+        Start voice call
+      </button>
+      <p className="max-w-72 text-center text-sm/5 text-fg2">Your browser wants a tap before the call can start.</p>
+    </div>
+  )
+}
+
 export default definePlugin({
   name: 'voice',
   setup(reg) {
@@ -656,8 +752,13 @@ export default definePlugin({
     reg.phoneBar.push(PhoneCallButton)
     // SHEP-122: no Listening pill above a phone's bar: the minimized call is its bar's buttons alone
     reg.phoneAbove.push(PhoneHelp)
-    reg.topBars.push(CallBanner, TopHelp, CallError, CallWhere)
-    reg.overlays.push(OpenedTag, CallScreen)
+    reg.topBars.push(CallBanner, TopHelp, CallError, CallHanded, CallWhere)
+    reg.overlays.push(OpenedTag, CallScreen, StartAsk)
+    // SHEP-238: opened at ?voice=1 (a wake word): straight into a call, once the page has drawn
+    setTimeout(watchLaunches, 0)
+    // SHEP-240: a wake word on this device reaches the page already open (Android can't hand it a link): the same as
+    // ?voice=1, so a call on shows its screen and never hangs up
+    reg.voiceWake = () => void launch(location.origin + location.pathname + '?voice=1')
     // 3.0 calls with Ctrl+Shift+Space (the keyboard plugin): no V or M keys of its own
   },
 })

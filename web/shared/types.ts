@@ -281,6 +281,19 @@ export interface Report {
  * starting and not yet at work on its brief; done: merged */
 export type TaskStatus = 'need' | 'ready' | 'merging' | 'work' | 'queued' | 'scheduled' | 'todo' | 'done'
 
+/** the Tasks panel's Status groups, in its order (who has to act first; Done last): the web app's groups and the glance
+ *  feed's (service/glance.ts) both come from here, so phone, watch and app list them alike */
+export const GROUPS: [TaskStatus, string][] = [
+  ['need', 'Needs you'],
+  ['ready', 'Ready'],
+  ['merging', 'Waiting to merge'],
+  ['work', 'Working'],
+  ['queued', 'Queued'],
+  ['scheduled', 'Scheduled'],
+  ['todo', 'To do'],
+  ['done', 'Done'],
+]
+
 /** A task's one agent: tapping the task opens its chat. */
 export interface TaskAgent {
   /** chat key */
@@ -396,9 +409,10 @@ export interface Automation {
   next: string[]
   /** its latest runs, newest first: when (ms), and the task it added or why it couldn't */
   runs?: { at: number; task?: string; error?: string }[]
-  /** why it didn't run as planned (its last error's message), and which way: it didn't run, or didn't start its task */
+  /** why it didn't run as planned (its last error's message), and which way: it didn't run, didn't start its task, or
+   *  the folder it watches on another machine (--from) hasn't answered for a while ("Can't reach vm-b since 23:03") */
   error?: string
-  failed?: 'fire' | 'start'
+  failed?: 'fire' | 'start' | 'from'
   /** when it runs next (ms): none while paused or failed */
   nextAt?: number
   /** the task it added last (its id): a tap on its row opens it */
@@ -1257,7 +1271,7 @@ export interface Snapshot {
   read?: Record<string, number>
   /** the agents' own alerts (herdr-task alert), one per agent, as the window's toasts say them (service/push.ts
    *  agentAlerts): "HERD-4 · <title>" over its body, its chat, and whether it reaches the person (its space's Notify) */
-  alerts?: { id: string; at: number; title: string; body: string; chat?: string; place?: string; notify: boolean }[]
+  alerts?: { id: string; at: number; title: string; body: string; chat?: string; place?: string; notify: boolean; ended?: true; machine?: string | null; memory?: true }[]
   /** the sidebar's sections, as Slack's, each with its spaces in the human's order: the top ones first (Pinned, id
    *  'pinned', among them), then each machine's, its machine in order (shared/order.ts) */
   sections?: Section[]
@@ -1374,6 +1388,10 @@ export type ServerEvent =
   | { type: 'pong' }
   /** an agent shows the person an artifact (herdr-artifact open): this screen, the one they used last, opens it */
   | { type: 'show'; artifact: string }
+  /** a wake word was heard on this screen's device (SHEP-240): it starts a voice call, or shows the one on */
+  | { type: 'voice' }
+  /** a tap on the phone app's alert (POST /api/open, SHEP-246): this screen goes where it points, in place */
+  | { type: 'go'; url: string }
 
 /** how Shepherdr's last update of itself went (update.json in its folder, written by the supervisor) */
 export interface UpdateStatus {

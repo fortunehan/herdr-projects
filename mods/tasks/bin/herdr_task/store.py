@@ -7,8 +7,9 @@ import json
 import os
 import re
 import time
+from contextlib import contextmanager
 
-from .base import Fail, git, hc_json, HELD, HOME, LEGACY, MAX_RUNNING, now, run, STORE
+from .base import Fail, git, hc_json, HELD, HOME, LEGACY, MAX_RUNNING, now, run, STORE, unlocked
 from .settings import bare, settings_for
 from .agents import agent_running
 from .sessions import session_of
@@ -30,6 +31,19 @@ def locate(path):
         return {"folder": main, "kind": "repo", "name": os.path.basename(main) or "/", "common": common}
     name = "~" if path == HOME else (os.path.basename(path) or "/")
     return {"folder": path, "kind": "folder", "name": name, "common": None}
+
+
+def bare_by_mistake(path):
+    """#1052: a repo whose .git/config says core.bare = true though its files are checked out (a .git
+    folder with work beside it): git then sees no work tree, so to herdr-task it looked like a plain
+    folder and tasks quietly worked in it, Worktrees on or not. Returns what to say, else None."""
+    ok, out, _ = git(path, "rev-parse", "--is-bare-repository", "--path-format=absolute", "--git-dir")
+    lines = out.split("\n") if ok else []
+    if len(lines) != 2 or lines[0] != "true" or os.path.basename(lines[1]) != ".git":
+        return None
+    folder = os.path.dirname(lines[1])
+    return (f"{folder} is a git repo, but its .git/config says core.bare = true, so git sees no work tree here and "
+            f"tasks would quietly skip their worktrees. If its files belong there, run: git -C {folder} config core.bare false")
 
 
 def slug_of(folder):
@@ -322,6 +336,16 @@ class Store:
         theirs, base, self.seen = self.load()
         merge(self.data, self.base, theirs)
         self.base = base
+
+    @contextmanager
+    def released(self):
+        """Upstream's #1007 (the lock let go around a long git push, github.released()): base.unlocked() (SHEP-29)
+        already lets go of it around every slow call and merges what others saved, keeping the caller's task dicts.
+        Saved on the way out: the caller goes on changing its task without saying so."""
+        with unlocked():
+            yield
+        if self.write:
+            self.dirty = True
 
     def unlock(self):
         if self in HELD:
