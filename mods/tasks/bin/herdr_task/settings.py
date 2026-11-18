@@ -618,7 +618,8 @@ def ensure_launcher(argv):
 
 def bare(i):
     """Ids as labels use them: "vm/sp12" -> "sp12"."""
-    return i.split("/")[-1] if i else i
+    value = i.strip().split("/")[-1] if isinstance(i, str) else None
+    return value if value and value not in ("null", "undefined") else None
 
 
 def machine_limits(machine=None):

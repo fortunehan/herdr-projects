@@ -10,6 +10,7 @@ import sys
 
 from .base import bundle, Fail, GH, gh_env, guard, run, STORE, sync_held, VERSION
 from .agents import LINE_MAX, SUMMARY_MAX
+from .settings import bare
 from .launch import cmd_allow, name_tabs
 from .commands import (
     cmd_accept, cmd_add, cmd_alert, cmd_config, cmd_edit, cmd_fix, cmd_list, cmd_merge, cmd_ready,
@@ -487,6 +488,8 @@ def main():
     c.set_defaults(fn=cmd_track, json=False)
 
     args = p.parse_args(argv)
+    if hasattr(args, "space") and bare(args.space) is None:
+        args.space = None
     if not getattr(args, "fn", None):
         p.print_help()
         return 1

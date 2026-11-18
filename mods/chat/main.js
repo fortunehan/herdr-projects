@@ -1163,6 +1163,19 @@ export default class Chat extends View {
     const pane = this.lastPane ?? (this.slot && this.slotRec()?.pane) ?? null;
     if (!this.thread && !this.inner && !this.swapping && !t.labels?.["herdr.chat"] && pane && !panes().some((p) => p.terminal === this.addr)
       && panes().some((p) => p.pane === pane && p.mod === "chat")) await hc(["label", this.addr, `herdr.chat=${chatLabel(pane)}`]);
+    // Recovery can retain the chat link without the Assistant's route labels.
+    if (!this.thread && !this.inner && (assistant(t) || this.role === "coordinator") && !t.labels?.["herdr.task"]) {
+      const ps = panes(), p = ps.find((p) => p.mod === "chat" && p.pane === (chatPane(t) ?? pane));
+      const space = p && spaces().find((s) => s.tabs.some((tab) => tab.id === p.tab));
+      const machine = this.addr.includes("/") ? this.addr.split("/")[0] : null;
+      if (space && (space.machine ?? null) === machine && !ps.some((p) => p.terminal === this.addr)) {
+        const route = { "herdr.coordinator.space": String(space.id).split("/").pop(), "herdr.coordinator.tab": String(p.tab).split("/").pop() };
+        const missing = Object.entries(route).filter(([key]) => !t.labels?.[key] || ["null", "undefined"].includes(t.labels[key]));
+        const agrees = Object.entries(route).every(([key, value]) => missing.some(([k]) => k === key) || t.labels[key] === value);
+        if (agrees && missing.length && (await hc(["label", this.addr, ...missing.map(([key, value]) => `${key}=${value}`)])).code === 0)
+          Object.assign(t.labels ??= {}, Object.fromEntries(missing));
+      }
+    }
     const kind = KINDS[t.status?.app] ?? KINDS[String(t.foreground?.name ?? "").split("/").pop()];
     // Back at its shell because the session it resumed is gone: a new agent starts there.
     if (!kind) { if (!(await this.checkLost(this.addr, cx, t))) this.set("unsupported", cx); return; }

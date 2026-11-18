@@ -23,8 +23,8 @@ Rules:
 ```sh
 hc get $HC_TERMINAL_ID    # your labels say where you live; cwd = the repo
 # In a terminal pane: herdr.space / herdr.tab. Behind a chat: herdr.coordinator.space / herdr.coordinator.tab.
-SPACE=$(hc get $HC_TERMINAL_ID | jq -r '.labels["herdr.space"] // .labels["herdr.coordinator.space"]')
-MYTAB=$(hc get $HC_TERMINAL_ID | jq -r '.labels["herdr.tab"] // .labels["herdr.coordinator.tab"]')
+SPACE=$(hc get $HC_TERMINAL_ID | jq -r '.labels["herdr.space"] // .labels["herdr.coordinator.space"] // empty')
+MYTAB=$(hc get $HC_TERMINAL_ID | jq -r '.labels["herdr.tab"] // .labels["herdr.coordinator.tab"] // empty')
 herdr-app ls              # every space, its tabs and their terminals
 ```
 

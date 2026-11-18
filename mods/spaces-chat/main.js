@@ -18,7 +18,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { machines, run, props, exec, hc, home, theme, shared, setShared, watchFolder, window, layout, nextCommand, readTextFile } from "herdr";
 import { panes, spaces as allSpaces, inRender } from "./live.js";
-import { countsByTab, readyByTab } from "./inbox.js";
+import { spaceStatusCounts } from "./inbox.js";
 import { spacesWithChats } from "./parked.js";
 import { sectionsOf, sectionOf, iconOf, placeSpace, foldSection, prune, data, pin, foldPinned, machineLook, restoreSection } from "./sections.js";
 import { Menu, openMenu, rectOf } from "./popups.js";
@@ -30,7 +30,7 @@ import { MachinePopup, openMachine, openMachineSettings } from "./machine-popup.
 import { startPolling, allStats, healthMeters, bars } from "./machines.js";
 import { red, green, blue, H, TEXT, RADIUS, toast, spaceCounts } from "./ui.js";
 import { on as addonOn } from "./addons.js";
-import { spaceName, gitTail, tilde, sharedNames, inOrder, withOrder, machinesInOrder, machineOrderOf, withMachineOrder, isThinking, workingIn } from "./core/spaces.js";
+import { spaceName, gitTail, tilde, sharedNames, inOrder, withOrder, machinesInOrder, machineOrderOf, withMachineOrder, isThinking } from "./core/spaces.js";
 import { coordinatorTab } from "./coordinator.js";
 import { WORKTREE_RE } from "./core/paths.js";
 import { dirsReady } from "./dirs.js";
@@ -686,15 +686,15 @@ export default class Spaces extends View {
   // count (none while Shepherdr settings' "Red counts" / "Green counts" is off: shared
   // "counts.red" / "counts.green" false).
   needs(w) {
-    if (shared("counts.red") === false) return 0;
-    const m = countsByTab();
-    return w.tabs.reduce((n, tab) => n + (m.get(tab.id) ?? 0), 0);
+    return this.countsIn(w)?.need ?? 0;
   }
 
   readyIn(w) {
-    if (shared("counts.green") === false) return 0;
-    const m = readyByTab();
-    return w.tabs.reduce((n, tab) => n + (m.get(tab.id) ?? 0), 0);
+    return this.countsIn(w)?.ready ?? 0;
+  }
+
+  countsIn(w) {
+    return (this.statusCounts ?? spaceStatusCounts().bySpace).get(w.id);
   }
 
   // Only what's unusual, after the name: "herdr \u00b7 spike". The repo or
@@ -717,7 +717,7 @@ export default class Spaces extends View {
   // How many of a space's tasks are at work (the tab bar's engine reads them: shared "inbox.running"), yellow with a
   // small turning ring, before its red and green counts.
   workingMark(w, t) {
-    const n = workingIn(w, shared("inbox.running"));
+    const n = this.countsIn(w)?.working ?? 0;
     if (!n) return null;
     return h_flex().id(`working-${w.id}`).flex_none().gap(3).items_center().text_size(TEXT.label).text_color(t.working)
       .child(svg("mods/tasks/merging.svg").size(10).flex_none().spin(1400))
@@ -817,6 +817,7 @@ export default class Spaces extends View {
     prune();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
+    this.statusCounts = spaceStatusCounts().bySpace;
     // Assistants with something new; any on screen is read now.
     readShown();
     // Shepherdr settings' "Bold unread spaces" off (shared "sidebar.unread" false): none.

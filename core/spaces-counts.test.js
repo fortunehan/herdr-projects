@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { workingIn } from "./spaces.js";
+import { spaceTaskCounts } from "./task-counts.js";
 
 const bare = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
   .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export (default )?/gm, "");
@@ -29,8 +29,10 @@ function fixture() {
     svg: (path) => { const e = element("svg"); e.style.path = path; return e; },
     shared: (k) => state.get(k), settings: () => ({}), red: () => "red", green: () => "green",
     TEXT: { id: 11, label: 12 }, RADIUS: { card: 8 }, onStatus: () => "black",
-    workingIn, countsByTab: () => new Map([["a", 2], ["b", 3], ["other", 20]]),
-    readyByTab: () => new Map([["a", 1], ["b", 2], ["other", 20]]),
+    spaceStatusCounts: () => spaceTaskCounts({ spaces: [w],
+      needs: Array.from({ length: 5 }, (_, key) => ({ key, tab: key < 2 ? "a" : "b" })),
+      ready: Array.from({ length: 3 }, (_, key) => ({ key, tab: key < 1 ? "a" : "b" })),
+      running: state.get("inbox.running") ?? [], red: state.get("counts.red") !== false, green: state.get("counts.green") !== false }),
     muted: () => false, iconOf: () => null, data: () => state.get("spaces-chat") ?? {},
   };
   deps.spaceCounts = load("lib/ui.js", { div: deps.div, h_flex: deps.h_flex, settings: () => ({ dark: true }) }, "spaceCounts");
@@ -100,7 +102,7 @@ describe("Spaces status counts (SHEP-71)", () => {
     const { s, state, w, row } = fixture();
     expect(s.workingMark(w, t)).toBeNull();
     state.set("inbox.running", [
-      ...Array.from({ length: 12 }, () => ({ space: w.id, status: "working" })),
+      ...Array.from({ length: 12 }, (_, ref) => ({ ref, space: w.id, status: "working" })),
       { space: "other", status: "working" }, { space: w.id, status: "ready" },
       { space: w.id, status: "working", archived: 1 },
     ]);
