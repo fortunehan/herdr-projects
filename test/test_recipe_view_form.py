@@ -28,8 +28,10 @@ export const Input = { new: () => el() };
 export const made = [];
 export const InputState = { new: (o) => {
   if (rendering) throw new Error("InputState.new(...) cannot run during render");
-  const s = { o, value: () => "" }; made.push(s); return s; } };
+  const s = { o, value: () => "", on: () => {} }; made.push(s); return s; } };
 export const theme = () => new Proxy({}, { get: () => "#000" });
+// the fork's viewer keeps the keyboard holder (SHEP-9): shared, setShared and props from herdr
+export const shared = () => null, setShared = () => {}, props = () => ({});
 export const asset = (x) => x, reply = async () => true;
 """
 

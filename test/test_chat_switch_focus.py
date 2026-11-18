@@ -19,6 +19,9 @@ REFOCUS = re.search(r"\n  refocus\(paneFocused, showsBox, cx\) \{\n.*?\n  \}\n",
 FORGET = re.search(r"\n  forgetHidden\(ps = panes\(\), tab = focused\(\)\?\.tab\) \{\n.*?\n  \}\n", SRC, re.S)
 
 HARNESS = r"""
+// The fork's refocus (SHEP-9/15/23) decides through core/chat-focus.js's boxRefocus, and keeps off fields and overlays.
+import { boxRefocus } from %(focus)s;
+const keysOver = () => false, holdKeys = () => {};
 // Another area holds the keyboard: the other space's chat took it while this one was hidden.
 const KEY_HOLDER = "keyboard.holder";
 const shared = () => ({ who: "pane-other", at: 1 });
@@ -33,7 +36,7 @@ const cx = { timer: { after: (ms, fn) => fn() } };
 // Shown and focused at its last draw, its box blurred when the window moved to the other space.
 const self = { box: { focus: () => focusCalls.push(1) }, wasFocused: true, hadBox: true, focused: false, call: null,
   press: null, pressMoved: false, refocusAt: 0, thread: false, inner: false,
-  myPane: () => "pane-mine", areaKey: () => "pane-mine", forgetHidden: obj.forgetHidden };
+  myPane: () => "pane-mine", areaKey: () => "pane-mine", fieldHolds: () => false, forgetHidden: obj.forgetHidden };
 const input = %(input)s;
 if (input.hidden) { shownTab = "tab-other"; if (input.timer) self.forgetHidden(); }
 shownTab = "tab-mine";
@@ -45,7 +48,8 @@ console.log(JSON.stringify({ focus: focusCalls.length }));
 
 def run(**inp):
     methods = REFOCUS.group(0).strip() + ",\n" + FORGET.group(0).strip()
-    script = HARNESS % {"methods": methods, "input": json.dumps(inp)}
+    focus = json.dumps("file://" + os.path.join(ROOT, "core", "chat-focus.js"))
+    script = HARNESS % {"methods": methods, "input": json.dumps(inp), "focus": focus}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "switch.mjs")
         with open(path, "w") as f:
