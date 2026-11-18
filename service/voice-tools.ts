@@ -29,7 +29,14 @@ export type Where = {
   settings?: boolean;
   /** the web call fills the screen (SHEP-118), else it is minimized */
   full?: boolean;
+  /** SHEP-251: the phone is locked (Shepherdr Wake runs the call): talk and send only, no actions */
+  locked?: boolean;
+  /** SHEP-251: the phone's screen is on */
+  screen?: boolean;
 };
+
+/** SHEP-251: what a call on a locked phone says to an action (and to look secrets or settings) */
+export const LOCKED = "The phone is locked: unlock it, then ask again.";
 
 /** Something to show in the app the call runs in (the page's kernel, or the window's chat mod). */
 export type Nav =
@@ -305,7 +312,8 @@ export function lookHere(snap: Snapshot, where: Where) {
   const a = where.artifact ? snap.artifacts.find((x) => x.id === where.artifact) : null;
   if (a) shows.push(`the artifact "${cut(a.title, 80)}"`);
   if (shows.length) out.push(`The app shows ${shows.join(", ")}.`);
-  if (where.client === "web" && typeof where.full === "boolean") out.push(where.full ? "The call fills the screen (full screen) over the app." : "The call is minimized: the app shows.");
+  if (where.locked === true) out.push("The person is on their phone with it locked: you can talk and pass messages, not act.");
+  if (where.client === "web" && typeof where.full === "boolean" && where.locked !== true) out.push(where.full ? "The call fills the screen (full screen) over the app." : "The call is minimized: the app shows.");
   const need = snap.needs.length, ready = snap.tasks.filter((x) => x.status === "ready" && !x.archived).length, work = snap.tasks.filter((x) => x.status === "work" && !x.archived).length;
   out.push(`Overall: ${need} waiting on the person, ${ready} ready for review, ${work} working.`);
   return out.join(" ");
@@ -603,6 +611,8 @@ export async function voiceTool(name: string, params: any, where: Where, io: Voi
   if (name === "read_chat") return voiceTool("look", { what: "chat" }, where, io);
   if (!snap) return fail("Shepherdr is still starting: try again in a moment.");
   try {
+    // SHEP-251: a locked phone talks and passes messages, nothing more: refused before any spoken yes is asked
+    if (where.locked === true && (name === "act" || (name === "look" && (p.what === "secrets" || p.what === "settings")))) return fail(LOCKED);
     if (name === "look") {
       switch (String(p.what ?? "")) {
         case "here": return done(lookHere(snap, where));
@@ -737,7 +747,12 @@ async function act(snap: Snapshot, where: Where, io: VoiceIO, p: any, id: string
     switch (action) {
       case "accept":
         if (t.status !== "ready") return fail(`${spoken(t.id)} isn't ready to accept: it is ${STATUS[t.status] ?? t.status}.`);
-        ask = `Accept ${n}? That merges it.`; body = { type: "accept", task: t.id }; said = `Accepted ${spoken(t.id)}: it merges now.`; break;
+      {
+        // as the Accept button (SHEP-225): it merges only a task with a branch or pull request of its own; else it's just done
+        const merges = Boolean(t.branch || t.pr);
+        ask = merges ? `Accept ${n}? That merges it.` : `Accept ${n}? That marks it done; nothing merges.`; body = { type: "accept", task: t.id };
+        said = merges ? `Accepted ${spoken(t.id)}: it merges now.` : `Accepted ${spoken(t.id)}: done.`; break;
+      }
       case "start": ask = `Start ${n} now?`; body = { type: "schedule", chat, now: true }; said = `${spoken(t.id)} starts now.`; break;
       case "schedule":
         if (!value) return fail("When? Say a time, like in 2 hours or tomorrow at 9.");

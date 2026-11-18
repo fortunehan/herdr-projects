@@ -1,4 +1,5 @@
 import { actionable, attentionCounts } from './attention.ts'
+import { needsYou, type Waiting } from '@shared/needs-you.ts'
 // The screen's small kernel: plugin slots, the store (server data + what's on screen), and the link to the server.
 import { useSyncExternalStore, type FC, type ReactNode } from 'react'
 import { buildId } from '@shared/build.ts'
@@ -126,6 +127,8 @@ export interface Registry {
   /** pages a plugin adds to Settings' This device group, after Appearance (the keyboard shortcuts); `when` says if one shows;
    *  into: drawn on top of that server page instead (Notify's alerts on this device) */
   settingsPages: { name: string; about?: string; Icon: FC<{ className?: string }>; when: (ui: UI) => boolean; View: FC<{ phone: boolean }>; into?: string }[]
+  /** a wake word on this device (POST /api/voice/wake, SHEP-240): the voice plugin starts a call here */
+  voiceWake: (() => void) | null
 }
 
 export const registry: Registry = {
@@ -146,6 +149,7 @@ export const registry: Registry = {
   composerSettings: [],
   composerPlus: null,
   composerMic: null,
+  voiceWake: null,
   overlays: [],
   topBars: [],
   sideTop: [],
@@ -401,6 +405,8 @@ function saveSide(side: UI['side']) {
 }
 
 const params = new URLSearchParams(location.search)
+/** the address the page loaded at, before the app writes its own (SHEP-238: `voice=1` opens into a call) */
+export const launchHref = location.href
 // a reload for a new build draws at once what it showed: the last snapshot and the chats on screen, until the server's
 const { text: keptText, snap: keptSnap, chats: keptChats, ...keptUI } = kept()
 let state: State = {
@@ -674,6 +680,15 @@ export function openLink(href: string) {
   forgetJump()
 }
 
+/** go where an alert points: its place, task and card, or a Ready task's Accept card (./#accept=<id>: the Accept screen
+ *  listens, as for the link a page opens with) */
+export function openGo(url: string) {
+  const u = new URL(url, location.href)
+  const m = /^#accept=(.+)$/.exec(u.hash)
+  if (m) return void dispatchEvent(new CustomEvent('shepherdr:accept', { detail: decodeURIComponent(m[1]) }))
+  openLink(u.href)
+}
+
 // the card to bring into view is not part of the address: a reload or a step back doesn't bring it into view again
 let jumpTimer: ReturnType<typeof setTimeout> | null = null
 function forgetJump() {
@@ -788,6 +803,8 @@ export function connect() {
     const msg = JSON.parse(ev.data) as ServerEvent
     if (msg.type === 'pong') return
     if (msg.type === 'show') return openArtifact(msg.artifact)
+    if (msg.type === 'voice') return registry.voiceWake?.()
+    if (msg.type === 'go') return openGo(msg.url)
     if (msg.type === 'snapshot') {
       // an add-on switched on or off in Settings › Window: the page starts again with its plugins in or out (main.tsx)
       const booted = (window as { shepherdrOff?: string[] }).shepherdrOff
@@ -1143,14 +1160,24 @@ export function counts(snap: Snapshot, placeId: string) {
 
 export { GROUPS, keepTasks, namesFor, type GroupBy, type TaskGroup } from './groups.ts'
 
+/** a list's Needs you, oldest first, one rule for every view (web/shared/needs-you.ts, SHEP-250: the phone's widgets, lock
+ *  screen and watch list the same): its tasks (the Tasks panel's Needs you group) and the rest (rows of their own there).
+ *  One of no place (a machine's memory alert) only in a list of every space. */
+export function needsIn(snap: Snapshot, list: Pick<ListView, 'chips'>, ws: Waiting[] = needsYou(snap)): Waiting[] {
+  const ids = new Set(tasksIn(snap, list).map((t) => t.id))
+  return ws.filter((w) => (w.task ? ids.has(w.task) : w.place ? inList(snap, list.chips, w.place) : !list.chips.length))
+}
+
 /** a list's tasks in their groups, in the order they show (groups.ts groupTasks) */
 export function taskGroups(snap: Snapshot, list: ListView, by: GroupBy): TaskGroup[] {
   const tasks = tasksIn(snap, list)
+  // Needs you's tasks, in its order (web/shared/needs-you.ts: the phone's glance feed lists the same)
+  const waits = needsIn(snap, list).flatMap((w) => (w.task ? [w.task] : []))
   if (list.attention) return snap.places.flatMap((p) => (['need', 'ready'] as const).flatMap((status) => {
-    const rows = tasks.filter((t) => t.place === p.id && t.status === status)
+    const rows = status === 'need' ? waits.map((id) => tasks.find((t) => t.id === id)!).filter((t) => t.place === p.id) : tasks.filter((t) => t.place === p.id && t.status === status && !waits.includes(t.id))
     return rows.length ? [{ key: `${p.id}|${status}`, label: `${p.name} · ${status === 'need' ? 'Needs you' : 'Ready'}`, note: machineName(snap.machines, p.machine), tasks: rows, names: { machine: false, project: false } }] : []
   }))
-  return groupTasks(snap.places, snap.machines ?? [], tasks, by, list.level)
+  return groupTasks(snap.places, snap.machines ?? [], tasks, by, list.level, waits)
 }
 
 /** Done: shut until opened ("done:open" in shut), its count showing alone */

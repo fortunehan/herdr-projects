@@ -14,7 +14,7 @@ import { DATA, SOCK, TOKEN, PORT, HOME, ensureData, settingsFile, where } from "
 import { holdLock } from "./lock.ts";
 import { gate, localCaller, type Gate } from "./auth.ts";
 import { refusedWhy, trustedPeer } from "./peer.ts";
-import { whoami, share, served, unshare, restoreShare, httpsPort, webLink, webOrigin, HTTPS_PORT_FILE, type Me } from "./tailscale.ts";
+import { whoami, share, served, unshare, restoreShare, httpsPort, webLink, webOrigin, deviceOf, forwardedFrom, HTTPS_PORT_FILE, type Me } from "./tailscale.ts";
 import { qrFile } from "./qr.ts";
 import { Hub } from "./hub.ts";
 import { Store } from "./store.ts";
@@ -27,7 +27,7 @@ import { windowSection, setWindow, offList, offPlugins } from "./window.ts";
 import { record, deleteAll, note as noteUsage, followSwitch, isOn as insightsOn, logLines } from "./usage.ts";
 import { insightsSummary } from "./voice-data.ts";
 import { Chats } from "./chats.ts";
-import { act, hc as hcRun } from "./actions.ts";
+import { act, findMachines, hc as hcRun } from "./actions.ts";
 import { AgentWatch } from "./watch.ts";
 import { Compat, activity, newsKey, placeKey } from "./compat.ts";
 import { keep, served as fileResponse, smaller } from "./media.ts";
@@ -38,7 +38,7 @@ import { worktree } from "./worktree.ts";
 import * as W from "../core/worktree.js";
 import * as SPm from "../core/spaces.js";
 import { browserRelay } from "./browser.ts";
-import { voiceCall, callToResume, callsOn, pageWhere, type ChatView } from "./voice.ts";
+import { voiceCall, callToResume, callsOn, handOff, pageWhere, type ChatView } from "./voice.ts";
 import { hearing, type HearIO, type Hearing } from "./voice-hear.ts";
 import { voiceTool, type VoiceIO, type Where } from "./voice-tools.ts";
 import { Artifacts } from "./artifacts.ts";
@@ -48,6 +48,8 @@ import { Secrets, SecretsHome } from "./secrets.ts";
 import { Agents } from "./agents.ts";
 import { Machines } from "./machines.ts";
 import { Push, alertsOf, agentAlerts } from "./push.ts";
+import { waiting } from "../web/shared/alerts.ts";
+import { GlanceFeed, glanceOf, openUrlOk } from "./glance.ts";
 import { Shows, showInWindow } from "./show.ts";
 import { dictate, liveToken, cachedKey, refused } from "./dictate.ts";
 import { readUsage } from "../core/voice.js";
@@ -140,6 +142,11 @@ const push = new Push(() => (me ? webOrigin(me.dns, hp) : "https://herdr.dev"));
 const pushSend = push.send.bind(push);
 push.send = ((a: any) => (host.serving() ? pushSend(a) : Promise.resolve())) as typeof push.send;
 live.onVisible = (v) => { push.visible = v; };
+// the glance feed for the phone's and watch's own app (SHEP-246): while its native stream is open (and 2 minutes after),
+// that device gets no web push, never two notifications of one alert
+const glance = new GlanceFeed();
+push.quiet = (node) => glance.quiet(node);
+live.onPushDevice = (endpoint, device) => push.nodeOf(endpoint, device);
 // an agent's herdr-artifact open (service/show.ts): the serving machine's screen the person is on opens the artifact,
 // else its window (an agent on another machine; one here opened it in this window itself)
 const shows = new Shows();
@@ -154,11 +161,22 @@ const chatOfAddress = (a: string) => { for (const [k, v] of ((compat as any).cha
 const alertNewAnd = (snap: any) => { try { snap.alerts = agentAlerts(hub.terminals.values(), snap, chatOfAddress, HOME); alertNew(snap); } catch {} return snap; };
 // the spaces whose Autopilot wake was under way at the last snapshot: a message just after it is its update
 let woke = new Set<string>();
+// what waits on you now, as the last alerts said it: the app icon's count and the tags of the alerts that may stay (the
+// service worker asks after a notification's button did something: GET /api/waiting)
+let waitingNow = { count: 0, tags: [] as string[] };
+// an Assistant's last words, for its New message alert
+const lastSaid = (key: string) => {
+  const a = compat.addrOf(key), items: any[] = (a ? live.chats?.reader(a)?.conv?.items : null) ?? [];
+  return items.findLast((x) => x.kind === "agent" && x.text)?.text as string | undefined;
+};
 function alertNew(snap: any) {
   // their words, as the window's toasts: service/push.ts alertsOf
-  const now = alertsOf(snap, woke);
+  const now = alertsOf(snap, woke, lastSaid);
+  // the phone's and watch's glance, with these same words (service/glance.ts)
+  try { glance.set(glanceOf(snap, now)); } catch (err) { console.error(`glance: ${(err as Error).message}`); }
   woke = new Set((snap.places ?? []).filter((p: any) => p.pilot?.on && (p.pilot.inflight || p.pilot.pending)).map((p: any) => p.id));
-  if (alerted) for (const [k, a] of now) if (!alerted.has(k)) void push.send({ ...a, badge: (snap.needs?.length ?? 0) + (snap.tasks ?? []).filter((t: any) => t.status === "ready" && !t.archived).length, open: [...now.values()].filter((x) => x.waits).map((x) => x.tag) });
+  waitingNow = { count: waiting(snap).count, tags: [...new Set([...now.values()].filter((x) => x.waits).map((x) => x.tag))] };
+  if (alerted) for (const [k, a] of now) if (!alerted.has(k)) void push.send({ ...a, badge: waitingNow.count, open: waitingNow.tags });
   alerted = new Set(now.keys());
 }
 compat.agents = new Agents(hub);
@@ -224,6 +242,8 @@ setInterval(() => {
   void moveSecrets(null).catch(() => {});
 }, 30_000);
 const settings = new Settings();
+// a space's Assistant started from the web runs the agent Settings › Agents chooses for it, as the window's (#1051)
+compat.assistantPick = (space) => settings.role(space, "coordinator");
 // Settings › Agents' model menu and buttons (core/settings.js choicesFrom), from each CLI's own settings here, read
 // again every ten minutes; a CLI herdr-task's check finds missing here isn't offered
 const readDefaults = async () => {
@@ -638,7 +658,7 @@ async function doAction(body: any): Promise<Response> {
   if (body?.type === "limits-check") { await machines.checkNow(); return json({ ok: true }); }
   if (body?.type === "secrets-move") {
     // Settings › Secrets › Kept on: the vault moves (shepherdr secrets move-to); the page sees it as it goes
-    const m = typeof body.machine === "string" && body.machine && body.machine !== home.me?.name ? body.machine : null;
+    const m = HCORE.pickedMachine(body.machine, home.me?.name);
     if (m !== null && !home.machines.has(m)) return json({ ok: false, error: "That machine isn't linked." });
     if (secretsMoving && !secretsMoving.error) return json({ ok: false, error: `Already moving them to ${secretsMoving.to}.` });
     void moveSecrets(m).catch(() => {});
@@ -646,7 +666,7 @@ async function doAction(body: any): Promise<Response> {
   }
   if (body?.type === "serve-from") {
     // Settings › Web's Serve from: the move runs on (the page sees it in Settings › Web as it goes)
-    const m = typeof body.machine === "string" && body.machine && body.machine !== host.me?.name ? body.machine : null;
+    const m = HCORE.pickedMachine(body.machine, host.me?.name);
     if (m !== null && !host.machines.has(m)) return json({ ok: false, error: "That machine isn't linked." });
     if (moving && !moving.error) return json({ ok: false, error: `Already moving it to ${moving.to}.` });
     void serveFrom(m).catch(() => {});
@@ -665,6 +685,13 @@ async function doAction(body: any): Promise<Response> {
     if (body?.type === "mode" && typeof body.place === "string") await model.readPilot(body.place);
     return json(r);
   } catch (err) { return new Response((err as Error).message, { status: 400 }); }
+}
+
+/** The tailnet device a request came from (tailscale serve's forwarded address, as its node's id), or null: this
+ *  machine's own callers (the window, the CLI) aren't a device of the tailnet. */
+async function deviceFrom(req: Request, via: "tailnet" | "local") {
+  const ip = via === "tailnet" ? forwardedFrom(req) : null;
+  return ip ? await deviceOf(ip) : null;
 }
 
 const server = Bun.serve<{ who: string }>({
@@ -689,7 +716,9 @@ const server = Bun.serve<{ who: string }>({
     }
     const socket = path === "/api/ws" || path === "/api/terminal" || path === "/api/browser" || path === "/api/voice";
     const viaTailnet = req.headers.has("tailscale-user-login");
-    const pass = gate(req, g, socket, viaTailnet && trustedPeer(srv.requestIP(req)?.port, PORT));
+    // the glance feed (SHEP-246) is read by the phone's own app: checked as a write (its origin, x-shepherdr: 1)
+    const native = path === "/api/glance" && url.searchParams.get("native") === "1";
+    const pass = gate(req, g, socket, viaTailnet && trustedPeer(srv.requestIP(req)?.port, PORT), path === "/api/glance");
     if (!pass.ok) {
       const why = refusedWhy(pass.why);
       if (why !== pass.why && why !== saidPeer) console.error(`web: ${(saidPeer = why)}`);
@@ -715,9 +744,15 @@ const server = Bun.serve<{ who: string }>({
       const key = addr && !addr.startsWith("log:") ? asked : null;
       // SHEP-102: a page whose socket dropped (a locked phone) comes back to its call with the call's id
       const resume = (url.searchParams.get("resume") ?? "").slice(0, 64);
-      return srv.upgrade(req, { data: { who: pass.who, voice: { key, resume } } as any }) ? undefined : new Response("upgrade failed", { status: 400 });
+      // the device it is on: Shepherdr Wake takes a call over from its own device's page only (SHEP-251)
+      const from = await deviceFrom(req, pass.via);
+      return srv.upgrade(req, { data: { who: pass.who, from, voice: { key, resume } } as any }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
-    if (socket) return srv.upgrade(req, { data: { who: pass.who } }) ? undefined : new Response("upgrade failed", { status: 400 });
+    if (socket) {
+      // the device a page is on (a wake word reaches only its own device's pages, SHEP-240)
+      const from = await deviceFrom(req, pass.via);
+      return srv.upgrade(req, { data: { who: pass.who, from } as any }) ? undefined : new Response("upgrade failed", { status: 400 });
+    }
     if (path === "/api/me") return json({ login: pass.who, via: pass.via, machine: me?.host ?? null, link: ownLink(), version: VERSION, off: offPlugins() });
     if (path === "/api/state" && req.method === "GET") return json(store.doc.version ? store.doc : await store.load());
     if (path === "/api/state" && req.method === "POST") {
@@ -801,6 +836,7 @@ const server = Bun.serve<{ who: string }>({
       const machine = a ? (a.includes("/") ? a.split("/")[0] : null) : sp?.machine ?? null;
       return json(await reachOf(machine));
     }
+    if (path === "/api/machines/find") return json(await findMachines(req.method === "POST"));
     if (path === "/api/folders") {
       const m = url.searchParams.get("machine"), machine = !m || m === me?.host ? null : m;
       const home = (await exec(hub, ["sh", "-c", 'printf %s "$HOME"'], machine).catch(() => ({ stdout: "" }))).stdout;
@@ -817,16 +853,17 @@ const server = Bun.serve<{ who: string }>({
       try {
         const machine = !b?.machine || b.machine === me?.host ? null : String(b.machine);
         const icon = typeof b?.icon === "string" && b.icon ? b.icon.slice(0, 16) : null;
-        const place = await newSpace(hub, { machine, path: String(b?.path ?? ""), makeRepo: !!b?.makeRepo, icon, store: compat.shared! });
+        const place = await newSpace(hub, { machine, path: String(b?.path ?? ""), makeRepo: !!b?.makeRepo, icon, store: compat.shared!, pick: compat.assistantPick });
         // the page opens it once the sidebar has it: in the snapshot before the answer, not at the next 10 s read
         await model.waitSpace(place);
         return json({ place });
       } catch (err) { return json({ error: (err as Error).message }, 400); }
     }
     if (path === "/api/push/key") return json({ key: await push.key() });
+    if (path === "/api/waiting") return json(waitingNow);
     if (path === "/api/push/subscribe" && req.method === "POST") {
       const body = await req.json().catch(() => null);
-      try { push.subscribe(body?.sub, body?.device, typeof body?.from === "string" ? body.from : undefined); return json({ ok: true, ...push.state(body.sub.endpoint) }); } catch (err) { return json({ error: (err as Error).message }, 400); }
+      try { push.subscribe(body?.sub, body?.device, typeof body?.from === "string" ? body.from : undefined, await deviceFrom(req, pass.via)); return json({ ok: true, ...push.state(body.sub.endpoint) }); } catch (err) { return json({ error: (err as Error).message }, 400); }
     }
     // Settings › Notifications: this device's alerts as the server keeps them, turned off, chosen, tested
     if (path.startsWith("/api/push/") && req.method === "POST") {
@@ -871,6 +908,39 @@ const server = Bun.serve<{ who: string }>({
       return json(await activity(r, id));
     }
     if (path === "/api/action" && req.method === "POST") return doAction(await req.json().catch(() => null));
+    if (path === "/api/glance" && req.method === "GET") {
+      // the phone's and watch's small live feed (SHEP-246, docs/glance.md): the doc, or its stream (one frame per change)
+      if (url.searchParams.get("stream") !== "1") return glance.doc ? json(glance.doc) : json({ error: "not ready yet" }, 503);
+      // a stream stays open all day: no idle cut (Bun's 180 s here; the ping comes every 240 s)
+      srv.timeout(req, 0);
+      return glance.stream(native ? await deviceFrom(req, pass.via) : null, native, req.signal);
+    }
+    if (path === "/api/open" && req.method === "POST") {
+      // a tap on the phone app's alert (SHEP-246): the Shepherdr page already open on that device goes there in place, as
+      // the wake does (SHEP-240), so the phone never makes Chrome build the page again. shown: false, held 15 s.
+      const b = await req.json().catch(() => null);
+      if (!openUrlOk(b?.url)) return json({ error: "Not a Shepherdr link: ./?place=… or ./#accept=…" }, 400);
+      const from = await deviceFrom(req, pass.via);
+      if (!from) return json({ error: "only from a device on the tailnet" }, 400);
+      return json({ ok: true, shown: live.go(from, b.url) });
+    }
+    if (path === "/api/voice/wake" && req.method === "POST") {
+      // a wake word heard on a phone (Shepherdr Wake, SHEP-240): its Shepherdr page already open starts a call, as
+      // ?voice=1 would, without the phone opening a second page. shown: false, it waits 15 s for that page to show up.
+      if (offList().includes("voice")) return json({ error: "voice is off" }, 409);
+      const from = await deviceFrom(req, pass.via);
+      if (!from) return json({ error: "only from a device on the tailnet" }, 400);
+      return json({ ok: true, shown: live.voiceWake(from) });
+    }
+    if (path === "/api/voice/handoff" && req.method === "POST") {
+      // SHEP-251: the phone locks during a call on its page (Shepherdr Wake): the page lets go, the call holds, and
+      // Wake comes back to it by its id (/api/voice?resume=<id>), as a page after a dropped socket does
+      if (offList().includes("voice")) return json({ error: "voice is off" }, 409);
+      const from = await deviceFrom(req, pass.via);
+      if (!from) return json({ error: "only from a device on the tailnet" }, 400);
+      const id = handOff(from, String(pass.who ?? ""));
+      return json(id ? { ok: true, id } : { ok: false });
+    }
     if (path === "/api/voice/tool" && req.method === "POST") {
       // the window's voice call (mods/chat/voice.ts) asks its tools here, from this machine only
       if (pass.via !== "local") return json({ error: "not here" }, 403);
@@ -914,12 +984,12 @@ const server = Bun.serve<{ who: string }>({
       if (d.voice?.resume) {
         // back to a call that held for this page; gone (ended, or held too long): the page says so and stops
         d.bridge = callToResume(d.voice.resume, String(d.who ?? ""));
-        if (!d.bridge?.attach(page)) { d.bridge = null; ws.send(JSON.stringify({ type: "ended", why: "the connection was lost" })); ws.close(); }
+        if (!d.bridge?.attach(page, d.from ?? null)) { d.bridge = null; ws.send(JSON.stringify({ type: "ended", why: "the connection was lost" })); ws.close(); }
         return;
       }
       if (d.voice) noteUsage("feature", { from: "web", type: "voice-call" });
       if (d.voice) d.bridge = voiceCall(hub, { io: voiceIO, hear: hearIO, where: { client: "web", call: d.voice.key, machine: me?.host ?? null },
-        who: String(d.who ?? "") }, page);
+        who: String(d.who ?? ""), from: d.from ?? null }, page);
       else if (d.term) d.bridge = terminalBridge(hub, d.term, page);
       else if (d.browser) d.bridge = browserRelay(d.browser, page);
       else live.join(ws);

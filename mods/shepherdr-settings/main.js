@@ -23,6 +23,7 @@ import * as models from "./settings.js";
 import { layoutSection } from "./layout.js";
 import { manifest } from "./addons.js";
 import { note } from "./usage.js";
+import { over } from "./over.js";
 import { secretsInit, secretsSection } from "./secrets-section.js";
 import { baseInit, baseRow } from "./base-branch.js";
 import { branchInit, branchRow } from "./branch-names.js";
@@ -40,7 +41,7 @@ import { dirs } from "./dirs.js";
 // herdr-task's merge policy (MERGE): "ask" waits for the person's Accept (which merges), the others merge without it.
 // NOTES: what a task's agent is told to do first and last (tasks.start_notes / finish_notes): herdr-task puts them
 // into its starting prompt; Herdr runs nothing itself.
-import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, STAR, starState, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
+import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
   EVERYWHERE, CHANGED_HERE, RESET, EDIT_INSTRUCTIONS, USE_OTHER_CLI, LOADING_AGENTS, SAVED, sameAs as sameAsWords,
   spacesOwn, otherCliWords, backupProblem, notifyMachineAbout, machineLabel, TASK_ROWS, LEVEL } from "./core/settings.js";
 import { workerChoices, roleSel } from "./core/settings.js";
@@ -491,20 +492,7 @@ export default class ShepherdrSettings extends View {
       .child(this.backupRow(t))
       .child(this.reactionsRow(t))
       .child(feedbackRow(this, t))
-      .children([feedbackRepoRow(this, t)].filter(Boolean))
-      .when(!this.scope, (el) => el.child(this.starRow(t, cx)));
-  }
-
-  // Ask for a GitHub star (herdr-task's star.py), Everywhere only: a switch that turns it off before it ever shows;
-  // once an Assistant asked, no switch, just when (it never asks again). Kept as everywhere.star_prompt.
-  starRow(t, _cx) {
-    const st = starState(this.cfg);
-    return this.row(t, STAR.title, st.about.replace("\n", " "), st.asked ? null : toggleSwitch("star-prompt", st.on,
-      (next, _e, cx) => this.change((cfg) => {
-        const e = (cfg.everywhere ??= {});
-        if (e.star_prompt?.asked) return;
-        if (next) delete e.star_prompt; else e.star_prompt = { off: true };
-      }, cx)));
+      .children([feedbackRepoRow(this, t)].filter(Boolean));
   }
 
   // A role: its model button and, on Everywhere, "Edit instructions" (the same for every space).
@@ -637,8 +625,7 @@ export default class ShepherdrSettings extends View {
         .child(picker))
       .child(div().text_size(TEXT.label).line_height("17px").text_color(t.dim)
         .child(this.scope ? LEVEL.space(where) : LEVEL.everywhere))
-      .when(Boolean(folder), (el) => el.child(div().truncate().font_family("JetBrains Mono").text_size(TEXT.id).text_color(t.dim).child(folder)))
-      .when(this.levelOpen, (el) => el.child(this.levelMenu(t)));
+      .when(Boolean(folder), (el) => el.child(div().truncate().font_family("JetBrains Mono").text_size(TEXT.id).text_color(t.dim).child(folder)));
   }
 
   // Every space the picker offers, by machine (this computer's first): [{ id, name, machine }].
@@ -723,8 +710,7 @@ export default class ShepherdrSettings extends View {
       .child(div().relative().flex_1().min_w(0).h_full()
         .child(div().id("sh-body").size_full().overflow_y_scroll()
           .child(div().px(28).py(22)
-            .child(this.levelBar(t))
-            .child(body)))
+            .child(over(this.levelBar(t), [body], this.levelOpen && SECTIONS.find((sc) => sc.id === this.section)?.space ? this.levelMenu(t) : null))))
         .child(Scrollbar.vertical("sh-body").absolute().inset_0()));
     return div().id("sh-root").size_full().flex().items_center().justify_center().on_click(() => this.close()).child(card);
   }

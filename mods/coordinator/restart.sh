@@ -21,12 +21,17 @@ if [[ "$old" == */* ]]; then
   envs=()
   [ -n "${HERDR_RESTART_CHAT:-}" ] && envs+=(--env "HERDR_RESTART_CHAT=$HERDR_RESTART_CHAT")
   [ -n "${HERDR_RESTART_RESUME:-}" ] && envs+=(--env "HERDR_RESTART_RESUME=1")
-  out=$(hc exec --on "$on" --stdin --timeout 300 ${envs[@]+"${envs[@]}"} -- bash -s "$here" "$argv" <"$0")
+  # its own say on why it didn't (#980: a silent exit there read only as "It didn't restart"), kept apart from hc's
+  errf=$(mktemp "${TMPDIR:-/tmp}/herdr-restart.XXXXXX")
+  out=$(hc exec --on "$on" --stdin --timeout 300 ${envs[@]+"${envs[@]}"} -- bash -s "$here" "$argv" <"$0" 2>"$errf")
   code=$?
+  why=$(grep -v '^[[:space:]]*$' "$errf" 2>/dev/null | tail -n 1)
+  rm -f "$errf"
   new=$(tail -n 1 <<<"$out")
   if [ "$code" -ne 0 ] || [ -z "$new" ]; then
     state=$(hc machine ls --json 2>/dev/null | jq -r --arg m "${on%%/*}" '.machines[]? | select(.name == $m) | .state' 2>/dev/null)
     if [ -n "$state" ] && [ "$state" != connected ]; then echo "$on is offline. Try again once it's back." >&2
+    elif [ -n "$why" ]; then echo "It didn't restart on $on: $why" >&2
     else echo "It didn't restart on $on." >&2; fi
     exit 1
   fi
@@ -40,7 +45,7 @@ login_command() {
   local body=$1
   printf '%s %s "$0" "$@"; fi; %s' "$login" "$(jq -nr --arg cmd "$body" '$cmd | @sh')" "$body"
 }
-info=$(hc get "$old" --json) || exit 1
+info=$(hc get "$old" --json) || { echo "$old isn't running here any more." >&2; exit 1; }
 get() { jq -r "$1 // empty" <<<"$info"; }
 [ -n "$argv" ] || argv=$(get '.labels["herdr.launcher.argv"]')
 if [ -n "$argv" ]; then
@@ -63,7 +68,20 @@ case $(get .template) in assistant|coordinator) role=coordinator ;; esac
 cwd=$(get .cwd) app=$(get .status.app) pid=$(get .foreground.pid) created=$(get .created_ms)
 chat=${HERDR_RESTART_CHAT:-$(get '.labels["herdr.chat"]')}
 chat=${chat##*/}
-if [ "$role" = coordinator ]; then
+# A coordinator placed by a tab, a chat or a chat slot proves where it lives (SHEP-70); one the service started
+# without the window (#980) has only its space, and restarts in the background there.
+placed=$(get '.labels["herdr.tab"] // .labels["herdr.coordinator.tab"] // .labels["herdr.chat.slot"] // .labels["herdr.chat.origin"]')
+identity=""
+[ -n "$space" ] || space=$(get '.labels["herdr.coordinator.space"]')
+if [ "$role" = coordinator ] && [ -z "$chat" ] && [ -z "$placed" ]; then
+  # #980's space alone: its space labels must agree and be this machine's, as the identity check asks of the rest.
+  s1=$(get '.labels["herdr.space"]') s2=$(get '.labels["herdr.coordinator.space"]')
+  if { [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" != "$s2" ]; } || [[ "$s1$s2" == */* ]]; then
+    echo "conflicting or nonlocal Assistant space labels; the previous Assistant was kept." >&2
+    exit 1
+  fi
+fi
+if [ "$role" = coordinator ] && { [ -n "$chat" ] || [ -n "$placed" ]; }; then
   IFS= read -r -d '' identity_code <<'PY_IDENTITY' || :
 # ---- ASSISTANT IDENTITY ----
 """Assistant identity shared by recipient lookup and the standalone restart script."""
@@ -158,7 +176,15 @@ PY_IDENTITY
   identity=$(printf '%s' "$info" | python3 -c "$identity_code") || exit 1
   space=$(jq -r .space <<<"$identity") tab=$(jq -r .tab <<<"$identity")
 fi
-[ -n "$space" ] && [ -n "$tab" ] || [ -n "$chat" ] || exit 1
+# A parked agent (behind a chat) has no tab labels: the chat names where it goes instead.
+# A coordinator in Chat mode says where it lives in its own labels (its workers name that tab).
+[ -n "$tab" ] || tab=$(get '.labels["herdr.coordinator.tab"]')
+# Somewhere to start the new one: a tab, a chat, or (#980) a space alone: the service's own Assistant on a machine
+# without the window (service/spaces.ts) has a space but no tab or chat, and restarts in the background there too.
+if [ -z "$space" ] && [ -z "$chat" ]; then
+  echo "$old has no space, tab or chat to restart into." >&2
+  exit 1
+fi
 
 # What the previous agent did: its screen, and its session log when we can find it.
 dir=${HERDR_APP_HOME:-$HOME/.config/herdr-app}/data/coordinator/handoff
@@ -192,7 +218,13 @@ if [ "$role" = coordinator ]; then
   fi
 fi
 
-labels=(--label "herdr.space=$space" --label "herdr.tab=$tab")
+if [ -n "$tab" ]; then
+  labels=(--label "herdr.space=$space" --label "herdr.tab=$tab")
+else
+  # #980: no tab (an Assistant the service started without the window): kept in the background under its space,
+  # as the service starts it, so its space's chat finds the new one
+  labels=(--keep --label "herdr.space=$space")
+fi
 # An agent in Chat mode (parked behind a chat pane) restarts parked behind the same chat.
 if [ -n "$chat" ]; then
   origin=$(get '.labels["herdr.chat.origin"]'); origin=${origin:-$old}
@@ -201,7 +233,8 @@ if [ -n "$chat" ]; then
   [ -n "$slot" ] && labels+=(--label "herdr.chat.slot=$slot")
 fi
 if [ "$role" = coordinator ]; then
-  labels+=(--label herdr.role=coordinator --label "herdr.coordinator.space=$space" --label "herdr.coordinator.tab=$tab")
+  labels+=(--label herdr.role=coordinator --label "herdr.coordinator.space=$space")
+  [ -n "$tab" ] && labels+=(--label "herdr.coordinator.tab=$tab")
 fi
 # Worker association survives even when the replacement no longer has a parent.
 for k in herdr.coordinator herdr.agent; do
@@ -263,6 +296,14 @@ fi
 [ -n "$new" ] && [ "$new" != null ] && [ "$new" != "$old" ] || exit 1
 if [ "$role" = coordinator ]; then
   replacement=$(hc get "$new" --json) || replacement='{}'
+  if [ -z "$identity" ]; then
+    # #980: a space alone, so no saved chat to prove it against: the new one must sit under that space.
+    jq -e --arg space "$space" '.state == "live" and .labels["herdr.role"] == "coordinator"
+      and .labels["herdr.space"] == $space and .labels["herdr.coordinator.space"] == $space' <<<"$replacement" >/dev/null || {
+      echo "The replacement Assistant has no verified route; the previous Assistant was kept ($new was left for inspection)." >&2
+      exit 1
+    }
+  else
   route=$(printf '%s' "$replacement" | python3 -c "$identity_code" 2>/dev/null) || route=''
   if [ "$route" != "$identity" ] || ! jq -e --arg space "$space" --arg tab "$tab" --arg chat "$chat" --arg origin "${origin:-}" --arg slot "${slot:-}" '
     .state == "live" and .labels["herdr.role"] == "coordinator"
@@ -274,7 +315,8 @@ if [ "$role" = coordinator ]; then
     echo "The replacement Assistant has no verified route; the previous Assistant was kept ($new was left for inspection)." >&2
     exit 1
   fi
-  for w in $workers; do hc label "$w" "herdr.coordinator=$tab" >/dev/null 2>&1; done
+  fi
+  [ -n "$tab" ] && for w in $workers; do hc label "$w" "herdr.coordinator=$tab" >/dev/null 2>&1; done
 fi
 hc kill "$old" >/dev/null 2>&1
 hc rm "$old" >/dev/null 2>&1

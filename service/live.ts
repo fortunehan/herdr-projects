@@ -9,7 +9,10 @@ import type { Chats, Watcher } from "./chats.ts";
 import type { Compat } from "./compat.ts";
 
 // A page's socket: the chats it follows (by 2.1's chat key), each with the terminal and the watcher it holds.
-type WS = ServerWebSocket<{ who: string; keys?: string[]; chats?: Map<string, { addr: string; watcher: Watcher }>; push?: string | null; visible?: boolean; seen?: number }>;
+type WS = ServerWebSocket<{ who: string; keys?: string[]; chats?: Map<string, { addr: string; watcher: Watcher }>; push?: string | null; visible?: boolean; seen?: number; from?: string | null }>;
+
+/** how long a wake word (or an open, SHEP-246) waits for a page of its device to show up */
+export const WAKE_HELD_MS = 15_000;
 
 export class Live {
   private pages = new Set<WS>();
@@ -20,8 +23,12 @@ export class Live {
   chats: Chats | null = null;
   /** told which devices have the app on screen (they get no push) */
   onVisible: ((endpoints: Set<string>) => void) | null = null;
+  /** told which tailnet device a push subscription is on (a page knows both): push.ts nodeOf */
+  onPushDevice: ((endpoint: string, device: string) => void) | null = null;
   compat: Compat | null = null;
   private snap: string | null = null;
+  /** a wake word or an open no page of its device had on screen yet (voiceWake, go): the next one that shows up takes it */
+  private wake: { from: string; at: number; msg: string } | null = null;
 
   constructor(private hub: Hub, private store: Store, private me: () => Me | null, private version: string, private link: () => string | null = () => null) {
     hub.on((e) => {
@@ -107,7 +114,34 @@ export class Live {
       ws.data.push = typeof m.push === "string" ? m.push : null;
       ws.data.visible = m.visible !== false;
       this.visibleNow();
+      if (ws.data.push && ws.data.from) this.onPushDevice?.(ws.data.push, ws.data.from);
+      if (this.wake && ws.data.from === this.wake.from && ws.data.visible && Date.now() - this.wake.at < WAKE_HELD_MS) {
+        const msg = this.wake.msg;
+        this.wake = null;
+        ws.send(msg);
+      }
     }
+  }
+
+  /** A wake word was heard on device `from` (POST /api/voice/wake, SHEP-240): that device's page on screen, the one used
+   *  last, starts a voice call (or shows the one on: never hangs up). Pages of other devices never hear it. None on
+   *  screen yet (a phone bringing Shepherdr forward or starting it): the first that shows up within 15 s does. True: a
+   *  page got it now. */
+  voiceWake(from: string) { return this.toDevice(from, JSON.stringify({ type: "voice" })); }
+
+  /** Open an alert's link on device `from` (POST /api/open, SHEP-246): its page on screen used last goes there in place,
+   *  as a tap on the alert does, without reloading. None on screen yet: the first that shows up within 15 s does. */
+  go(from: string, url: string) { return this.toDevice(from, JSON.stringify({ type: "go", url })); }
+
+  /** one message to device `from`'s page on screen it used last, or held for its first page within 15 s */
+  private toDevice(from: string, msg: string) {
+    let best: WS | null = null;
+    for (const ws of this.pages)
+      if (ws.data.from === from && ws.data.visible !== false && ws.readyState === 1 && (!best || (ws.data.seen ?? 0) > (best.data.seen ?? 0))) best = ws;
+    if (!best) { this.wake = { from, at: Date.now(), msg }; return false; }
+    this.wake = null;
+    best.send(msg);
+    return true;
   }
 
   /** Shows an artifact where the person is (herdr-artifact open, service/show.ts): the page on screen they used

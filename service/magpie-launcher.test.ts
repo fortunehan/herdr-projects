@@ -154,7 +154,7 @@ test("Assistant one-off templates use the chosen wrapper and keep the Claude ses
     expect(tpl.argv?.slice(0, 5)).toEqual([`claude-${launcher}`, "--model", "custom/model", "--effort", "high"]);
     expect(tpl.words).toBe("Assistant instructions");
     const write = hub.calls.findLast((c) => c.argv[2]?.includes('printf "%s"'))!;
-    expect(write.argv.at(-1)).toContain(`exec 'claude-${launcher}'`);
+    expect(write.argv.at(-1)).toContain(`exec claude-${launcher} `);
     expect(write.argv.at(-1)).toContain('do unset "$v"; done');
     expect(write.on).toBe("vm");
     tpl.done();

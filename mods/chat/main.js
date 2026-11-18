@@ -52,6 +52,7 @@ import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
 import { SH } from "./core/paths.js";
+import { settle } from "./core/pending.js";
 import { dirs, dirsReady } from "./dirs.js";
 import * as agent from "./agent.js";
 import { cleanCommand } from "./core/clean-env.js";
@@ -472,6 +473,7 @@ export default class Chat extends View {
     // subagents, its background shells) count seconds for their first minute, then minutes.
     let ticks = 0;
     cx.timer.every(1000, (cx) => {
+      this.forgetHidden();
       if (this.call) return;
       ticks++;
       const rows = [...this.helpers(), ...this.jobs()];
@@ -1372,12 +1374,15 @@ export default class Chat extends View {
         if (this.phase === "ended" && !this.swapping) {
           // A thread stays open on its notice; ✕ closes it.
           if (this.thread) return;
+          // An Assistant that ran and ended (its /exit, GitHub #1039): its tab stays, with Restart Assistant (the same
+          // conversation, resumed) where its chat was. Closing it is the person's call.
+          if (this.resumable()) { this.endedAssistant = true; cx.notify(); return; }
           // A Coordinator tab's chat stays: empty again, ready to start the next one. One that ended before it ever
           // ran (its CLI not found on another machine, GitHub #839) says why, and the message goes back in the box.
           if (this.role) {
             const lost = !this.path ? this.pending.filter((p) => p.msg || p.text) : [];
             const why = lost.length ? await this.endedWhy(this.addr) : "";
-            this.addr = null; this.path = null; this.reset(); this.phase = "fresh";
+            this.startFresh();
             if (lost.length) {
               this.pending = this.pending.filter((p) => !lost.includes(p));
               if (!this.box.value().trim()) this.box.set_value(lost.map((p) => p.msg?.text ?? p.text).filter(Boolean).join("\n\n"));
@@ -2207,6 +2212,50 @@ export default class Chat extends View {
     run("pane-chat.toggle");
   }
 
+  // An Assistant whose agent ended after it ran: its session can be resumed (restartAssistant()).
+  resumable() {
+    return Boolean(!this.thread && !this.inner && this.assistant() && this.addr && this.path && agent.sessionOf(this.kind, this.path));
+  }
+
+  // The Coordinator tab's chat empty again, ready to start the next Assistant.
+  startFresh() {
+    this.endedAssistant = false;
+    this.addr = null; this.path = null; this.reset(); this.phase = "fresh";
+  }
+
+  // Restart Assistant, after its agent ended (GitHub #1039): the same conversation resumed, with its flags, parked
+  // behind this chat, which follows it (as the model picker's restart does).
+  restartAssistant(cx) {
+    const mine = this.myPane() ?? this.lastPane;
+    if (this.restarting || !mine || !this.addr) return;
+    this.restarting = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await hc(["get", this.addr, "--json"]);
+        let t = null;
+        try { t = JSON.parse(r.stdout || "null"); } catch {}
+        if (!t || t.error) throw new Error("Its old terminal is gone. Start a new Assistant instead.");
+        // A magpie or cdnd launcher's Assistant resumes through its launcher, not the bare claude under it.
+        const launched = agent.launchArgv(t);
+        const via = launched.includes("herdr-magpie") || agent.launcherOf(launched) !== "direct" ? launched : null;
+        const argv = agent.resumeArgv(this.kind, via ?? this.argv ?? t.argv ?? [this.kind], agent.sessionOf(this.kind, this.path));
+        this.swapping = true;
+        const next = await agent.restart(t, { argv, resume: true, base: argv }, mine);
+        this.endedAssistant = false;
+        this.follow_to(next);
+        this.note = { id: `note-${Date.now()}`, text: "Restarted. The conversation continues." };
+        cx.timer.after(6000, (cx) => { this.note = null; cx.notify(); });
+        cx.spawn(async (cx) => this.follow(cx));
+      } catch (e) {
+        toast({ title: "The Assistant didn't restart", body: plainError(e), level: "error" });
+      }
+      this.swapping = false;
+      this.restarting = false;
+      cx.notify();
+    });
+  }
+
   // The agent ended: its pane would have closed, so this one does.
   closeSelf() {
     if (this.inner) { backToTasks(); return; }
@@ -2389,7 +2438,15 @@ export default class Chat extends View {
     const tab = panes().find((p) => p.pane === this.myPane())?.tab;
     const space = spaces().find((s) => s.tabs.some((x) => x.id === tab));
     const folder = this.t?.foreground?.cwd ?? this.t?.cwd ?? undefined;
-    run("tab.new", { space: space?.id, folder, argv: agent.forkArgv(this.kind, agent.launchArgv(this.t), session) });
+    const args = { space: space?.id, folder, argv: agent.forkArgv(this.kind, agent.launchArgv(this.t), session) };
+    // #1050: the task's agent still runs in that folder: a fork would be a second agent there, so ask first
+    if (agent.liveTaskAgent(this.t, terminals())) {
+      const ask = agent.FORK_LIVE;
+      openOverlay({ mod: "confirm-chat", kind: "dialog", width: 420, height: 188, props: { title: ask.title, detail: ask.detail,
+        verb: ask.verb, cancel: ask.cancel, command: { name: "tab.new", args } } });
+      return;
+    }
+    run("tab.new", args);
   }
 
   // ---- dictation ----------------------------------------------------------------------------
@@ -2867,8 +2924,9 @@ export default class Chat extends View {
         // The task shown now: the view follows its new agent only while it still shows it (core/thread-bind.js).
         const before = shared("tasks.thread") ?? null;
         this.swapping = true;
-        const r = await exec(`${appHome()}/mods/tasks/bin/herdr-task`, [...(on ? ["--on", on] : []), "switch", ref, "--folder", folder,
-          "--argv", JSON.stringify(built.base), "--json"]);
+        const cli = (a) => exec(`${appHome()}/mods/tasks/bin/herdr-task`, a);
+        const r = await settle(cli, await cli([...(on ? ["--on", on] : []), "switch", ref, "--folder", folder,
+          "--argv", JSON.stringify(built.base), "--json"]));
         let out = null;
         try { out = JSON.parse(r.stdout || "null"); } catch {}
         if (r.code !== 0 || !out?.terminal) throw new Error(out?.error || r.stderr?.trim().split("\n").pop() || "Its agent didn't start.");
@@ -2895,7 +2953,8 @@ export default class Chat extends View {
     const before = shared("tasks.thread") ?? null;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(`${appHome()}/mods/tasks/bin/herdr-task`, [...(k.machine ? ["--on", k.machine] : []), "resume", String(k.id), "--json", "--folder", k.folder]);
+        const cli = (a) => exec(`${appHome()}/mods/tasks/bin/herdr-task`, a);
+        const r = await settle(cli, await cli([...(k.machine ? ["--on", k.machine] : []), "resume", String(k.id), "--json", "--folder", k.folder]));
         let out = null;
         try { out = JSON.parse(r.stdout || "null"); } catch {}
         if (r.code !== 0 || !out?.terminal) throw new Error(out?.error || r.stderr?.trim().split("\n").pop() || "Its agent didn't start.");
@@ -4465,6 +4524,17 @@ export default class Chat extends View {
     return Boolean(this.field);
   }
 
+  // A copy in a tab the window doesn't show (another space or tab) isn't drawn, so the wasFocused of its last draw
+  // stayed true and coming back to it never counted as the pane newly focused: its box stayed without the keyboard
+  // whenever another area held it (#1059). Forgotten while hidden (the 1 s timer runs for hidden copies too), so the
+  // first draw back puts the keyboard in the box. A task's chat in the Tasks panel has no tab of its own: left alone.
+  forgetHidden(ps = panes(), tab = focused()?.tab) {
+    if (!this.wasFocused || this.thread || this.inner || !tab) return;
+    const mine = this.myPane();
+    const p = mine && ps.find((x) => x.pane === mine);
+    if (p?.tab && p.tab !== tab) this.wasFocused = false;
+  }
+
   render(cx) {
     return inRender(() => this.draw(cx));
   }
@@ -4577,6 +4647,11 @@ export default class Chat extends View {
     if (this.phase === "ended" && this.thread) return root.child(this.notice(t, WORDS.taskEnded, null, [
       ...(this.taskKey ? [this.button("chat-resume", this.resuming ? WORDS.resuming : "Resume",null, "primary", t, (cx) => this.resumeTask(cx))] : []),
       this.button("chat-close", this.inner ? "Back to tasks" : "Close", null, "secondary", t, () => this.closeSelf())]));
+    if (this.phase === "ended" && !this.swapping && this.endedAssistant) return root.child(this.notice(t, WORDS.assistantEnded, WORDS.assistantEndedBody, [
+      this.button("chat-restart-assistant", this.restarting ? WORDS.restarting : "Restart Assistant", null, "primary", t, (cx) => this.restartAssistant(cx)),
+      this.role
+        ? this.button("chat-new-assistant", "Start a new one", null, "secondary", t, (cx) => { this.startFresh(); cx.notify(); })
+        : this.button("chat-close", "Close chat", null, "secondary", t, () => this.closeSelf())]));
     if (this.phase === "ended" && !this.swapping) return root.child(this.notice(t, WORDS.agentEnded, null, [
       this.button("chat-close", "Close chat", null, "secondary", t, () => this.closeSelf())]));
     const open = this.button("chat-open-terminal", WORDS.openTerminal,"mods/workspace-chrome/terminal.svg", "primary", t, () => this.toTerminal());

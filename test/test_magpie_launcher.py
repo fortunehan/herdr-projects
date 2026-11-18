@@ -94,7 +94,7 @@ class MagpieLauncher(unittest.TestCase):
         self.layers[2] = {"worker": {"argv": raw, "launcher": "magpie"}}
         self.assertEqual(self.argv({"model": "ignored/model", "effort": "max", "launcher": "direct"}), raw)
         self.assertEqual(settings.agent_key(["/some/bin/claude-magpie"]), "claude")
-        self.assertEqual(launch.resume_argv(raw, "S1"), raw + ["--resume", "S1"])
+        self.assertEqual(launch.resume_argv(raw, "S1"), raw + ["--permission-mode", launch.claude_mode(raw), "--resume", "S1"])
         owned = launch.own_argv(raw)
         self.assertIn("PermissionRequest", owned[owned.index("--settings") + 1])
 
@@ -131,7 +131,7 @@ class MagpieLauncher(unittest.TestCase):
                 patch.object(commands, "handoff", return_value="handoff"):
             commands.start_again(self.store, task, "sp1")
             self.assertEqual(run.call_args.args[2], old)
-            self.assertEqual(run.call_args.kwargs["resume"], old + ["--resume", "S1"])
+            self.assertEqual(run.call_args.kwargs["resume"], old + ["--permission-mode", "default", "--resume", "S1"])
             self.layers[2]["worker"]["argv"] = old
             commands.start_again(self.store, task, "sp1")
             self.assertFalse(run.call_args.kwargs["custom"])

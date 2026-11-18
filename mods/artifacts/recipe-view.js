@@ -9,7 +9,7 @@ import { image } from "gpui-kit";
 import { theme, shared, setShared, props } from "herdr";
 import { asset, reply } from "./artifact.js";
 import data from "./recipe-data.js";
-import { chartShapes, choiceReply, formReply, isLink, mediaKind, withIds } from "./recipe.js";
+import { chartShapes, choiceReply, formReply, isLink, mdParts, mediaKind, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
 // it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
@@ -32,15 +32,48 @@ export default class RecipeView extends View {
     this.sent = new Map();     // a choice's or form's words, once sent
     this.inputs = new Map();   // a form field's InputState
     this.checks = new Map();   // a form checkbox's value
+    this.copied = null;        // the code box just copied, for its "Copied" a moment
     try { this.recipe = withIds(data); } catch { this.error = "This artifact's recipe can't be read."; }
+    // every form field's InputState now: GPUI refuses InputState.new during render (#1026)
+    const walk = (bs) => (Array.isArray(bs) ? bs : []).forEach((b) => {
+      if (b?.type === "form") (b.fields ?? []).forEach((f) => f.kind !== "checkbox" && this.input(b, f));
+      else if (b?.type === "columns") (b.columns ?? []).forEach(walk);
+      else if (b?.type === "tabs") (b.tabs ?? []).forEach((x) => walk(x?.blocks));
+      else if (b?.type === "details") walk(b.blocks);
+    });
+    walk(this.recipe?.blocks);
   }
 
   async close() {
     if (shared(HOLDER)?.who === ME) setShared(HOLDER, null);
   }
 
+  // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
   md(id, text, t) {
-    return div().w_full().min_w(0).text_size(13).text_color(t.foreground).child(TextView.markdown(`md-${id}`, String(text ?? " ")).selectable(true));
+    const words = (key, w) => div().w_full().min_w(0).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
+    const parts = mdParts(text);
+    if (!parts.some((x) => "code" in x)) return words(`md-${id}`, String(text ?? " "));
+    return v_flex().w_full().min_w(0).gap(8).children(parts.map((x, i) => "code" in x ? this.code(`${id}-c${i}`, x.code, t) : words(`md-${id}-${i}`, x.md)));
+  }
+
+  // A code box: its text, and a Copy button at its top right that puts all of it on the clipboard (the
+  // window binds no copy key to a page's selected text, so this is how a command gets out whole). "Copied" a moment.
+  code(key, text, t) {
+    const done = this.copied === key;
+    return h_flex().w_full().min_w(0).p(10).gap(8).items_start().rounded(8).bg(t.surface)
+      .child(div().flex_1().min_w(0).font_family("JetBrains Mono").text_size(12).whitespace_normal().child(String(text)))
+      .child(div().id(`copy-${key}`).flex_none().h(22).px(8).flex().items_center().rounded(6).border_1().border_color(t.border)
+        .bg(t.background).text_size(12).text_color(done ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => this.copy(key, text, cx))
+        .child(done ? "Copied" : "Copy"));
+  }
+
+  copy(key, text, cx) {
+    cx.stop_propagation();
+    cx.write_to_clipboard(String(text));
+    this.copied = key;
+    cx.notify();
+    cx.timer.after(1500, (cx) => { if (this.copied === key) { this.copied = null; cx.notify(); } });
   }
 
   send(key, text, cx) {
@@ -50,6 +83,7 @@ export default class RecipeView extends View {
     cx.spawn(async (cx) => { if (!(await reply(text))) this.sent.delete(key); cx.notify(); });
   }
 
+  // a form field's InputState, made in init() (render only reads it)
   input(b, f) {
     const k = `${b.id}:${f.name}`;
     if (!this.inputs.has(k)) {
@@ -129,7 +163,7 @@ export default class RecipeView extends View {
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
           : image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border))
         .child(div().text_size(12).text_color(t.muted).child(x.caption ?? w))));
-      case "code": return div().w_full().p(10).rounded(8).bg(t.surface).font_family("JetBrains Mono").text_size(12).whitespace_normal().child(b.text);
+      case "code": return this.code(b.id, b.text, t);
       case "callout": return v_flex().gap(4).p(12).rounded(8).bg(t[TONE[b.tone ?? "info"]] ? t.surface : t.surface).border_l(3).border_color(t[TONE[b.tone ?? "info"]] ?? t.border)
         .when(!!b.title, (e) => e.child(div().text_size(13).font_semibold().child(b.title)))
         .when(!!b.md, (e) => e.child(this.md(b.id, b.md, t)));

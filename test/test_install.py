@@ -68,7 +68,7 @@ class Install(unittest.TestCase):
         out = run("install", "--root", self.root, "--yes").stdout
         self.assertRegex(out, r"files: \d+ new\n")
         rec = json.load(open(self.p(APP, "data/shepherdr/installed.json")))
-        self.assertEqual(rec["version"], "3.1.34")
+        self.assertEqual(rec["version"], "3.1.42")
         self.assertTrue(os.path.isfile(self.p(APP, "mods/tasks/bin/herdr-task")))
         self.assertTrue(os.path.isfile(self.p(APP, "layouts/shepherdr.json")))
         self.assertEqual(os.path.realpath(self.p(".local/bin/herdr-task")), os.path.realpath(self.p(APP, "mods/tasks/bin/herdr-task")))
@@ -398,10 +398,10 @@ class Install(unittest.TestCase):
         run("doctor", "--root", self.root, ok=False)
 
     def test_doctor_leaves_mods_that_are_not_shepherdrs_alone(self):
-        """SHEP-22: an artifact viewer (art-<id>, carrying Mark up's helpers) or the person's own mod with a copy of a
-        shared module is not a stray copy; a hand-made copy in one of Shepherdr's mods still fails doctor."""
+        """SHEP-22: an artifact viewer (art-<id>, carrying Mark up's helpers) with a copy of a shared module is not a
+        stray copy (upstream's SHEP-222 skip); a hand-made copy in another mod still fails doctor."""
         run("install", "--root", self.root, "--yes")
-        for mod in ("art-some-proof-1a2b", "art-pc-some-proof-3c4d--v2", "mine"):
+        for mod in ("art-some-proof-1a2b", "art-pc-some-proof-3c4d--v2"):
             os.makedirs(self.p(APP, "mods", mod, "core"))
             shutil.copyfile(os.path.join(ROOT, "lib", "dirs.js"), self.p(APP, "mods", mod, "dirs.js"))
             shutil.copyfile(os.path.join(ROOT, "core", "paths.js"), self.p(APP, "mods", mod, "core", "paths.js"))
@@ -412,7 +412,6 @@ class Install(unittest.TestCase):
         d = run("doctor", "--root", self.root, ok=False).stdout
         self.assertIn("mods/keybinds/core/paths.js looks like a copy of lib/core/paths.js", d)
         self.assertNotIn("art-", d)
-        self.assertNotIn("mods/mine/", d)
 
     def test_doctor_says_why_not_shared(self):
         """doctor (GitHub #754): when tailscale serve refused the share, it's broken (not a note), in tailscale's own
@@ -587,6 +586,68 @@ class Install(unittest.TestCase):
         finally:
             sh.bun_path, sh.has_unit, sh.calls_on, sh.subprocess.run, sh.service_answers = saved
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_linked_unit_is_left_alone(self):
+        """GitHub #1048: a Nix home-manager unit is a link into /nix/store. An update leaves it a link (no file written,
+        none recorded, so uninstall never takes it), restarts the service without enabling it, and says so."""
+        from importlib.machinery import SourceFileLoader
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        if sys.platform == "darwin":
+            self.skipTest("a systemd unit")
+        root = tempfile.mkdtemp(prefix="shepherdr-nix-")
+        ran = []
+        saved = (sh.bun_path, sh.calls_on, sh.subprocess.run, sh.service_answers)
+        try:
+            sh.bun_path = lambda: "/usr/bin/bun"
+            sh.calls_on = lambda r: 0
+            sh.service_answers = lambda r: (True, 7788)
+            sh.subprocess.run = lambda argv, **k: ran.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")
+            store = os.path.join(root, "store-unit.service")   # stands in for /nix/store/<hash>-shepherdr.service
+            with open(store, "w") as f:
+                f.write("[Service]\nExecStart=nix's own\n")
+            unit = os.path.join(root, sh.UNIT)
+            os.makedirs(os.path.dirname(unit))
+            os.symlink(store, unit)
+            r, rec = sh.Run(root, False), {"files": {sh.UNIT: "an older sha"}}
+            sh.install_service(r, rec, True)
+            self.assertTrue(os.path.islink(unit))
+            self.assertEqual(open(store).read(), "[Service]\nExecStart=nix's own\n")
+            self.assertNotIn(sh.UNIT, rec["files"])
+            self.assertTrue(any("links to " + store in n and "left as it is" in n for n in r.notes), r.notes)
+            self.assertIn(["systemctl", "--user", "restart", "shepherdr.service"], ran)
+            self.assertNotIn(["systemctl", "--user", "enable", "shepherdr.service"], ran)
+            # a plain unit (ours) is still written and recorded as before
+            os.remove(unit)
+            r, rec, ran[:] = sh.Run(root, False), {}, []
+            sh.install_service(r, rec, True)
+            self.assertFalse(os.path.islink(unit))
+            self.assertIn(sh.UNIT, rec["files"])
+            self.assertIn(["systemctl", "--user", "enable", "shepherdr.service"], ran)
+        finally:
+            sh.bun_path, sh.calls_on, sh.subprocess.run, sh.service_answers = saved
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_unit_path_has_hc(self):
+        """GitHub #1048: the unit's PATH holds the folder hc was found in, wherever that is (a Nix profile, not
+        ~/.local/bin); a tool linked into the Nix store goes on by its profile's folder, which outlives an upgrade."""
+        from importlib.machinery import SourceFileLoader
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        tmp = tempfile.mkdtemp(prefix="shepherdr-path-")
+        old = os.environ["PATH"]
+        try:
+            prof = os.path.join(tmp, "profile", "bin")
+            os.makedirs(prof)
+            with open(os.path.join(prof, "hc"), "w") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(os.path.join(prof, "hc"), 0o755)
+            os.environ["PATH"] = prof + os.pathsep + old
+            rel, text = sh.unit_text(tmp, "/usr/bin/bun", None)
+            path = next(l for l in text.splitlines() if "PATH" in l)
+            self.assertIn(prof, path)
+            self.assertEqual(sh.tool_dir("hc", "/home/u/.nix-profile/bin/hc"), "/home/u/.nix-profile/bin")
+        finally:
+            os.environ["PATH"] = old
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_update_web_only(self):
         """A web-only install updates web only (the record says so), and doctor says how; one whose source is gone says
@@ -894,6 +955,50 @@ class Install(unittest.TestCase):
             self.assertFalse(os.path.lexists(os.path.join(root, ".local/bin/shepherdr-statusline")))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+class LayoutBrandRow(unittest.TestCase):
+    """#1032: the sidebar's top row (layout block "brand") is Shepherdr's own, with the voice call button beside Search.
+    A layout from before, which the person's sizes made their own (kept on update), gets only that block changed."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shepherdr-test-")
+        os.makedirs(os.path.join(self.root, APP))
+        self.src = tempfile.mkdtemp(prefix="shepherdr-src-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.src, ignore_errors=True)
+
+    @staticmethod
+    def brand(d):
+        return next(c for c in d["children"][0]["children"] if c["id"] == "brand")
+
+    def test_the_shipped_layout_uses_shepherdrs_brand_row(self):
+        d = json.load(open(os.path.join(ROOT, "layouts", "shepherdr.json")))
+        self.assertEqual(self.brand(d)["content"]["mod"], "workspace-chrome-shepherdr")
+
+    def test_an_older_layout_the_person_resized_gets_only_its_brand_row_moved(self):
+        old = os.path.join(self.src, "s")
+        shutil.copytree(ROOT, old, ignore=shutil.ignore_patterns(".git", "node_modules"))
+        lay = os.path.join(old, "layouts", "shepherdr.json")
+        d = json.load(open(lay))
+        self.brand(d)["content"]["mod"] = "workspace-chrome"
+        with open(lay, "w") as f:
+            f.write(json.dumps(d, indent=2) + "\n")
+        run("install", "--root", self.root, "--yes", "--source", old)
+        mine = os.path.join(self.root, APP, "layouts", "shepherdr.json")
+        d = json.load(open(mine))
+        d["children"][0]["size"] = {"px": 312}
+        with open(mine, "w") as f:
+            f.write(json.dumps(d, indent=2) + "\n")
+        up = run("update", "--root", self.root, "--source", ROOT).stdout
+        d = json.load(open(mine))
+        self.assertEqual(self.brand(d)["content"]["mod"], "workspace-chrome-shepherdr")
+        self.assertEqual(d["children"][0]["size"], {"px": 312}, "the person's sidebar width stays")
+        self.assertIn("the voice call button beside Search", up)
+        self.assertTrue(os.path.exists(mine + ".new"))
+        # Again: nothing more to move.
+        again = run("update", "--root", self.root, "--source", ROOT).stdout
+        self.assertNotIn("the voice call button beside Search", again)
 
 
 class AudioTools(unittest.TestCase):

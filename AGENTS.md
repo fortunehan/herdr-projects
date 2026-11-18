@@ -61,6 +61,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 - On a busy dev Mac, Bun tests can pass the default 5 s timeout: rerun the failed files with `bun test --timeout 60000`.
+- A quick before/after of herdr-task settings logic without a second worktree: a `python3 -I` script that puts each tree's
+  `mods/tasks/bin` on `sys.path`, sets `HERDR_TASK_SETTINGS` to a scratch file and stubs `herdr_task.autopilot.window_spaces`.
 
 ## Trying a change
 
@@ -93,6 +95,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   sub line with `place()` and `secondLine()`. For whole rendered rows, build main's dist in a git-archive copy with
   node_modules symlinked from the worktree, and make each stub's snapshot with that tree's own `service/compat.ts`
   `Compat().snapshot({host,user,machines,spaces,sections,rows})`, rows placed by that tree's `core/tasks.js`.
+- Two throwaway cores on one VM: `herdr-task --on <it>` installs its bundle into the real `~/.local/bin/herdr-task` unless
+  `$HERDR_TASK_STORE/.remote/<machine>` already says `source`; write that first.
 - A cross-machine send without ssh: two throwaway cores (`HC_SESSION=a`/`b`, clean `env -i`) and
   `hc machine add --via 'sh -c' --name vmb --session b` on a; the wrap only shows with a real agent (e.g.
   `claude --model haiku`) as the target.
@@ -107,11 +111,19 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Python tests: each `test/test_*.py` imports `home_guard` first (a throwaway HOME for the run; touching the real home
   fails the test). Run them with `discover -s test` or from `test/`; one class from `test/` with
   `cd test && python3 -m unittest test_herdr_task.ClassName` (from the repo root the module import fails).
+- herdr-task tests that need a real task list on disk plus a faked `begin()`: reuse Scheduled's setUp/run_cmd/tick_at as class
+  attributes (see DoubleStart) instead of subclassing, which reruns Scheduled's tests.
+- Before-checks against main: `git archive origin/main | tar -x -C <scratch>`, copy the branch's new tests in, run there
+  (installer: `SHEPHERDR_HANDED_OVER=1`; a git worktree of main fails, it's checked out in ~/dev/shepherdr). Patch new names
+  with `mock.patch.object(..., create=True)` so the same test runs on both.
 - Tests that run accept or merge with the real `finish()` must stub `github.live_agents` and `live_helpers` (hc is
   refused under test).
 - Bun.spawn ignores a PATH changed inside a test: point the service at fakes with `SHEPHERDR_HERDR_APP` / `SHEPHERDR_HC`.
 - Bun's `mock.module` does not rebind names a mod already imported: `service/fake-herdr.ts` forwards every name to the last
   stand-in, so test files with different herdr data can share one process.
+- `bun test` from service/ alone skips bunfig's preload (2 false failures): run `bun test service core web` from the repo root.
+- Window-mod methods that need `cx.spawn`'s result in a bun test: give the stub cx a spawn that keeps the promise (see the
+  #1010 tests in service/spaces-sidebar.test.ts). ShepherdrSettings menus go through `mods/shepherdr-settings/over.js`.
 - Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
   service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
   service/spaces-sidebar.test.ts.
@@ -126,10 +138,14 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   shell alias there: use `/usr/bin/diff`.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
+- `herdr-artifact preview` with a branch's viewer: copy mods/artifacts into a scratch folder with `web/dist/artifact-viewer.html`
+  beside it as viewer.html, and run that copy with `HOME=<scratch>` so it uses a throwaway store.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
   <files>`, `bun run build`, copy `web/dist`, `git checkout HEAD -- web`) and run one stub per dist on different ports.
+- Real Codex in a throwaway hc session: `env -i HOME PATH TERM HC_SESSION=x CODEX_HOME=<scratch with auth.json symlinked> hc run --bg ...`;
+  herdr-task's own code refuses hc under a changed HC_SESSION, so feed it saved `hc ls`/`hc get` JSON instead.
 - Crash recovery for real: a throwaway core, `HC_SESSION=<name> hc ...` with `HC_TERMINAL_SOCKET` and Claude's
   `CLAUDE_*` env unset (`CLAUDE_CODE_CHILD_SESSION` turns off transcripts).
 - Service code against a throwaway core (`HC_SESSION=x`): Hub ignores `HC_SESSION`, so pass `new Hub(<wrapper script
@@ -149,6 +165,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   herdr-task against other machines spreads that branch fleet-wide until the next update. Prefer local tests.
 - herdr-task's scheduler re-execs itself within 15 s when its code changes. Its live code is either the zipapp
   `mods/tasks/bin/herdr-task` or the `herdr_task/` folder beside it (`zipfile.is_zipfile` says which).
+- Reach map tests: `test/test_reach.py` puts logging fake ssh/tailscale/hc on PATH and runs the real probe; reuse it for
+  anything that might contact other hosts.
 
 ## Add-ons
 
@@ -180,3 +198,5 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Never cut a new release (version bump, tag, GitHub release, publish) without asking the human first and getting a
   yes.
 - Version bumps are patch only (2.0.0 → 2.0.1) unless the human explicitly asks for a minor or major one.
+- From SHEP-238: headless Chrome with flags herdr-browser ignores (e.g. --autoplay-policy=no-user-gesture-required, fake mic): run ~/.agent-browser/browsers/chrome-*/chrome --headless=new --user-data-dir=<scratch> --screenshot/--dump-dom directly.
+- From SHEP-240: a second visible browser page on the dev VM: run ~/.agent-browser/browsers/chrome-*/chrome --headless=new --remote-debugging-port=<p> <url> in the background and screenshot over CDP (Page.captureScreenshot); herdr-browser's --headers don't reach WebSockets.

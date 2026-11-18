@@ -117,8 +117,8 @@ export function automationsBySpace(list: any[], spaces: Space[], spaceName: (s: 
     // as the window's automation row (mods/tasks autoRow): its name, why it won't run as planned, when it runs next,
     // its last task (a tap opens it), where it is
     const ref = typeof a.last_task === "string" ? a.last_task : null;
-    (out[s?.id ?? `${a.machine ?? ""}:${a.folder}`] ??= []).push({ name: a.title ?? a.id, when: a.last_error ? "Didn't start" : a.paused ? "Paused" : a.when ?? "", what: a.title ?? "", on: !a.paused, next,
-      ...(a.last_error ? { error: String(a.last_error.message ?? ""), failed: a.last_error.kind === "fire" ? "fire" : "start" } : {}),
+    (out[s?.id ?? `${a.machine ?? ""}:${a.folder}`] ??= []).push({ name: a.title ?? a.id, when: a.last_error ? (a.last_error.kind === "from" ? String(a.last_error.message ?? "") : "Didn't start") : a.paused ? "Paused" : a.when ?? "", what: a.title ?? "", on: !a.paused, next,
+      ...(a.last_error ? { error: String(a.last_error.message ?? ""), failed: a.last_error.kind === "fire" || a.last_error.kind === "from" ? a.last_error.kind : "start" } : {}),
       ...(!a.last_error && !a.paused && a.next_run ? { nextAt: a.next_run } : {}),
       ...(ref ? { task: a.machine ? `${a.machine}:${ref}` : ref } : {}),
       listName: s ? spaceName(s) : a.list ?? a.folder, machine: a.machine ?? null,
@@ -236,6 +236,8 @@ export class Compat {
   machineStats: ((m: string | null) => any) | null = null;
 
   /** The model menu and restarts (service/agents.ts), set by main. */
+  /** The agent Shepherdr settings choose for a space's Assistant (main.ts: Settings.role), for a start from the web. */
+  assistantPick: ((space: string) => any) | null = null;
   agents: { info(addr: string, reader: any): Promise<unknown>; restart(addr: string, reader: any, pick: any): Promise<string>; choices(machine: string | null): Promise<unknown>; ownDefaults(): Promise<{ claude: unknown; codex: unknown }> } | null = null;
 
   /** Agents' secret asks (service/secrets.ts), set by main. */
