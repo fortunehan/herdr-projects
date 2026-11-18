@@ -2662,7 +2662,60 @@ class NewWorktrees(unittest.TestCase):
 
     def test_default_branch_name_stays(self):
         t, _ = self.new_worktree(self.task("Fix the login page"))
-        self.assertEqual(t["branch"], "task/1-fix-the-login-page")
+        self.assertEqual(t["branch"], "task/1-fix-login-page")
+
+    TITLE = "Merge icons: complete PR validation and integration of the new icon set"
+
+    def test_slug_keeps_whole_words(self):
+        slug = self.settings.title_slug
+        self.assertEqual(slug(self.TITLE), "merge-icons-complete-pr-validation")
+        self.assertEqual(slug(self.TITLE, 50), "merge-icons-complete-pr-validation-integration-new")
+        words = set(self.TITLE.lower().replace(":", "").split())
+        for limit in range(20, 81):
+            got = slug(self.TITLE, limit)
+            self.assertLessEqual(len(got), limit)
+            self.assertTrue(set(got.split("-")) <= words, got)  # no partial word
+
+    def test_slug_cuts_only_a_long_first_word(self):
+        slug = self.settings.title_slug
+        self.assertEqual(slug("Pneumonoultramicroscopicsilicovolcanoconiosis everywhere", 20), "pneumonoultramicrosc")
+        self.assertEqual(slug("Fix pneumonoultramicroscopicsilicovolcanoconiosis", 20), "fix")
+
+    def test_slug_filler_words(self):
+        slug = self.settings.title_slug
+        self.assertEqual(slug("Add a test for the login of users"), "add-test-login-users")
+        self.assertEqual(slug("The and of"), "the-and-of")  # nothing but filler: kept
+        self.assertEqual(slug("!!!"), "task")
+
+    def test_slug_keeps_versions_whole(self):
+        slug = self.settings.title_slug
+        self.assertEqual(slug("Sync upstream shepherdr 3.1.42"), "sync-upstream-shepherdr-3-1-42")
+        self.assertEqual(slug("Sync upstream shepherdr 3.1.42", 25), "sync-upstream-shepherdr")
+        self.assertEqual(slug("Ship 2 fixes in 10 minutes"), "ship-2-fixes-10-minutes")
+
+    def test_slug_length_setting(self):
+        self.write_settings({"everywhere": {"tasks": {"slug_max": 50}}})
+        self.assertEqual(self.new_worktree(self.task(self.TITLE))[0]["branch"],
+                         "task/1-merge-icons-complete-pr-validation-integration-new")
+        # a space's own wins
+        self.write_settings({"everywhere": {"tasks": {"slug_max": 50}},
+                             "spaces": {"sp1": {"folder": self.main, "tasks": {"slug_max": 20}}}})
+        self.assertEqual(self.new_worktree(self.task(self.TITLE))[0]["branch"], "task/2-merge-icons-complete")
+        # the folder's git config wins over both
+        self.git(self.main, "config", "herdr.slugmax", "25")
+        self.assertEqual(self.new_worktree(self.task(self.TITLE))[0]["branch"], "task/3-merge-icons-complete-pr")
+
+    def test_slug_length_invalid_falls_back(self):
+        for bad in (10, 81, "lots", True, None, -5):
+            self.assertEqual(self.settings.slug_max(bad), 40, bad)
+        self.assertEqual(self.settings.slug_max("60"), 60)
+        self.write_settings({"everywhere": {"tasks": {"slug_max": 500}}})
+        self.assertEqual(self.new_worktree(self.task(self.TITLE))[0]["branch"], "task/1-merge-icons-complete-pr-validation")
+
+    def test_a_task_with_a_branch_keeps_it(self):
+        t = self.task(self.TITLE, branch="task/1-merge-icons-complete-pr-validation-and-i")
+        self.new_worktree(t)
+        self.assertEqual(t["branch"], "task/1-merge-icons-complete-pr-validation-and-i")
 
     def write_settings(self, d):
         with open(self.settings_file, "w") as f:

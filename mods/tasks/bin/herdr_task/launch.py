@@ -18,7 +18,7 @@ import warnings
 
 from .base import ASK_HOME, ENTRY, Fail, git, hc_json, now, run, unlocked, WORKTREES
 from . import local
-from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, keep_review, notes, notes_part, review_limits, settings_block, settings_for, worker_pick, ensure_launcher
+from .settings import agent_key, ASSISTANT_TEMPLATES, trust_roots, bare, BRANCH_PATTERN, branch_pattern_problem, slug_max, title_slug, keep_review, notes, notes_part, review_limits, settings_block, settings_for, worker_pick, ensure_launcher
 from .templates import instructions
 from .agents import detail, LINE_MAX, live_agents, SUMMARY_MAX
 from .github import finish, remote_of
@@ -761,11 +761,13 @@ def set_branch(s, t, name):
 
 def branch_for(s, task):
     """A task's branch: its own (--branch), else its folder's pattern (Shepherdr settings > Tasks >
-    Branch names: {n} its number, {key} its id, {slug} its title's words), else task/{n}-{slug}."""
+    Branch names: {n} its number, {key} its id, {slug} its title's words, at most Branch name length
+    characters: git config herdr.slugmax, else the setting), else task/{n}-{slug}."""
     if task.get("branch"):
         return task["branch"]
-    words = re.sub(r"[^a-z0-9]+", "-", task["title"].lower()).strip("-")[:40].strip("-") or "task"
-    pattern = local.branch_pattern(s, task) or str(settings_for(s, task.get("space"))["tasks"].get("branch") or "").strip()
+    tasks = settings_for(s, task.get("space"))["tasks"]
+    words = title_slug(task["title"], slug_max(local.git_setting(s.loc["folder"], "slugmax") or tasks.get("slug_max")))
+    pattern = local.branch_pattern(s, task) or str(tasks.get("branch") or "").strip()
     if not pattern or branch_pattern_problem(pattern):
         pattern = BRANCH_PATTERN
     name = pattern.replace("{n}", str(task["id"])).replace("{key}", s.ref(task)).replace("{slug}", words)

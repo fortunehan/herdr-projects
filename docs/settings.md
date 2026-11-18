@@ -31,6 +31,7 @@ drops the space's own, and it inherits again. A few settings are one for every s
 | Tasks | Worktrees | Everywhere, space | A folder that isn't a repo, or one that can't take worktrees |
 | Tasks | Base branch (empty: the folder's checked-out branch; on Azure DevOps, `develop` when the remote has it; `git config herdr.base` or a task's own `--base` wins) | Space only | A branch only means something in one repo |
 | Tasks | Branch names (a pattern: `{n}`, `{key}`, `{slug}`; empty: `task/{n}-{slug}`; a task's own `--branch` wins) | Everywhere, space | A team may name branches after its tickets |
+| Tasks | Branch name length (the most characters `{slug}` takes, 20 to 80, 40 by default: whole words only, filler words such as "the" and "of" left out, versions such as 3.1.42 kept whole; `git config herdr.slugmax` wins; only new branches, a task that has one keeps it) | Everywhere, space | `{slug}` names the worktree's folder too, so a repo with deep paths (Windows checkouts) wants it short |
 | Tasks | Run automations | Everywhere, space | Pause one repo's automations |
 | Tasks | When a task starts / finishes | Everywhere, space | Setup and cleanup steps are a repo's |
 | Autopilot | Heartbeat, Schedule, Events | Everywhere, space | Each space works toward its own goal, at its own pace |

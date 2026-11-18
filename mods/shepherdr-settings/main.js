@@ -26,7 +26,7 @@ import { note } from "./usage.js";
 import { over } from "./over.js";
 import { secretsInit, secretsSection } from "./secrets-section.js";
 import { baseInit, baseRow } from "./base-branch.js";
-import { branchInit, branchRow } from "./branch-names.js";
+import { branchInit, branchRow, slugRow } from "./branch-names.js";
 import { feedbackInit, feedbackRow, feedbackRepoRow } from "./feedback-repo.js";
 import { autopilotInit, autopilotSection, autopilotFlush } from "./autopilot-section.js";
 import { spaceName } from "./core/spaces.js";
@@ -550,6 +550,7 @@ export default class ShepherdrSettings extends View {
     const autoOn = shepherdrFor(this.cfg, this.scope).automations.enabled !== false;
     const base = baseRow(this, t);
     const branch = branchRow(this, t);
+    const slug = slugRow(this, t);
     return v_flex()
       .child(this.title(t, page("tasks")))
       .child(this.row(t, rowTitle("tasks.merge"), ABOUT["tasks.merge"],
@@ -578,6 +579,7 @@ export default class ShepherdrSettings extends View {
         this.scoped("tasks", "worktrees")))
       .when(Boolean(base), (el) => el.child(base))
       .when(Boolean(branch), (el) => el.child(branch))
+      .when(Boolean(slug), (el) => el.child(slug))
       .child(this.row(t, rowTitle("automations.enabled"), ABOUT["automations.enabled"],
         toggleSwitch("auto", autoOn, (next, _e, cx) => this.set("automations", "enabled", next, cx)),
         this.scoped("automations", "enabled")))
