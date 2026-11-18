@@ -15,6 +15,7 @@ AGENTS = {"claude": ["claude"], "codex": ["codex", "--no-daemon"]}
 MAGPIE_MODEL = "copilot/claude-sonnet-5.5"
 LAUNCHERS = {"direct", "magpie", "cdnd"}
 LAUNCHER_COMMANDS = {"direct": "claude", "magpie": "claude-magpie", "cdnd": "claude-cdnd"}
+OTHER_CLI_MODEL = re.compile(r"(codex|copilot|openai)/", re.I)
 
 
 def launcher_of(argv):
@@ -130,19 +131,49 @@ def reactions_on(space=None, d=None):
     return DEFAULTS["agents"]["reactions"]
 
 
+_LIVE = {"at": 0.0, "ids": None}
+
+
+def live_space_ids():
+    """This computer's live space ids from the window's list (autopilot's window_spaces), None when
+    no window here can say. Kept a few seconds: settings_for runs many times per command."""
+    import time
+    if time.monotonic() - _LIVE["at"] > 10:
+        from .autopilot import window_spaces
+        win = window_spaces()
+        _LIVE["ids"] = None if win is None else {bare(x.get("id")) for x in win if "/" not in (x.get("id") or "") and not x.get("machine")}
+        _LIVE["at"] = time.monotonic()
+    return _LIVE["ids"]
+
+
+def space_layer(spaces, folder, space=None):
+    """The space entry whose settings a task gets (SHEP-80). A known space id: that space's own
+    entry, or none (Everywhere's then apply), never another space's that shares the folder, as
+    deleted spaces' entries stay in the file. No id: the entries at the folder whose space is still
+    live, the lowest id when several are; when no window can say which are live, only a sole entry."""
+    if bare(space):
+        own = spaces.get(bare(space))
+        return own if isinstance(own, dict) else {}
+    mine = sorted(k for k, v in spaces.items() if isinstance(v, dict) and v.get("folder") == folder)
+    if not mine:
+        return {}
+    live = live_space_ids()
+    if live is None:
+        return spaces[mine[0]] if len(mine) == 1 else {}
+    return next((spaces[k] for k in mine if k in live), {})
+
+
 def settings_layers(s, space=None):
-    """(Everywhere's, this machine's, this folder's) raw settings, least specific first: the
-    folder's are those of the space working in it (--space's when several do)."""
+    """(Everywhere's, this machine's, this space's) raw settings, least specific first (space_layer
+    says which space's)."""
     try:
         with open(SETTINGS) as f:
             d = json.load(f)
     except (OSError, ValueError):
         d = {}
-    spaces = d.get("spaces") or {}
-    mine = [v for k, v in spaces.items() if (v or {}).get("folder") == s.loc["folder"]]
-    pick = (spaces.get(bare(space)) if space and (spaces.get(bare(space)) or {}).get("folder") == s.loc["folder"] else None) or (mine[0] if mine else None)
+    pick = space_layer(d.get("spaces") or {}, s.loc["folder"], space)
     machine = (d.get("machines") or {}).get(d.get("here") or LOCAL_MACHINE)
-    return d.get("everywhere") or {}, machine or {}, pick or {}
+    return d.get("everywhere") or {}, machine or {}, pick
 
 
 def settings_for(s, space=None):
@@ -206,6 +237,9 @@ def argv_for(pick):
         magpie = pick.get("launcher") == "magpie"
         a = [LAUNCHER_COMMANDS.get(pick.get("launcher"), "claude")]
         model = pick.get("model") or (MAGPIE_MODEL if magpie else None)
+        if model and pick.get("launcher") not in ("magpie", "cdnd") and OTHER_CLI_MODEL.match(str(model)):
+            # Another CLI's model on plain Claude (e.g. "codex/gpt-6.1-sol", SHEP-80) would not start: its default model runs.
+            model = None
         effort = pick.get("effort") or ("high" if magpie else None)
         if model:
             a += ["--model", model]

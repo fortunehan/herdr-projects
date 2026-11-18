@@ -4216,6 +4216,81 @@ class AgentReactions(unittest.TestCase):
         self.assertIn("👀", self.sent[2][1])
 
 
+class SettingsFollowTheSpace(unittest.TestCase):
+    """SHEP-80: a task's settings come from the space it starts in, by id: never from a deleted space's entry
+    that shares its folder. A scratch settings file; the window's live spaces are faked."""
+
+    FOLDER = "/repos/shop"
+    STALE = {"folder": FOLDER, "worker": {"agent": "codex", "model": "gpt-6.1-sol", "effort": "high"}}
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.settings as settings
+        import herdr_task.autopilot as ap
+        import herdr_task.assistant_settings as aset
+        self.settings, self.aset = settings, aset
+        self.dir = tempfile.mkdtemp()
+        self.file = os.path.join(self.dir, "settings.json")
+        self.live = ["sp_live"]
+        for target, name, value in ((settings, "SETTINGS", self.file), (aset, "SETTINGS", self.file),
+                                    (ap, "window_spaces", lambda: None if self.live is None else
+                                     [{"id": i, "name": i, "folder": self.FOLDER} for i in self.live])):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        settings._LIVE.update(at=0.0, ids=None)
+        self.addCleanup(settings._LIVE.update, at=0.0, ids=None)
+        self.s = type("S", (), {"loc": {"folder": self.FOLDER, "kind": "repo"}})()
+
+    def write(self, spaces):
+        with open(self.file, "w") as f:
+            json.dump({"version": 1, "everywhere": {"worker": {"agent": "claude", "model": "opus", "effort": "medium"}},
+                       "spaces": spaces}, f)
+
+    def agent_line(self, space):
+        t = {"title": "x", "mode": "worktree", "space": space}
+        return next(x for x in self.settings.task_settings(self.s, t) if x["label"] == "Agent")
+
+    def assistant_worker(self, space):
+        d = self.settings.read_settings()
+        return self.aset.resolve(self.aset.layers(d, space))["worker"]
+
+    def test_a_stale_entry_never_beats_everywhere_for_a_live_space_without_its_own(self):
+        self.write({"sp_gone": self.STALE})
+        argv = self.settings.worker_argv(self.s, {"space": "sp_live"}, "sp_live")
+        self.assertEqual(self.settings.argv_model(argv), ("opus", "medium"))
+        line = self.agent_line("sp_live")
+        self.assertEqual((line["text"], line["by"]), ("claude, model opus, effort medium", "all"))
+        self.assertEqual(self.assistant_worker("sp_live"), {"agent": "claude", "model": "opus", "effort": "medium"})
+        # no space id at all: the folder's only entry is a deleted space's, so Everywhere's still applies
+        self.assertEqual(self.settings.worker_argv(self.s, {})[0], "claude")
+
+    def test_a_space_with_its_own_settings_gets_its_own(self):
+        self.write({"sp_gone": self.STALE, "sp_live": {"folder": self.FOLDER, "worker": {"agent": "codex", "model": "gpt-5"}}})
+        argv = self.settings.worker_argv(self.s, {"space": "sp_live"}, "sp_live")
+        self.assertEqual((argv[0], self.settings.argv_model(argv)), ("codex", ("gpt-5", None)))
+        line = self.agent_line("sp_live")
+        self.assertEqual((line["text"], line["by"]), ("codex, model gpt-5", "folder"))
+        self.assertEqual(self.assistant_worker("sp_live"), {"agent": "codex", "model": "gpt-5"})
+
+    def test_of_two_entries_at_one_folder_the_live_one_wins(self):
+        for gone in ("sp_aaa", "sp_zzz"):  # a deleted space's id sorting before and after the live one's
+            self.write({gone: self.STALE, "sp_live": {"folder": self.FOLDER, "worker": {"agent": "claude", "model": "sonnet"}}})
+            self.settings._LIVE.update(at=0.0)
+            self.assertEqual(self.settings.settings_for(self.s)["worker"]["model"], "sonnet", gone)
+        # no window to say which live: two entries are ambiguous, so neither wins over Everywhere's
+        self.live = None
+        self.settings._LIVE.update(at=0.0)
+        self.assertEqual(self.settings.settings_for(self.s)["worker"]["model"], "opus")
+
+    def test_another_clis_model_on_claude_starts_claudes_default(self):
+        argv = self.settings.argv_for({"agent": "claude", "model": "codex/gpt-6.1-sol", "effort": "high"})
+        self.assertEqual(self.settings.argv_model(argv), (None, "high"))
+        argv = self.settings.argv_for({"agent": "claude", "launcher": "magpie", "model": "copilot/claude-sonnet-5.5"})
+        self.assertEqual(self.settings.argv_model(argv)[0], "copilot/claude-sonnet-5.5")
+
+
 class AssistantSettings(unittest.TestCase):
     """SHEP-42/SHEP-49: a space's Assistant is told its settings (Reactions among them): the block its
     session gets at the start, and the one message a running one gets when some change. A throwaway

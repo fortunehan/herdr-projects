@@ -13,7 +13,7 @@ import os
 import sys
 
 from .base import addon_off, hc_json, MAX_RUNNING, now, run, STORE
-from .settings import DEFAULTS, LOCAL_MACHINE, MUST_WORDS, SETTINGS, agent_key, bare, read_settings
+from .settings import DEFAULTS, LOCAL_MACHINE, MUST_WORDS, SETTINGS, agent_key, bare, merge_worker, read_settings, space_layer
 from .launch import coordinators, is_coordinator
 from . import reactions
 from . import local
@@ -48,7 +48,7 @@ def layers(d, space):
             x = {**x, "agents": {"reactions": old["reactions"], **(x.get("agents") if isinstance(x.get("agents"), dict) else {})}}
         return x
     machine = obj(obj(d.get("machines")).get(d.get("here") or LOCAL_MACHINE))
-    own = obj(obj(d.get("spaces")).get(bare(space))) if space else {}
+    own = obj(space_layer(obj(d.get("spaces")), None, space)) if bare(space) else {}
     return [("everywhere", obj(d.get("everywhere"))), ("machine", machine), ("space", own)]
 
 
@@ -57,7 +57,9 @@ def resolve(ls):
     out = {k: dict(v) for k, v in DEFAULTS.items()}
     for _, layer in ls:
         for k, v in layer.items():
-            if isinstance(v, dict) and isinstance(out.get(k), dict):
+            if isinstance(v, dict) and k in ("worker", "reviewer", "coordinator"):
+                out[k] = merge_worker(out[k], v)  # as a task's own settings_for merges them
+            elif isinstance(v, dict) and isinstance(out.get(k), dict):
                 out[k].update({kk: vv for kk, vv in v.items() if vv is not None})
             elif k in out and v is not None:
                 out[k] = v
