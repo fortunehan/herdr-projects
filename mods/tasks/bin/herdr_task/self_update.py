@@ -385,7 +385,7 @@ def cmd_self_update(args):
     st = read_state()
     src = source_checkout()
     on = enabled()
-    lines = [f"Update after a Shepherdr task merges: {'on' if on else 'off'} on this machine"
+    lines = [f"Update after a Shepherdr task merges: {'on' if on else 'off'} here"
              + (f" (checkout: {tilde(src)})" if src else " (no install record names a checkout)")]
     if st.get("running"):
         lines.append(f"Running now, for {', '.join(st['running'].get('refs') or [])}.")
