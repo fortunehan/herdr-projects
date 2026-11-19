@@ -148,6 +148,17 @@ class Answers(unittest.TestCase):
             self.assertEqual(self.answers(machine="vm", version=1)["ship"]["value"], "Ship")
         self.assertEqual(calls[0][2:6], ["--on", "vm", "answers", self.aid])
 
+    def test_a_republished_version_never_carries_answers(self):
+        """A kept version pulled into a folder and published again: its answers stay with the old version."""
+        src = os.path.join(self.dir, "again")
+        shutil.copytree(os.path.join(A.FILES, self.aid, "v1"), src)
+        with open(os.path.join(src, "answers.json"), "w") as f:
+            json.dump({"ship": {"value": "Ship", "at": 1}}, f)
+        with mock.patch("sys.stdout"):
+            A.cmd_publish(types.SimpleNamespace(dir=src, id=self.aid, title=None, folder=self.folder, task=None, note="v2", json=True, custom=False))
+        self.assertFalse(os.path.exists(os.path.join(A.FILES, self.aid, "v2", "answers.json")))
+        self.assertEqual(self.answers(version=2), {})
+
     def test_check_blocks(self):
         d = os.path.join(self.dir, "r")
         ok = lambda b: A.recipe_problems(d, ["recipe.json"]) if write(b) else None  # noqa: E731

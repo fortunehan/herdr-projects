@@ -99,7 +99,8 @@ BROWSER_AUDIO = ("aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le
 # What a mod folder may hold: code, text, pictures and media. No node_modules.
 ALLOWED = {".js", ".mjs", ".json", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".md", ".txt", ".csv", ".ttf", ".otf",
            *(f".{e}" for kind in MEDIA for e in MEDIA[kind])}
-SKIP = {"jsconfig.json", "gpui-kit.d.ts", "herdr.d.ts", "artifact.js", "artifact-main.js", "artifact-markup.js", ".version"}
+# answers.json: the person's answers beside a kept version, never part of a new one (a pulled version republished)
+SKIP = {"jsconfig.json", "gpui-kit.d.ts", "herdr.d.ts", "artifact.js", "artifact-main.js", "artifact-markup.js", ".version", "answers.json"}
 
 
 class Fail(Exception):
