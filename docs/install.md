@@ -77,9 +77,16 @@ When it can't (offline, no `curl`, a download that isn't the release), the Brows
 ```bash
 herdr-browser --install    # install or repair agent-browser and Chrome now, and say what it found
 herdr-browser --status     # what's here, as JSON (doctor's line comes from it)
+herdr-browser --check      # start Chrome once with a scratch profile, and say why when it can't (doctor runs it)
 ```
 
 A failed try isn't repeated by every command: the next automatic one waits 10 minutes (`--install` tries at once).
+
+A task's browser that can't start says why once and stops there: later commands fail at once with "This task's
+browser couldn't start: …" instead of starting Chrome again, until Chrome or agent-browser changes or someone runs
+`herdr-browser close` (which never starts a browser itself). On a Mac, a Codex worker's commands run in Codex's
+sandbox, which blocks the window server Chrome needs as it starts; herdr-browser runs those commands outside, through
+`hc exec`.
 A scratch `--root` install downloads nothing (`SHEPHERDR_AGENT_BROWSER=1` asks it to, into that root).
 
 ## Without the Herdr window
