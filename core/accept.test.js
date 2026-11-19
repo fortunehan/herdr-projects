@@ -57,3 +57,22 @@ test("the window's card and the web's read their words from here, not their own"
     expect(web).not.toContain(w);
   }
 });
+
+// SHEP-87: Send back's words, and the choices answered in the proof listed under Details
+import { ACCEPT as WORDS, choiceLine, detailsText } from "./accept.js";
+
+test("Send back has its own words beside Accept", () => {
+  expect(WORDS.sendBack).toBe("Send back…");
+  expect(WORDS.sendBackGo).toBe("Send back");
+  expect(WORDS.sendBackAsk).toBe("What should change?");
+});
+
+test("Details lists the answered choices first, then the agent's own details", () => {
+  const choices = [{ question: "Ship it?", value: "Ship", at: 1, v: 1 }, { question: "Owner", value: "Name: Ann", at: 2, v: 2 }];
+  expect(choiceLine(choices[0])).toBe("Ship it? Ship");
+  expect(choiceLine(choices[1])).toBe("Owner: Name: Ann");
+  expect(detailsText({ choices }, "")).toBe("**Your choices**\n- Ship it? Ship\n- Owner: Name: Ann");
+  expect(detailsText({ choices }, "- Tests pass")).toBe("**Your choices**\n- Ship it? Ship\n- Owner: Name: Ann\n\n- Tests pass");
+  expect(detailsText({}, "- Tests pass")).toBe("- Tests pass");
+  expect(detailsText({ choices: [] }, "")).toBe("");
+});

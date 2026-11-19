@@ -4,7 +4,8 @@
 // A task no longer Ready says where it is now, with only Close. On a phone it slides up as a sheet.
 // With a proof (SHEP-138) the card grows large and the proof shows right in it, drawn as the artifact viewer draws it
 // (ArtifactFrame): beside the rest on a wide screen, its own scroll; under the summary on a narrow one, all in one
-// scroll. Accept stays in view under it either way.
+// scroll. Accept stays in view under it either way. Send back… (SHEP-87) beside it opens a note box: the task goes back
+// to its agent with that note (`herdr-task send-back`), Ready to Working.
 import clsx from 'clsx'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { act, closeArtifact, getState, openArtifact, taskOf, useStore } from '../kernel.ts'
@@ -28,6 +29,8 @@ type Evidence = {
   checks?: { state: 'passed' | 'failed' | 'running' | 'none' | 'unknown'; text: string }
   /** Accept merges its branch first (it has work to merge): the button says "Accept and merge" */
   merges?: boolean
+  /** the person's answers in its proof (answers.json), listed under Details */
+  choices?: { question: string; value: string; at: number; v: number }[]
 }
 type Shown = { ref: string; title: string; state: string; status?: string; needs?: string; attention?: string; status_text?: string; accepted_at?: number; evidence?: Evidence }
 
@@ -134,9 +137,11 @@ export function AcceptCard() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [details, setDetails] = useState(false)
+  /** Send back's note while its box is open, else null */
+  const [back, setBack] = useState<string | null>(null)
 
   useEffect(() => {
-    setT(null); setError(null); setBusy(false); setDetails(false)
+    setT(null); setError(null); setBusy(false); setDetails(false); setBack(null)
     if (!task) return
     let gone = false
     act({ type: 'evidence', task } as never).then((x) => !gone && setT(x as Shown), (e) => !gone && setError(String(e?.message ?? e)))
@@ -167,12 +172,31 @@ export function AcceptCard() {
     }
   }
 
+  // Send back: the note to its agent, Ready back to Working; the card closes once it went
+  const sendBack = async () => {
+    const note = (back ?? '').trim()
+    if (!ready || busy || !note) return
+    setBusy(true); setError(null)
+    try {
+      await act({ type: 'send-back', task, note } as never)
+      close()
+    } catch (err) {
+      setError(String((err as Error)?.message ?? err))
+      const now = (await act({ type: 'evidence', task } as never).catch(() => null)) as Shown | null
+      if (now && !A.canAccept(now)) { setT(now); setError(null); setBack(null) }
+      setBusy(false)
+    }
+  }
+
   // as the window's card: "Accept HERD-4?" while it can be accepted, only its ref once settled; its name under it
   const ref = t?.ref ?? task
   const settled = !!t && !ready
   const w = A.words(e) as { summary: string; details: string }
-  // Escape over the proof (the viewer sits over this card) closes the proof, back to the card as it was
-  const cancel = () => (getState().ui.viewer ? closeArtifact() : close())
+  // the answered choices first, then the agent's details
+  const more = A.detailsText(e, w.details) as string
+  // Escape over the proof (the viewer sits over this card) closes the proof, back to the card as it was; with Send
+  // back's box open it closes the box
+  const cancel = () => (getState().ui.viewer ? closeArtifact() : back !== null ? setBack(null) : close())
   // what follows the summary (and the proof, when it shows in the card)
   const rest = (
     <>
@@ -193,13 +217,13 @@ export function AcceptCard() {
           <div className="flex flex-col gap-1.5">{e.artifacts.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
         </Section>
       ) : null}
-      {w.details ? (
+      {more ? (
         <section className="flex flex-col gap-2 border-t border-line pt-3">
           <button type="button" aria-expanded={details} onClick={() => setDetails(!details)} className="flex items-center gap-1.5 self-start text-[0.8125rem] font-medium text-fg3 hover:text-fg phone:text-sm">
             {details ? <DownIcon className="size-3.5 shrink-0" /> : <NextIcon className="size-3.5 shrink-0" />}
             {A.ACCEPT.details}
           </button>
-          {details ? <div data-selectable className="pl-5"><Markdown text={A.readable(w.details)} /></div> : null}
+          {details ? <div data-selectable className="pl-5"><Markdown text={A.readable(more)} /></div> : null}
         </section>
       ) : null}
     </>
@@ -208,8 +232,17 @@ export function AcceptCard() {
   return (
     <Dialog title={settled ? ref : A.ACCEPT.title(ref)} sub={t?.title ?? named ?? ''} closer wide large={!!proofArt} onCancel={cancel} safe
       cancel={settled ? A.ACCEPT.close : A.ACCEPT.cancel}
-      foot={t && (error || settled) ? (
+      foot={t && (error || settled || (back !== null && !settled)) ? (
         <>
+          {back !== null && !settled ? (
+            <label className="flex flex-col gap-1.5">
+              <span className="font-medium text-fg">{A.ACCEPT.sendBackAsk}</span>
+              <textarea autoFocus rows={3} value={back} onChange={(ev) => setBack(ev.target.value)} disabled={busy}
+                onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void sendBack() } }}
+                className="w-full resize-y rounded-[var(--row-radius)] bg-bg px-3 py-2 text-fg shadow-[inset_0_0_0_1px_var(--line2)] outline-none focus:shadow-[inset_0_0_0_1px_var(--fg3)]" />
+              <span className="text-fg3">{A.ACCEPT.sendBackHint}</span>
+            </label>
+          ) : null}
           {error ? <p role="alert" className="text-need-fg">{error}</p> : null}
           {settled ? (
             <p className="flex items-center gap-2 text-fg"><span className={clsx('size-[7px] shrink-0 rounded-full', t.state === 'done' ? 'bg-ready' : 'bg-fg3')} />{A.whereNow(t)}</p>
@@ -217,7 +250,14 @@ export function AcceptCard() {
         </>
       ) : null}
       // Accept shows while it is read too, not yet pressable; once settled only Close is left
-      buttons={settled ? null : <Primary disabled={!ready || busy} onClick={accept}>{busy ? A.ACCEPT.accepting : A.acceptLabel(e)}</Primary>}>
+      buttons={settled ? null : back !== null ? (
+        <Primary disabled={!ready || busy || !back.trim()} onClick={sendBack}>{busy ? A.ACCEPT.sendingBack : A.ACCEPT.sendBackGo}</Primary>
+      ) : (
+        <>
+          <Primary soft disabled={!ready || busy} onClick={() => setBack('')}>{A.ACCEPT.sendBack}</Primary>
+          <Primary disabled={!ready || busy} onClick={accept}>{busy ? A.ACCEPT.accepting : A.acceptLabel(e)}</Primary>
+        </>
+      )}>
       {!t ? (
         <div className="pt-2 pb-1"><p className={error ? 'text-need-fg' : 'text-fg3'} role={error ? 'alert' : undefined}>{error ?? A.ACCEPT.reading}</p></div>
       ) : proofArt ? (

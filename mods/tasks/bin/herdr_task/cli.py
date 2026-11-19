@@ -16,7 +16,7 @@ from .settings import bare
 from .launch import cmd_allow, name_tabs
 from .commands import (
     cmd_accept, cmd_add, cmd_alert, cmd_config, cmd_edit, cmd_fix, cmd_list, cmd_merge, cmd_ready,
-    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_rm, cmd_show, cmd_start, cmd_state, cmd_status,
+    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_rm, cmd_send_back, cmd_show, cmd_start, cmd_state, cmd_status,
     cmd_switch, cmd_unarchive, cmd_where,
 )
 from .tick import cmd_tick
@@ -467,6 +467,11 @@ def main():
     agent_opts(c)
     c.add_argument("--space")
     c.add_argument("--reason", help="what to fix (default: what Herdr found)")
+    c = cmd("send-back", cmd_send_back, "send a Ready task back to its agent with a note (the Accept card's Send back): Working again")
+    agent_opts(c)
+    c.add_argument("--space")
+    c.add_argument("--note", required=True, help="what should change, for its agent")
+    c.add_argument("--on", help="what in its proof the note is about, in words (a block, as Mark up describes it)")
     c = cmd("merge", cmd_merge, "ask the task's agent to merge it (the Merge button)")
     agent_opts(c)
     c.add_argument("--space")
