@@ -6,7 +6,7 @@
 // the whole recipe (plugins/artifacts).
 import clsx from 'clsx'
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { ArrowUpRightIcon } from '@heroicons/react/16/solid'
+import { ArrowUpRightIcon, CheckIcon } from '@heroicons/react/16/solid'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { Primary } from '../ui.tsx'
 import * as R from '@core/recipe.js'
@@ -81,9 +81,12 @@ function Choice({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer 
         return (
           <button key={o.label} type="button" aria-pressed={on} disabled={on || busy || !reply}
             onClick={async () => { setBusy(true); try { await reply?.(choiceReply(b, o.label), { key: b.id, value: o.label }) } finally { setBusy(false) } }}
-            className={clsx('press-dim flex flex-col items-start rounded-box px-3.5 py-2.5 text-left shadow-box enabled:hover:bg-hover disabled:cursor-default', on && 'bg-sel shadow-[inset_0_0_0_1.5px_var(--fg3)]')}>
-            <span className="font-medium">{o.label}</span>
-            {o.description ? <span className="text-fg2">{o.description}</span> : null}
+            className={clsx('press-dim flex items-center gap-3 rounded-box px-3.5 py-2.5 text-left enabled:hover:bg-hover disabled:cursor-default', on ? 'bg-sel shadow-[inset_0_0_0_1.5px_var(--fg2)]' : 'shadow-box')}>
+            <span className="flex min-w-0 flex-1 flex-col items-start">
+              <span className="font-medium">{o.label}</span>
+              {o.description ? <span className="text-fg2">{o.description}</span> : null}
+            </span>
+            {on ? <span className="flex shrink-0 items-center gap-1 text-[0.8125rem] font-medium text-fg"><CheckIcon aria-hidden className="size-4" />Your choice</span> : null}
           </button>
         )
       })}
@@ -265,7 +268,7 @@ function Check({ b }: { b: Block }) {
           </span>
           {b.summary ? <span className="min-w-0 text-fg">{b.summary}</span> : null}
         </div>
-        <code data-selectable className="block overflow-x-auto font-mono text-[0.8125rem] whitespace-pre text-fg2">$ {b.command}</code>
+        <code data-selectable className="block font-mono text-[0.8125rem] break-all whitespace-pre-wrap text-fg2">$ {b.command}</code>
         {b.output ? (
           <details className="group">
             <summary className="cursor-pointer text-[0.8125rem] text-fg3 hover:text-fg">Output</summary>
