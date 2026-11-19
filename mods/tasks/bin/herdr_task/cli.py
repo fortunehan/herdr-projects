@@ -29,6 +29,7 @@ from .assistant_settings import cmd_session_note
 from .feedback import cmd_feedback
 from . import ado, ado_flow
 from .sandbox import cmd_sandbox
+from .self_update import cmd_self_update
 
 
 # ---- another machine ------------------------------------------------------------------------
@@ -333,6 +334,8 @@ def main():
     c = cmd("scheduler", cmd_scheduler, "run automations and the queue (herdr-core keeps one as herdr-automations)", id=False)
     c.add_argument("--ensure", action="store_true", help="start it if automations need it and it isn't running")
     c.add_argument("--once", action="store_true", help="one round, then exit")
+    c = cmd("self-update", cmd_self_update, "this machine's Shepherdr checkout updating itself after its tasks merge (Settings > Machines): its state", id=False)
+    c.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)  # the scheduler's detached run (self_update.spawn)
     cmd("backup", cmd_backup, "save a backup of every connected machine's spaces and the sidebar now (the scheduler does every 10 minutes)", id=False)
     c = cmd("restore-spaces", cmd_restore_spaces, "dry run: what a backup would recreate (no backup: list them)", id=False)
     c.add_argument("backup", nargs="?", help="a backup's name or folder, or latest")

@@ -41,6 +41,7 @@ drops the space's own, and it inherits again. A few settings are one for every s
 | Secrets | Kept on | All machines | One vault every machine's agents and voice calls use; follows Serve from unless picked |
 | Machines | When new tasks wait (memory, CPU, disk), low priority, memory cap per worker | All machines, machine | About a machine's hardware, not a space's work |
 | Machines | Home Assistant | Machine only | One per machine |
+| Machines | Update after a Shepherdr task merges ([how](self-update.md); off) | Machine only | Only that machine's Shepherdr checkout updates itself |
 | Window | Tabs, sidebar, counts, filters, subagents, Assistant in new spaces | Everywhere only | How the screen looks; the last is about spaces not made yet |
 | Window | Add-ons | Everywhere only | Which mods run: the window's, for every space |
 | Web | Serve from, link | Everywhere only | One web app for every machine |

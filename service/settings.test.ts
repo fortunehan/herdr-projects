@@ -213,6 +213,23 @@ test("Machines is one page as the window's: every machine's limits, then each ma
   expect(JSON.parse(readFileSync(file, "utf8")).everywhere.machine.start_load).toBe(1.75);
 });
 
+// SHEP-83: per machine, off unless set; on is kept as machines[key].self_update, off drops the key
+test("Update after a Shepherdr task merges: a machine's own switch, off by default", () => {
+  const s = new Settings();
+  s.start();
+  const row = (k: string) => s.sections(null, [], ["vm"], "box").find((x) => x.name === "Machines")!.rows.find((r) => r.key === k)!;
+  expect(row("machine.self_update@local")).toMatchObject({ group: "This computer", value: "off", options: ["on", "off"], hint: CORE.MACHINES.selfUpdate.about(false) });
+  expect(row("machine.self_update@vm")).toMatchObject({ group: "vm", value: "off" });
+  expect(row("machine.self_update")).toBeUndefined();
+  s.set("machine.self_update@local", "on");
+  expect(JSON.parse(readFileSync(file, "utf8")).machines.local.self_update).toBe(true);
+  expect(row("machine.self_update@local")).toMatchObject({ value: "on", hint: CORE.MACHINES.selfUpdate.about(true) });
+  expect(row("machine.old@local")).toBeUndefined();
+  s.set("machine.self_update@local", "off");
+  expect(JSON.parse(readFileSync(file, "utf8")).machines?.local?.self_update).toBeUndefined();
+  expect(() => s.set("machine.self_update", "on", "all")).toThrow();
+});
+
 test("Agents and Tasks say the window's words: the model button, Other CLI, Must fix only with a review", async () => {
   const C: any = await import("../core/settings.js");
   const s = new Settings();

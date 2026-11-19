@@ -178,7 +178,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   read the parts you need, never edit them).
 - `lib/addons.json` lists every mod by add-on; a new mod goes in one (the tests check). Shared modules have one
   source in `lib/`: edit it, run `bin/sync-shared`. A worktree's `lib/.last` can be stale (copied from the main checkout): if
-  sync-shared calls a copy hand-edited though it equals HEAD's lib file, refresh `lib/.last/<file>` from `git show HEAD:lib/<file>`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
+  sync-shared calls a copy hand-edited though it equals HEAD's lib file, refresh `lib/.last/<file>` from `git show HEAD:lib/<file>`. On the dev Mac the command guard blocks a shell redirect onto a home path: write it to /tmp, then `cp -f`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
 - Mod names, the layout's node ids and `keys.json` contexts are what people's state and keys hang on: change them
   with care and say so in your done summary.
 
@@ -188,6 +188,10 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   checkout: `git fetch`, `git merge --no-edit origin/main` (a merge commit, never a rebase), then `./install.sh --yes`
   on this machine only. Report the installed version. Stop and ask on a merge conflict. Never push, and never install
   on another machine.
+- When Settings > Machines > Update after a Shepherdr task merges is on for this machine, herdr-task does these steps
+  itself a few minutes after the merge ([docs/self-update.md](docs/self-update.md)). Skip them once its
+  `self-update` news says it updated, and only pass on the version. If it says it stopped, tell the person and follow
+  its finish-by-hand command once they say yes. `herdr-task self-update` shows how the last update ended.
 
 ## README
 

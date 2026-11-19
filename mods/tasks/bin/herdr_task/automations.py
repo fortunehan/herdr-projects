@@ -728,6 +728,11 @@ def one_pass(report):
             home_pass(report)
         except Exception as e:  # never stops the scheduler
             print(f"{time.strftime('%H:%M:%S')} home: {e}", flush=True)
+        try:
+            from .self_update import self_update_pass
+            self_update_pass(report)
+        except Exception as e:  # never stops the scheduler
+            print(f"{time.strftime('%H:%M:%S')} self-update: {e}", flush=True)
         tmp = f"{SEEN}.{os.getpid()}.tmp"
         with open(tmp, "w") as f:
             json.dump(seen_all, f)
@@ -783,6 +788,8 @@ def cmd_scheduler(args):
             print(f"{time.strftime('%H:%M:%S')} {f['task']} is done: ended {', '.join(f['terminals'])}", flush=True)
         if (report.get("memory_guard") or {}).get("alert"):
             print(f"{time.strftime('%H:%M:%S')} memory guard: {report['memory_guard']['alert']}", flush=True)
+        for f in report.get("self_update") or []:
+            print(f"{time.strftime('%H:%M:%S')} self-update started for {', '.join(f['refs'] or [])}", flush=True)
         for f in report.get("autopilot") or []:
             print(f"{time.strftime('%H:%M:%S')} autopilot woke {f['to']} ({f['why']})", flush=True)
         if args.once:

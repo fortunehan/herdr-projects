@@ -82,6 +82,18 @@ function homeRow(view, t, k) {
     .child(toggleSwitch(`home-${k}`, on, set)));
 }
 
+// SHEP-83: this machine's Shepherdr checkout updates itself after its tasks merge (machines[key].self_update; unset: off).
+function selfUpdateRow(view, t, k) {
+  const on = view.cfg.machines?.[k]?.self_update === true;
+  const set = (_next, _e, cx) => view.change((next) => {
+    const layer = ((next.machines ??= {})[k] ??= {});
+    if (on) delete layer.self_update;
+    else layer.self_update = true;
+    if (!Object.keys(layer).length) delete next.machines[k];
+  }, cx);
+  return view.row(t, MACHINES.selfUpdate.title, MACHINES.selfUpdate.about(on), toggleSwitch(`self-update-${k}`, on, set));
+}
+
 // Writes one machine setting: for all machines (key null) or one machine's own; undefined drops it.
 function write(view, key, field, value, cx) {
   view.change((next) => {
@@ -138,19 +150,20 @@ function machineBlock(view, t, k) {
   const ownLimits = FIELDS.some((f) => f in (layer.machine ?? {}));
   view._machOpen ??= {};
   const open = ownLimits || view._machOpen[k];
-  const old = Object.entries(layer).filter(([key]) => !["machine", "home"].includes(key))
+  const old = Object.entries(layer).filter(([key]) => !["machine", "home", "self_update"].includes(key))
     .flatMap(([key, v]) => (["tasks", "automations"].includes(key) && v && typeof v === "object" ? Object.keys(v).map((f) => (key === "automations" ? key : f)) : [key]));
   const oldNames = [...new Set(old.map((x) => OLD_NAMES[x] ?? x))];
   const dropOld = (_e, cx) => view.change((next) => {
     const l = next.machines?.[k];
     if (!l) return;
-    for (const key of Object.keys(l)) if (!["machine", "home"].includes(key)) delete l[key];
+    for (const key of Object.keys(l)) if (!["machine", "home", "self_update"].includes(key)) delete l[key];
     if (!Object.keys(l).length) delete next.machines[k];
   }, cx);
   return v_flex().id(`mach-${k}`)
     .child(div().pt(26).pb(10).text_size(TEXT.body).font_semibold().text_color(t.foreground).child(label(k)))
     .child(div().pb(12).border_b(1).border_color(t.border).child(machineDetails(t, toMachine(k))))
     .child(homeRow(view, t, k))
+    .child(selfUpdateRow(view, t, k))
     .when(!open, (el) => el.child(view.row(t, MACHINES.own.title, MACHINES.own.about,
       button(`ml-own-${k}`, MACHINES.own.button, { onClick: () => { view._machOpen[k] = true; } }))))
     .when(Boolean(open), (el) => el.children(limitRows(view, t, k)))
