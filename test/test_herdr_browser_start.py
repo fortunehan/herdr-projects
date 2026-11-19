@@ -2,8 +2,8 @@
 included, so one Chrome that couldn't start crashed again on every later command (on a Mac, each crash a "Google
 Chrome quit unexpectedly" dialog). Now the first failure is kept with why, later commands fail at once with it until
 its cause changes or `close` asks for a new try, and `close` never starts a browser. A caller whose sandbox blocks the
-window server Chrome needs (a Codex worker on a Mac) runs the command outside, through hc exec. Throwaway homes;
-agent-browser, its daemon, hc and the window-server probe are stand-ins."""
+window server Chrome needs (a Codex agent in its sandbox on a Mac) starts nothing and says why. Throwaway homes;
+agent-browser, its daemon and the window-server probe are stand-ins."""
 import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
 import os
 import shutil
@@ -41,14 +41,6 @@ echo "ok $*"
 # its daemon without a browser, and with one (Chrome runs as the daemon's child)
 DAEMON_IDLE = 'exec python3 -c "import time; time.sleep(300)" agent-browser-daemon\n'
 DAEMON_UP = "sleep 300 &\nwait\n"
-# hc: logs, and runs `exec` commands with herdr-core's bare environment (and its HC_SCOPE)
-FAKE_HC = """#!/bin/sh
-echo "hc $*" >> "@TMP@/hc.log"
-[ "$1" = exec ] || exit 1
-shift
-[ "$1" = -- ] && shift
-exec env -i HOME="$HOME" PATH="/usr/bin:/bin" HC_SCOPE=core "$@"
-"""
 # the window-server probe: 1 for this caller while FAKE_INSIDE is set (it isn't, outside), and for listed pids
 FAKE_PROBE = """#!/bin/sh
 grep -qx "$1" "@TMP@/blocked" 2>/dev/null && { echo 1; exit 0; }
@@ -100,9 +92,6 @@ class BrowserStart(unittest.TestCase):
     def daemon(self, name):
         with open(os.path.join(self.tmp, "daemon"), "w") as f:
             f.write(name)
-
-    def hc(self):
-        self.script(os.path.join(self.bin, "hc"), FAKE_HC)
 
     def calls(self):
         try:
@@ -207,24 +196,12 @@ class BrowserStart(unittest.TestCase):
         self.assertTrue(self.calls()[-1].endswith("close | outside= scope= args=--force-prefers-reduced-motion proxy="),
                         self.calls())
 
-    def test_in_a_sandbox_the_command_runs_outside_through_hc(self):
-        self.hc()
-        p = self.run_hb("--task", "a#1", "open", "x",
-                        extra={"FAKE_INSIDE": "1", "HTTPS_PROXY": "http://127.0.0.1:9", "HC_SCOPE": "worker"})
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("ok --session herdr-a-1", p.stdout)
-        calls = self.calls()
-        self.assertEqual(len(calls), 1)
-        # outside, with this caller's browser settings and proxy, and without hc exec's scope (the daemon outlives it)
-        self.assertIn("| outside=1 scope= args=--force-prefers-reduced-motion proxy=http://127.0.0.1:9", calls[0])
-        self.assertEqual([f for f in os.listdir(os.path.join(self.home, ".herdr", "browser")) if f.startswith(".env")],
-                         [], "the environment file is removed")
-
-    def test_in_a_sandbox_without_hc_nothing_starts(self):
+    def test_in_a_sandbox_nothing_starts(self):
         p = self.run_hb("--task", "a#1", "open", "x", extra={"FAKE_INSIDE": "1"})
         self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
-        self.assertIn("Chrome can't start inside this agent's sandbox", p.stderr)
-        self.assertEqual(self.calls(), [])
+        self.assertIn("this agent runs in a sandbox that blocks the window server Chrome needs", p.stderr)
+        self.assertIn("Full access", p.stderr)
+        self.assertEqual(self.calls(), [], "Chrome would abort there")
         self.assertFalse(os.path.exists(self.broken), "not a failure of the browser: another caller may start it")
 
     def test_a_daemon_started_inside_a_sandbox_is_ended_first(self):

@@ -264,7 +264,7 @@ EOF
 
 # The window server (SHEP-85). On a Mac, Chrome registers with it as it starts (TransformProcessType); in a process
 # whose sandbox denies that lookup (Codex's Seatbelt sandbox, which runs a Codex worker's commands) it aborts there,
-# and macOS shows "Google Chrome quit unexpectedly" for each try. Such a command runs outside, through `hc exec`.
+# and macOS shows "Google Chrome quit unexpectedly" for each try. Such a caller never starts it.
 # Prints 1 when a live process can't reach the window server (sandbox_check, as the sandbox itself answers), else 0.
 gui_probe='
 import ctypes, platform, sys
@@ -413,28 +413,12 @@ if [ -n "${show-}" ]; then
   exit 0
 fi
 
-# This process can't reach the window server (a Codex worker's sandbox, SHEP-85): the whole command runs outside,
-# through herdr-core (hc exec), where Chrome can start and the session's daemon can be seen and ended (the sandbox
-# can't run ps nor signal it). The daemon it starts outlives the command. hc exec gives it herdr-core's environment:
-# this one's PATH, browser settings and proxy go along in a file, read and removed there.
-if [ -z "${HERDR_BROWSER_OUTSIDE:-}" ] && gui_blocked; then
-  if ! command -v hc >/dev/null 2>&1 || ! hc exec -- true >/dev/null 2>&1 </dev/null; then
-    echo "herdr-browser: Chrome can't start inside this agent's sandbox (it blocks the window server Chrome needs), and Herdr couldn't start it outside: hc isn't reachable from here. Run this herdr-browser command outside the sandbox (escalated)." >&2
-    exit 5
-  fi
-  mkdir -p "$root" 2>/dev/null
-  envf=$(mktemp "$root/.env.XXXXXX") || exit 1
-  python3 -I -c 'import os, re, shlex
-for k, v in os.environ.items():
-    if re.fullmatch(r"(AGENT|HERDR)_BROWSER_\w+|SHEPHERDR_HOME|XDG_\w+|HC_TERMINAL_ID|PATH|[a-z]+_proxy|no_proxy", k, re.I):
-        print("export %s=%s" % (k, shlex.quote(v)))' > "$envf"
-  case "$0" in /*) self=$0 ;; *) self="$PWD/$0" ;; esac
-  # HC_SCOPE: hc exec ends every process that carries it once the command is done, the daemon too
-  hc exec -- sh -c 'cd "$1" 2>/dev/null; . "$2"; rm -f "$2"; unset HC_SCOPE; export HERDR_BROWSER_OUTSIDE=1; shift 2; exec sh "$@"' \
-    herdr-browser "$PWD" "$envf" "$self" --task "$task" ${own:+--own} "$@"
-  rc=$?
-  rm -f "$envf"
-  exit "$rc"
+# This process can't reach the window server (SHEP-85): a Codex agent in its Seatbelt sandbox. Chrome would abort as
+# it starts (a "Google Chrome quit unexpectedly" dialog each time), so nothing starts here. Codex workers run without
+# the sandbox unless a permission mode was chosen. (The sandbox can't see a running daemon either: no ps, no signals.)
+if gui_blocked; then
+  echo "herdr-browser: This task's browser couldn't start: this agent runs in a sandbox that blocks the window server Chrome needs. Give the task's agent Full access (Settings > Worker, or the task's agent), or run herdr-browser outside the sandbox." >&2
+  exit 5
 fi
 
 # Its session and profile are Herdr's: another one would start a second browser beside it.

@@ -5040,6 +5040,36 @@ class SettingsFollowTheSpace(unittest.TestCase):
         argv = self.settings.argv_for({"agent": "claude", "launcher": "magpie", "model": "copilot/claude-sonnet-5.5"})
         self.assertEqual(self.settings.argv_model(argv)[0], "copilot/claude-sonnet-5.5")
 
+    def write_worker(self, worker):
+        with open(self.file, "w") as f:
+            json.dump({"version": 1, "everywhere": {"worker": worker}, "spaces": {}}, f)
+
+    def test_a_codex_worker_runs_without_its_sandbox_unless_a_mode_was_chosen(self):
+        # SHEP-85: Codex's sandbox blocks what a task needs (on a Mac, the window server: Chrome aborted at every start)
+        full = "--dangerously-bypass-approvals-and-sandbox"
+        self.write_worker({"agent": "codex", "model": "gpt-5"})
+        argv = self.settings.worker_argv(self.s, {})
+        self.assertIn(full, argv)
+        self.assertNotIn("workspace-write", argv)
+        # a mode the person chose stays theirs
+        self.write_worker({"agent": "codex", "model": "gpt-5", "perm": "auto"})
+        argv = self.settings.worker_argv(self.s, {})
+        self.assertNotIn(full, argv)
+        self.assertIn("workspace-write", argv)
+
+    def test_a_tasks_own_agent_keeps_the_persons_permission_mode(self):
+        # CODE-1: Settings' worker is Claude with full access, the task's own agent Codex: it ran in Codex's sandbox
+        self.write_worker({"agent": "claude", "model": "opus", "perm": "bypassPermissions"})
+        argv = self.settings.worker_argv(self.s, {"agent": "codex", "model": "gpt-6.2-sol"})
+        self.assertEqual(argv[0], "codex")
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.write_worker({"agent": "claude", "model": "opus", "perm": "plan"})
+        argv = self.settings.worker_argv(self.s, {"agent": "codex"})
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        self.write_worker({"agent": "codex", "perm": "full"})
+        argv = self.settings.worker_argv(self.s, {"agent": "claude"})
+        self.assertIn("--dangerously-skip-permissions", argv)
+
 
 class AssistantSettings(unittest.TestCase):
     """SHEP-42/SHEP-49: a space's Assistant is told its settings (Reactions among them): the block its
