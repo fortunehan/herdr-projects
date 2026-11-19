@@ -44,13 +44,14 @@ export const ACCEPT = {
 
 // One answered choice in its proof, as Details lists it: "Ship it? Ship" (c: herdr-task's evidence.choices item).
 export const choiceLine = (c) => `${String(c?.question ?? "").replace(/[:?]?\s*$/, (m) => (m.includes("?") ? "?" : ":"))} ${c?.value ?? ""}`.trim();
-// Details as markdown: the answered choices first (a "Your choices" list), then the agent's own details.
+// Details as markdown: the agent's own details, then the answered choices under their own label ("Your choices"), a
+// paragraph between so the two lists never run together.
 export function detailsText(e, details) {
   const cs = Array.isArray(e?.choices) ? e.choices.filter((c) => c && c.question) : [];
   const own = String(details ?? "").trim();
   if (!cs.length) return own;
-  const list = `**${ACCEPT.choices}**\n${cs.map((c) => `- ${choiceLine(c)}`).join("\n")}`;
-  return own ? `${list}\n\n${readable(own)}` : list;
+  const list = `**${ACCEPT.choices}**\n\n${cs.map((c) => `- ${choiceLine(c)}`).join("\n")}`;
+  return own ? `${readable(own)}\n\n${list}` : list;
 }
 
 // The Accept button's words (SHEP-225, #1046): what pressing it will do. herdr-task's evidence says `merges` when its
