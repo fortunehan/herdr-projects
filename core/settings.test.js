@@ -54,12 +54,19 @@ test("switching the worker's agent there and back keeps auto (#758)", () => {
   const toCodex = S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: "auto" }, "codex", "gpt-5");
   expect(toCodex.perm).toBe("auto");
   expect(S.chooseModel(menus, permDefault, toCodex, "claude", "opus").perm).toBe("auto");
-  // nearest mode: plan and read only swap, accept edits is Codex's auto, ask (no match) takes the default
+  // nearest mode: plan and read only swap, accept edits is Codex's auto, ask (no match) takes Codex's default
   expect(S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: "plan" }, "codex", "gpt-5").perm).toBe("read-only");
   expect(S.chooseModel(menus, permDefault, { agent: "codex", model: "gpt-5", perm: "read-only" }, "claude", "opus").perm).toBe("plan");
   expect(S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: "acceptEdits" }, "codex", "gpt-5").perm).toBe("auto");
-  expect(S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: "manual" }, "codex", "gpt-5").perm).toBe("auto");
+  expect(S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: "manual" }, "codex", "gpt-5").perm).toBe("full");
   expect(S.chooseModel(menus, permDefault, { agent: "codex", model: "gpt-5", perm: "full" }, "claude", "opus").perm).toBe("bypassPermissions");
+});
+
+test("Codex picked for a role starts with Full access (SHEP-85: its sandbox stops the task's browser)", () => {
+  const { menus, permDefault } = S.choicesFrom({ claude: { model: "opus", per: {} }, codex: { models: [{ id: "gpt-5", label: "GPT-5", efforts: ["low", "high"] }] } });
+  expect(permDefault.codex).toBe("full");
+  expect(S.chooseModel(menus, permDefault, { agent: "claude", model: "opus", perm: null }, "codex", "gpt-5").perm).toBe("full");
+  expect(read("service/agents.ts")).toContain('codex: "full"');
 });
 
 test("Backup's warning, an add-on's line and Web's state, in the window's words", () => {

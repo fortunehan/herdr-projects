@@ -60,6 +60,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
+- `docs/**` is in the dev Mac's global gitignore: a new docs/ page needs `git add -f`.
 - On a busy dev Mac, Bun tests can pass the default 5 s timeout: rerun the failed files with `bun test --timeout 60000`.
 - A quick before/after of herdr-task settings logic without a second worktree: a `python3 -I` script that puts each tree's
   `mods/tasks/bin` on `sys.path`, sets `HERDR_TASK_SETTINGS` to a scratch file and stubs `herdr_task.autopilot.window_spaces`.
@@ -178,7 +179,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   read the parts you need, never edit them).
 - `lib/addons.json` lists every mod by add-on; a new mod goes in one (the tests check). Shared modules have one
   source in `lib/`: edit it, run `bin/sync-shared`. A worktree's `lib/.last` can be stale (copied from the main checkout): if
-  sync-shared calls a copy hand-edited though it equals HEAD's lib file, refresh `lib/.last/<file>` from `git show HEAD:lib/<file>`. On the dev Mac the command guard blocks a shell redirect onto a home path: write it to /tmp, then `cp -f`. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
+  sync-shared calls a copy hand-edited though it equals HEAD's lib file, refresh `lib/.last/<file>` from `git show HEAD:lib/<file>`. On the dev Mac the command guard (dcg) blocks a shell redirect onto a home or `$VAR` path: write to a literal /tmp path and `cp -f`, use python's open(), or extract one file with git archive piped to tar. The add-ons' switches and how they work: [docs/addons.md](docs/addons.md).
 - Mod names, the layout's node ids and `keys.json` contexts are what people's state and keys hang on: change them
   with care and say so in your done summary.
 
