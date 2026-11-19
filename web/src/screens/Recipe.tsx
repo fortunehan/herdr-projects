@@ -122,7 +122,7 @@ function Form({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer | 
   )
 }
 
-/** a press sends its reply, once: "<label> · Sent" (kept: so it stays after a reopen, its time as its tooltip). With
+/** a press sends its reply, once: "<label> · Sent" (kept: so it stays after a reopen, its time under it). With
  *  an href (https only) it opens that page in a new tab each press, as a plain link: the person acts there
  *  themselves. quiet: the softer look, beside the one to press. */
 function Button({ b, k, reply, answers: kept, className }: { b: Block; k: string; reply?: Reply; answers?: Answers; className?: string }) {
@@ -131,7 +131,7 @@ function Button({ b, k, reply, answers: kept, className }: { b: Block; k: string
   const link = isLink(b.href) ? (b.href as string) : null
   const answers = typeof b.reply === 'string'
   return (
-    <Primary soft={!!b.quiet} disabled={!link && (sent || !reply)} className={clsx(link && 'pr-3', className)} title={a ? answerLine('button', a.at) : undefined}
+    <Primary soft={!!b.quiet} disabled={!link && (sent || !reply)} className={clsx(link && 'pr-3', className)}
       onClick={async () => {
         if (link) window.open(link, '_blank', 'noopener,noreferrer')
         if (answers && !sent && reply) await reply(b.reply, { key: k, value: b.label })
@@ -319,8 +319,17 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
       case 'divider': return <hr className="border-line" />
       case 'choice': return <Choice b={b} reply={reply} answer={answerOf(answers, b.id)} />
       case 'form': return <Form b={b} reply={reply} answer={answerOf(answers, b.id)} />
-      case 'button': return <Button b={b} k={b.id} reply={reply} answers={answers} className="self-start" />
-      case 'buttons': return <div className="flex flex-wrap items-center gap-2">{b.items.map((x: Block, i: number) => <Button key={i} b={x} k={`${b.id}-${i}`} reply={reply} answers={answers} />)}</div>
+      case 'button': return <div className="flex flex-col items-start gap-1.5"><Button b={b} k={b.id} reply={reply} answers={answers} /><Answered kind="button" a={answerOf(answers, b.id)} /></div>
+      case 'buttons': {
+        // the newest press among them, under the row
+        const pressed = b.items.map((_: Block, i: number) => answerOf(answers, `${b.id}-${i}`) as Answer | null).filter(Boolean).sort((x: Answer, y: Answer) => y.at - x.at)[0] ?? null
+        return (
+          <div className="flex flex-col items-start gap-1.5">
+            <div className="flex flex-wrap items-center gap-2">{b.items.map((x: Block, i: number) => <Button key={i} b={x} k={`${b.id}-${i}`} reply={reply} answers={answers} />)}</div>
+            <Answered kind="button" a={pressed} />
+          </div>
+        )
+      }
     }
     return null
   }
