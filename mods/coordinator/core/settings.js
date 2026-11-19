@@ -160,7 +160,7 @@ export function modelLabel(menus, sel) {
 // { menus, permDefault, defaults } (defaults: the first installed CLI's own, what an unset role runs).
 export function choicesFrom(dflts, installed = { claude: true, codex: true }) {
   const menus = choiceMenus(dflts, null, installed);
-  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "auto", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" };
+  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "full", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" };
   const first = menus.claude ? "claude" : Object.keys(menus)[0] ?? "claude";
   const c = current(first, [], {}, dflts[first]);
   const model = rowFor(first, c) ?? menus[first]?.models?.[0]?.id ?? null;
