@@ -128,7 +128,7 @@ def browser_pass(report):
         if t is None or t.get("state") == "done":
             _close(bp, key)
             shutil.rmtree(os.path.join(ROOT, name), ignore_errors=True)
-            for ext in (".used", ".you", ".view", ".new", ".session", ".task"):
+            for ext in (".used", ".you", ".view", ".new", ".session", ".broken", ".task"):
                 try:
                     os.remove(os.path.join(ROOT, name + ext))
                 except OSError:

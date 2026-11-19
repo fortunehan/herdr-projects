@@ -1094,7 +1094,18 @@ def agent_browser_state(root):
         return "the task browser: herdr-browser --status didn't answer"
     if st.get("ok"):
         where = "Shepherdr's own copy" if st.get("from") == "shepherdr" else st.get("bin")
-        return f"agent-browser {st.get('version')} for the task browser ({where})"
+        line = f"agent-browser {st.get('version')} for the task browser ({where})"
+        # SHEP-85: one quick start of Chrome with a scratch profile, on this machine's own home only
+        if os.path.realpath(root) != os.path.realpath(real_home()):
+            return line
+        try:
+            c = subprocess.run(["sh", hb, "--check"], capture_output=True, text=True, env=browser_env(root),
+                               stdin=subprocess.DEVNULL, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return line + "; its start check didn't finish"
+        if c.returncode:
+            return "the task browser: " + (c.stderr.strip() or c.stdout.strip()).replace("herdr-browser: ", "", 1)
+        return line + ", and Chrome starts"
     return "the task browser: " + (st.get("problem") or "agent-browser isn't usable").replace("herdr-browser: ", "", 1)
 
 
