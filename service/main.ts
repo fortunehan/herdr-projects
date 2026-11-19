@@ -792,11 +792,13 @@ const server = Bun.serve<{ who: string }>({
     }
     // a recipe artifact's files (the web's recipe view asks api/artifacts/<id>/recipe?v=, /file/<path>?v=; &on=<machine>
     // for another machine's, read there)
-    const art = /^\/api\/artifacts\/([\w.-]+)\/(recipe|file\/(.+))$/.exec(path);
+    const art = /^\/api\/artifacts\/([\w.-]+)\/(recipe|answers|file\/(.+))$/.exec(path);
     if (art) {
       const v = Number(url.searchParams.get("v"));
       const on = url.searchParams.get("on") || null;
       if (art[2] === "recipe") { const r = await artifacts.recipe(art[1], v, on); return r ? json(r) : json({ error: "No recipe here." }, 404); }
+      // the person's answers kept with the version (SHEP-87), fresh each time
+      if (art[2] === "answers") return json(await artifacts.answers(art[1], v, on));
       let rel = "";
       try { rel = decodeURIComponent(art[3]); } catch { return json({ error: "not found" }, 404); }
       return artifacts.file(art[1], v, rel, on, req.headers.get("range"));

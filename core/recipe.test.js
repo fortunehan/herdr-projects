@@ -85,3 +85,44 @@ test("mdParts cuts Markdown at its fenced code blocks", () => {
   expect(mdParts("``` not a fence ```")).toEqual([{ md: "``` not a fence ```" }]);
   expect(mdParts(undefined)).toEqual([]);
 });
+
+// SHEP-87: a check block (a command that ran, its exit code), a diff's coloured lines, and answers kept per version
+import { checkStatus, diffLines, isDiff, answerLine, answerOf, CHECK_OUTPUT_MAX } from "./recipe.js";
+
+test("a check needs its command and a whole exit code; summary, caption and output are words", () => {
+  expect(one({ type: "check", command: "bun test", exit: 0, summary: "12 pass", output: "ok", caption: "Unit tests" })).toEqual([]);
+  expect(one({ type: "check", command: "make", exit: 2 })).toEqual([]);
+  expect(one({ type: "check", exit: 0 }).length).toBe(1);
+  expect(one({ type: "check", command: " ", exit: 0 }).length).toBe(1);
+  expect(one({ type: "check", command: "x", exit: "0" }).length).toBe(1);
+  expect(one({ type: "check", command: "x", exit: 1.5 }).length).toBe(1);
+  expect(one({ type: "check", command: "x", exit: 0, summary: 3 }).length).toBe(1);
+  expect(one({ type: "check", command: "x", exit: 0, output: "y".repeat(CHECK_OUTPUT_MAX + 1) }).length).toBe(1);
+  expect(blockName({ type: "check", command: "bun test", caption: "Unit tests" })).toBe("the check “Unit tests”");
+  expect(blockName({ type: "check", command: "bun test" })).toBe("the check “bun test”");
+});
+
+test("a check's status: Passed on exit 0, else Failed with its exit code", () => {
+  expect(checkStatus({ exit: 0 })).toEqual({ ok: true, label: "Passed" });
+  expect(checkStatus({ exit: 1 })).toEqual({ ok: false, label: "Failed · exit 1" });
+  expect(checkStatus({ exit: 137 }).label).toBe("Failed · exit 137");
+});
+
+test("a diff's lines: added, removed, hunks and file headers", () => {
+  const text = "diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n same\n-old\n+new";
+  expect(diffLines(text).map((l) => l.kind)).toEqual(["file", "file", "file", "file", "hunk", "", "del", "add"]);
+  expect(diffLines("+++plus\n---minus").map((l) => l.kind)).toEqual(["add", "del"]);
+  expect(isDiff({ type: "code", lang: "diff", text: "" })).toBe(true);
+  expect(isDiff({ type: "code", lang: "Diff", text: "" })).toBe(true);
+  expect(isDiff({ type: "code", lang: "js", text: "" })).toBe(false);
+});
+
+test("a kept answer says when: today's time, else its day", () => {
+  const now = new Date(2026, 10, 20, 18, 0).getTime();
+  expect(answerLine("choice", new Date(2026, 10, 20, 9, 5).getTime(), now)).toBe("You chose this at 09:05");
+  expect(answerLine("form", new Date(2026, 10, 19, 14, 30).getTime(), now)).toBe("You sent this on 19 Nov at 14:30");
+  expect(answerLine("button", new Date(2025, 0, 2, 8, 0).getTime(), now)).toBe("You pressed this on 2 Jan 2025 at 08:00");
+  expect(answerOf({ ship: { value: "Ship", at: 1 } }, "ship")).toEqual({ value: "Ship", at: 1 });
+  expect(answerOf({ ship: { at: 1 } }, "ship")).toBe(null);
+  expect(answerOf(null, "ship")).toBe(null);
+});

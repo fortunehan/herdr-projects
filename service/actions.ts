@@ -639,7 +639,7 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     if (!t) throw new Error("That task isn't here any more.");
     b = { ...b, ref: t.ref, folder: t.folder, machine: t.machine };
   }
-  else if ((b?.type === "evidence" || b?.type === "accept" || b?.type === "dismiss") && typeof b.task === "string") {
+  else if ((b?.type === "evidence" || b?.type === "accept" || b?.type === "send-back" || b?.type === "dismiss") && typeof b.task === "string") {
     const t = compat.taskOf(b.task);
     if (!t) throw new Error("That task isn't here any more.");
     b = { ...b, ref: t.ref, folder: t.folder, machine: t.machine };
@@ -661,7 +661,10 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     // a recipe's answer or a note on one of its blocks: to the agent that keeps the artifact
     const text = str(b.text ?? b.note, 4000).trim();
     if (!text) throw new Error("Nothing to send.");
-    return compat.artifacts.say(str(b.artifact, 100), Number(b.v) || 1, text, typeof b.target === "string" ? b.target.slice(0, 300) : undefined);
+    // an answer is kept with its version (answers.json) before its words go: a block's key and its value, at most 4000 characters as JSON
+    const keep = b.type === "artifact-send" && typeof b.answer === "string" && b.answer && JSON.stringify(b.value ?? null).length <= 4000
+      ? { key: b.answer.slice(0, 120), value: b.value ?? null } : undefined;
+    return compat.artifacts.say(str(b.artifact, 100), Number(b.v) || 1, text, typeof b.target === "string" ? b.target.slice(0, 300) : undefined, keep);
   }
   switch (b?.type) {
     case "send": {
@@ -701,6 +704,17 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       let out: any = null;
       try { out = JSON.parse(r.stdout); } catch {}
       if (r.code !== 0 || out?.error) throw new Error(out?.error || r.stderr.trim() || "herdr-task accept failed");
+      return out ?? { ok: true };
+    }
+    case "send-back": {
+      // the Accept card's Send back (SHEP-87): Ready back to Working, the note to its agent (resumed if it ended)
+      const { ref, folder, machine } = taskOf(b);
+      const note = str(b.note, 4000).trim();
+      if (!note) throw new Error("Say what should change.");
+      const r = await task(["send-back", ref, "--note", note, ...(typeof b.on === "string" && b.on.trim() ? ["--on", b.on.slice(0, 300)] : [])], folder, machine);
+      let out: any = null;
+      try { out = JSON.parse(r.stdout); } catch {}
+      if (r.code !== 0 || out?.error) throw new Error(out?.error || r.stderr.trim().split("\n").pop() || "herdr-task send-back failed");
       return out ?? { ok: true };
     }
     case "dismiss": {
