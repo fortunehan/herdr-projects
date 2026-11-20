@@ -741,7 +741,7 @@ def finalize(s, t):
     local = t.get("mode") != "worktree" or not wt or t.get("nothing_to_merge")
     # SHEP-96: on Azure DevOps ready pushes nothing and opens no pull request; the person's Accept has its agent open it.
     later = not local and os.path.isdir(wt) and ado_flow.pr_on_accept(s, t)
-    agent_pr = bool((t.get("pr") or {}).get("by_agent"))
+    agent_pr = bool(t.get("pr") and ado.owns(t["pr"].get("repo")))
     repo = github(s) if not local and not later and not agent_pr and os.path.isdir(wt) else None
     failed = None
     if later:
@@ -778,8 +778,10 @@ def finalize(s, t):
         t["attention"] = failed
         return f"{s.ref(t)} {READY_BUT} {failed} Tell the person."
     if agent_pr:
-        msg += (f" Its pull request #{t['pr']['number']} on Azure DevOps stays as you opened it: push new commits to it "
-                "yourself (git push), never a second one.")
+        msg += (f" Its pull request #{t['pr']['number']} on Azure DevOps stays as it is: push new commits to it yourself "
+                "(git push), never a second one.")
+    if agent_pr and waits:
+        return msg + " " + ado_flow.WAITS
     if later:
         msg += (" On Azure DevOps nothing is pushed yet: the person reviews your branch, and once they accept it you're asked "
                 "to open its pull request with the ado-push-pr skill.")
@@ -1525,7 +1527,8 @@ def cmd_fix(args):
             raise Fail(f"{s.ref(t)} works in the folder itself; tell its agent what to fix.")
         problem = args.reason or t.get("attention") or "The pull request can't merge yet."
         main, wt, br, base = s.loc["folder"], t["worktree"], t["branch"], t.get("base") or "main"
-        if (t.get("pr") or {}).get("by_agent"):
+        accepted = bool(t.get("merge_wait") and t.get("pr") and ado.owns(t["pr"].get("repo")))
+        if accepted:
             msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
                    f"Fix it in {wt}: for conflicts, merge {base} into {br}; for failing checks, find out why and fix them. Run "
                    f"the checks, commit and push to its pull request (`git push`; never force-push, don't run ready).")
@@ -1537,7 +1540,12 @@ def cmd_fix(args):
         t["fix_requested"] = t["handed_at"] = now()
         s.dirty = True
         sent, started = tell(s, t, msg, args)
-        back_to_work(s, t, f"asked to fix: {problem}", f"Fixing: {problem}")
+        if accepted:
+            # SHEP-96: Azure DevOps merges it once its push passes: Waiting to merge, never Working (no ready follows).
+            for k in ("attention", "attention_at", "stuck_head"):
+                t.pop(k, None)
+        else:
+            back_to_work(s, t, f"asked to fix: {problem}", f"Fixing: {problem}")
         v = view(s, t)
     say(args, {**v, "terminal": sent, "new_agent": started},
         f"{s.ref(t)}: asked {sent} to fix it" + (" (a new agent)" if started else ""))

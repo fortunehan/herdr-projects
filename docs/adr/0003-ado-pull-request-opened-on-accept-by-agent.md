@@ -13,9 +13,10 @@ A failing check while it waits to merge goes to the task's agent to fix: commit 
 
 - When the agent can't open the pull request (no valid work item, a refused push, the skill missing), it says so with `herdr-task status … --cant-fix "<why>"`, and the task needs the person with that reason ("Couldn't open the pull request"). The same applies when the agent ends its turn without recording one, or stops. Herdr never falls back to opening the pull request itself. The person's Accept asks the agent again.
 - The message names the task branch as the remote branch to push (an explicit name, which the skill allows), so Herdr's `task/...` branches pass the skill's rule for new branch names.
-- `herdr-task pr` is refused before an Accept, and for a pull request from another branch or at another commit than the one the person accepted.
+- `herdr-task pr` is refused before an Accept, and for a pull request (open or completed) from another branch or at another commit than the one the person accepted (kept when Accept asked). Reporting one already recorded changes nothing.
 - Settings' Merge "on its own" or "after checks" stands for the person's Accept, as it did before: the agent is told so, not that the person accepted.
-- A later ready never pushes or reopens a pull request its agent opened: the agent pushes to it itself.
+- A later ready never pushes or reopens a pull request on Azure DevOps, one recorded before SHEP-96 included: the agent pushes to it itself, and an accepted one stays Waiting to merge. `herdr-task fix` on an accepted one asks the agent to push, and it stays Waiting to merge too.
 - `--cant-fix` on a failing check, or fix rounds used up, keeps the task in Needs you with why until the pull request's head moves (a fix pushed), whatever its checks say meanwhile.
 - While the agent opens the pull request or fixes checks, its turns don't take the task back to Working: that is the work it was asked for, as an agent merging locally on request.
-- A task whose pull request was opened at ready before SHEP-96 goes on as ADR 0001 describes. GitHub is unchanged: ready still opens its pull request.
+- A task whose pull request was opened at ready before SHEP-96 goes on as ADR 0001 describes, except that ready no longer pushes to it.
+- The ado-push-pr skill works only with an origin on dev.azure.com. A repo Herdr reads as Azure DevOps through visualstudio.com, or through a remote other than origin, gets a Needs you with the skill's reason after Accept, not a pull request opened by Herdr. GitHub is unchanged: ready still opens its pull request.

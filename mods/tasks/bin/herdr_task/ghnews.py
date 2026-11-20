@@ -150,9 +150,9 @@ def pr_news(s, t, v, report):
     # SHEP-96: accepted on Azure DevOps (Waiting to merge): its agent fixes and pushes, at most fix_rounds times. A
     # reviewer's vote is news, not a check to fix; nothing more goes to it while the task waits on the person.
     fix = None
-    builds = [c for c in news_checks if not str(c.get("name") or "").startswith("Review by ")]
+    builds = [c for c in news_checks if not re.match(r"review by |.*reviewer", str(c.get("name") or ""), re.I)]
     if accepted and str(t.get("attention") or "").startswith(STUCK):
-        news_checks = []
+        news_checks, news_conflict = [], None
     elif builds and accepted:
         from .ado_flow import fix_round
         fix = fix_round(s, t, builds, head)
@@ -212,6 +212,10 @@ def pr_deliver(s, t, report):
         return
     if t["state"] != "ready" or n.get("since") != t.get("ready_at") or now() - (n.get("at") or 0) > NOTICE_KEEP_MS:
         pr.pop("news")
+        s.dirty = True
+        return
+    if ado.owns(pr.get("repo")) and t.get("merge_wait") and str(t.get("attention") or "").startswith(STUCK):
+        pr.pop("news")  # SHEP-96: stopped for the person meanwhile: nothing more for its agent
         s.dirty = True
         return
     k = resting(s, t)

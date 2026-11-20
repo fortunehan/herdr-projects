@@ -157,16 +157,13 @@ def facts(s, t, report):
                     pr.pop("wait", None)
             if wait:
                 pr["checked"] = now() - PR_EVERY + PR_WAIT_EVERY
+        # SHEP-96: its agent can't fix it, or its fix rounds are used up: Needs you with why until a fix is pushed.
+        stuck = ado_flow.unstick(t, v)
         try:
             pr_news(s, t, v, report)
         except Exception as e:  # never stops the tick
             report.setdefault("github_error", []).append(f"{s.ref(t)}: {e}")
-        # SHEP-96: its agent can't fix it, or its fix rounds are used up: Needs you with why until a fix is pushed.
         stuck = str(t.get("attention") or "").startswith(ado_flow.STUCK)
-        if stuck and v.get("headRefOid") and v.get("headRefOid") != t.get("stuck_head"):
-            t.pop("attention", None)
-            t.pop("stuck_head", None)
-            stuck = False
         # Kept up to date while it is back at work too (a fix pushed: the problem goes away), so its
         # agent going quiet with the problem still there reads Needs you (on_it()).
         if t["state"] in ("ready", "running") and problem != t.get("attention") and not stuck:

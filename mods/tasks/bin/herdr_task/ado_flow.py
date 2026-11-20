@@ -227,7 +227,9 @@ def request_pr(s, t, args, by_settings=False):
     from .base import Fail
     for k in ("attention", "attention_at", "merge_failed_head", "auto_merge"):
         t.pop(k, None)
+    from .commands import branch_tip
     t["pr_requested"] = t["handed_at"] = now()
+    t["pr_accepted_head"] = branch_tip(s, t)
     s.dirty = True
     try:
         return tell(s, t, open_msg(s, t, by_settings), args)
@@ -239,8 +241,8 @@ def request_pr(s, t, args, by_settings=False):
 def opened(s, t, v):
     """Its agent recorded its pull request (v: as read): Waiting to merge (auto-complete on, the skill's, else turned
     on now), Done when it merged already, else why not (Needs you)."""
-    t.pop("pr_requested", None)
-    t.pop("pr_on_accept", None)
+    for k in ("pr_requested", "pr_on_accept", "pr_accepted_head"):
+        t.pop(k, None)
     t["pr"]["checked"] = 0
     if v.get("state") == "MERGED":
         merged(s, t, v, even_if_busy=True)
@@ -271,11 +273,14 @@ def cmd_pr(args):
             raise Fail(f"That URL isn't a pull request of {repo[len(ado.PREFIX):]} ({ado.web(repo)}/pullrequest/<number>).")
         if t["state"] not in ("ready", "running") or t.get("merged"):
             raise Fail(f"{s.ref(t)} isn't waiting for its pull request ({t['state']}).")
-        if not t.get("pr_requested") and not t.get("pr"):
+        if t.get("pr"):
+            if int(t["pr"].get("number") or 0) != int(n):
+                raise Fail(f"{s.ref(t)} already has pull request #{t['pr']['number']}.")
+            say(args, view(s, t), f"{s.ref(t)}: pull request #{n} is already recorded; nothing changed.")
+            return
+        if not t.get("pr_requested"):
             raise Fail(f"{s.ref(t)} wasn't accepted yet: its pull request is opened only once the person accepts it (you're "
                        f"asked then). Say ready and wait.")
-        if t.get("pr") and int(t["pr"].get("number") or 0) != int(n):
-            raise Fail(f"{s.ref(t)} already has pull request #{t['pr']['number']}.")
         try:
             v = ado.view(repo, int(n))
         except ado.AdoError as e:
@@ -283,10 +288,11 @@ def cmd_pr(args):
         base = t.get("base") or "main"
         if v.get("headRefName") != t.get("branch"):
             raise Fail(f"Pull request #{n} is from {v.get('headRefName')}, not {s.ref(t)}'s branch {t.get('branch')}.")
-        tip = branch_tip(s, t)
-        if v.get("state") == "OPEN" and tip and v.get("headRefOid") != tip:
-            raise Fail(f"Pull request #{n} is at {str(v.get('headRefOid'))[:7]}, but {t.get('branch')} here is at {tip[:7]}, the "
-                       f"commit the person accepted: push {t.get('branch')} (git push), then run this again.")
+        tip = t.get("pr_accepted_head") or branch_tip(s, t)
+        if tip and v.get("headRefOid") != tip:
+            raise Fail(f"Pull request #{n} is at {str(v.get('headRefOid'))[:7]}, but the person accepted {t.get('branch')} at "
+                       f"{tip[:7]}: " + ("push that commit (git push), then run this again." if v.get("state") == "OPEN" else
+                                         "it isn't this task's pull request. Open one for the accepted commit."))
         if v.get("baseRefName") != base:
             raise Fail(f"Pull request #{n} goes into {v.get('baseRefName')}, but {s.ref(t)} merges into {base}: change its "
                        f"target branch to {base} in Azure DevOps, then run this again.")
@@ -318,8 +324,21 @@ def cant_fix(s, t, why):
         t["stuck_head"] = last.get("head") or git(t.get("worktree") or s.loc["folder"], "rev-parse", "HEAD")[1] or None
     t["attention_at"] = now()
     t.pop("handed_at", None)
+    (t.get("pr") or {}).pop("news", None)
     s.dirty = True
     return t["attention"]
+
+
+def unstick(t, v):
+    """A stop (STUCK) goes once its pull request's head moved (a fix pushed): before that commit's news is read
+    (ghnews.pr_news()), so its failure is a fix round of its own. Returns whether the task is still stopped."""
+    if not str(t.get("attention") or "").startswith(STUCK):
+        return False
+    if v.get("headRefOid") and v.get("headRefOid") != t.get("stuck_head"):
+        t.pop("attention", None)
+        t.pop("stuck_head", None)
+        return False
+    return True
 
 
 def opening_pass(s, t, report):
@@ -362,6 +381,8 @@ def fix_round(s, t, failed, head):
     if used >= limit:
         t["attention"], t["attention_at"] = f"{ROUNDS_OUT} {used} fix round{'' if used == 1 else 's'}: {names}", now()
         t["stuck_head"] = pr["last_failure"]["head"]
+        t.pop("handed_at", None)
+        pr.pop("news", None)
         return None
     pr["fix_rounds"], pr["fix_head"] = used + 1, head or None
     ref, ht, folder = s.ref(t), own_path(), shlex.quote(s.loc["folder"])
