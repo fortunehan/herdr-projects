@@ -3,9 +3,11 @@
 // A choice, a form or a button sends its words to the agent that made it (reply), as the window's
 // (mods/artifacts/recipe-view.js). The answer is kept with the version (answers.json, SHEP-87): reopened, the chosen
 // option shows picked with when, and a choice or a form can be changed (sent again). Mark up lays its own layer over
-// the whole recipe (plugins/artifacts).
+// the whole recipe (plugins/artifacts). A tap on a picture opens it large, with the recipe's other pictures beside it
+// (Pictures.tsx, SHEP-90).
 import clsx from 'clsx'
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { PictureViewer } from './Pictures.tsx'
 import { ArrowUpRightIcon, CheckIcon } from '@heroicons/react/16/solid'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { Primary } from '../ui.tsx'
@@ -21,7 +23,10 @@ type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; repl
 /** the window's words when a recipe can't be read */
 export const UNREADABLE = "This artifact's recipe can't be read."
 
-const { chartShapes, choiceReply, formReply, isLink, answerLine, answerOf, checkStatus, diffLines, isDiff } = R as any
+const { chartShapes, choiceReply, formReply, isLink, answerLine, answerOf, checkStatus, diffLines, isDiff, pictures } = R as any
+
+/** opens the picture viewer on a picture, by its src in the recipe */
+const OpenPicture = createContext<((src: string) => void) | null>(null)
 const PALETTE = ['var(--accent)', 'var(--focus)', 'var(--ready)', 'var(--work)', 'var(--merged)', 'var(--need)']
 const TONE: Record<string, string> = { info: 'bg-well shadow-soft', good: 'bg-ready/10', warn: 'bg-work/12', bad: 'bg-need/10' }
 
@@ -193,12 +198,20 @@ function Pdf({ src, caption, asset }: { src: string; caption?: string; asset: (s
 /** A picture at its own size, never wider than its column (a flex column would stretch it: #954). One that fails to
  *  load (a version still being copied, a hiccup reaching another machine) is asked for again a few times, under a
  *  new address so no cached failure answers (#983). */
-function Pic({ src, alt, w, h }: { src: string; alt: string; w?: number; h?: number }) {
+function Pic({ src, file, alt, w, h }: { src: string; file: string; alt: string; w?: number; h?: number }) {
+  const open = useContext(OpenPicture)
   const [tries, setTries] = useState(0)
   useEffect(() => setTries(0), [src])
   const retry = () => { if (tries < 3) setTimeout(() => setTries((n) => n + 1), 1000 * 2 ** tries) }
   const url = tries ? `${src}${src.includes('?') ? '&' : '?'}retry=${tries}` : src
-  return <img src={url} alt={alt} width={w} height={h} onError={retry} className="h-auto max-w-full self-start rounded-box shadow-box" loading="lazy" />
+  const pic = <img src={url} alt={alt} width={w} height={h} onError={retry} className="h-auto max-w-full rounded-box shadow-box" loading="lazy" />
+  if (!open) return <div className="self-start">{pic}</div>
+  return (
+    <button type="button" aria-label={`Open ${alt || file.split('/').pop()}`} onClick={() => open(file)}
+      className="press-dim block max-w-full self-start cursor-zoom-in rounded-box">
+      {pic}
+    </button>
+  )
 }
 
 /** before and after side by side: a picture or a clip each; two clips play together (one's play, pause and seek are the other's) */
@@ -220,7 +233,7 @@ function Pair({ b, asset }: { b: Block; asset: (src: string) => string }) {
           <Clip key={w} src={x.src} poster={x.poster} caption={x.caption ?? w} asset={asset} videoRef={mine} label={`${w}: ${x.caption ?? w}`}
             events={clips ? follow(mine, theirs) : undefined} />
         ) : (
-          <figure key={w} className="flex min-w-0 flex-col gap-1.5"><Pic src={asset(x.src)} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}</figcaption></figure>
+          <figure key={w} className="flex min-w-0 flex-col gap-1.5"><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}</figcaption></figure>
         )
       })}
     </div>
@@ -285,6 +298,9 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   // what was answered here since it opened, over what was kept before (answers.json)
   const [mine, setMine] = useState<Answers>({})
   const answers: Answers = { ...(given ?? {}), ...mine }
+  // every picture in it, for the viewer to page through; the one open
+  const pics = useMemo(() => (pictures(recipe) as { src: string; caption: string }[]).map((x) => ({ src: x.src, url: asset(x.src), name: x.caption || x.src.split('/').pop()!, file: x.src.split('/').pop()! })), [recipe, asset])
+  const [shown, setShown] = useState<number | null>(null)
   const reply: Reply | undefined = send && (async (text, keep) => {
     const r = await send(text, keep)
     if (keep) setMine((m) => ({ ...m, [keep.key]: { value: keep.value, at: Date.now(), by: 'web' } }))
@@ -305,7 +321,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
       )
       case 'chart': return <Chart b={b} />
       case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}</dd> : null}</div>)}</dl>
-      case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}</figcaption> : null}</figure>
+      case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}</figcaption> : null}</figure>
       case 'video': return <Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />
       case 'audio': return <Sound src={b.src} caption={b.caption} asset={asset} />
       case 'pdf': return <Pdf src={b.src} caption={b.caption} asset={asset} />
@@ -338,5 +354,10 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
       {one(b)}
     </section>
   )
-  return <div className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">{recipe.blocks.map(wrap)}</div>
+  return (
+    <OpenPicture.Provider value={(src) => setShown(Math.max(0, pics.findIndex((x) => x.src === src)))}>
+      <div className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">{recipe.blocks.map(wrap)}</div>
+      {shown !== null && pics.length ? <PictureViewer pics={pics} at={shown} onClose={() => setShown(null)} /> : null}
+    </OpenPicture.Provider>
+  )
 }
