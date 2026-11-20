@@ -1213,6 +1213,71 @@ class OpenedOnAccept(Base):
             self.tick.facts(self.store, self.task, {"attention": [], "done": []})
         self.assertNotIn("fix_rounds", self.task["pr"])
 
+    def test_the_accepted_commit_is_named_for_the_skill(self):
+        self.ready()
+        self.accept()
+        self.assertIn(f"Push exactly commit {self.tip}, the one accepted", self.sent[-1][1])
+        self.assertEqual(self.task["pr_accepted_head"], self.tip)
+
+    def test_herdr_task_merge_hands_it_to_its_agent_too(self):
+        self.ready()
+        with mock.patch.object(commands, "ff_merge", side_effect=AssertionError("merged here")):
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertEqual(self.said[-1][1], "SHEP-1: t5 opens its pull request on Azure DevOps.")
+        self.assertIn("ado-push-pr skill", self.sent[-1][1])
+
+    def test_a_legacy_pull_request_behind_the_reviewed_commit_is_never_completed(self):
+        self.ready()
+        self.task["pr"] = {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}
+        f = self.azure(self.opened(lastMergeSourceCommit={"commitId": "0ld"}))
+        with mock.patch.object(commands, "own_open_pr", lambda s, t: None):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None, worker=True))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+        self.assertTrue(self.task["attention"].startswith("Its pull request doesn't hold the reviewed commit: #41 is at 0ld"))
+        self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))
+
+    def test_a_build_named_after_reviewers_is_still_a_fix_round(self):
+        self.waiting()
+        self.assertIn("Fix round 1 of 3", self.fail_at("h1", names=("reviewer-service-ci",))[0])
+
+    def test_held_failure_news_is_kept_when_a_comment_comes_after_it(self):
+        self.waiting()
+        with mock.patch.object(ghnews, "news_send", lambda a, text: False):  # the person is typing: held
+            self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                       [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)],
+                       {("GET", r"build/builds/88/timeline"): {"records": []}})
+            self.task["pr"]["checked"] = 0
+            with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]):
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+                ghnews.pr_deliver(self.store, self.task, {})
+                self.assertIn("Fix round 1 of 3", self.task["pr"]["news"]["text"])
+                comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                                  "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+                self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                           [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)],
+                           {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": [comment]},
+                            ("GET", r"build/builds/88/timeline"): {"records": []}})
+                self.task["pr"]["checked"] = 0
+                self.task["pr"]["watch"]["checked"] = 0
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Fix round 1 of 3", text)
+        self.assertIn("Rename it.", text)
+
+    def test_cant_fix_waits_for_a_push_after_it(self):
+        self.waiting()
+        self.fail_at("h1")
+        # its agent pushed h2 and the scheduler saw it running, then it says it can't fix it
+        self.azure(pr(n=41, head="h2", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                   [evaluation("running", buildDefinitionName="web-ci")])
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.cant("The service is down")
+        self.assertEqual(self.task["stuck_head"], "h2")
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.assertTrue(self.task["attention"].startswith("Its agent can't fix it: The service is down"))
+
     def test_its_worker_runs_herdr_task_pr_without_asking(self):
         import herdr_task.launch as launch
         self.assertIn("pr", launch.OWN)

@@ -32,7 +32,8 @@ AUTO_OFF = "Auto-complete was turned off in Azure DevOps"
 # The problems the person's Accept itself fixes (it turns auto-complete on again): Needs you with
 # Accept on its row (core/tasks.js acceptAgain()).
 OPEN_FAILED = "Couldn't open the pull request"
-ACCEPT_AGAIN = (AUTO_FAILED, AUTO_OFF, OPEN_FAILED)
+BEHIND_HERE = "Its pull request doesn't hold the reviewed commit"
+ACCEPT_AGAIN = (AUTO_FAILED, AUTO_OFF, OPEN_FAILED, BEHIND_HERE)
 PULL_FAILED = "The main checkout couldn't pull"
 # SHEP-96: the task's agent opens its pull request after Accept (as core/tasks.js readyWait()).
 OPENING = "Opening pull request"
@@ -62,6 +63,13 @@ def accept(s, t, publish=True):
         stop_waiting(t)
         t["attention"], t["attention_at"] = problem, now()
         return problem
+    from .commands import branch_tip
+    tip = branch_tip(s, t)
+    if tip and v.get("headRefOid") and v["headRefOid"] != tip and not t.get("merge_wait"):
+        # SHEP-96: ready no longer pushes: the Accept card showed the branch here, and its pull request lacks some of it.
+        t["attention"], t["attention_at"] = (f"{BEHIND_HERE}: #{n} is at {v['headRefOid'][:7]}, {t.get('branch')} here at "
+                                             f"{tip[:7]}. Its agent pushes it (git push), then Accept again."), now()
+        return t["attention"]
     if v.get("isDraft"):
         if not publish:
             return "It's still a draft pull request: Accept publishes and merges it."
@@ -197,7 +205,7 @@ def pr_on_accept(s, t):
                 and ado.repo_of(s))
 
 
-def open_msg(s, t, by_settings=False):
+def open_msg(s, t, by_settings=False, head=None):
     """What the task's agent is told on Accept (by_settings: Settings' merge policy accepted it for the person): open
     its pull request with the ado-push-pr skill, then record it."""
     from .launch import own_path
@@ -211,7 +219,9 @@ def open_msg(s, t, by_settings=False):
             f"{t['worktree']} to the remote branch of the same name ({t['branch']}: Herdr's task branch, an explicit name "
             f"for the skill) and create its pull request into {base} (the task's base branch, even when the repository's "
             f"default branch is another one), with auto-complete on. Follow the skill's own steps: {item}, the title "
-            f"\"#<work item>: <Summary>\", and the repository's pull request template. Don't add, change or rebase commits.\n"
+            f"\"#<work item>: <Summary>\", and the repository's pull request template. Don't add, change or rebase commits."
+            + (f" Push exactly commit {head}, the one accepted: if `git -C {t['worktree']} rev-parse HEAD` says another, push "
+               f"nothing and say why with --cant-fix (below)." if head else "") + "\n"
             f"Once it exists, record it: `{ht} pr {ref} --folder {folder} --url <its URL>`. Herdr then waits for Azure DevOps "
             f"to merge it and sends you any check that fails.\n"
             f"If you can't create it (no valid work item, the push refused, the skill missing, a sign-in failing), don't open "
@@ -232,7 +242,7 @@ def request_pr(s, t, args, by_settings=False):
     t["pr_accepted_head"] = branch_tip(s, t)
     s.dirty = True
     try:
-        return tell(s, t, open_msg(s, t, by_settings), args)
+        return tell(s, t, open_msg(s, t, by_settings, t["pr_accepted_head"]), args)
     except Fail as e:
         t["attention"], t["attention_at"] = f"{OPEN_FAILED}: couldn't reach its agent: {e}", now()
         raise Fail(t["attention"])
@@ -321,7 +331,8 @@ def cant_fix(s, t, why):
     else:
         last = ((t.get("pr") or {}).get("last_failure") or {})
         t["attention"] = f"{CANT_FIX}: {why}" + (f" Last failure: {last['text']}" if last.get("text") else "")
-        t["stuck_head"] = last.get("head") or git(t.get("worktree") or s.loc["folder"], "rev-parse", "HEAD")[1] or None
+        t["stuck_head"] = ((t.get("pr") or {}).get("seen_head") or last.get("head")
+                           or git(t.get("worktree") or s.loc["folder"], "rev-parse", "HEAD")[1] or None)
     t["attention_at"] = now()
     t.pop("handed_at", None)
     (t.get("pr") or {}).pop("news", None)

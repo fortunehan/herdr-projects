@@ -134,7 +134,7 @@ export function mergeWaitLine(task) {
 // SHEP-64: and a background Accept that didn't finish (herdr-task's commands.ACCEPT_FAILED), on any forge.
 // SHEP-96: and its agent couldn't open the pull request after Accept (herdr-task's ado_flow.OPEN_FAILED): Accept asks again.
 const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps", "Accept didn't finish",
-  "Couldn't open the pull request"];
+  "Couldn't open the pull request", "Its pull request doesn't hold the reviewed commit"];
 export const acceptAgain = (p) => p.section === "needs" && p.needs === "attention" && p.task.state === "ready"
   && ACCEPT_AGAIN.some((x) => String(p.task.attention ?? "").startsWith(x));
 

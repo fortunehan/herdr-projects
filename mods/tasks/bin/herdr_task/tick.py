@@ -158,6 +158,8 @@ def facts(s, t, report):
             if wait:
                 pr["checked"] = now() - PR_EVERY + PR_WAIT_EVERY
         # SHEP-96: its agent can't fix it, or its fix rounds are used up: Needs you with why until a fix is pushed.
+        if v.get("headRefOid"):
+            pr["seen_head"] = v["headRefOid"]
         stuck = ado_flow.unstick(t, v)
         try:
             pr_news(s, t, v, report)

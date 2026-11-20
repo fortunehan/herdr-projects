@@ -150,7 +150,7 @@ def pr_news(s, t, v, report):
     # SHEP-96: accepted on Azure DevOps (Waiting to merge): its agent fixes and pushes, at most fix_rounds times. A
     # reviewer's vote is news, not a check to fix; nothing more goes to it while the task waits on the person.
     fix = None
-    builds = [c for c in news_checks if not re.match(r"review by |.*reviewer", str(c.get("name") or ""), re.I)]
+    builds = [c for c in news_checks if not c.get("reviewer")]
     if accepted and str(t.get("attention") or "").startswith(STUCK):
         news_checks, news_conflict = [], None
     elif builds and accepted:
@@ -197,8 +197,12 @@ def pr_news(s, t, v, report):
                      "wish that fits your brief: do it. Anything else: ask the person with your CLI's question tool (it reaches them "
                      "as Needs you; only without one, end your message with one full question). After a fix, commit and run your "
                      "ready command again.")
+    old = pr.get("news") or {}
+    if old.get("lines") and old.get("since") == since:
+        # SHEP-96: news its agent hasn't had yet (held while the person types) stays: a failure with its fix round too
+        lines = old["lines"] + lines[1:]
     pr["news"] = {"text": f'<herdr-github task="{attr(s.ref(t))}" pr="{pr["number"]}">' + esc("\n".join(lines)) + "</herdr-github>",
-                  "at": now(), "since": since}
+                  "lines": lines, "at": now(), "since": since}
     report.setdefault("github", []).append({"task": s.ref(t), "checks": len(news_checks), "comments": len(fresh),
                                             **({"conflict": True} if news_conflict else {})})
 

@@ -1246,7 +1246,14 @@ def cmd_merge(args):
         if t.get("mode") != "worktree" or not t.get("worktree"):
             raise Fail(f"{s.ref(t)} works in the folder itself; there is nothing to merge.")
         sent, started, how = None, False, "agent"
-        if t.get("pr") or own_open_pr(s, t):
+        if ado_flow.pr_on_accept(s, t) and not merged_here(s, t) and not in_base(s, t):
+            # SHEP-96: Azure DevOps: its agent opens the pull request, as Accept has it; never merged here.
+            how = "opening"
+            try:
+                sent, started = ado_flow.request_pr(s, t, args)
+            except Fail as e:
+                error = str(e)
+        elif t.get("pr") or own_open_pr(s, t):
             # On GitHub or Azure DevOps: Herdr merges the pull request itself, then tidies up here.
             how = "github"
             error = merge_now(s, t, publish=True)
@@ -1269,6 +1276,7 @@ def cmd_merge(args):
     text = f"{s.ref(t)}: pull request #{t['pr']['number']} merged; done." if how == "github" else \
         f"{s.ref(t)}: pull request #{t['pr']['number']} is in GitHub's merge queue; done once GitHub merges it." if how == "queue" else \
         f"{s.ref(t)}: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on)." if how == "waiting" else \
+        f"{s.ref(t)}: {sent} opens its pull request on Azure DevOps." if how == "opening" else \
         f"{s.ref(t)}: merge asked of {sent}" + (" (a new agent)" if started else "")
     say(args, {**v, "terminal": sent, "new_agent": started, "merged": how == "github", "queued": how == "queue",
                "waiting": how == "waiting"}, text)
@@ -1400,7 +1408,7 @@ def accept_precheck(args):
             s.dirty = True
         # A pull request's problems are read fresh (merge_now()): one fixed since, or a merge that
         # failed once, doesn't stand in the way. Without one, only a failed try doesn't.
-        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED, ACCEPT_FAILED, ado_flow.OPEN_FAILED)):
+        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED, ACCEPT_FAILED, ado_flow.OPEN_FAILED, ado_flow.BEHIND_HERE)):
             raise Fail(f"{s.ref(t)} needs attention first: {t['attention']}")
     if back:
         raise Fail(f"{s.ref(t)} is working again: its agent took up more work after it said ready. Accept it once it says ready again.")
@@ -1535,7 +1543,9 @@ def cmd_fix(args):
         else:
             msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
                    f"Fix it in {wt}: for conflicts, rebase {br} onto {base}; for failing checks, find out why and fix them. "
-                   f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix.")
+                   f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix."
+                   + (" On Azure DevOps ready pushes nothing: push it yourself first (`git push`; never force-push)."
+                      if t.get("pr") and ado.owns(t["pr"].get("repo")) else ""))
         # Handed the problem: someone is on it while its agent starts (on_it()).
         t["fix_requested"] = t["handed_at"] = now()
         s.dirty = True
