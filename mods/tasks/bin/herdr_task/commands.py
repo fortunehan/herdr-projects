@@ -780,6 +780,13 @@ def finalize(s, t):
     if agent_pr:
         msg += (f" Its pull request #{t['pr']['number']} on Azure DevOps stays as it is: push new commits to it yourself "
                 "(git push), never a second one.")
+    if agent_pr and not t["pr"].get("by_agent") and os.path.isdir(wt):
+        # Opened at ready before SHEP-96: its new commits go to it as they did (a plain push, never a second pull request).
+        names = git(s.loc["folder"], "remote")[1].split()
+        ok, _, err = git(wt, "push", "origin" if "origin" in names else (names[0] if names else "origin"), t["branch"])
+        if not ok:
+            t["attention"] = f"Couldn't push {t['branch']} to its pull request: {err}"
+            return f"{s.ref(t)} {READY_BUT} {t['attention']} Tell the person."
     if agent_pr and waits:
         return msg + " " + ado_flow.WAITS
     if later:
@@ -1247,7 +1254,11 @@ def cmd_merge(args):
             raise Fail(f"{s.ref(t)} works in the folder itself; there is nothing to merge.")
         sent, started, how = None, False, "agent"
         if ado_flow.pr_on_accept(s, t) and not merged_here(s, t) and not in_base(s, t):
-            # SHEP-96: Azure DevOps: its agent opens the pull request, as Accept has it; never merged here.
+            # SHEP-96: Azure DevOps: its agent opens the pull request, as Accept has it; never merged here. Only once it said
+            # ready, as Accept.
+            if t["state"] != "ready" or t.get("pr_requested") and not t.get("attention"):
+                raise Fail(f"{s.ref(t)} isn't Ready ({t['state']}): on Azure DevOps its pull request is opened once it says ready "
+                           "and is accepted.")
             how = "opening"
             try:
                 sent, started = ado_flow.request_pr(s, t, args)
@@ -1541,11 +1552,11 @@ def cmd_fix(args):
                    f"Fix it in {wt}: for conflicts, merge {base} into {br}; for failing checks, find out why and fix them. Run "
                    f"the checks, commit and push to its pull request (`git push`; never force-push, don't run ready).")
         else:
+            on_ado = bool(t.get("pr") and ado.owns(t["pr"].get("repo")))
+            how = f"merge {base} into {br}" if on_ado else f"rebase {br} onto {base}"
             msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
-                   f"Fix it in {wt}: for conflicts, rebase {br} onto {base}; for failing checks, find out why and fix them. "
-                   f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix."
-                   + (" On Azure DevOps ready pushes nothing: push it yourself first (`git push`; never force-push)."
-                      if t.get("pr") and ado.owns(t["pr"].get("repo")) else ""))
+                   f"Fix it in {wt}: for conflicts, {how}; for failing checks, find out why and fix them. "
+                   f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix.")
         # Handed the problem: someone is on it while its agent starts (on_it()).
         t["fix_requested"] = t["handed_at"] = now()
         s.dirty = True

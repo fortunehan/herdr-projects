@@ -238,8 +238,14 @@ def request_pr(s, t, args, by_settings=False):
     for k in ("attention", "attention_at", "merge_failed_head", "auto_merge"):
         t.pop(k, None)
     from .commands import branch_tip
+    tip, said = branch_tip(s, t), t.get("head")
+    if said and tip and tip != said:
+        t["attention"], t["attention_at"] = (f"{OPEN_FAILED}: {t.get('branch')} moved to {tip[:7]} since it said ready at "
+                                             f"{said[:7]}, the commit the Accept card showed; its agent says ready again"), now()
+        s.dirty = True
+        raise Fail(t["attention"])
     t["pr_requested"] = t["handed_at"] = now()
-    t["pr_accepted_head"] = branch_tip(s, t)
+    t["pr_accepted_head"] = said or tip
     s.dirty = True
     try:
         return tell(s, t, open_msg(s, t, by_settings, t["pr_accepted_head"]), args)

@@ -1278,6 +1278,52 @@ class OpenedOnAccept(Base):
         self.tick.facts(self.store, self.task, {"attention": [], "done": []})
         self.assertTrue(self.task["attention"].startswith("Its agent can't fix it: The service is down"))
 
+    def test_a_branch_moved_since_ready_isnt_opened_on_accept(self):
+        self.ready()
+        self.task["head"] = self.start  # ready said it at another commit than the branch is at now
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.accept()
+        self.assertEqual(self.sent, [])
+        self.assertIn("moved to", self.task["attention"])
+        self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))
+        self.task["head"] = self.tip  # said ready again at the tip
+        self.accept()
+        self.assertIn(f"Push exactly commit {self.tip}", self.sent[-1][1])
+
+    def test_herdr_task_merge_refuses_a_task_not_ready(self):
+        with self.assertRaises(commands.Fail) as e:
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertIn("isn't Ready (running)", str(e.exception))
+        self.assertEqual(self.sent, [])
+
+    def test_ready_pushes_new_commits_to_a_pull_request_opened_before(self):
+        self.task.update(pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}, merge_wait=1)
+        said = self.ready()
+        self.assertEqual(self.git("-C", self.bare, "rev-parse", f"refs/heads/{self.branch}"), self.tip)
+        self.assertTrue(said.endswith("It waits to merge in Azure DevOps."))
+        self.assertEqual(self.store.data["tasks"][0]["pr"]["number"], 41)
+
+    def test_held_fix_news_goes_once_its_checks_pass(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3: old"], "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
+        comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                          "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}), BUILT,
+                   {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": [comment]}})
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Rename it.", text)
+        self.assertNotIn("Fix round 1 of 3: old", text)
+
+    def test_fix_before_accept_merges_the_base_on_azure_devops(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}, attention="It conflicts with the base branch.")
+        with mock.patch.object(commands, "back_to_work", lambda *a, **k: True):
+            commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
+        self.assertIn("for conflicts, merge main into task/1-login", self.sent[-1][1])
+
     def test_its_worker_runs_herdr_task_pr_without_asking(self):
         import herdr_task.launch as launch
         self.assertIn("pr", launch.OWN)

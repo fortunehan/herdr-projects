@@ -198,7 +198,7 @@ def pr_news(s, t, v, report):
                      "as Needs you; only without one, end your message with one full question). After a fix, commit and run your "
                      "ready command again.")
     old = pr.get("news") or {}
-    if old.get("lines") and old.get("since") == since:
+    if old.get("lines") and old.get("since") == since and not (accepted and green):
         # SHEP-96: news its agent hasn't had yet (held while the person types) stays: a failure with its fix round too
         lines = old["lines"] + lines[1:]
     pr["news"] = {"text": f'<herdr-github task="{attr(s.ref(t))}" pr="{pr["number"]}">' + esc("\n".join(lines)) + "</herdr-github>",
