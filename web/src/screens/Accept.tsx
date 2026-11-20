@@ -237,11 +237,8 @@ export function AcceptCard() {
   // back's box open it closes the box
   const cancel = () => (getState().ui.viewer ? closeArtifact() : back !== null ? setBack(null) : close())
   // what follows the lead (and the proof, when it shows in the card)
-  const artifactRows = e.artifacts?.length ? (
-    <Section label={A.ACCEPT.artifacts}>
-      <div className="flex flex-col gap-1.5">{e.artifacts.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
-    </Section>
-  ) : null
+  const artifactList = <div className="flex flex-col gap-1.5">{e.artifacts?.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
+  const artifactRows = e.artifacts?.length ? <Section label={A.ACCEPT.artifacts}>{artifactList}</Section> : null
   // what a nothing-to-merge task made, before its lead: its proof as a row (drawn in the card too, on a wide one beside
   // it already), then its other artifacts
   const made = (
@@ -250,7 +247,12 @@ export function AcceptCard() {
         <h3 className="text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.proof}</h3>
         {e.proof ? <ArtifactRow a={e.proof} /> : <p className="text-fg3">{A.ACCEPT.noProof}</p>}
       </section>
-      {artifactRows}
+      {e.artifacts?.length ? (
+        <section className="flex flex-col gap-1.5">
+          <h3 className="text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.artifacts}</h3>
+          {artifactList}
+        </section>
+      ) : null}
     </div>
   )
   const rest = (
