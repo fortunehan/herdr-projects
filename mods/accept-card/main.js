@@ -1,11 +1,12 @@
 // Accept shows what you approve (as Shepherdr's merge card): a Ready task's Accept (the Tasks
 // panel's row, the task chat's header, the Assistant chat's live row) opens this dialog first.
 // Props { ref, folder, machine?, title? }. It reads `herdr-task show --evidence` (from Git,
-// GitHub and the task's artifacts, never the agent's own words but its summary and details): the
-// short summary first, then small sections: Changes (commits, files), Checks, Proof (opens its
-// proof artifact in a modal of a fitting size over this card: the artifact viewer's toolbar,
-// mods/chat-image's bar, over the artifact's mod) and a folded Details with the agent's long
-// text, as short markdown bullets.
+// GitHub and the task's artifacts, never the agent's own words but its summary, explanation and details): the
+// short summary first, then (SHEP-89) its plain-words explanation and What to check, then small sections: Proof
+// (opens its proof artifact in a modal of a fitting size over this card: the artifact viewer's toolbar,
+// mods/chat-image's bar, over the artifact's mod), Code changes (commits, files), Automatic checks and a folded
+// Technical details with the agent's long text, as short markdown bullets. A task without an explanation (an older
+// ready) shows its summary alone first, as before.
 // Accept runs `herdr-task accept --background` (merges first when there is something to merge, in a detached
 // herdr-task: the card closes at once); Send back… (SHEP-87) beside it opens a note box, and Send back sends the
 // task back to its agent with that note (`herdr-task send-back`: Ready to Working). Cancel, the X and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
@@ -18,7 +19,7 @@ import { appHome, closeOverlay, exec, notify, openOverlay, props, theme } from "
 import { note } from "./usage.js";
 import { button, dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
-import { ACCEPT, acceptLabel, words, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
+import { ACCEPT, acceptLabel, words, simple, paragraphs, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
 import { settle } from "./core/pending.js";
 
 export { words, readable };
@@ -262,6 +263,25 @@ export default class AcceptCard extends View {
     });
   }
 
+  // What the card leads with: the summary, then the plain-words explanation a size up and What to check as a short
+  // list in a quiet well; without them, the summary alone as before.
+  lead(t, w, e) {
+    const s = simple(e);
+    const check = (x) => h_flex().w_full().items_start().gap(8)
+      .child(div().h(21).w(8).flex_none().flex().items_center().justify_center()
+        .child(div().size(7).rounded(4).border_1().border_color(t.muted)))
+      .child(div().flex_1().min_w(0).child(x));
+    return v_flex().w_full().gap(12)
+      .child(div().max_w(560).text_size(s.explain ? TEXT.title : TEXT.body).line_height(s.explain ? "22px" : "20px")
+        .when(Boolean(s.explain), (el) => el.font_semibold())
+        .text_color(w.summary ? t.foreground : t.muted).child(w.summary || ACCEPT.noSummary))
+      .when(Boolean(s.explain), (el) => el.child(v_flex().max_w(560).gap(8).text_size(14).line_height("22px")
+        .text_color(t.foreground).children(paragraphs(s.explain).map((x) => div().w_full().child(x)))))
+      .when(s.toCheck.length > 0, (el) => el.child(v_flex().max_w(560).gap(6).px(12).py(10).rounded(RADIUS.card).bg(t.surface)
+        .child(div().text_size(TEXT.label).font_medium().text_color(t.muted).child(ACCEPT.toCheck))
+        .child(v_flex().gap(4).line_height("21px").text_color(t.foreground).children(s.toCheck.map(check)))));
+  }
+
   // One small section: a hairline above, a quiet label, then what it says at reading size.
   section(t, label, content) {
     return v_flex().w_full().gap(6).pt(14).border_t(1).border_color(t.border)
@@ -323,7 +343,7 @@ export default class AcceptCard extends View {
       .child(svg("mods/chat-image/external-link.svg").size(13).flex_none().text_color(t.muted));
   }
 
-  // Details: folded; its header is the toggle, the long text below it selectable.
+  // Technical details: folded; its header is the toggle, the long text below it selectable.
   detailsSection(t, text) {
     const open = this.details;
     return v_flex().w_full().gap(8).pt(14).border_t(1).border_color(t.border)
@@ -363,12 +383,11 @@ export default class AcceptCard extends View {
     const body = !x
       ? div().text_color(this.error ? red() : t.dim).child(this.error ?? ACCEPT.reading)
       : v_flex().w_full().gap(16).pb(4)
-        .child(div().max_w(560).text_size(TEXT.body).line_height("20px").text_color(w.summary ? t.foreground : t.muted)
-          .child(w.summary || ACCEPT.noSummary))
-        .child(this.section(t, ACCEPT.changes, this.changes(t, e)))
-        .child(this.section(t, ACCEPT.checks, this.checks(t, e)))
+        .child(this.lead(t, w, e))
         .child(this.section(t, ACCEPT.proof, this.proof(t, e)))
         .when(Boolean(e.artifacts?.length), (el) => el.child(this.section(t, ACCEPT.artifacts, this.artifacts(t, e))))
+        .child(this.section(t, ACCEPT.changes, this.changes(t, e)))
+        .child(this.section(t, ACCEPT.checks, this.checks(t, e)))
         .when(Boolean(detailsText(e, w.details)), (el) => el.child(this.detailsSection(t, detailsText(e, w.details))));
     return v_flex().id("accept-card").track_focus(this.handle)
       .on_key_down((ev, cx) => {

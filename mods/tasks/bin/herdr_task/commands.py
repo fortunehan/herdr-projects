@@ -377,17 +377,20 @@ def folder_desc(t, s):
 
 def ready_words(args):
     """The ready summary in one line, refused past SUMMARY_MAX (as Shepherdr's) before anything
-    changes; --details, any length, as written."""
+    changes; --details, any length, as written; --explain (the plain-words explanation the Accept card
+    leads with) as written, and each --check (what the person should look at) one short line."""
     said = " ".join(str(args.summary or "").split())
     if len(said) > SUMMARY_MAX:
         raise Fail(f"That summary is {len(said)} characters: write a shorter one, {SUMMARY_MAX} at most, in plain words on "
                    f"what the person now sees or can do (no file names, flags or jargon). Put the detail in --details \"…\" "
                    f"(a few short bullets in plain words, folded in the Accept card) or in your proof, then run ready again.")
-    return said, str(args.details or "").strip()
+    explain = str(getattr(args, "explain", None) or "").strip()
+    checks = [" ".join(str(c).split()) for c in (getattr(args, "check", None) or [])]
+    return said, str(args.details or "").strip(), explain, [c for c in checks if c]
 
 
 def cmd_ready(args):
-    said, details = ready_words(args)
+    said, details, explain, checks = ready_words(args)
     with open_store(args) as s:
         t = s.find(args.id)
         me = os.environ.get("HC_TERMINAL_ID")
@@ -406,15 +409,14 @@ def cmd_ready(args):
             # Kept (the task's line says why it waits); refused after the store is saved.
             s.dirty = True
         else:
+            # A new summary brings its own details, explanation and checks (or none): an older one's would be stale.
             if said:
                 t["summary"] = said
-                # A new summary brings its own details (or none): an older one's would be stale.
-                if details:
-                    t["details"] = details
-                else:
-                    t.pop("details", None)
-            elif details:
-                t["details"] = details
+            for k, v in (("details", details), ("explain", explain), ("to_check", checks)):
+                if v:
+                    t[k] = v
+                elif said:
+                    t.pop(k, None)
             # Its proof artifact (--proof <id>, else its newest one titled "... · Proof"), linked from
             # the person's Accept card.
             proof = find_proof(s, t, getattr(args, "proof", None))

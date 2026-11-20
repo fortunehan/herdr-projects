@@ -167,10 +167,12 @@ def checks_of(t):
 
 
 def evidence(s, t):
-    """What an Accept card shows: {summary, details, commits: {count, list}, diff: {files, added, removed,
+    """What an Accept card shows: {summary, details, explain, to_check (ready's plain-words explanation and what
+    to check; absent on older tasks), commits: {count, list}, diff: {files, added, removed,
     list} or None, git (False: not a git folder), scope, checks, proof, artifacts (its others), merges (Accept
     merges its branch first: an open pull request or commits past its base; the button says so)}."""
-    main, out = s.loc["folder"], {"summary": t.get("summary"), "details": t.get("details"), "proof": t.get("proof") or find_proof(s, t)}
+    main, out = s.loc["folder"], {"summary": t.get("summary"), "details": t.get("details"),
+                             "explain": t.get("explain"), "to_check": t.get("to_check") or [], "proof": t.get("proof") or find_proof(s, t)}
     out["artifacts"] = task_artifacts(s, t, out["proof"])
     out["choices"] = choices_of(main, out["proof"])
     commits, files = [], {}

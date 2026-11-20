@@ -578,6 +578,8 @@ def closing_line(s, task, parent=None, argv=None):
     ht = own_path()
     text = (f"When the work is {done}, run `{ht} ready {s.ref(task)} --folder {shlex.quote(s.loc['folder'])} "
             f"--summary \"<what the person now sees or can do, plain words, at most {SUMMARY_MAX} characters>\"` (optionally "
+            f"`--explain \"<2-4 short plain sentences in the person's language: what changed for them, why it matters, what to look at>\"`, "
+            f"one `--check \"<a thing to check, one short plain line>\"` per thing to check, and "
             f"`--details \"<a few short bullets in plain words, one per line: what changed for the person first, then how it was checked>\"`; with `--agents-md \"<one line>\"` when you learned something "
             f"about setting up or testing this repo that its AGENTS.md lacks). The person accepts it from there; never mark it done yourself.")
     on, rounds = review_limits(s, task)

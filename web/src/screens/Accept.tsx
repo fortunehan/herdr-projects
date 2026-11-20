@@ -1,6 +1,6 @@
 // The Accept card (Shepherdr 3's mods/accept-card), in 2.1's dialog: what the person approves before a Ready task
-// merges. Its summary, then Changes (commits and files), Checks, Proof and folded Details, all from
-// `herdr-task show --evidence`; Accept runs `herdr-task accept`, which merges first when there is something to merge.
+// merges. Its summary and plain-words explanation with What to check (SHEP-89), then Proof, Code changes (commits and
+// files), Automatic checks and folded Technical details, all from `herdr-task show --evidence`; Accept runs `herdr-task accept`, which merges first when there is something to merge.
 // A task no longer Ready says where it is now, with only Close. On a phone it slides up as a sheet.
 // With a proof (SHEP-138) the card grows large and the proof shows right in it, drawn as the artifact viewer draws it
 // (ArtifactFrame): beside the rest on a wide screen, its own scroll; under the summary on a narrow one, all in one
@@ -20,6 +20,10 @@ import * as A from '@core/accept.js'
 type Evidence = {
   summary?: string
   details?: string
+  /** ready's plain-words explanation (--explain), led with; absent on older tasks */
+  explain?: string
+  /** one short line per thing the person should check (--check) */
+  to_check?: string[]
   proof?: { id: string; title: string } | null
   /** its other artifacts (a research task's report), linked beside its proof */
   artifacts?: { id: string; title: string }[]
@@ -90,6 +94,35 @@ function Changes({ e }: { e: Evidence }) {
           {d.list.map((f) => <li key={f.path} className="truncate">{f.path}</li>)}
           {d.files > d.list.length ? <li className="font-sans text-fg3 tabular-nums">{A.moreLine(d.files - d.list.length)}</li> : null}
         </ul>
+      ) : null}
+    </div>
+  )
+}
+
+// What the card leads with: the summary, then (SHEP-89) the plain-words explanation at reading size and What to check
+// as a short list. A task without them (an older ready) shows its summary alone, as before.
+function Lead({ summary, e }: { summary: string; e: Evidence }) {
+  const s = A.simple(e) as { explain: string; toCheck: string[] }
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <p className={clsx('max-w-[560px] text-pretty', !summary && 'text-fg3', s.explain && 'text-[1.0625rem]/6 font-semibold')}>{summary || A.ACCEPT.noSummary}</p>
+      {s.explain ? (
+        <div data-selectable className="flex max-w-[560px] flex-col gap-2 text-[0.9375rem]/6 text-pretty text-fg2 phone:text-base/7">
+          {(A.paragraphs(s.explain) as string[]).map((x, i) => <p key={i}>{x}</p>)}
+        </div>
+      ) : null}
+      {s.toCheck.length ? (
+        <section aria-label={A.ACCEPT.toCheck} className="flex max-w-[560px] flex-col gap-1.5 rounded-box bg-well px-3 py-2.5">
+          <h3 className="text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.toCheck}</h3>
+          <ul role="list" data-selectable className="flex flex-col gap-1">
+            {s.toCheck.map((x, i) => (
+              <li key={i} className="flex gap-2 text-pretty">
+                <span aria-hidden className="mt-[0.45em] size-[7px] shrink-0 rounded-full border border-fg3" />
+                <span className="min-w-0">{x}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
     </div>
   )
@@ -197,16 +230,9 @@ export function AcceptCard() {
   // Escape over the proof (the viewer sits over this card) closes the proof, back to the card as it was; with Send
   // back's box open it closes the box
   const cancel = () => (getState().ui.viewer ? closeArtifact() : back !== null ? setBack(null) : close())
-  // what follows the summary (and the proof, when it shows in the card)
+  // what follows the lead (and the proof, when it shows in the card)
   const rest = (
     <>
-      <Section label={A.ACCEPT.changes}><Changes e={e} /></Section>
-      <Section label={A.ACCEPT.checks}>
-        <p className="flex items-center gap-2">
-          {e.checks && e.checks.state !== 'none' ? <span className={clsx('size-[7px] shrink-0 rounded-full', CHECK[e.checks.state])} /> : null}
-          <span className={clsx(!e.checks || e.checks.state === 'none' ? 'text-fg3' : '')}>{e.checks?.text ?? A.ACCEPT.noChecks}</span>
-        </p>
-      </Section>
       {proofArt ? null : (
         <Section label={A.ACCEPT.proof}>
           {e.proof ? <ArtifactRow a={e.proof} /> : <p className="text-fg3">{A.ACCEPT.noProof}</p>}
@@ -217,6 +243,13 @@ export function AcceptCard() {
           <div className="flex flex-col gap-1.5">{e.artifacts.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
         </Section>
       ) : null}
+      <Section label={A.ACCEPT.changes}><Changes e={e} /></Section>
+      <Section label={A.ACCEPT.checks}>
+        <p className="flex items-center gap-2">
+          {e.checks && e.checks.state !== 'none' ? <span className={clsx('size-[7px] shrink-0 rounded-full', CHECK[e.checks.state])} /> : null}
+          <span className={clsx(!e.checks || e.checks.state === 'none' ? 'text-fg3' : '')}>{e.checks?.text ?? A.ACCEPT.noChecks}</span>
+        </p>
+      </Section>
       {more ? (
         <section className="flex flex-col gap-2 border-t border-line pt-3">
           <button type="button" aria-expanded={details} onClick={() => setDetails(!details)} className="flex items-center gap-1.5 self-start text-[0.8125rem] font-medium text-fg3 hover:text-fg phone:text-sm">
@@ -261,19 +294,22 @@ export function AcceptCard() {
       {!t ? (
         <div className="pt-2 pb-1"><p className={error ? 'text-need-fg' : 'text-fg3'} role={error ? 'alert' : undefined}>{error ?? A.ACCEPT.reading}</p></div>
       ) : proofArt ? (
-        // wide: the proof on the left over the card's height, the summary and the rest beside it; narrow: one scroll
+        // wide: the proof on the left over the card's height, the lead and the rest beside it in one scroll; narrow:
+        // one scroll, the lead, then the proof, then the rest (the column is `contents` there, its parts ordered)
         <div className="@container flex min-h-0 flex-1 flex-col pt-2 text-fg">
           <div className="min-h-0 flex-1 overflow-y-auto @3xl:overflow-hidden">
-            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 pb-1 @3xl:h-full @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:grid-rows-[auto_minmax(0,1fr)] @3xl:gap-x-6 @3xl:pb-0">
-              <p className={clsx('text-pretty @3xl:col-start-2 @3xl:row-start-1', !w.summary && 'text-fg3')}>{w.summary || A.ACCEPT.noSummary}</p>
-              <div className="@3xl:col-start-1 @3xl:row-start-1 @3xl:row-span-2 @3xl:flex @3xl:min-h-0 @3xl:flex-col"><InlineProof art={proofArt} /></div>
-              <div className="flex min-w-0 flex-col gap-4 @3xl:col-start-2 @3xl:row-start-2 @3xl:min-h-0 @3xl:overflow-y-auto @3xl:pb-1">{rest}</div>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 pb-1 @3xl:h-full @3xl:grid-cols-[minmax(0,1fr)_360px] @3xl:grid-rows-[minmax(0,1fr)] @3xl:gap-x-6 @3xl:pb-0">
+              <div className="order-2 @3xl:order-none @3xl:col-start-1 @3xl:row-start-1 @3xl:flex @3xl:min-h-0 @3xl:flex-col"><InlineProof art={proofArt} /></div>
+              <div className="contents @3xl:col-start-2 @3xl:row-start-1 @3xl:flex @3xl:min-h-0 @3xl:min-w-0 @3xl:flex-col @3xl:gap-4 @3xl:overflow-y-auto @3xl:pb-1">
+                <div className="order-1 @3xl:order-none"><Lead summary={w.summary} e={e} /></div>
+                <div className="order-3 flex min-w-0 flex-col gap-4 @3xl:order-none">{rest}</div>
+              </div>
             </div>
           </div>
         </div>
       ) : (
         <div className="flex max-h-[60dvh] min-w-0 flex-col gap-4 overflow-y-auto pt-2 pb-1 text-fg">
-          <p className={clsx('max-w-[560px] text-pretty', !w.summary && 'text-fg3')}>{w.summary || A.ACCEPT.noSummary}</p>
+          <Lead summary={w.summary} e={e} />
           {rest}
         </div>
       )}
