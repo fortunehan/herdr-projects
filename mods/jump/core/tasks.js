@@ -147,7 +147,7 @@ export function readyWait(task, live = [], now = Date.now()) {
   // ACCEPTING_MS was left by a worker that died: the task is Ready again.
   if (task.accepting && now - task.accepting < ACCEPTING_MS) return "Accepting…";
   // SHEP-96: accepted on Azure DevOps, its agent opening the pull request (ado-push-pr).
-  if (task.pr_requested && !task.pr) return "Opening pull request";
+  if (task.pr_requested && !task.pr && !task.attention) return "Opening pull request";
   if (task.merge_requested && live.length) return "Merging";
   if (task.merge_queued && task.pr) return "In GitHub's merge queue";
   // #743: waits calmly for a review GitHub requires.

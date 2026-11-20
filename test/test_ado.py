@@ -985,19 +985,21 @@ class OpenedOnAccept(Base):
                           ("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": []}, **self.LISTED, **(extra or {})})
 
     def opened(self, **extra):
-        return pr(n=41, head=self.tip, sourceRefName=f"refs/heads/{self.branch}", title="#16951176: Login", **extra)
+        return pr(**{"n": 41, "head": self.tip, "sourceRefName": f"refs/heads/{self.branch}", "title": "#16951176: Login", **extra})
 
     def test_accept_asks_its_agent_to_open_it_with_the_skill(self):
         f = self.fake(self.LISTED)
         self.ready()
         data, text = self.accept()
         self.assertEqual((data["accepted"], self.task["state"]), ("opening", "ready"))
-        # Herdr opens nothing itself: it only asked whether its agent had opened one already
-        self.assertEqual([c[:2] for c in f.calls], [("GET", "git/repositories/web/pullrequests")])
+        # Herdr opens nothing itself, nor asks Azure DevOps first (its agent's sign-in may work where Herdr's doesn't)
+        self.assertEqual(f.calls, [])
         self.assertEqual(text, "SHEP-1 accepted: t5 opens its pull request on Azure DevOps.")
         (to, msg), = self.sent
         self.assertEqual(to, "t5")
-        for words in ("ado-push-pr skill", f"push {self.branch} from {self.wt}", "into main", "auto-complete on",
+        for words in ("The person accepted SHEP-1", "ado-push-pr skill", f"push {self.branch} from {self.wt}",
+                      f"to the remote branch of the same name ({self.branch}: Herdr's task branch, an explicit name for the skill)",
+                      "into main", "auto-complete on",
                       "work item #16951176, checked live", "#<work item>: <Summary>", "pull request template",
                       f"herdr-task pr SHEP-1 --folder {self.main} --url <its URL>",
                       "don't open it any other way", "--cant-fix"):
@@ -1021,7 +1023,7 @@ class OpenedOnAccept(Base):
         self.accept()
         f = self.azure(self.opened(autoCompleteSetBy={"id": "someone"}), BUILT + REVIEWERS)
         data, text = self.record(ado.pr_url(REPO, 41))
-        self.assertEqual(self.task["pr"], {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0})
+        self.assertEqual(self.task["pr"], {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0, "by_agent": True})
         self.assertTrue(self.task["merge_wait"])
         self.assertNotIn("pr_requested", self.task)
         self.assertEqual(f.sent("PATCH", r".*"), [])  # the skill's auto-complete is kept
@@ -1045,6 +1047,40 @@ class OpenedOnAccept(Base):
             self.record("https://dev.azure.com/contoso/Other/_git/api/pullrequest/41")
         self.assertNotIn("pr", self.task)
         self.assertTrue(self.task["pr_requested"])
+        # one from the branch at an older commit than the person accepted: refused, and why
+        self.azure(self.opened(lastMergeSourceCommit={"commitId": "0ld"}))
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("the commit the person accepted: push task/1-login", str(e.exception))
+        # one from another branch at the same commit: refused
+        self.azure(self.opened(sourceRefName="refs/heads/feature/other"))
+        with self.assertRaises(commands.Fail):
+            self.record(ado.pr_url(REPO, 41))
+
+    def test_no_pull_request_is_recorded_before_the_persons_accept(self):
+        self.ready()
+        f = self.azure(self.opened())
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("wasn't accepted yet", str(e.exception))
+        self.assertEqual((f.calls, "pr" in self.task, "merge_wait" in self.task), ([], False, False))
+
+    def test_a_merge_policy_accepts_for_the_person_and_says_so(self):
+        with mock.patch.object(commands, "merge_policy", lambda s, t: "auto"):
+            said = self.ready()
+        self.assertIn("the next message asks you to open its pull request", said)
+        (_, msg), = self.sent
+        self.assertIn("The person's Settings merge SHEP-1", msg)
+        self.assertNotIn("The person accepted", msg)
+
+    def test_ready_again_never_pushes_or_reopens_a_pull_request_its_agent_opened(self):
+        self.waiting()
+        with mock.patch.object(commands, "github", side_effect=AssertionError("asked the forge")):
+            said = self.ready()
+        self.assertIn("stays as you opened it: push new commits to it yourself", said)
+        self.assertTrue(self.task["merge_wait"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("-C", self.bare, "rev-parse", f"refs/heads/{self.branch}")
 
     def cant(self, why):
         args = argparse.Namespace(id="SHEP-1", json=False, folder=None, text="Couldn't open the pull request", done=None, left=None,
@@ -1057,7 +1093,8 @@ class OpenedOnAccept(Base):
         self.accept()
         self.cant("Work item 16951176 doesn't exist in Azure DevOps")
         self.assertEqual(self.task["attention"], "Couldn't open the pull request: Work item 16951176 doesn't exist in Azure DevOps")
-        self.assertNotIn("pr_requested", self.task)
+        # its agent still finishing that turn: never Working again (the scheduler leaves it), Needs you once it rests
+        self.assertFalse(agents.busy_again(self.task, [{**self.live[0], "status": "working", "turn": 9}]))
         self.task["attention_at"] = 0
         self.assertEqual(agents.task_status(self.task, self.live)[:2], ("needs", "attention"))
         self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))  # the row offers Accept again
@@ -1087,16 +1124,16 @@ class OpenedOnAccept(Base):
         self.record(ado.pr_url(REPO, 41))
         self.sent.clear()
 
-    def fail(self, head, build=88, log="npm ERR! 2 tests failed"):
+    def fail(self, head, build=88, log="npm ERR! 2 tests failed", names=("web-ci",)):
         """One tick's look at its pull request with web-ci failing at head; the news its agent was sent, if any."""
         self.azure(pr(n=41, head=head, sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
-                   [evaluation("rejected", buildDefinitionName="web-ci", buildId=build)],
+                   [evaluation("rejected", buildDefinitionName=name, buildId=build) for name in names],
                    {("GET", rf"build/builds/{build}/timeline"): {"records": [{"type": "Task", "result": "failed", "log": {"id": 9}}]},
                       ("GET", rf"build/builds/{build}/logs/9"): log + "\n"})
         report = {"attention": [], "done": []}
         self.task["pr"]["checked"] = 0
         before = len(self.sent)
-        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send",
+        with mock.patch.object(ghnews, "resting", lambda s, t: (self.live or [None])[0]), mock.patch.object(ghnews, "news_send",
                                                                                                  lambda a, text: self.sent.append((a, text)) or True):
             self.tick.facts(self.store, self.task, report)
             if self.task["pr"].get("news"):
@@ -1118,6 +1155,34 @@ class OpenedOnAccept(Base):
         # the same failure of the same commit isn't another round
         again, _ = self.fail("h1")
         self.assertEqual((again, self.task["pr"]["fix_rounds"]), (None, 1))
+        # nor another check of that same push failing later
+        more, _ = self.fail("h1", names=("web-ci", "e2e"))
+        self.assertIn("Fix round 1 of 3, still", more)
+        self.assertEqual(self.task["pr"]["fix_rounds"], 1)
+
+    def test_its_agent_that_ended_is_started_again_with_the_failure(self):
+        self.waiting()
+        self.live = []
+        resumed = []
+        with mock.patch.object(commands, "tell", lambda s, t, msg, args: resumed.append(msg) or ("t9", True)):
+            text, _ = self.fail("h1")
+        self.assertIsNone(text)  # not sent to a resting agent: there is none
+        self.assertEqual(len(resumed), 1)
+        self.assertIn("Fix round 1 of 3", resumed[0])
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_reviewers_vote_is_news_not_a_fix_round(self):
+        self.waiting()
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME},
+                      reviewers=[{"displayName": "Ann", "vote": -5}]), BUILT)
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), \
+                mock.patch.object(ghnews, "news_send", lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+            ghnews.pr_deliver(self.store, self.task, {})
+        self.assertIn("Review by Ann: waiting for the author", self.sent[-1][1])
+        self.assertNotIn("Fix round", self.sent[-1][1])
+        self.assertNotIn("fix_rounds", self.task["pr"])
 
     def test_after_three_failed_rounds_it_needs_you_with_the_last_failure(self):
         self.waiting()

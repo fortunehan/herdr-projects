@@ -12,6 +12,7 @@ from . import ado
 from .launch import coordinator_in
 from .commands import workers
 from .news import news_send
+from .ado_flow import STUCK
 
 
 PR_NEWS_EVERY = 120000      # how often a Ready task's pull request is read for news (ms)
@@ -124,7 +125,9 @@ def pr_news(s, t, v, report):
                 else f"{head}:behind" if v.get("mergeStateStatus") == "BEHIND" else None)
     # A new failure or conflict goes to its agent at once: the task stays Working, never Needs you first.
     new = (mark and mark != w.get("failed")) or (conflict and conflict != w.get("conflict"))
-    if (now() - (w.get("checked") or 0) < PR_NEWS_EVERY and not new) or not resting(s, t):
+    # SHEP-96: an accepted Azure DevOps pull request's agent that ended is started again for it (pr_deliver()).
+    accepted = ado.owns(pr["repo"]) and bool(t.get("merge_wait"))
+    if (now() - (w.get("checked") or 0) < PR_NEWS_EVERY and not new) or not (resting(s, t) or (accepted and not workers(s, t))):
         pr["watch"] = w
         return
     w["checked"] = now()
@@ -144,15 +147,18 @@ def pr_news(s, t, v, report):
                  and (c["body"] or c.get("state") == "CHANGES_REQUESTED") and c["body"] not in own]
         w["seen"] = [c["id"] for c in all_c][-500:]
     pr["watch"] = w
-    # SHEP-96: accepted on Azure DevOps (Waiting to merge): its agent fixes and pushes, at most fix_rounds times.
-    accepted = ado.owns(pr["repo"]) and bool(t.get("merge_wait"))
+    # SHEP-96: accepted on Azure DevOps (Waiting to merge): its agent fixes and pushes, at most fix_rounds times. A
+    # reviewer's vote is news, not a check to fix; nothing more goes to it while the task waits on the person.
     fix = None
-    if news_checks and accepted:
+    builds = [c for c in news_checks if not str(c.get("name") or "").startswith("Review by ")]
+    if accepted and str(t.get("attention") or "").startswith(STUCK):
+        news_checks = []
+    elif builds and accepted:
         from .ado_flow import fix_round
-        fix = fix_round(s, t, news_checks, head)
+        fix = fix_round(s, t, builds, head)
         if fix is None:
             report.setdefault("attention", []).append(t["id"])
-            news_checks = []
+            news_checks = [c for c in news_checks if c not in builds]
     if not news_checks and not fresh and not news_conflict:
         return
     lines = [f"{ado.forge(pr['repo'])} news on pull request #{pr['number']} ({pr.get('url') or ''}), since "
@@ -209,6 +215,19 @@ def pr_deliver(s, t, report):
         s.dirty = True
         return
     k = resting(s, t)
+    if not k and ado.owns(pr.get("repo")) and t.get("merge_wait") and not workers(s, t):
+        # SHEP-96: its agent ended while Azure DevOps merges it: started again with the news, as herdr-task fix does.
+        from .commands import tell
+        try:
+            sent, _ = tell(s, t, n["text"], None)
+        except Exception as e:  # its agent still starting, or it couldn't start: told on a later pass
+            report.setdefault("github_error", []).append(f"{s.ref(t)}: {e}")
+            return
+        pr.pop("news")
+        t["handed_at"] = now()
+        s.dirty = True
+        report.setdefault("github", []).append({"task": s.ref(t), "to": sent, "started": True})
+        return
     if k and news_send(k["address"], n["text"]):
         pr.pop("news")
         # Handed to its agent: someone is on a failing check while it starts (on_it()).

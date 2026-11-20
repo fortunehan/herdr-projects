@@ -246,7 +246,7 @@ def ready_wait(task, live):
     """What a Ready task waits on that needs nobody, in a few words; None when it's the person's."""
     if accepting(task):
         return ACCEPTING
-    if task.get("pr_requested") and not task.get("pr"):
+    if task.get("pr_requested") and not task.get("pr") and not task.get("attention"):
         return OPENING_PR
     if task.get("merge_requested") and live:
         return MERGING

@@ -55,6 +55,17 @@ test("the Tasks rows say the window's words, and a change keeps the rest of the 
   expect(() => s.set("secrets.vault", "x")).toThrow();
 });
 
+test("SHEP-96: Fix checks, beside Merge, sets how often an Azure DevOps task's agent fixes failing checks", () => {
+  const s = new Settings();
+  s.start();
+  const rows = s.sections("https://box/shepherdr/").find((x) => x.name === "Tasks" && x.level === "all")!.rows;
+  const at = rows.findIndex((r) => r.key === "tasks.fix_rounds");
+  expect(rows[at]).toMatchObject({ label: "Fix checks", value: "3 rounds", options: ["Off", "1 round", "2 rounds", "3 rounds", "5 rounds"] });
+  expect(rows[at - 1].key).toBe("tasks.merge");
+  s.set("tasks.fix_rounds", "1 round");
+  expect(JSON.parse(readFileSync(file, "utf8")).everywhere.tasks.fix_rounds).toBe(1);
+});
+
 test("a space's own values go in its layer with its folder, and Reset drops them", () => {
   const s = new Settings();
   s.start();

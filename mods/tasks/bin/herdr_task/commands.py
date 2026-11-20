@@ -741,7 +741,8 @@ def finalize(s, t):
     local = t.get("mode") != "worktree" or not wt or t.get("nothing_to_merge")
     # SHEP-96: on Azure DevOps ready pushes nothing and opens no pull request; the person's Accept has its agent open it.
     later = not local and os.path.isdir(wt) and ado_flow.pr_on_accept(s, t)
-    repo = github(s) if not local and not later and os.path.isdir(wt) else None
+    agent_pr = bool((t.get("pr") or {}).get("by_agent"))
+    repo = github(s) if not local and not later and not agent_pr and os.path.isdir(wt) else None
     failed = None
     if later:
         t["pr_on_accept"] = True
@@ -760,7 +761,7 @@ def finalize(s, t):
         failed = f"Couldn't reach GitHub to open its pull request: {github_unreachable(s)}"
     t["state"], t["ready_at"] = "ready", now()
     # An accepted Azure DevOps pull request keeps waiting to merge (auto-complete stays on there).
-    waits = bool(t.get("merge_wait") and repo and ado.owns(repo))
+    waits = bool(t.get("merge_wait") and (agent_pr or (repo and ado.owns(repo))))
     for k in ("attention", "merge_requested", "review", "merge_wait", "accepting", "pr_requested", "stuck_head"):
         if not (k == "merge_wait" and waits):
             t.pop(k, None)
@@ -776,6 +777,9 @@ def finalize(s, t):
     if failed:
         t["attention"] = failed
         return f"{s.ref(t)} {READY_BUT} {failed} Tell the person."
+    if agent_pr:
+        msg += (f" Its pull request #{t['pr']['number']} on Azure DevOps stays as you opened it: push new commits to it "
+                "yourself (git push), never a second one.")
     if later:
         msg += (" On Azure DevOps nothing is pushed yet: the person reviews your branch, and once they accept it you're asked "
                 "to open its pull request with the ado-push-pr skill.")
@@ -796,7 +800,7 @@ def finalize(s, t):
         if later:
             # Accepted at once: Azure DevOps' auto-complete merges it once its checks pass, as "after checks" asks.
             try:
-                ado_flow.request_pr(s, t, None)
+                ado_flow.request_pr(s, t, None, by_settings=True)
                 return msg + " Settings say merge it by itself: the next message asks you to open its pull request."
             except Fail as e:
                 return msg + f" {e}"
@@ -1420,6 +1424,14 @@ def accept_run(args, worker=False):
         if not wt:
             # Worked in the folder itself: nothing to merge.
             finish(s, t)
+        elif ado_flow.pr_on_accept(s, t) and not merged_here(s, t) and not in_base(s, t):
+            # SHEP-96: Azure DevOps: its agent opens the pull request (ado-push-pr, auto-complete on; the skill finds one
+            # already open), never merged here. Before any Azure DevOps call: its agent's sign-in may work where Herdr's doesn't.
+            how = "opening"
+            try:
+                sent, started = ado_flow.request_pr(s, t, args)
+            except Fail as e:
+                error = str(e)
         elif t.get("pr") or own_open_pr(s, t):
             how = "github"
             error = merge_now(s, t, publish=True)
@@ -1437,13 +1449,6 @@ def accept_run(args, worker=False):
             if not t["merged"]:
                 t["nothing_to_merge"] = True
             finish(s, t, even_if_busy=True)
-        elif ado_flow.pr_on_accept(s, t):
-            # SHEP-96: Azure DevOps: its agent opens the pull request (ado-push-pr, auto-complete on); never merged here.
-            how = "opening"
-            try:
-                sent, started = ado_flow.request_pr(s, t, args)
-            except Fail as e:
-                error = str(e)
         elif ff_merge(s, t):
             how = "merged"
             t["merged"] = True
@@ -1473,7 +1478,7 @@ def send_back_refusal(s, t):
         return f"{s.ref(t)} is in GitHub's merge queue and may merge any moment: take it out there first."
     if t.get("merge_wait"):
         return f"{s.ref(t)} is set to complete on Azure DevOps: cancel its auto-complete there first."
-    if t.get("pr_requested") and not t.get("pr"):
+    if t.get("pr_requested") and not t.get("pr") and not t.get("attention"):
         return f"{s.ref(t)} was accepted and its agent is opening its pull request: tell its agent instead."
     return None
 
@@ -1520,9 +1525,14 @@ def cmd_fix(args):
             raise Fail(f"{s.ref(t)} works in the folder itself; tell its agent what to fix.")
         problem = args.reason or t.get("attention") or "The pull request can't merge yet."
         main, wt, br, base = s.loc["folder"], t["worktree"], t["branch"], t.get("base") or "main"
-        msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
-               f"Fix it in {wt}: for conflicts, rebase {br} onto {base}; for failing checks, find out why and fix them. "
-               f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix.")
+        if (t.get("pr") or {}).get("by_agent"):
+            msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
+                   f"Fix it in {wt}: for conflicts, merge {base} into {br}; for failing checks, find out why and fix them. Run "
+                   f"the checks, commit and push to its pull request (`git push`; never force-push, don't run ready).")
+        else:
+            msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
+                   f"Fix it in {wt}: for conflicts, rebase {br} onto {base}; for failing checks, find out why and fix them. "
+                   f"Run the checks, commit, then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` to push the fix.")
         # Handed the problem: someone is on it while its agent starts (on_it()).
         t["fix_requested"] = t["handed_at"] = now()
         s.dirty = True
