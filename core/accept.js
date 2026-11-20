@@ -1,9 +1,10 @@
-// The Accept card's words and its summary, plain-words explanation and details as read: what the person approves before a Ready task merges.
+// The Accept card's words and its summary, plain-words explanation and details as read: what the person approves before a Ready task merges
+// (or, with nothing to merge, before it is marked done: SHEP-95).
 // mods/accept-card draws it in the window, web/src/screens/Accept.tsx in the web app; both read the same words and
 // the same reading of `herdr-task show --evidence` from here.
 // Shared core: the source is core/accept.js; bin/sync-shared copies it into the mods in lib/COPIES. Edit it here,
 // never a copy.
-import { acceptAgain } from "./tasks.js";
+import { acceptAgain, nothingToMerge } from "./tasks.js";
 
 // show --evidence includes the derived status; the saved ready state alone is not eligibility.
 export const canAccept = (x) => Boolean(x?.state === "ready" && (x.status === "ready"
@@ -33,6 +34,10 @@ export const ACCEPT = {
   accept: "Accept",
   acceptMerge: "Accept and merge",
   accepting: "Accepting…",
+  // SHEP-95: a task with nothing to merge (research, a design, an artifact): its card marks it done, never merges
+  markTitle: (ref) => `Mark ${ref} done?`,
+  markDone: "Mark done",
+  marking: "Marking done…",
   noTask: "No task to accept.",
   // Send back (SHEP-87): the task goes back to its agent with the person's note, Ready to Working
   sendBack: "Send back…",
@@ -59,7 +64,20 @@ export function detailsText(e, details) {
 // The Accept button's words (SHEP-225, #1046): what pressing it will do. herdr-task's evidence says `merges` when its
 // branch has work to merge (whatever the Merge setting, Accept merges that first); plain Accept when it only marks the
 // task done (it worked in the folder itself, or nothing is left to merge), and while the card is still being read.
-export const acceptLabel = (e) => (e?.merges ? ACCEPT.acceptMerge : ACCEPT.accept);
+export const acceptLabel = (e, task) => (markDone(e, task) ? ACCEPT.markDone : e?.merges ? ACCEPT.acceptMerge : ACCEPT.accept);
+
+// SHEP-95: the card of a task with nothing to merge says Mark done and leads with what it made (its proof and other
+// artifacts), then the plain-words explanation. Its evidence decides once read (merges false: it worked in the folder
+// itself, its branch has nothing of its own, or it isn't a git folder); until then, its task row (core/tasks.js
+// nothingToMerge()), or a hint already worked out from one (true/false).
+export const markDone = (e, task) => (typeof e?.merges === "boolean" ? !e.merges
+  : typeof task === "boolean" ? task : Boolean(task && nothingToMerge(task)));
+export const cardTitle = (ref, e, task) => (markDone(e, task) ? ACCEPT.markTitle(ref) : ACCEPT.title(ref));
+export const busyLabel = (e, task) => (markDone(e, task) ? ACCEPT.marking : ACCEPT.accepting);
+// What a nothing-to-merge card still shows under its lead: its changes only when it committed some, its checks only
+// when there are any (a task without a pull request has none).
+export const hasChanges = (e) => Boolean(e?.git !== false && (e?.commits?.count || e?.diff?.files));
+export const hasChecks = (e) => Boolean(e?.checks && e.checks.state !== "none");
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // "3 commits", "12 files changed", "And 4 more"
