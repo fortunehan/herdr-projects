@@ -343,7 +343,7 @@ export class Settings {
       hint: MACHINES.cap.about, group, ...hidden, ...from("worker_memory", gb) });
     if (m && !ownLimits) rows.push({ label: MACHINES.own.title, key: "", value: "", hint: MACHINES.own.about, reveals: `limits@${m}`, group } as SettingRow);
     // what a machine set for all its spaces before (the old machine scope): it still applies there, until Reset
-    const old = m ? Object.entries(layer).filter(([k]) => !["machine", "home"].includes(k))
+    const old = m ? Object.entries(layer).filter(([k]) => !["machine", "home", "self_update"].includes(k))
       .flatMap(([k, v]: [string, any]) => (["tasks", "automations"].includes(k) && v && typeof v === "object" ? Object.keys(v).map((f) => (k === "automations" ? k : f)) : [k])) : [];
     if (old.length) rows.push({ label: MACHINES.old.title, key: `machine.old${at}`, value: "", button: RESET, group,
       hint: MACHINES.old.about([...new Set(old.map((x) => OLD_NAMES[x] ?? x))]) } as SettingRow);
@@ -355,6 +355,10 @@ export class Settings {
       const missing = home && !st?.space && !st?.error && this.homes !== null;
       rows.unshift({ label: MACHINES.home.title, key: `machine.home${at}`, value: ON(home), options: ["on", "off"], group, details: m,
         hint: homeAbout(home, st), ...(missing ? { extra: { label: MACHINES.home.make, key: `machine.makehome${at}` } } : {}) });
+      // SHEP-83: its Shepherdr checkout updates itself after its tasks merge (off unless set)
+      const self = layer.self_update === true;
+      rows.splice(1, 0, { label: MACHINES.selfUpdate.title, key: `machine.self_update${at}`, value: ON(self), options: ["on", "off"], group,
+        hint: MACHINES.selfUpdate.about(self) });
     }
     return rows;
   }
@@ -409,7 +413,10 @@ export class Settings {
       if (field === "old") {
         // Reset of what a machine set for all its spaces before: only its own rows and Home Assistant stay
         if (!machine) throw new Error("That is set per machine.");
-        for (const k of Object.keys(layer)) if (!["machine", "home"].includes(k)) delete layer[k];
+        for (const k of Object.keys(layer)) if (!["machine", "home", "self_update"].includes(k)) delete layer[k];
+      } else if (field === "self_update") {
+        if (!machine) throw new Error("That is set per machine.");
+        if (word === "on") layer.self_update = true; else delete layer.self_update;
       } else if (field === "home") {
         if (!machine) throw new Error("Home Assistant is set per machine.");
         const on = word === "on";

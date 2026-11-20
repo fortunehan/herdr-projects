@@ -686,6 +686,12 @@ def watch_main(s, task, sha=None):
     merged.append({"ref": s.ref(task), "title": task["title"], "pr": task["pr"]["number"], "at": now(), **({"sha": sha} if sha else {})})
     w["merged"] = merged[-30:]
     s.dirty = True
+    # SHEP-83: every merge through a pull request comes here; this machine's own Shepherdr checkout may update itself.
+    try:
+        from .self_update import merged as self_update_armed
+        self_update_armed(s, task)
+    except Exception:  # noqa: BLE001 - never stops the merge that called it
+        pass
 
 
 def merged_here(s, task):
