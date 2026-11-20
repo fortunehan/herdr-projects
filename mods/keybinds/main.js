@@ -9,6 +9,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { keys, commands, shared, window, theme } from "herdr";
 import { TEXT, RADIUS, H, heading } from "./ui.js";
+import { dialogKeys } from "./keyholder.js";
 // The names, groups, key words and filter: core/keys.js (the web app's Keybinds reads the same).
 import { grouped as groupedKeys, keyFound, KEYBINDS } from "./core/keys.js";
 
@@ -27,7 +28,11 @@ export default class Keybinds extends View {
     this.input.on("blur", (_e, cx) => { this.focused = false; cx.notify(); });
     this.input.focus();
     cx.timer.after(0, () => this.input.focus());
+    // Its filter keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:keybinds", cx);
   }
+
+  close() { this.dropKeys?.(); }
 
   render() {
     const t = theme();

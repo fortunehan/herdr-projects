@@ -25,6 +25,7 @@ import { h_flex, v_flex, InputState, Input, VirtualListScrollHandle, v_virtual_l
 import { theme, props, setShared, closeOverlay, home, readTextFile, writeTextFile } from "herdr";
 import { modelSections, parsePicks, pickKey, withPin, withRecent, PICKS_FILE, permAcross, CHOICES, agentKey, normalizePick, viewPick } from "./core/agents.js";
 import { dirs } from "./dirs.js";
+import { dialogKeys } from "./keyholder.js";
 
 const AGENTS = CHOICES;
 const LEVEL = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", none: "None" };
@@ -54,6 +55,8 @@ export default class ModelMenu extends View {
     this.reveal = true; // the first render scrolls the chosen model into view
     this.picks = parsePicks("");
     this.handle = cx.focus_handle();
+    // Its search keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:models", cx);
     this.input = InputState.new({ placeholder: Object.keys(p.menus ?? {}).length > 1 ? "Search every agent’s models" : "Search models" });
     this.scroll = VirtualListScrollHandle.new();
     // a search's first match is what Enter takes, so it shows as the cursor's
@@ -68,7 +71,7 @@ export default class ModelMenu extends View {
     });
   }
 
-  close() { this.input?.release(); this.scroll?.release(); }
+  close() { this.dropKeys?.(); this.input?.release(); this.scroll?.release(); }
 
   // The list as shown now: sections of rows (core/agents.js modelSections), worked out again only when the tab, the
   // search, the picks or the menus change: render runs on every change of Herdr's live data and every hover.

@@ -4494,7 +4494,7 @@ export default class Chat extends View {
       cx.timer.after(600, () => { if (free()) this.box.focus(); });
     } else if (how === "back") {
       this.refocusAt = Date.now();
-      cx.timer.after(0, () => { if (!this.fieldHolds()) this.box.focus(); });
+      cx.timer.after(0, () => { if (free()) this.box.focus(); });
     }
     // Cmd+Shift+L named this chat (mods/tabs-tasks compose(), shared "chat.composereq", SHEP-15): its box gets the
     // keyboard, whatever was keeping it off (a text selection, another holder); again once Herdr has settled the pane's

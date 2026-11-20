@@ -16,6 +16,7 @@ import { spaces } from "./live.js";
 import { data, iconOf, setIcon, setSectionIcon, renameSection, addSection, nameFree, machineLook, setMachineLook } from "./sections.js";
 import { logSpace } from "./spacelog.js";
 import { dialogFooter, TEXT, RADIUS, H } from "./ui.js";
+import { dialogKeys } from "./keyholder.js";
 
 // As New space's (tabs-tasks/coordinator.js NEWSPACE): the app's one dialog footer (ui.js), 32 tall.
 const K = { pad: 18, title: 20, label: 16, gap: 4, field: H.lg, buttons: H.lg, section: 16 };
@@ -35,6 +36,8 @@ export const openNewSection = (machine) => openRename({ new: "section", machine:
 
 // A machine (null: this computer): what the sidebar calls it, and its emoji.
 export const openRenameMachine = (machine) => openRename({ renameMachine: true, machine: machine ?? null });
+
+const RENAME_KEYS = "dialog:rename";
 
 export class Rename {
   init(cx) {
@@ -63,9 +66,11 @@ export class Rename {
     focus();
     cx.timer.after(120, focus);
     cx.timer.after(300, () => { if (!this.focused) focus(); });
+    // Its field keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys(RENAME_KEYS, cx);
   }
 
-  close() { this.input.release(); }
+  close() { this.dropKeys?.(); this.input.release(); }
 
   cancel() { closeOverlay(this.p.overlay); }
 
@@ -99,7 +104,7 @@ export class Rename {
   // The picker, under the icon button; its pick is for this dialog only.
   pick(at) {
     openOverlay({ mod: "spaces-chat", kind: "popup", width: 360, height: 420, at: at ? { x: at.x, y: at.y + at.height + 4 } : "pointer",
-      props: { view: "icon", for: this.p.overlay, current: this.icon, section: this.isSection,
+      props: { view: "icon", for: this.p.overlay, keysBack: RENAME_KEYS, current: this.icon, section: this.isSection,
         machine: this.isMachine ? (this.p.machine ? "server" : "monitor") : null, width: 360, height: 420 } });
   }
 

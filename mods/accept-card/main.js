@@ -16,6 +16,7 @@ import { v_flex, h_flex, Input, InputState } from "gpui-base";
 import { openViewer } from "./artview.js";
 import { appHome, closeOverlay, exec, notify, openOverlay, props, theme } from "herdr";
 import { note } from "./usage.js";
+import { dialogKeys } from "./keyholder.js";
 import { button, dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
 import { ACCEPT, acceptLabel, words, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
@@ -136,6 +137,8 @@ export default class AcceptCard extends View {
     this.back = false;    // Send back's note box open
     // its note's field, made now: GPUI refuses InputState.new during render
     this.note = InputState.new({ placeholder: ACCEPT.sendBackAsk, multi_line: true });
+    // Send back's note keeps the keyboard: the chat behind takes nothing back while the card is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:accept", cx);
     const p = props() ?? {};
     // Opened without a task (the palette's mod.open, say): nothing to approve, so it goes.
     if (!p.ref || !p.folder) {
@@ -168,6 +171,7 @@ export default class AcceptCard extends View {
   }
 
   close() {
+    this.dropKeys?.();
     const o = props()?.overlay;
     if (o) closeOverlay(o);
   }

@@ -11,6 +11,7 @@ import { h_flex, v_flex, InputState, Input, VirtualListScrollHandle, v_virtual_l
 import { theme, props, setShared, closeOverlay, appHome, settings } from "herdr";
 import * as fs from "fs/promises";
 import DATA from "./emoji-data.js";
+import { dialogKeys } from "./keyholder.js";
 
 const PER = 9, CELL = 36, HEAD = 28, PAD = 6;
 
@@ -41,13 +42,15 @@ export default class EmojiPicker extends View {
     this.search.on("change", (_e, cx) => { this.scroll.scroll_to_item(0, "top"); cx.notify(); });
     this.toneFile = `${appHome()}/data/chat-emoji-tone.json`;
     cx.timer.after(0, () => this.search.focus());
+    // Its search keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:react", cx);
     cx.spawn(async (cx) => {
       try { this.tone = Number(JSON.parse(await fs.readFile(this.toneFile, "utf8"))?.tone) || 0; } catch {}
       cx.notify();
     });
   }
 
-  close() { this.search.release(); this.scroll.release(); }
+  close() { this.dropKeys?.(); this.search.release(); this.scroll.release(); }
 
   pick(emoji) {
     setShared("chat.reactreq", { pane: this.p.pane, at: Date.now(), target: this.p.target, text: this.p.text, emoji });

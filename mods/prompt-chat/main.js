@@ -6,6 +6,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, InputState, Input } from "gpui-base";
 import { run, props, closeOverlay, theme } from "herdr";
 import { dialogFooter, TEXT, RADIUS, H } from "./ui.js";
+import { dialogKeys } from "./keyholder.js";
 
 export default class Prompt extends View {
   init(_props, cx) {
@@ -20,9 +21,11 @@ export default class Prompt extends View {
     this.input.focus();
     cx.timer.after(300, () => this.input.focus());
     this.handle = cx.focus_handle();
+    // Its field keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:prompt", cx);
   }
 
-  close() { this.input.release(); }
+  close() { this.dropKeys?.(); this.input.release(); }
 
   submit() {
     const p = props();
