@@ -10,7 +10,8 @@ import { createPortal } from 'react-dom'
 import { MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon } from '@heroicons/react/16/solid'
 import { BackIcon, CheckIcon, CopyIcon, DownloadIcon, ic, NextIcon, OpenIcon, XIcon } from '../ui.tsx'
 import { toast } from '@plugins/alerts/toasts.tsx'
-import { canCopyPicture, clampZoom, copyPicture, percent, STEP, toggledZoom } from '../pictures.ts'
+import { clampZoom, percent, STEP, toggledZoom } from '../pictures.ts'
+import { canCopyPicture, copyPicture } from '../copy.ts'
 
 /** one picture: its address, what the bar calls it, the file name it saves as */
 export type Picture = { url: string; name: string; file: string }

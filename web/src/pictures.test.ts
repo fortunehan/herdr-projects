@@ -1,7 +1,8 @@
 // SHEP-90: the artifact picture viewer's zoom, its Copy (a PNG on the clipboard, asked for in the click itself), what a
 // failed Copy says, and which full screen the viewer gets
 import { describe, expect, test } from 'bun:test'
-import { canCopyPicture, clampZoom, copyPicture, copyProblem, percent, toggledZoom, type ClipEnv } from './pictures.ts'
+import { clampZoom, percent, toggledZoom } from './pictures.ts'
+import { canCopyPicture, copyPicture, copyProblem, type ClipEnv } from './copy.ts'
 import { fullscreenWay } from './fullscreen.ts'
 
 class Item {
