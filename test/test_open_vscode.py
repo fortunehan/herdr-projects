@@ -121,6 +121,74 @@ class OpenInVSCode(unittest.TestCase):
         self.assertIn("busy || Boolean(this.rec.machine), (el) => el.opacity(0.5)", icon)
         self.assertNotIn(".tooltip(", icon)
 
+    def test_xcode_opens_the_worktree(self):
+        out = run(TASK, app="xcode")
+        self.assertEqual(out["calls"], [["sh", "-c", "open-xcode", WT]])
+        self.assertEqual(out["toasts"], [])
+
+
+COPY = re.search(r"\n  copy\(what, addr, cx\) \{\n.*?\n  \}\n", SRC, re.S)
+
+COPY_HARNESS = r"""
+const input = %(input)s;
+%(core)s
+const toasts = [], clip = [];
+const toast = (n) => toasts.push(n);
+const plainError = (e) => e.message;
+const obj = { %(method)s };
+const cx = { write_to_clipboard(s) { if (input.broken) throw new Error("no clipboard"); clip.push(s); } };
+obj.copy.call({ rec: input.rec }, input.what, input.addr, cx);
+console.log(JSON.stringify({ clip, toasts }));
+"""
+
+
+def copy(what, rec=TASK, addr="vm-demo/w3", broken=False):
+    script = COPY_HARNESS % {"method": COPY.group(0).strip(), "core": CORE,
+                             "input": json.dumps({"rec": rec, "what": what, "addr": addr, "broken": broken})}
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "copy.mjs")
+        with open(path, "w") as f:
+            f.write(script)
+        out = subprocess.run(["node", path], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+class CopyFromTheTaskBar(unittest.TestCase):
+    """SHEP-91: the task bar's Copy path and Copy panel ID, as an Assistant's pane header has them (mods/pane-chat)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if COPY is None or shutil.which("node") is None:
+            raise unittest.SkipTest("panel.js copy() not found or no node")
+
+    def test_copy_path_puts_the_worktree_on_the_clipboard(self):
+        out = copy("path")
+        self.assertEqual(out["clip"], [WT])
+        self.assertEqual(out["toasts"], [{"title": "Full path copied", "level": "success", "timeout": 1600}])
+
+    def test_copy_panel_id_puts_the_workers_address_on_the_clipboard(self):
+        out = copy("id")
+        self.assertEqual(out["clip"], ["vm-demo/w3"])
+        self.assertEqual(out["toasts"][0]["title"], "Panel ID copied")
+
+    def test_no_worker_copies_nothing_and_says_why(self):
+        out = copy("id", addr=None)
+        self.assertEqual(out["clip"], [])
+        self.assertEqual(out["toasts"], [{"title": "Couldn't copy", "body": "No live terminal is available for this task.", "level": "warning"}])
+
+    def test_a_clipboard_failure_says_so(self):
+        out = copy("path", broken=True)
+        self.assertEqual(out["toasts"], [{"title": "Couldn't copy", "body": "no clipboard", "level": "error"}])
+
+    def test_the_bar_puts_the_copy_icons_before_the_open_icons(self):
+        bar = re.search(r"\n  barRow\(t, st, addr\) \{\n.*?\n  \}\n", SRC, re.S).group(0)
+        copies = bar.index("Object.keys(COPIES).map((what) => this.copyIcon(t, what, addr))")
+        self.assertLess(copies, bar.index("Object.keys(APPS).map((app) => this.openIcon(t, app))"))
+        icon = re.search(r"\n  copyIcon\(t, what, addr\) \{\n.*?\n  \}\n", SRC, re.S).group(0)
+        self.assertIn("accessibility_label(c.name)", icon)
+        self.assertIn('what === "id" && !addr, (el) => el.opacity(0.5)', icon)
+        self.assertNotIn(".tooltip(", icon)
+
 
 if __name__ == "__main__":
     unittest.main()

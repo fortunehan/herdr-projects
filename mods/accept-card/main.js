@@ -7,17 +7,18 @@
 // mods/chat-image's bar, over the artifact's mod) and a folded Details with the agent's long
 // text, as short markdown bullets.
 // Accept runs `herdr-task accept --background` (merges first when there is something to merge, in a detached
-// herdr-task: the card closes at once); Cancel, the X and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
+// herdr-task: the card closes at once); Send back… (SHEP-87) beside it opens a note box, and Send back sends the
+// task back to its agent with that note (`herdr-task send-back`: Ready to Working). Cancel, the X and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
 // calmly, with only Close.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, Input, InputState } from "gpui-base";
 import { openViewer } from "./artview.js";
 import { appHome, closeOverlay, exec, notify, openOverlay, props, theme } from "herdr";
 import { note } from "./usage.js";
-import { dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
+import { button, dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
-import { ACCEPT, acceptLabel, words, readable, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
+import { ACCEPT, acceptLabel, words, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
 import { settle } from "./core/pending.js";
 
 export { words, readable };
@@ -132,6 +133,9 @@ export default class AcceptCard extends View {
     this.busy = false;    // accepting
     this.opening = false; // pulling the proof
     this.details = false; // Details unfolded
+    this.back = false;    // Send back's note box open
+    // its note's field, made now: GPUI refuses InputState.new during render
+    this.note = InputState.new({ placeholder: ACCEPT.sendBackAsk, multi_line: true });
     const p = props() ?? {};
     // Opened without a task (the palette's mod.open, say): nothing to approve, so it goes.
     if (!p.ref || !p.folder) {
@@ -194,6 +198,54 @@ export default class AcceptCard extends View {
       }
       cx.notify();
     });
+  }
+
+  // Send back: the note to its agent (resumed if it ended), Ready back to Working; the card closes once it went.
+  sendBack(cx) {
+    const text = String(this.note.value() ?? "").trim();
+    if (this.busy || !canAccept(this.t) || !text) return;
+    const p = props() ?? {};
+    note("act", { type: "send-back", task: p.ref });
+    this.busy = true;
+    this.error = null;
+    cx.spawn(async (cx) => {
+      try {
+        await task(p, ["send-back", p.ref, "--note", text]);
+        this.close();
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+        const now = await task(p, ["show", p.ref]).catch(() => null);
+        if (now && !canAccept(now)) {
+          this.t = { ...now, evidence: this.t.evidence };
+          this.error = null;
+          this.back = false;
+        }
+        this.busy = false;
+      }
+      cx.notify();
+    });
+  }
+
+  // The footer while it can be accepted: Cancel, Send back… and Accept; with the note box open, Cancel and Send back.
+  footer(t, e, ready) {
+    const live = ready && !this.busy;
+    return h_flex().h(H.lg).w_full().flex_none().gap(8).items_center()
+      .child(div().flex_1().min_w(0))
+      .child(button("dialog-cancel", ACCEPT.cancel, { kind: "plain", size: "lg", onClick: () => { if (this.back) this.back = false; else this.close(); } }))
+      .when(this.back, (el) => el.child(button("send-back-go", this.busy ? ACCEPT.sendingBack : ACCEPT.sendBackGo,
+        { kind: "primary", size: "lg", disabled: !live, onClick: (_e, cx) => this.sendBack(cx) })))
+      .when(!this.back, (el) => el
+        .child(button("send-back", ACCEPT.sendBack, { kind: "secondary", size: "lg", disabled: !live, onClick: () => { this.back = true; this.note.focus?.(); } }))
+        .child(button("accept", this.busy ? ACCEPT.accepting : acceptLabel(e), { kind: "primary", size: "lg", disabled: !live, onClick: (_e, cx) => this.accept(cx) })));
+  }
+
+  // Send back's note box: what should change, and that its agent gets it.
+  noteBox(t) {
+    return v_flex().w_full().gap(6)
+      .child(div().text_size(TEXT.body).font_medium().text_color(t.foreground).child(ACCEPT.sendBackAsk))
+      .child(div().w_full().px(8).py(6).rounded(RADIUS.control).border_1().border_color(t.input)
+        .child(Input.new(this.note).w_full().h(64).text_size(TEXT.body)))
+      .child(div().text_size(TEXT.label).text_color(t.muted).child(ACCEPT.sendBackHint));
   }
 
   // The proof in a modal over this card (artview.js: its mod is made in this app first, pulled
@@ -317,10 +369,10 @@ export default class AcceptCard extends View {
         .child(this.section(t, ACCEPT.checks, this.checks(t, e)))
         .child(this.section(t, ACCEPT.proof, this.proof(t, e)))
         .when(Boolean(e.artifacts?.length), (el) => el.child(this.section(t, ACCEPT.artifacts, this.artifacts(t, e))))
-        .when(Boolean(w.details), (el) => el.child(this.detailsSection(t, w.details)));
+        .when(Boolean(detailsText(e, w.details)), (el) => el.child(this.detailsSection(t, detailsText(e, w.details))));
     return v_flex().id("accept-card").track_focus(this.handle)
       .on_key_down((ev, cx) => {
-        if (ev.key === "escape") this.close();
+        if (ev.key === "escape") { if (this.back) this.back = false; else this.close(); }
         else return;
         cx.stop_propagation();
       })
@@ -334,12 +386,12 @@ export default class AcceptCard extends View {
         .child(div().mt(-2).mr(-6).child(this.closeButton(t))))
       .child(div().id("accept-body").flex_1().min_h(0).overflow_y_scrollbar().pr(6).child(body))
       .child(v_flex().flex_none().gap(10)
+        .when(Boolean(x && !settled && this.back), (el) => el.child(this.noteBox(t)))
         .when(Boolean(x && this.error), (el) => el.child(div().text_color(red()).child(this.error)))
         .when(settled, (el) => el.child(this.where(t, x)))
         // The dialog's one footer (ui.js): Cancel, then Accept; only Close once there's nothing
         // to accept.
         .child(settled ? dialogFooter({ onCancel: () => this.close(), cancelLabel: ACCEPT.close })
-          : dialogFooter({ onCancel: () => this.close(), cancelLabel: ACCEPT.cancel,
-            primary: { id: "accept", label: this.busy ? ACCEPT.accepting : acceptLabel(e), disabled: !(ready && !this.busy), onClick: (_e, cx) => this.accept(cx) } })));
+          : this.footer(t, e, ready)));
   }
 }

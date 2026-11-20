@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APPS, cantOpen, folderOf, openCommand as command, openProblem as problem, title } from "./open-editor.js";
+import { APPS, COPIES, cantOpen, copyOf, folderOf, openCommand as command, openProblem as problem, title } from "./open-editor.js";
 
 const WT = "/h/.local/share/shepherdr/worktrees/shop/task-3-x";
 const WORKTREE = { mode: "worktree", worktree: WT, folder: "/h/dev/shop", machine: null, state: "running" };
@@ -27,13 +27,39 @@ describe("folderOf", () => {
 });
 
 describe("APPS", () => {
-  test("VS Code, iTerm2, Finder, in that order", () => {
-    expect(Object.keys(APPS)).toEqual(["vscode", "iterm", "finder"]);
-    expect(Object.values(APPS).map((a) => a.name)).toEqual(["VS Code", "iTerm2", "Finder"]);
+  test("VS Code, iTerm2, Finder, Xcode, in that order", () => {
+    expect(Object.keys(APPS)).toEqual(["vscode", "iterm", "finder", "xcode"]);
+    expect(Object.values(APPS).map((a) => a.name)).toEqual(["VS Code", "iTerm2", "Finder", "Xcode"]);
   });
 
   test("each icon is in mods/chat", () => {
-    for (const a of Object.values(APPS)) expect(existsSync(join(import.meta.dir, "..", "mods", "chat", a.icon))).toBe(true);
+    for (const a of [...Object.values(APPS), ...Object.values(COPIES)]) expect(existsSync(join(import.meta.dir, "..", "mods", "chat", a.icon))).toBe(true);
+  });
+});
+
+describe("copyOf", () => {
+  test("Copy path: the task's folder, a worktree or a --here task's list folder", () => {
+    expect(copyOf("path", WORKTREE, "x")).toEqual({ text: WT });
+    expect(copyOf("path", HERE, null)).toEqual({ text: "/h/dev/shop" });
+  });
+
+  test("Copy path on another machine's task: its folder there (copying needs no local folder)", () => {
+    expect(copyOf("path", { ...WORKTREE, machine: "vm-demo" }, "vm-demo/w3")).toEqual({ text: WT });
+  });
+
+  test("Copy path with no record or no worktree yet says why", () => {
+    expect(copyOf("path", null, null)).toEqual({ problem: "The task isn't read yet." });
+    expect(copyOf("path", { ...WORKTREE, worktree: null }, null).problem).toContain("no worktree yet");
+  });
+
+  test("Copy panel ID: the worker's terminal address, its machine's prefix included; none running says so", () => {
+    expect(copyOf("id", WORKTREE, "vm-demo/w3")).toEqual({ text: "vm-demo/w3" });
+    expect(copyOf("id", WORKTREE, null)).toEqual({ problem: "No live terminal is available for this task." });
+  });
+
+  test("the Assistant header's words", () => {
+    expect(COPIES.path).toMatchObject({ name: "Copy path", done: "Full path copied" });
+    expect(COPIES.id).toMatchObject({ name: "Copy panel ID", done: "Panel ID copied" });
   });
 });
 
@@ -125,6 +151,16 @@ describe("the scripts", () => {
   test("Finder: open on the folder", () => {
     expect(run("finder", { open: "exit 0" })).toEqual({ code: 0, log: [`open ${folder}`] });
     expect(run("finder", { open: "exit 0", uname: "echo Linux" })).toEqual({ code: 4, log: [] });
+  });
+
+  test("Xcode: looks the app up, then opens it on the folder", () => {
+    expect(run("xcode", { open: "exit 0" })).toEqual({ code: 0, log: ["open -Ra Xcode", `open -a Xcode ${folder}`] });
+  });
+
+  test("Xcode: not installed or not macOS, exit 4 and nothing opened", () => {
+    expect(run("xcode", { open: "exit 1" })).toEqual({ code: 4, log: ["open -Ra Xcode"] });
+    expect(run("xcode", { open: "exit 0", uname: "echo Linux" })).toEqual({ code: 4, log: [] });
+    expect(problem("xcode", { code: 4, stdout: "", stderr: "" }, false)).toEqual({ title: "Couldn't open Xcode", body: "Xcode isn't installed." });
   });
 
   test("a removed folder: exit 3, nothing started", () => {

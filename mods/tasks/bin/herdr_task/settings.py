@@ -282,11 +282,29 @@ def worker_pick(s, task, space=None, agent=None):
     pick = dict(settings_for(s, space)["worker"] or {})
     for key in (task.get("agent"), agent):
         if key and key != pick.get("agent"):
-            pick = {"agent": key}
+            # the person's permission mode goes along, as its nearest mode in that CLI (core/agents.js permAcross)
+            perm = perm_across(pick.get("perm"), key)
+            pick = {"agent": key, **({"perm": perm} if perm else {})}
     if not pick.get("agent") and not pick.get("argv"):
         pick["agent"] = "claude"
     pick = merge_worker(pick, {k: task[k] for k in ("launcher", "model", "effort") if task.get(k)})
+    # SHEP-85: a Codex worker runs without Codex's sandbox unless a mode was chosen. On a Mac its Seatbelt sandbox
+    # blocks the window server, so the task's browser (Chrome) aborted at every start, and much else a task needs.
+    if pick.get("agent") == "codex" and not pick.get("argv") and not pick.get("perm"):
+        pick["perm"] = "full"
     return pick
+
+
+# A permission mode carried to another CLI: its nearest mode there (core/agents.js PERM_ACROSS), else none.
+PERM_ACROSS = {"claude": {"read-only": "plan", "auto": "auto", "full": "bypassPermissions"},
+               "codex": {"plan": "read-only", "auto": "auto", "acceptEdits": "auto", "bypassPermissions": "full"}}
+PERMS = {"claude": ("manual", "auto", "acceptEdits", "plan", "bypassPermissions"), "codex": ("read-only", "auto", "full")}
+
+
+def perm_across(perm, agent):
+    if not perm:
+        return None
+    return PERM_ACROSS.get(agent, {}).get(perm) or (perm if perm in PERMS.get(agent, ()) else None)
 
 
 def worker_argv(s, task, space=None, agent=None):
