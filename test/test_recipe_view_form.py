@@ -32,6 +32,8 @@ export const InputState = { new: (o) => {
 export const theme = () => new Proxy({}, { get: () => "#000" });
 // the fork's viewer keeps the keyboard holder (SHEP-9): shared, setShared and props from herdr
 export const shared = () => null, setShared = () => {}, props = () => ({});
+// a picture opens the picture viewer (SHEP-90): openOverlay, appHome, exec and settings from herdr
+export const openOverlay = () => "o", appHome = () => "/tmp", exec = async () => ({ code: 1, stdout: "" }), settings = () => ({});
 export const asset = (x) => x, reply = async () => true, answer = async () => true, answers = async () => ({});
 """
 
