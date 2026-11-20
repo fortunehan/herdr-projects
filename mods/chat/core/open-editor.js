@@ -1,5 +1,5 @@
 // Shared core: the source is core/open-editor.js; bin/sync-shared copies it into mods/chat/core/. Edit it here.
-// The task view's Open in VS Code, iTerm2 and Finder (mods/chat/panel.js, SHEP-27, SHEP-38): a task's folder (its
+// The task view's Open in VS Code, iTerm2, Finder and Xcode (mods/chat/panel.js, SHEP-27, SHEP-38, SHEP-91): a task's folder (its
 // worktree, or its list's folder for a --here task) in that app on this machine. Says why when it can't: another
 // machine's task, a worktree not made yet or removed since (a Done task), the app missing.
 // Plain JS: no herdr, node or DOM.
@@ -27,11 +27,18 @@ const FINDER = `${GONE}
 ${MAC}
 open "$1"`;
 
+/** Xcode: as iTerm2, looked up first so a missing Xcode is told apart from one that fails to start. */
+const XCODE = `${GONE}
+${MAC}
+open -Ra Xcode >/dev/null 2>&1 || exit 4
+open -a Xcode "$1"`;
+
 /** The header's buttons, in their order: name, icon (mods/chat), script, and what a missing app says. */
 export const APPS = {
   vscode: { name: "VS Code", icon: "vscode.svg", script: VSCODE, missing: "VS Code isn't installed: no `code` command and no Visual Studio Code app." },
   iterm: { name: "iTerm2", icon: "terminal-square.svg", script: ITERM, missing: "iTerm2 isn't installed." },
   finder: { name: "Finder", icon: "finder.svg", script: FINDER, missing: "Finder is only on macOS." },
+  xcode: { name: "Xcode", icon: "xcode.svg", script: XCODE, missing: "Xcode isn't installed." },
 };
 
 export const title = (app) => `Couldn't open ${APPS[app].name}`;
@@ -65,4 +72,20 @@ export function openProblem(app, r, done) {
   if (r.code === 3) return { title: t, body: done ? "Its folder is gone (a finished task's worktree is removed)." : "Its folder is gone." };
   if (r.code === 4) return { title: t, body: APPS[app].missing };
   return { title: t, body: String(r.stderr ?? "").trim().split("\n").pop() || `It exited with ${r.code}.` };
+}
+
+/** The task header's Copy path and Copy panel ID (SHEP-91), as an Assistant pane header's (mods/pane-chat): the
+ *  task's folder (on whichever machine it runs) and its worker's hc terminal address (a remote machine's prefix
+ *  included). what: "path" or "id"; addr: the worker's address, null when none runs. */
+export const COPIES = {
+  path: { name: "Copy path", icon: "copy-path.svg", done: "Full path copied" },
+  id: { name: "Copy panel ID", icon: "copy-id.svg", done: "Panel ID copied" },
+};
+
+/** What to copy: { text } or, when there's nothing, { problem } in plain words. */
+export function copyOf(what, rec, addr) {
+  if (what === "id") return addr ? { text: addr } : { problem: "No live terminal is available for this task." };
+  if (!rec) return { problem: "The task isn't read yet." };
+  const dir = folderOf(rec);
+  return dir ? { text: dir } : { problem: "The task has no worktree yet: it's made when the task starts." };
 }
