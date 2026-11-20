@@ -744,8 +744,9 @@ class BrowserSessionNames(unittest.TestCase):
         s = self.session(task)
         self.run_it(task, "open", "about:blank")
         self.run_it(task, "snapshot")
+        # no daemon runs under the old name here: nothing to close, and agent-browser's close would start Chrome first
+        # (SHEP-85); a running one is ended (test_herdr_browser_start covers how)
         self.assertEqual(self.calls(), [
-            "--session herdr-home-someone-dev-a-rather-long-repo-12 close",
             "--session %s --profile %s open about:blank" % (s, os.path.join(self.home, ".herdr", "browser", task.replace("#", "-"))),
             "--session %s --profile %s snapshot" % (s, os.path.join(self.home, ".herdr", "browser", task.replace("#", "-"))),
         ])

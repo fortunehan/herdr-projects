@@ -26,6 +26,10 @@ const TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg
 /** what a file a recipe shows is served with: sandboxed, sniffed as nothing else, a clip or sound played from this origin */
 const SHOWN = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
 
+/** an answer to keep: its block's key (an id, or "<id>-<n>" for a button among buttons) and its value */
+export type Keep = { key: string; value: unknown };
+const KEY = /^[\w.-]{1,120}$/;
+
 export type Art = { id: string; title: string; version: number; folder: string; publisher?: string; task?: string | null; at: number; files: string[]; versions: { v: number; at: number; publisher?: string; note?: string }[]; machine?: string; folderName?: string };
 
 async function run(args: string[]) {
@@ -134,14 +138,49 @@ export class Artifacts {
     try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
   }
 
+  /** where an artifact is kept: null for this machine's own list, else the other machine that lists it */
+  private machineOf(id: string) {
+    return this.here.some((a) => a.id === id) ? null : this.list.find((a) => a.id === id)?.machine ?? null;
+  }
+
+  /** The person's answers kept with a version (answers.json beside it, SHEP-87): {} when none. Never cached, unlike
+   *  its files: an answer from another screen shows on the next open. */
+  async answers(id: string, v: number, machine: string | null = null): Promise<Record<string, unknown>> {
+    if (!/^[\w.-]+$/.test(id) || !Number.isInteger(v) || v < 1) return {};
+    let text = "";
+    if (machine) {
+      if (!MACHINE.test(machine)) return {};
+      const r = await this.exec(machine, ["sh", "-c", SH + 'f="$SHEP_ARTIFACTS/files/$1/v$2/answers.json"; [ -f "$f" ] && exec cat -- "$f"; exit 0', "answers", id, String(v)]).catch(() => null);
+      text = r && r.code === 0 ? r.out.toString("utf8") : "";
+    } else {
+      const p = join(FILES, id, `v${v}`, "answers.json");
+      text = existsSync(p) ? readFileSync(p, "utf8") : "";
+    }
+    try { const a = text ? JSON.parse(text) : {}; return a && typeof a === "object" && !Array.isArray(a) ? a : {}; } catch { return {}; }
+  }
+
   /** The person's words to the agent that keeps it (a note on a block, or an answer); another machine's through
    *  herdr-artifact --on, as the window's panel reaches it. */
-  async say(id: string, v: number, text: string, spot?: string, machine: string | null = null) {
+  async say(id: string, v: number, text: string, spot?: string, keep?: Keep, machine: string | null = null) {
     if (!/^\w[\w.-]{0,119}$/.test(id)) throw new Error("Not an artifact.");
-    // where it is kept: this machine's own list first, else another's
-    machine ??= this.here.some((a) => a.id === id) ? null : this.list.find((a) => a.id === id)?.machine ?? null;
+    machine ??= this.machineOf(id);
     if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");
-    const args = [...(machine ? ["--on", machine] : []), "note", id, "--text", text, "--version", String(v), "--json", ...(spot ? ["--spot", spot] : [])];
+    // an answer (a choice, a form, a button): herdr-artifact keeps it with the version first, then sends the words
+    const answer = keep && KEY.test(keep.key) ? ["--answer", keep.key, "--value", JSON.stringify(keep.value ?? null), "--by", "web"] : [];
+    const args = [...(machine ? ["--on", machine] : []), "note", id, "--text", text, "--version", String(v), "--json", ...(spot ? ["--spot", spot] : []), ...answer];
+    const r = await run(args);
+    if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
+    try { return JSON.parse(r.out.trim().split("\n").pop() ?? "{}"); } catch { return {}; }
+  }
+
+  /** Mark up's Send all (SHEP-88): numbered notes ({text, spot}) and the words about all of it as one message
+   *  (herdr-artifact note --notes); one note without general words goes as the single note it always was. */
+  async notes(id: string, v: number, notes: { text: string; spot?: string }[], general = "", machine: string | null = null) {
+    if (notes.length === 1 && !general && notes[0].text) return this.say(id, v, notes[0].text, notes[0].spot || undefined, undefined, machine);
+    if (!/^\w[\w.-]{0,119}$/.test(id)) throw new Error("Not an artifact.");
+    machine ??= this.machineOf(id);
+    if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");
+    const args = [...(machine ? ["--on", machine] : []), "note", id, "--notes", JSON.stringify(notes), "--version", String(v), "--json", ...(general ? ["--text", general] : [])];
     const r = await run(args);
     if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
     try { return JSON.parse(r.out.trim().split("\n").pop() ?? "{}"); } catch { return {}; }

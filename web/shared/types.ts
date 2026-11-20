@@ -1300,6 +1300,8 @@ export type Action =
       so another machine's goes there */
   | { type: 'artifact-send'; place: string; artifact: string; v: number; text: string }
   | { type: 'artifact-note'; place: string; artifact: string; v: number; note: string; target?: string }
+  /** Mark up's Send all (SHEP-88): numbered notes, each its words and its spot in words, and the words about all of it */
+  | { type: 'artifact-note'; place: string; artifact: string; v: number; notes: { note: string; target?: string }[]; text?: string }
   | { type: 'artifact-say'; place: string; artifact: string; v: number; text: string }
   | { type: 'artifact-delete'; place: string; artifact: string }
   /** Mark up's notes from the shared browser, sent together into the task's chat */

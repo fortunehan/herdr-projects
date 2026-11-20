@@ -256,7 +256,7 @@ export class Compat {
   reader: ((addr: string) => any) | null = null;
 
   /** This machine's artifacts (service/artifacts.ts), set by main: notes and answers go through it. */
-  artifacts: { say(id: string, v: number, text: string, spot?: string): Promise<unknown> } | null = null;
+  artifacts: { say(id: string, v: number, text: string, spot?: string, keep?: { key: string; value: unknown }): Promise<unknown>; notes(id: string, v: number, notes: { text: string; spot?: string }[], general?: string): Promise<unknown> } | null = null;
 
   /** Open hook asks (service/asks.ts), set by main: they show as cards in their chat and in Needs you. */
   asks: { of(terminal: string): any[]; open: Map<string, any> } | null = null;

@@ -11,6 +11,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { hc, exec, home, readTextFile, theme, props, closeOverlay, openOverlay } from "herdr";
 import { button, TEXT, RADIUS, H, red, green } from "./ui.js";
+import { dialogKeys } from "./keyholder.js";
 
 // The words, the ssh config's hosts and when an add needs a terminal: core/machine-add.js, shared with
 // the web app's Add machine.
@@ -34,6 +35,8 @@ export default class MachineAdd extends View {
       this.input.focus();
       cx.timer.after(600, () => this.input.focus());
     }
+    // Its field keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:machine-add", cx);
     this.macs = {}; // target -> { name, core } for an added Mac
     this.opened = {};
     this.handle = cx.focus_handle();
@@ -163,6 +166,7 @@ export default class MachineAdd extends View {
   }
 
   close() {
+    this.dropKeys?.();
     closeOverlay(props().overlay);
   }
 

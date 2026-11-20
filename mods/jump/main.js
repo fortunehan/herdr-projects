@@ -32,6 +32,7 @@ import { spaceName } from "./core/spaces.js";
 import { openViewer, showViewer, chatArea } from "./artview.js";
 import { showInSidebar, hasSidebarView } from "./artifact-sidebar.js";
 import { TEXT, RADIUS } from "./ui.js";
+import { dialogKeys } from "./keyholder.js";
 
 // Our layout with the Tasks panel, for a task picked where the shown one has none.
 const TASKS_LAYOUT = "shepherdr";
@@ -126,12 +127,14 @@ export default class Jump extends View {
     this.input.focus();
     cx.timer.after(0, () => this.input.focus());
     cx.timer.after(600, () => this.input.focus());
+    // Its search keeps the keyboard: the chat behind takes nothing back while it is open (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:jump", cx);
     for (const m of [null, ...machines().filter((x) => x.name && x.layout !== "unavailable").map((x) => x.name)]) {
       cx.spawn(async (cx) => this.read(cx, m));
     }
   }
 
-  close() { this.input.release(); this.scroll.release(); }
+  close() { this.dropKeys?.(); this.input.release(); this.scroll.release(); }
 
   // One machine's task lists and artifacts (null: this computer's).
   async read(cx, machine) {

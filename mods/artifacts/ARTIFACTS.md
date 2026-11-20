@@ -56,7 +56,8 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
 | `audio` | `src` (a sound beside it: mp3, m4a, wav or ogg), `caption` |
 | `pdf` | `src` (a PDF beside it), `caption`: shown inline, with a link to open it whole |
 | `pair` | `before` and `after`, each { `src`, `caption` } (a picture, or a clip with an optional `poster`): side by side, stacked on a phone; two clips play together |
-| `code` | `text`, `lang`: command output, a diff, a log |
+| `code` | `text`, `lang`: command output, a diff, a log; `lang` `diff` colours its `+`, `-` and `@@` lines |
+| `check` | `command`, `exit` (its exit code, a whole number), `summary`, `output` (at most 20000 characters: its last lines), `caption`: a command that ran, shown green "Passed" (exit 0) or red "Failed · exit N", its output folded |
 | `callout` | `tone` info, good, warn or bad, `title`, `md` |
 | `columns` | `columns`: lists of blocks, side by side (stacked on a phone) |
 | `tabs` | `tabs` [{ `label`, `blocks` }] |
@@ -87,12 +88,20 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
   .mov play in place). The artifact stays the lasting record.
 - **Forms and answers**: a `choice`, a `form` or a `button` sends the person's words to you as
   `<hc from="artifact" id=… version=… title=…>Ship it?: Ship</hc>`, in the window and on the web
-  alike.
+  alike. Each answer is kept with that version (beside it, never in your recipe.json): reopened, it shows what they
+  picked and when, and they can change a choice or send a form again (you get the new words). The Accept card lists
+  the choices answered in a task's proof. A new version starts with none answered, so give each block an `id` and
+  don't ask again what they already answered.
+- **Test runs and changes**: a `check` block for a command you ran (its real exit code and the last lines of its
+  output, copied from the run, never typed by hand), a `code` block with `"lang": "diff"` for a change.
 - **Update**: change recipe.json (and pictures or clips), then `herdr-artifact update <id> <dir> --note
   "what changed"`. Each version is kept with its note.
 - **Mark up**: the person can point at a block (or a spot) and write what should change. It
   reaches you as `<hc from="artifact" id=… version=… title=… on="the table “Coverage”">note</hc>`,
-  sometimes with a path to a picture of it. Change it and `update`.
+  sometimes with a path to a picture of it. Several spots at once come as one message
+  `<hc from="artifact" … notes="3">`: numbered notes (`1. On <where>:` then the words, the same
+  numbers drawn on the picture when there is one), then `About all of it:` when they wrote that.
+  Change it and `update`.
 - Don't repeat the title inside it: the viewer shows it right above. Start with the content (a
   one-line summary, the numbers, the picture). No emojis. Data goes in the recipe; it isn't read
   live.
@@ -102,8 +111,9 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
 
 A proof is a recipe, always (the person accepts tasks from their phone too): titled "<the task's
 full title> · Proof"; a `text` block saying what changed in one to three plain lines; then each
-proof as an `image`, `video` (a short clip of a flow beats a GIF), `pair`, `code` or `pdf` block with a one-line `caption`
-(or a `text` line above it);
+proof as an `image`, `video` (a short clip of a flow beats a GIF), `pair`, `check`, `code` or `pdf` block with a
+one-line `caption` (or a `text` line above it); a test run is a `check` block (`command`, its real `exit`, a `summary`
+such as "412 tests, 0 failures", the `output`'s last lines), a change worth showing a `code` block with `"lang": "diff"`;
 then a `heading` "Not proven" and a `list`. `herdr-artifact publish` refuses a proof that isn't a
 recipe.
 

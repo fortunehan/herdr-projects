@@ -49,4 +49,9 @@ describe("the chat's box takes the keyboard back (mods/chat refocus())", () => {
     expect(boxRefocus({ ...blurred, paneFocused: false })).toBeNull();
     expect(boxRefocus({ ...blurred, showsBox: false })).toBeNull();
   });
+
+  test("a dialog over the chat holds the keyboard (Settings' Branch names, SHEP-92): no 'back' either; none: back", () => {
+    expect(boxRefocus({ ...blurred, dialog: true })).toBeNull();
+    expect(boxRefocus({ ...blurred, dialog: false })).toBe("back");
+  });
 });

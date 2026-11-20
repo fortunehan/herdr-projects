@@ -15,7 +15,7 @@ core/needs.js: accept-card chat jump spaces-chat tabs-tasks tasks workspace-stat
 core/tasks.js: accept-card chat jump tasks
 core/notify.js: chat spaces-chat tabs-tasks tasks shepherdr-settings workspace-status-chat
 parked.js: chat spaces-chat tabs-tasks workspace-status-chat
-keyholder.js: chat tasks artifacts chat-image newspace changes-review
+keyholder.js: chat tasks artifacts chat-image newspace changes-review shepherdr-settings coordinator accept-card chat-models chat-react jump keybinds machine-add-chat prompt-chat spaces-chat
 unread.js: chat spaces-chat
 agent.js: chat newspace shepherdr-settings
 settings.js: chat newspace shepherdr-settings
@@ -32,6 +32,7 @@ core/chat-reader.js: chat
 core/clean-env.js: chat changes-review tabs-tasks newspace shepherdr-settings
 core/worktree.js: task-pr
 core/recipe.js: artifacts chat
+core/markup.js: artifacts
 core/task-artifacts.js: chat task-artifacts
 core/newspace.js: newspace
 core/machine-add.js: machine-add-chat

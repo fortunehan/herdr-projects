@@ -16,7 +16,7 @@ from .settings import bare
 from .launch import cmd_allow, name_tabs
 from .commands import (
     cmd_accept, cmd_add, cmd_alert, cmd_config, cmd_edit, cmd_fix, cmd_list, cmd_merge, cmd_ready,
-    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_rm, cmd_show, cmd_start, cmd_state, cmd_status,
+    cmd_resume, cmd_review, cmd_review_more, cmd_reviewed, cmd_rm, cmd_send_back, cmd_show, cmd_start, cmd_state, cmd_status,
     cmd_switch, cmd_unarchive, cmd_where,
 )
 from .tick import cmd_tick
@@ -29,6 +29,7 @@ from .assistant_settings import cmd_session_note
 from .feedback import cmd_feedback
 from . import ado, ado_flow
 from .sandbox import cmd_sandbox
+from .self_update import cmd_self_update
 
 
 # ---- another machine ------------------------------------------------------------------------
@@ -256,7 +257,14 @@ def main():
                                      "(no file names, flags or jargon); longer is refused")
     c.add_argument("--details", help="optional: a few short bullets in plain words (one \"- \" per line): what changed for the "
                                      "person first, then how it was checked; file names only where they help; never one dense "
-                                     "paragraph. Folded under Details in the Accept card")
+                                     "paragraph. Folded under Technical details in the Accept card")
+    c.add_argument("--explain", help="optional: explain it simply, as to someone who isn't an expert, in the person's language: "
+                                     "what changed for them, why it matters and what to look at, in 2-4 short plain sentences, "
+                                     "with an everyday comparison where it helps; no file names, flags or jargon. The Accept "
+                                     "card leads with it")
+    c.add_argument("--check", action="append", metavar="WHAT", help="optional, repeatable: one thing the person should check, "
+                                     "a short plain line (\"Open a task's card on the phone: the words come first\"); listed "
+                                     "under What to check in the Accept card")
     c.add_argument("--proof", help="its proof artifact's id (herdr-artifact publish prints it); default: its newest artifact titled \"... · Proof\"")
     c.add_argument("--agents-md", help="\"For AGENTS.md\": one line about setting up or testing this repo that the next agent "
                                        "would need and AGENTS.md lacks; the Assistant decides whether to add it")
@@ -333,6 +341,8 @@ def main():
     c = cmd("scheduler", cmd_scheduler, "run automations and the queue (herdr-core keeps one as herdr-automations)", id=False)
     c.add_argument("--ensure", action="store_true", help="start it if automations need it and it isn't running")
     c.add_argument("--once", action="store_true", help="one round, then exit")
+    c = cmd("self-update", cmd_self_update, "this machine's Shepherdr checkout updating itself after its tasks merge (Settings > Machines): its state", id=False)
+    c.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)  # the scheduler's detached run (self_update.spawn)
     cmd("backup", cmd_backup, "save a backup of every connected machine's spaces and the sidebar now (the scheduler does every 10 minutes)", id=False)
     c = cmd("restore-spaces", cmd_restore_spaces, "dry run: what a backup would recreate (no backup: list them)", id=False)
     c.add_argument("backup", nargs="?", help="a backup's name or folder, or latest")
@@ -467,6 +477,11 @@ def main():
     agent_opts(c)
     c.add_argument("--space")
     c.add_argument("--reason", help="what to fix (default: what Herdr found)")
+    c = cmd("send-back", cmd_send_back, "send a Ready task back to its agent with a note (the Accept card's Send back): Working again")
+    agent_opts(c)
+    c.add_argument("--space")
+    c.add_argument("--note", required=True, help="what should change, for its agent")
+    c.add_argument("--on", help="what in its proof the note is about, in words (a block, as Mark up describes it)")
     c = cmd("merge", cmd_merge, "ask the task's agent to merge it (the Merge button)")
     agent_opts(c)
     c.add_argument("--space")
