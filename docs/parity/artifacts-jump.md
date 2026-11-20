@@ -70,17 +70,20 @@ State: ✓ matches, ◇ web-only form (why), ✗ still differs (why).
 |---|---|---|---|
 | Dashed edge over the artifact | markup.js:52-53 | A:152 | ✓ |
 | Click a spot / drag over an area | markup.js:54-96 (4 px moves make it an area) | A:153-170 (was: a tap on a block) | ✓ |
-| Badge "1", the area outlined and tinted | markup.js:98-106 | A:173-176 | ✓ |
+| Many notes (SHEP-88): each click or drag a numbered badge 1, 2, 3…, its area outlined and tinted; a press on a badge picks it | markup.js `mark()` | A `MarkupLayer` + ui.tsx `MarkBadge` | ✓ |
+| The card lists the notes: pick one to edit its words, × deletes it (the rest renumber) | markup.js `row()` | A `MarkupLayer` list | ✓ (the list folds with "3 notes" on the web; the window's list scrolls) |
+| Words about all of it, Send all: one message (`herdr-artifact note --notes`) | markup.js `send()` | A → `artifact-note` with `notes` → service/artifacts.ts `notes()` | ✓ (one note alone: the single note as before) |
+| Drafts survive closing Mark up, per version, on this device; gone once sent | markup-drafts/ files (`saveDraft`) | localStorage `shepherdr.markup:<id>:v<n>` | ✓ |
 | Note box hides while drawing | markup.js:74 | A:177 | ✓ |
 | Hint "Click a spot or drag over an area, or write to Claude Code about all of it." | markup.js:116-117 | A:147 (core/markup.js) | ✓ ("Tap" on a touch screen: ◇) |
 | "A note on the marked spot." / "…area." | markup.js:116 | A:148 | ✓ |
-| Clear spot | markup.js:130-133 | A:187 | ✓ |
+| Delete a note (was: Clear spot) | markup.js `row()` × | A list × | ✓ |
 | "What should change?" | markup.js:26 | A:214 | ✓ |
 | Send (tooltip "Send  Enter"), Enter sends | markup.js:137-143 | A:216-225 | ✓ (Enter makes a new line on a phone: ◇ its keyboard's return) |
-| Esc drops the spot, then ends | markup.js:122-126 | A:207-212 | ✓ |
+| Esc closes the note being written, then ends (the notes stay as a draft) | markup.js `card()` | A `keys()` | ✓ |
 | "Sending…", "Sent to Claude Code. A new version shows here when it's in.", error words | markup.js:177-190 | A:133-144 | ✓ (keeper: the publisher's program, service/compat.ts) |
-| The spot in words for the agent | markup.js:152-162 `describe()` | core/markup.js `describe()` → `--spot` | ✓ |
-| A picture of the panel with the spot | markup.js:89-93,170-173 (`herdr-app shot`) | none | ◇ a browser can't take a picture of the page |
+| The spot in words for the agent | its copy of core/markup.js `describe()` | core/markup.js `describe()` → `--spot` / `--notes` | ✓ (one file now) |
+| A picture of the panel with every numbered mark (taken at Send all, the card hidden) | markup.js `send()` (`herdr-app shot`) | none | ◇ a browser can't take a picture of the page |
 
 ## Recipe blocks (recipe-view.js vs Recipe.tsx)
 

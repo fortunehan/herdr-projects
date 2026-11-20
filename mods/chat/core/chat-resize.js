@@ -61,3 +61,56 @@ export function anchorRow(sizes, start, scrollTop) {
   if (i + 1 >= sizes.length) return i;
   return scrollTop - top <= top + sizes[i] - scrollTop ? i : i + 1;
 }
+
+/** How long (ms) after its first measure a row keeps being taken as measured: markdown can lay out a moment late. */
+export const MEASURE_MS = 4000;
+
+/**
+ * Heights measured again while the pointer is on the list (SHEP-94). The list redraws every few pixels the pointer
+ * moves (rows' hover styles), and each redraw measures the rows on screen again; a settled row that came out a few
+ * pixels different moved every row under it, and, following the newest, sent the list back to its end: a long
+ * message shook as the pointer moved over it. A settled row's new height now waits until the pointer leaves the list.
+ */
+export class HoverHold {
+  constructor() {
+    this.held = new Map();
+  }
+
+  /** True when a new height should wait: the pointer is on the list and the row had one for MEASURE_MS already. */
+  waits(hovering, had, firstAt, now) {
+    return Boolean(hovering) && had && firstAt != null && now - firstAt >= MEASURE_MS;
+  }
+
+  keep(key, h, gen) {
+    this.held.set(key, { h, gen });
+  }
+
+  drop(key) {
+    this.held.delete(key);
+  }
+
+  /** The heights held for measure generation `gen` (older ones are for another width), all let go. */
+  take(gen) {
+    const out = [];
+    for (const [k, v] of this.held) if (v.gen === gen) out.push([k, v.h]);
+    this.held.clear();
+    return out;
+  }
+}
+
+/**
+ * The list's scroll position as near as known, once it says which rows it drew: the top of the view lies in the first
+ * of them. The list calls its renderer twice a frame, once only to measure a representative row (`measured`, the first
+ * by default): that call says nothing about where it is, and taking it put the estimate back at that row's top on
+ * every redraw (SHEP-94), losing the place read inside a long message.
+ */
+export function scrollEstimate(sizes, range, scrollTop, measured = 0) {
+  const at = scrollTop ?? 0;
+  if (!(range.end > range.start) || (range.start === measured && range.end === measured + 1)) return at;
+  let top = 0;
+  for (let k = 0; k < range.start; k++) top += sizes[k] ?? 0;
+  const h = sizes[range.start] ?? 0;
+  if (at < top) return top;
+  if (at >= top + h) return Math.max(top, top + h - 1);
+  return at;
+}

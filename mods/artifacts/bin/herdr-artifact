@@ -66,14 +66,19 @@ APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config", "herdr-a
 GUIDE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "ARTIFACTS.md")
 # Mark up (the person points at a spot and writes to the agent), laid over every installed artifact.
 MARKUP = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "markup.js")
-# What Mark up imports beside it (markup.js's dirs.js, and dirs.js's core/paths.js): each copy carries them too (#870).
-MARKUP_HELPERS = ("dirs.js", os.path.join("core", "paths.js"))
+# What Mark up imports beside it (markup.js's dirs.js and core/markup.js, and dirs.js's core/paths.js): each copy carries
+# them too (#870).
+MARKUP_HELPERS = ("dirs.js", os.path.join("core", "paths.js"), os.path.join("core", "markup.js"))
 # A recipe artifact (recipe.json, Shepherdr 3.1) is drawn by the shared recipe view: copied into its installed mod.
 RECIPE_VIEW = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "recipe-view.js")
 RECIPE_CORE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "core", "recipe.js")
-RECIPE_TYPES = {"heading", "text", "list", "table", "chart", "stats", "image", "video", "audio", "pdf", "pair", "code", "callout",
-                "columns", "tabs", "details", "divider", "choice", "form", "button", "buttons"}
+RECIPE_TYPES = {"heading", "text", "list", "table", "chart", "stats", "image", "video", "audio", "pdf", "pair", "code", "check",
+                "callout", "columns", "tabs", "details", "divider", "choice", "form", "button", "buttons"}
 NOTES = os.path.join(STORE, "notes")
+# The person's answers to a version's choices, forms and buttons (SHEP-87), beside its files: {block key: {value, at, by}}.
+ANSWERS = "answers.json"
+# A check block's output, at most (core/recipe.js CHECK_OUTPUT_MAX).
+CHECK_OUTPUT_MAX = 20000
 # A custom artifact's picture, as the window last showed it (a version's folder; the web shows it in its place).
 PICTURE = ".window.png"
 # A task's proof, as herdr-task finds it ("HAT-2: ... · Proof"): always a recipe, the person accepts from their phone too.
@@ -95,7 +100,8 @@ BROWSER_AUDIO = ("aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le
 # What a mod folder may hold: code, text, pictures and media. No node_modules.
 ALLOWED = {".js", ".mjs", ".json", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".md", ".txt", ".csv", ".ttf", ".otf",
            *(f".{e}" for kind in MEDIA for e in MEDIA[kind])}
-SKIP = {"jsconfig.json", "gpui-kit.d.ts", "herdr.d.ts", "artifact.js", "artifact-main.js", "artifact-markup.js", ".version"}
+# answers.json: the person's answers beside a kept version, never part of a new one (a pulled version republished)
+SKIP = {"jsconfig.json", "gpui-kit.d.ts", "herdr.d.ts", "artifact.js", "artifact-main.js", "artifact-markup.js", ".version", "answers.json"}
 
 
 class Fail(Exception):
@@ -367,6 +373,18 @@ def recipe_problems(src, files):
                     out.append(f"block {where} (video): poster {side.get('poster')!r} isn't a file beside recipe.json.")
                 elif side.get("poster") is not None and file_kind(str(side.get("poster"))) != "image":
                     out.append(f"block {where} ({b['type']}): poster must be a picture beside recipe.json.")
+            if b["type"] == "check":
+                # a command that ran (core/recipe.js): its words, its exit code, a summary and its output (short)
+                if not isinstance(b.get("command"), str) or not b["command"].strip():
+                    out.append(f"block {where} (check): needs the command that ran.")
+                if not isinstance(b.get("exit"), int) or isinstance(b.get("exit"), bool):
+                    out.append(f"block {where} (check): exit must be the command's exit code, a whole number.")
+                for k in ("summary", "caption"):
+                    if b.get(k) is not None and not isinstance(b.get(k), str):
+                        out.append(f"block {where} (check): {k} must be words.")
+                o = b.get("output")
+                if o is not None and (not isinstance(o, str) or len(o) > CHECK_OUTPUT_MAX):
+                    out.append(f"block {where} (check): output must be words, at most {CHECK_OUTPUT_MAX} characters (keep its last lines).")
             for x in ([b] if b["type"] == "button" else (b.get("items") or [None]) if b["type"] == "buttons" else []):
                 # a button: words, and a reply, a plain https link or both (core/recipe.js buttonProblem)
                 x = x if isinstance(x, dict) else {}
@@ -513,7 +531,7 @@ def copy_files(src, files, dst):
 def helper(art, mod, agent, machine=None, custom=False):
     """artifact.js, written into the installed mod: who made it and how to answer them."""
     return f"""// Written by herdr-artifact each time this artifact is installed. Don't edit: it's replaced.
-import {{ hc }} from "herdr";
+import {{ appHome, checking, exec, hc }} from "herdr";
 
 export const id = {json.dumps(art["id"])};
 export const title = {json.dumps(art["title"])};
@@ -538,6 +556,24 @@ export async function reply(text) {{
   const body = `<hc from="artifact" id="${{id}}" version="${{version}}" title=${{JSON.stringify(title)}}>\\n${{text}}\\n</hc>`;
   const r = await hc(["send", agent, body]);
   return r.code === 0;
+}}
+
+const CLI = () => `${{appHome()}}/mods/artifacts/bin/herdr-artifact`;
+const there = machine ? ["--from", machine] : [];
+
+/** An answer (a choice, a form, a button), kept with this version first (answers.json, SHEP-87), then sent to the
+ *  agent that keeps the artifact (herdr-artifact note). key: the block's id. Resolves true once both went. */
+export async function answer(key, value, text) {{
+  const r = await exec(CLI(), ["note", id, "--text", text, "--version", String(version), "--json",
+    "--answer", key, "--value", JSON.stringify(value ?? null), "--by", "window", ...there]).catch(() => null);
+  return Boolean(r && r.code === 0);
+}}
+
+/** This version's kept answers: {{ key: {{ value, at, by }} }}, {{}} when none (or while it is being checked). */
+export async function answers() {{
+  if (checking()) return {{}};
+  const r = await exec(CLI(), ["answers", id, "--version", String(version), ...there]).catch(() => null);
+  try {{ const a = JSON.parse(r?.stdout || "{{}}"); return a && typeof a === "object" ? a : {{}}; }} catch {{ return {{}}; }}
 }}
 """
 
@@ -1459,8 +1495,60 @@ def rect(s):
     return v
 
 
+NOTES_MAX = 30  # core/markup.js NOTES_MAX
+
+
+def read_notes(v):
+    """--notes: a JSON list of {"text", "spot"} (spot: where on it, in words; may be left out), given as JSON, @file or
+    - (stdin). Numbered in its order, as marked on the artifact."""
+    if v == "-":
+        v = sys.stdin.read()
+    elif v.startswith("@"):
+        try:
+            with open(os.path.expanduser(v[1:])) as f:
+                v = f.read()
+        except OSError as e:
+            raise Fail(f"Can't read {v[1:]}: {e.strerror}")
+    try:
+        d = json.loads(v)
+    except ValueError:
+        raise Fail("--notes isn't JSON: give a list of {\"text\": …, \"spot\": …}.")
+    if isinstance(d, dict) and isinstance(d.get("notes"), list):
+        d = d["notes"]
+    if not isinstance(d, list) or not all(isinstance(n, (dict, str)) for n in d):
+        raise Fail("--notes must be a list of {\"text\": …, \"spot\": …}.")
+    if len(d) > NOTES_MAX:
+        raise Fail(f"At most {NOTES_MAX} notes at once.")
+    out = []
+    for n in d:
+        n = {"text": n} if isinstance(n, str) else n
+        text = str(n.get("text") or "").strip()[:4000]
+        spot = str(n.get("spot") or "").strip()[:300]
+        out.append({"text": text, "spot": spot})
+    return out
+
+
+def note_lines(notes, general):
+    """Several notes in one message: each with its number (as marked on the artifact), where it is and its words, then
+    the general words."""
+    lines = [f"{len(notes)} notes, numbered as marked on it:"]
+    for i, n in enumerate(notes, 1):
+        where = f"On {n['spot']}" if n["spot"] else "On it"
+        lines.append(f"{i}. {where}:\n{n['text'] or '(no words: just this spot)'}")
+    if general:
+        lines.append(f"About all of it:\n{general}")
+    return lines
+
+
 def cmd_note(o):
-    """The person's note on an artifact (the viewer's Mark up), sent to the agent that keeps it."""
+    """The person's note on an artifact (the viewer's Mark up), sent to the agent that keeps it. Several numbered notes
+    (--notes) go as one message; one note without --text is sent as a single note, as before."""
+    notes = read_notes(o.notes) if o.notes is not None else []
+    text, spot = (o.text or "").strip(), o.spot
+    if len(notes) == 1 and not text:
+        text, spot, notes = notes[0]["text"], notes[0]["spot"] or o.spot, []
+    if not text and not notes:
+        raise Fail("Nothing to send: give --text or --notes.")
     image = o.image
     if o.shot:
         os.makedirs(NOTES, exist_ok=True)
@@ -1472,7 +1560,9 @@ def cmd_note(o):
                 pass
         out = os.path.join(NOTES, f"{o.id}-v{o.version or 0}-{now()}.png")
         try:
-            if o.panel and o.area and crop_shot(o.shot, rect(o.panel), rect(o.area), out):
+            # several notes: their numbered marks are in the shot already, so only the panel is cut
+            area = rect(o.area) if o.area and not notes else None
+            if o.panel and (area or notes) and crop_shot(o.shot, rect(o.panel), area, out):
                 image = out
         finally:
             try:
@@ -1480,7 +1570,10 @@ def cmd_note(o):
             except OSError:
                 pass
     if o.machine:
-        args = ["note", o.id, "--text", o.text, "--json"] + (["--version", str(o.version)] if o.version else []) + (["--spot", o.spot] if o.spot else [])
+        args = ["note", o.id, "--json"] + (["--text", text] if text else []) + (["--version", str(o.version)] if o.version else []) \
+            + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else [])
+        if o.answer:
+            args += ["--answer", o.answer, "--value", o.value or "null", "--by", o.by or "window"]
         if image:
             rel = f".herdr/artifacts/notes/{os.path.basename(image)}"
             with open(image, "rb") as f:
@@ -1502,19 +1595,97 @@ def cmd_note(o):
     with Store(loc, write=False) as s:
         a = s.find(o.id)
     v = o.version or a["version"]
+    if o.answer:
+        # kept first (SHEP-87): the answer stays with the version even when its agent is gone
+        keep_answer(a["id"], v, o.answer, o.value, o.by)
     to, why = keeper(a, loc["folder"])
-    on = f' on="{attr(o.spot)}"' if o.spot else ""
-    lines = [o.text.strip()]
+    if notes:
+        on = f' notes="{len(notes)}"'
+        lines = note_lines(notes, text)
+    else:
+        on = f' on="{attr(spot)}"' if spot else ""
+        lines = [text]
     if v != a["version"]:
         lines.append(f"(Written on v{v}; the latest is v{a['version']}.)")
     if image:
-        lines.append(f"The artifact as they saw it, the spot outlined in blue: {image}")
+        lines.append(f"The artifact as they saw it, each note's spot marked with its number in blue: {image}" if notes
+                     else f"The artifact as they saw it, the spot outlined in blue: {image}")
     body = f'<hc from="artifact" id="{attr(a["id"])}" version="{v}" title="{attr(a["title"])}"{on}>\n' + "\n\n".join(lines) + "\n</hc>"
     r = run(["hc", "send", to, body])
     if r.returncode != 0:
         raise Fail(r.stderr.strip() or r.stdout.strip() or f"Couldn't send it to {to}.")
     out = {"to": to, "why": why, "version": v, "image": image}
+    if notes:
+        out["notes"] = len(notes)
     print(json.dumps(out) if o.json else f"Sent to {to} ({why}).")
+    return 0
+
+
+# ---- the person's answers (SHEP-87) ------------------------------------------------------------
+
+ANSWER_KEY = re.compile(r"^[\w.-]{1,120}$")
+
+
+def answers_path(aid, v):
+    return os.path.join(FILES, aid, f"v{v}", ANSWERS)
+
+
+def read_answers(aid, v):
+    """A version's kept answers, {} when none (or unreadable)."""
+    try:
+        with open(answers_path(aid, v)) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def keep_answer(aid, v, key, value, by=None):
+    """Keeps the person's answer to a block (its key: the block's id, "<id>-<n>" for a button among buttons) with
+    the version, beside its files: {value, at, by}. A newer answer to the same block replaces it. value: JSON (a
+    form's values), else its words."""
+    if not ANSWER_KEY.match(key or ""):
+        raise Fail(f"Not a block key: {key!r}")
+    d = os.path.join(FILES, aid, f"v{v}")
+    if not os.path.isdir(d):
+        raise Fail(f"{aid} has no v{v} here.")
+    try:
+        val = json.loads(value) if value is not None else None
+    except ValueError:
+        val = value
+    if len(json.dumps(val)) > 4000:
+        raise Fail("That answer is too long to keep (at most 4000 characters).")
+    lock = os.path.join(STORE, "." + aid + ".answers.lock")
+    with open(lock, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        all_ = read_answers(aid, v)
+        all_[key] = {"value": val, "at": now(), "by": by or "cli"}
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".answers-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(all_, f, ensure_ascii=False)
+        os.replace(tmp, answers_path(aid, v))
+    return all_[key]
+
+
+def cmd_answers(o):
+    """A version's kept answers, as JSON: {block key: {value, at, by}} (the window's recipe view reads them)."""
+    if o.machine:
+        r = run([sys.executable, os.path.realpath(__file__), "--on", o.machine, "answers", o.id]
+                + (["--version", str(o.version)] if o.version else []))
+        try:
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            raise Fail(r.stderr.strip() or f"Couldn't reach {o.machine}.")
+        if isinstance(out, dict) and out.get("error"):
+            raise Fail(out["error"])
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+    v = o.version
+    if not v:
+        loc = find_anywhere(o.id)
+        with Store(loc, write=False) as s:
+            v = s.find(o.id)["version"]
+    print(json.dumps(read_answers(o.id, v), ensure_ascii=False))
     return 0
 
 
@@ -2401,13 +2572,22 @@ def main():
     c.add_argument("--version", type=int, help="an older version (default: the latest)")
     c = cmd("note", cmd_note, "send the person's note on an artifact to the agent that keeps it (the viewer's Mark up)")
     c.add_argument("id")
-    c.add_argument("--text", required=True, help="what the person wrote")
+    c.add_argument("--text", help="what the person wrote (with --notes: their words about all of it, optional)")
+    c.add_argument("--notes", help='several numbered notes sent as one message: a JSON list of {"text": …, "spot": …} '
+                   "(spot: where on it, in words), as JSON, @file or - for stdin")
     c.add_argument("--version", type=int, help="the version they were looking at (default: the latest)")
     c.add_argument("--spot", help="where on it, in words")
     c.add_argument("--image", help="a picture of it, a path the agent can read")
     c.add_argument("--shot", help="a window shot (herdr-app shot) to cut the panel from; removed after")
     c.add_argument("--panel", help="the panel in the shot, logical px: x,y,w,h")
     c.add_argument("--area", help="the marked spot in the shot, logical px: x,y,w,h")
+    c.add_argument("--from", dest="machine", help="the machine the artifact is on (default: this one)")
+    c.add_argument("--answer", help="the block answered (its id; <id>-<n> for a button among buttons): kept with the version first")
+    c.add_argument("--value", help="the answer to keep, as JSON (a choice's label, a form's values)")
+    c.add_argument("--by", help="where it was answered (web, window)")
+    c = cmd("answers", cmd_answers, "the person's answers kept with a version (JSON)")
+    c.add_argument("id")
+    c.add_argument("--version", type=int, help="the version (default: the latest)")
     c.add_argument("--from", dest="machine", help="the machine the artifact is on (default: this one)")
     c = cmd("picture", cmd_picture, argparse.SUPPRESS)
     c.add_argument("id")

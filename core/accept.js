@@ -1,4 +1,4 @@
-// The Accept card's words and its summary and details as read: what the person approves before a Ready task merges.
+// The Accept card's words and its summary, plain-words explanation and details as read: what the person approves before a Ready task merges.
 // mods/accept-card draws it in the window, web/src/screens/Accept.tsx in the web app; both read the same words and
 // the same reading of `herdr-task show --evidence` from here.
 // Shared core: the source is core/accept.js; bin/sync-shared copies it into the mods in lib/COPIES. Edit it here,
@@ -14,11 +14,13 @@ export const ACCEPT = {
   title: (ref) => `Accept ${ref}?`,
   reading: "Reading the task…",
   noSummary: "No summary.",
-  changes: "Changes",
-  checks: "Checks",
+  changes: "Code changes",
+  checks: "Automatic checks",
   proof: "Proof",
   artifacts: "Artifacts",
-  details: "Details",
+  // SHEP-89: ready's plain-words explanation leads, then what to check; the agent's own details fold below
+  toCheck: "What to check",
+  details: "Technical details",
   notGit: "Not a git folder.",
   noCommits: "No commits.",
   noFiles: "· Couldn't read the files",
@@ -32,7 +34,27 @@ export const ACCEPT = {
   acceptMerge: "Accept and merge",
   accepting: "Accepting…",
   noTask: "No task to accept.",
+  // Send back (SHEP-87): the task goes back to its agent with the person's note, Ready to Working
+  sendBack: "Send back…",
+  sendBackGo: "Send back",
+  sendingBack: "Sending back…",
+  sendBackAsk: "What should change?",
+  sendBackHint: "Its agent gets this note, fixes it and says ready again.",
+  // the choices the person answered in its proof (answers.json), in Details
+  choices: "Your choices",
 };
+
+// One answered choice in its proof, as Details lists it: "Ship it? Ship" (c: herdr-task's evidence.choices item).
+export const choiceLine = (c) => `${String(c?.question ?? "").replace(/[:?]?\s*$/, (m) => (m.includes("?") ? "?" : ":"))} ${c?.value ?? ""}`.trim();
+// Details as markdown: the agent's own details, then the answered choices under their own label ("Your choices"), a
+// paragraph between so the two lists never run together.
+export function detailsText(e, details) {
+  const cs = Array.isArray(e?.choices) ? e.choices.filter((c) => c && c.question) : [];
+  const own = String(details ?? "").trim();
+  if (!cs.length) return own;
+  const list = `**${ACCEPT.choices}**\n\n${cs.map((c) => `- ${choiceLine(c)}`).join("\n")}`;
+  return own ? `${readable(own)}\n\n${list}` : list;
+}
 
 // The Accept button's words (SHEP-225, #1046): what pressing it will do. herdr-task's evidence says `merges` when its
 // branch has work to merge (whatever the Merge setting, Accept merges that first); plain Accept when it only marks the
@@ -52,6 +74,18 @@ export function whereNow(x) {
   if (x.state === "done") return x.accepted_at ? "Already accepted." : "Already done.";
   return `Not ready right now: it's in ${x.status_text ?? x.state}.`;
 }
+
+// { explain, toCheck }: what ready said for someone who isn't an expert (SHEP-89: --explain, in plain sentences, and
+// one --check per thing to look at), which the card leads with. An older ready has neither: the card shows its summary
+// first, as before.
+export function simple(e) {
+  const explain = String(e?.explain ?? "").trim();
+  const toCheck = (Array.isArray(e?.to_check) ? e.to_check : [])
+    .map((c) => String(c ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  return { explain, toCheck };
+}
+// The explanation's paragraphs, one per line the agent wrote.
+export const paragraphs = (text) => String(text ?? "").split(/\n+/).map((x) => x.trim()).filter(Boolean);
 
 // herdr-task ready's SUMMARY_MAX (as Shepherdr's): an older, longer summary shows its first sentence and folds the
 // rest under Details.

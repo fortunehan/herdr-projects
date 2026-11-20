@@ -13,7 +13,10 @@
 //   audio    { src, caption }                           a sound: mp3, m4a, wav or ogg
 //   pdf      { src, caption }                           a PDF, shown inline (on a phone: its first page and a link)
 //   pair     { before: { src, caption }, after: { src, caption } }   a picture or a video each; videos play together
-//   code     { text, lang }                             callout  { tone: info | good | warn | bad, title, md }
+//   code     { text, lang }                             lang "diff": its +, - and @@ lines coloured (diffLines())
+//   check    { command, exit, summary, output, caption }   a command that ran: "Passed" (exit 0) or "Failed · exit N",
+//                                                       its command and summary, its output folded (checkStatus())
+//   callout  { tone: info | good | warn | bad, title, md }
 //   columns  { columns: [[blocks]] }                    tabs     { tabs: [{ label, blocks }] }
 //   details  { summary, blocks }                        divider  {}
 //   choice   { question, options: [{ label, description }] }   one pick, sent to the agent as a reply
@@ -21,11 +24,14 @@
 //   button   { label, reply, href, quiet }              a press sends `reply` to the agent; with href (https only) it
 //                                                       opens that page in the person's browser too; quiet: the softer look
 //   buttons  { items: [button] }                        buttons side by side (the first not quiet is the one to press)
+// The person's answers (a choice, a form, a button) are kept per version beside it in answers.json,
+// { "<block id>": { value, at, by } } (a button in buttons: "<id>-<n>"), never in the agent's recipe.json: a reopened
+// artifact shows what was picked and when (answerLine()), and the Accept card lists them.
 // "cover" (optional, beside "blocks"): the picture beside it that its card in the chat shows first (preview()).
 // Shared core: the source is core/recipe.js; bin/sync-shared copies it into the mods in lib/COPIES.
 
 export const RECIPE = 1;
-export const TYPES = ["heading", "text", "list", "table", "chart", "stats", "image", "video", "audio", "pdf", "pair", "code", "callout", "columns", "tabs", "details", "divider", "choice", "form", "button", "buttons"];
+export const TYPES = ["heading", "text", "list", "table", "chart", "stats", "image", "video", "audio", "pdf", "pair", "code", "check", "callout", "columns", "tabs", "details", "divider", "choice", "form", "button", "buttons"];
 // The files a block can show, by extension (what the browser plays or draws; a .mov the browser can't play is still
 // served, and the web app says so and offers the file).
 export const PICTURES = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
@@ -41,6 +47,8 @@ export const TONES = ["info", "good", "warn", "bad"];
 export const CHARTS = ["bar", "line", "pie"];
 export const FIELDS = ["text", "textarea", "select", "checkbox"];
 const MAX_BLOCKS = 400;
+/** a check block's output, at most, in characters (its last lines are what matter) */
+export const CHECK_OUTPUT_MAX = 20000;
 
 const str = (v) => typeof v === "string";
 const arr = (v) => Array.isArray(v);
@@ -75,6 +83,13 @@ export function problems(recipe, files = null) {
       case "pdf": file(b.src, ["pdf"], "src must be a PDF beside it"); break;
       case "pair": for (const x of [b.before, b.after]) { file(x?.src, ["image", "video"], "a side's src must be a picture or a clip"); if (x?.poster != null) file(x.poster, ["image"], "a side's poster must be a picture beside it"); } break;
       case "code": need(str(b.text), "needs text"); break;
+      case "check":
+        need(str(b.command) && b.command.trim() !== "", "needs the command that ran");
+        need(Number.isInteger(b.exit), "exit must be the command's exit code, a whole number");
+        need(b.summary == null || str(b.summary), "summary must be words");
+        need(b.caption == null || str(b.caption), "caption must be words");
+        need(b.output == null || (str(b.output) && b.output.length <= CHECK_OUTPUT_MAX), `output must be words, at most ${CHECK_OUTPUT_MAX} characters (keep its last lines)`);
+        break;
       case "callout": need(!b.tone || TONES.includes(b.tone), `tone must be ${TONES.join(", ")}`); need(str(b.md) || str(b.title), "needs md or a title"); break;
       case "columns": need(arr(b.columns) && b.columns.every(arr), "columns must be lists of blocks"); if (arr(b.columns)) b.columns.forEach((c, j) => arr(c) && walk(c, `${where}.${j + 1}.`)); break;
       case "tabs": need(arr(b.tabs) && b.tabs.every((t) => str(t?.label) && arr(t?.blocks)), "tabs need a label and blocks"); if (arr(b.tabs)) b.tabs.forEach((t, j) => arr(t?.blocks) && walk(t.blocks, `${where}.${j + 1}.`)); break;
@@ -115,11 +130,45 @@ export function withIds(recipe) {
 // A block's words for a note or a reply ("the table “Coverage”"), so the agent knows what was pointed at.
 export function blockName(b) {
   const what = { heading: "heading", text: "text", list: "list", table: "table", chart: "chart", stats: "numbers", image: "picture",
-    pair: "before and after", code: "code", callout: "callout", columns: "columns", tabs: "tabs", details: "folded section",
+    pair: "before and after", code: "code", check: "check", callout: "callout", columns: "columns", tabs: "tabs", details: "folded section",
     divider: "line", choice: "choice", form: "form", button: "button", buttons: "buttons", video: "video", audio: "audio", pdf: "PDF" }[b?.type] ?? "block";
-  const name = b?.text ?? b?.title ?? b?.question ?? b?.summary ?? b?.caption ?? b?.label ?? b?.items?.[0]?.label ?? null;
+  const name = b?.type === "check" ? b.caption ?? b.command : b?.text ?? b?.title ?? b?.question ?? b?.summary ?? b?.caption ?? b?.label ?? b?.items?.[0]?.label ?? null;
   return name ? `the ${what} “${String(name).slice(0, 60)}”` : `the ${what} ${b?.id ?? ""}`.trim();
 }
+
+// A check block's status: { ok, label }: "Passed" (exit 0), else "Failed · exit 2".
+export function checkStatus(b) {
+  const ok = b?.exit === 0;
+  return { ok, label: ok ? "Passed" : `Failed · exit ${b?.exit}` };
+}
+
+// A diff's lines, each with its kind for colouring: "add" (+), "del" (-), "hunk" (@@), "file" (---, +++, diff, index)
+// or "" (context). [{ text, kind }]
+export function diffLines(text) {
+  return String(text ?? "").split("\n").map((line) => ({
+    text: line,
+    kind: /^(?:\+\+\+|---)(?:\s|$)|^diff |^index /.test(line) ? "file" : line.startsWith("@@") ? "hunk"
+      : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "",
+  }));
+}
+export const isDiff = (b) => b?.type === "code" && String(b.lang ?? "").toLowerCase() === "diff";
+
+// A kept answer (answers.json) as its block shows it once reopened: "You chose this at 14:05" today, else with its
+// day ("You chose this on 19 Nov at 14:05"). kind: the block's type. at: ms.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function answerLine(kind, at, now = Date.now()) {
+  const verb = kind === "form" ? "You sent this" : kind === "button" ? "You pressed this" : "You chose this";
+  const d = new Date(at), n = new Date(now);
+  if (!Number.isFinite(d.getTime())) return verb;
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const today = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return today ? `${verb} at ${hm}` : `${verb} on ${d.getDate()} ${MONTHS[d.getMonth()]}${d.getFullYear() === n.getFullYear() ? "" : ` ${d.getFullYear()}`} at ${hm}`;
+}
+// A kept answer, if it is one: { value, at, by } with a value.
+export const answerOf = (answers, key) => {
+  const a = answers && typeof answers === "object" ? answers[key] : null;
+  return a && typeof a === "object" && a.value != null ? a : null;
+};
 
 // The reply a choice or a form sends to its agent: plain words, as the person would write them.
 export function choiceReply(b, label) { return `${b.question}: ${label}`; }

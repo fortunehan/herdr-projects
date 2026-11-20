@@ -3,7 +3,7 @@
 // list per place, and one per chat (its ⋯ → Artifacts). A newer version swaps in live: only its data changed, the page takes the new data without a reload.
 // Shown in the side panel, it fills a place's Artifacts list (or a task's Artifacts tab) beside the chat.
 import clsx from 'clsx'
-import { Recipe, UNREADABLE } from '@client/screens/Recipe.tsx'
+import { Recipe, UNREADABLE, type Answers } from '@client/screens/Recipe.tsx'
 import { enterHint, sendsNow } from '@client/enter.ts'
 import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
@@ -53,12 +53,12 @@ import {
   UpIcon,
   XIcon,
 } from '@client/ui.tsx'
-import type { Artifact, ArtifactVersion, Chat, Message, Task } from '@shared/types.ts'
+import type { Action, Artifact, ArtifactVersion, Chat, Message, Task } from '@shared/types.ts'
 import { titleInTask } from '@core/task-artifacts.js'
 
 const { withIds, preview } = R as any
 const { WORDS, artifactLine } = CV as any
-const { MARKUP, markupHint, markupSent, describe } = M as any
+const { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing } = M as any
 
 export type Pick = { text: string; selector: string; component?: string; x: number; y: number }
 
@@ -107,56 +107,121 @@ function Stepper({ art, shown, onStep, bar }: { art: Artifact; shown: number; on
 }
 
 type Spot = { x: number; y: number; w: number; h: number }
+/** a numbered note: its spot as fractions of the layer (core/markup.js toFrac) and its words */
+type Note = Spot & { text: string }
 
-/** Mark up, as the window's (mods/artifacts/markup.js): a dashed edge over the artifact; click a spot or drag over an
- *  area (the note box hides while you draw), write what should change, and Send gives it to the agent that keeps it,
- *  the spot in words. Esc drops the spot, then ends. Laid over the artifact in the viewer and in the sidebar. */
+const loadDraft = (id: string, v: number): { notes: Note[]; general: string } => {
+  try { return readDraft(localStorage.getItem(draftKey(id, v))) } catch { return { notes: [], general: '' } }
+}
+const keepDraft = (id: string, v: number, notes: Note[], general: string) => {
+  try {
+    const t = draftText(notes, general)
+    if (t) localStorage.setItem(draftKey(id, v), t)
+    else localStorage.removeItem(draftKey(id, v))
+  } catch { /* a private window: the draft lasts while Mark up is open */ }
+}
+
+/** Mark up, as the window's (mods/artifacts/markup.js): a dashed edge over the artifact; click or tap spots, or drag
+ *  over areas, each a numbered note with its own words (the list beside them edits or deletes each one), plus words
+ *  about all of it, and Send all gives them to the agent that keeps it as one message, each spot in words (SHEP-88).
+ *  The notes are kept on this device per version until they went. Esc closes a note, then ends. Laid over the artifact
+ *  in the viewer and in the sidebar. */
 function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
+  const generalRef = useRef<HTMLTextAreaElement>(null)
   const device = useUI((u) => u.device)
-  const [spot, setSpot] = useState<Spot | null>(null)
+  const [draft] = useState(() => loadDraft(art.id, v))
+  const [notes, setNotes] = useState<Note[]>(draft.notes)
+  const [general, setGeneral] = useState(draft.general)
+  const [sel, setSel] = useState<number | null>(null)
+  const [open, setOpen] = useState(true)
+  const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const [press, setPress] = useState<{ x0: number; y0: number; x1: number; y1: number; moved: boolean } | null>(null)
-  const [text, setText] = useState('')
   const [said, setSaid] = useState('')
   const [failed, setFailed] = useState(false)
   const [sending, setSending] = useState(false)
   const keeper = art.keeper || 'the agent'
-  const focus = () => device !== 'phone' && setTimeout(() => ref.current?.querySelector('textarea')?.focus(), 0)
-  useEffect(() => { focus() }, [])
+  const phone = device === 'phone'
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const o = new ResizeObserver(() => setSize({ width: el.clientWidth, height: el.clientHeight }))
+    o.observe(el)
+    setSize({ width: el.clientWidth, height: el.clientHeight })
+    return () => o.disconnect()
+  }, [])
+  useEffect(() => { keepDraft(art.id, v, notes, general) }, [art.id, v, notes, general])
+  const focusGeneral = () => !phone && setTimeout(() => generalRef.current?.focus(), 0)
+  const focusNote = () => !phone && setTimeout(() => ref.current?.querySelector<HTMLTextAreaElement>('textarea[data-note]')?.focus(), 0)
+  useEffect(() => { focusGeneral() }, [])
   const at = (e: { clientX: number; clientY: number }) => {
     const r = ref.current!.getBoundingClientRect()
     return { x: Math.max(0, Math.min(r.width, e.clientX - r.left)), y: Math.max(0, Math.min(r.height, e.clientY - r.top)) }
   }
   const box = (p: NonNullable<typeof press>): Spot => ({ x: Math.min(p.x0, p.x1), y: Math.min(p.y0, p.y1), w: Math.abs(p.x1 - p.x0), h: Math.abs(p.y1 - p.y0) })
-  const shown = press?.moved ? box(press) : spot
+  const fresh = () => {
+    if (said && !sending) {
+      setSaid('')
+      setFailed(false)
+    }
+  }
+  const pick = (i: number | null) => {
+    setSel(i)
+    setOpen(true)
+    if (i !== null) focusNote()
+  }
+  const remove = (i: number) => {
+    setNotes(notes.filter((_, j) => j !== i))
+    setSel(sel === null || sel < i ? sel : sel === i ? null : sel - 1)
+  }
+  const out = outgoing(notes, general, size)
   const send = async () => {
-    const t = text.trim()
-    if (!t || sending) return
-    const r0 = ref.current?.getBoundingClientRect()
+    if (!out || sending) return
     setSending(true)
     setFailed(false)
     setSaid(MARKUP.sending)
-    const r = (await act(spot
-      ? { type: 'artifact-note', place: art.place, artifact: art.id, v, note: t, target: describe(spot, r0 ? { width: r0.width, height: r0.height } : null) }
-      : { type: 'artifact-say', place: art.place, artifact: art.id, v, text: t }).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string }
+    const base = { place: art.place, artifact: art.id, v }
+    const msg: Action = out.kind === 'say' ? { type: 'artifact-say', ...base, text: out.text }
+      : out.kind === 'note' ? { type: 'artifact-note', ...base, note: out.text, target: out.spot }
+      : { type: 'artifact-note', ...base, notes: out.notes.map((n: { text: string; spot: string }) => ({ note: n.text, target: n.spot })), text: out.text }
+    const r = (await act(msg).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string }
     setSending(false)
     if (r.ok === false) {
       setFailed(true)
       return setSaid(r.error || MARKUP.failed)
     }
-    setText('')
-    setSpot(null)
+    setNotes([])
+    setGeneral('')
+    setSel(null)
     setSaid(markupSent(keeper))
   }
   // a touch screen taps where the window clicks
   const hint = device === 'desktop' ? markupHint(keeper) : markupHint(keeper).replace(/^Click/, 'Tap')
-  const line = said || (spot ? (spot.w || spot.h ? MARKUP.area : MARKUP.spot) : hint)
+  const cur = sel !== null ? notes[sel] : null
+  const line = said || (cur ? (cur.w || cur.h ? MARKUP.area : MARKUP.spot) : notes.length ? MARKUP.more.replace(/^Click/, device === 'desktop' ? 'Click' : 'Tap') : hint)
+  const drawn = press?.moved ? box(press) : null
+  const keys = (e: React.KeyboardEvent, enter: () => void, esc: () => void) => {
+    if (sendsNow(e, getState().ui.keyboard)) {
+      e.preventDefault()
+      enter()
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      esc()
+    }
+  }
+  const boxCls = 'max-h-32 min-h-8 min-w-0 flex-1 rounded-row bg-bg px-2.5 py-1.5 shadow-[inset_0_0_0_1px_var(--line2)] outline-none placeholder:text-fg3 focus:shadow-[inset_0_0_0_1.5px_var(--focus)] phone:min-h-11 phone:text-[1rem]'
   return (
     <div
       ref={ref}
-      className="absolute inset-0 cursor-crosshair touch-none rounded-[inherit] border-2 border-dashed border-focus"
+      className="@container absolute inset-0 cursor-crosshair touch-none rounded-[inherit] border-2 border-dashed border-focus"
       onPointerDown={(e) => {
         if (e.button !== 0) return
+        if (notes.length >= NOTES_MAX) {
+          setFailed(true)
+          return setSaid(`At most ${NOTES_MAX} notes at once: send these first.`)
+        }
         const q = at(e)
         e.currentTarget.setPointerCapture(e.pointerId)
         setPress({ x0: q.x, y0: q.y, x1: q.x, y1: q.y, moved: false })
@@ -170,65 +235,122 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
       }}
       onPointerUp={() => {
         if (!press) return
-        setSpot(press.moved ? box(press) : { x: press.x0, y: press.y0, w: 0, h: 0 })
+        const s = press.moved ? box(press) : { x: press.x0, y: press.y0, w: 0, h: 0 }
         setPress(null)
-        focus()
+        setNotes([...notes, { ...toFrac(s, size), text: '' }])
+        pick(notes.length)
       }}
     >
-      {shown && (shown.w || shown.h) ? (
-        <span className="pointer-events-none absolute rounded-[4px] border-2 border-focus bg-[color-mix(in_srgb,var(--focus)_12%,transparent)]" style={{ left: shown.x, top: shown.y, width: shown.w, height: shown.h }} />
+      {notes.map((n, i) => {
+        const s = fromFrac(n, size)
+        return (
+          <span key={i}>
+            {s.w || s.h ? (
+              <span
+                className={clsx('pointer-events-none absolute rounded-[4px] border-2 border-focus', sel === i ? 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_10%,transparent)]')}
+                style={{ left: s.x, top: s.y, width: s.w, height: s.h }}
+              />
+            ) : null}
+            <MarkBadge x={s.x} y={s.y} n={i + 1} on={sel === i} onPick={() => pick(i)} />
+          </span>
+        )
+      })}
+      {drawn ? (
+        <span className="pointer-events-none absolute rounded-[4px] border-2 border-focus bg-[color-mix(in_srgb,var(--focus)_12%,transparent)]" style={{ left: drawn.x, top: drawn.y, width: drawn.w, height: drawn.h }} />
       ) : null}
-      {shown ? <MarkBadge x={shown.x} y={shown.y} /> : null}
+      {press ? <MarkBadge x={press.moved ? Math.min(press.x0, press.x1) : press.x0} y={press.moved ? Math.min(press.y0, press.y1) : press.y0} n={notes.length + 1} /> : null}
       {press ? null : (
-        // the window's markup card: what it's about, Clear spot, the note and Send
+        // the window's markup card: what it's about, the numbered notes, the words about all of it and Send all
         <div
-          className="absolute inset-x-2.5 bottom-[max(env(safe-area-inset-bottom),--spacing(2.5))] flex cursor-default flex-col gap-1.5 rounded-box bg-bg p-2 shadow-dialog"
+          className="absolute inset-x-2.5 bottom-[max(env(safe-area-inset-bottom),--spacing(2.5))] flex max-h-[calc(100%-1.25rem)] cursor-default flex-col gap-1.5 rounded-box bg-bg p-2 shadow-dialog @min-[40rem]:left-auto @min-[40rem]:w-[22rem]"
           onPointerDown={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
         >
           <div className="flex items-start gap-2 px-0.5 text-[0.75rem] phone:text-[0.8125rem]">
             <p className={clsx('min-w-0 flex-1 text-pretty', failed ? 'text-need-fg' : 'text-fg2')} role={said ? 'status' : undefined}>{line}</p>
-            {spot && !said ? (
-              <button type="button" className="shrink-0 font-medium text-focus hover:underline" onClick={() => setSpot(null)}>{MARKUP.clear}</button>
+            {notes.length ? (
+              <button
+                type="button"
+                aria-expanded={open}
+                className="flex shrink-0 items-center gap-0.5 font-medium text-focus hover:underline"
+                onClick={() => setOpen(!open)}
+              >
+                {markupCount(notes.length)}
+                <DownIcon className={clsx('size-3.5 transition-transform', open ? '' : '-rotate-90')} />
+              </button>
             ) : null}
           </div>
-          <div className="flex items-center gap-1.5">
+          {open && notes.length ? (
+            <ol aria-label="Notes" className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+              {notes.map((n, i) => (
+                <li key={i} className={clsx('flex items-start gap-1.5 rounded-row px-0.5 py-0.5', sel === i ? 'bg-hover' : '')}>
+                  <span className="mt-1.5 grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full bg-focus px-[5px] text-[0.6875rem] font-semibold text-white tabular-nums phone:mt-3 phone:h-[22px] phone:min-w-[22px] phone:text-[0.8125rem]">{i + 1}</span>
+                  {sel === i ? (
+                    <TextBox
+                      label={`Note ${i + 1}`}
+                      data-note=""
+                      enterKeyHint="done"
+                      value={n.text}
+                      onChange={(t) => {
+                        setNotes(notes.map((x, j) => (j === i ? { ...x, text: t } : x)))
+                        fresh()
+                      }}
+                      onKeyDown={(e) => keys(e, () => { setSel(null); focusGeneral() }, () => { setSel(null); focusGeneral() })}
+                      placeholder={MARKUP.notePlaceholder}
+                      className={boxCls}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className={clsx('min-h-8 min-w-0 flex-1 truncate rounded-row px-1.5 text-left text-[0.8125rem] hover:bg-hover phone:min-h-11 phone:text-[0.9375rem]', n.text.trim() ? 'text-fg' : 'text-fg3')}
+                      onClick={() => pick(i)}
+                    >
+                      {n.text.trim() || MARKUP.notePlaceholder}
+                    </button>
+                  )}
+                  <IconButton label={`${MARKUP.remove} ${i + 1}`} className="shrink-0 rounded-full!" onClick={() => remove(i)}>
+                    <XIcon className={ic} />
+                  </IconButton>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+          <div className="flex items-end gap-1.5">
             <TextBox
-              label="Note"
+              label={notes.length ? 'About all of it' : 'Note'}
+              ref={generalRef}
               enterKeyHint={enterHint()}
-              value={text}
+              value={general}
               onChange={(t) => {
-                setText(t)
-                if (said && !sending) {
-                  setSaid('')
-                  setFailed(false)
-                }
+                setGeneral(t)
+                fresh()
               }}
-              onKeyDown={(e) => {
-                if (sendsNow(e, getState().ui.keyboard)) {
-                  e.preventDefault()
-                  void send()
-                }
-                // Esc drops the spot, then ends marking up
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  if (spot) setSpot(null)
-                  else onEnd()
-                }
-              }}
-              placeholder={MARKUP.placeholder}
-              className="max-h-32 min-h-8 min-w-0 flex-1 rounded-row bg-bg px-2.5 py-1.5 shadow-[inset_0_0_0_1px_var(--line2)] outline-none placeholder:text-fg3 focus:shadow-[inset_0_0_0_1.5px_var(--focus)] phone:min-h-11 phone:text-[1rem]"
+              onFocus={() => setSel(null)}
+              onKeyDown={(e) => keys(e, () => void send(), () => onEnd())}
+              placeholder={notes.length ? MARKUP.general : MARKUP.placeholder}
+              className={boxCls}
             />
-            <button
-              type="button"
-              aria-label="Send"
-              disabled={!text.trim() || sending}
-              onClick={() => void send()}
-              className={clsx('press-dim relative grid size-8 shrink-0 place-items-center rounded-row bg-fg text-bg after:absolute after:-inset-1.5 phone:size-11', dimmed)}
-            >
-              <UpIcon className={ic} />
-            </button>
+            {notes.length ? (
+              <button
+                type="button"
+                disabled={!out || sending}
+                onClick={() => void send()}
+                className={clsx('press-dim relative flex h-8 shrink-0 items-center gap-1 rounded-row bg-fg pr-2.5 pl-2 text-[0.8125rem] font-medium text-bg after:absolute after:-inset-1.5 phone:h-11 phone:text-[0.9375rem]', dimmed)}
+              >
+                <UpIcon className={ic} />
+                {MARKUP.sendAll}
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label="Send"
+                disabled={!out || sending}
+                onClick={() => void send()}
+                className={clsx('press-dim relative grid size-8 shrink-0 place-items-center rounded-row bg-fg text-bg after:absolute after:-inset-1.5 phone:size-11', dimmed)}
+              >
+                <UpIcon className={ic} />
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -390,15 +512,21 @@ export function ArtifactFrame(p: Parameters<typeof PageFrame>[0]) {
 function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   const [recipe, setRecipe] = useState<{ blocks: unknown[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [answers, setAnswers] = useState<Answers>({})
   // another machine's: the service reads its files there
   const on = art.machine ? `&on=${encodeURIComponent(art.machine)}` : ''
   useEffect(() => {
     let gone = false
     setRecipe(null)
     setError(null)
+    setAnswers({})
     fetch(`api/artifacts/${encodeURIComponent(art.id)}/recipe?v=${v}${on}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('gone'))))
       .then((r) => !gone && setRecipe(withIds(r)), () => !gone && setError(UNREADABLE))
+    // the person's answers kept with this version (SHEP-87): none yet is {}
+    fetch(`api/artifacts/${encodeURIComponent(art.id)}/answers?v=${v}${on}`)
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((a) => !gone && a && typeof a === 'object' && setAnswers(a as Answers), () => undefined)
     return () => { gone = true }
   }, [art.id, v, on])
   if (error) return <p className="p-4 text-fg3">{error}</p>
@@ -406,7 +534,8 @@ function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   return (
     <div className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
       <Recipe recipe={recipe} asset={(src) => `api/artifacts/${encodeURIComponent(art.id)}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${v}${on}`}
-        reply={(text) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text })} />
+        answers={answers}
+        reply={(text, keep) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text, ...(keep ? { answer: keep.key, value: keep.value } : {}) })} />
     </div>
   )
 }

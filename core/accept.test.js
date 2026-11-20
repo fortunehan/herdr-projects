@@ -57,3 +57,54 @@ test("the window's card and the web's read their words from here, not their own"
     expect(web).not.toContain(w);
   }
 });
+
+// SHEP-87: Send back's words, and the choices answered in the proof listed under Details
+import { ACCEPT as WORDS, choiceLine, detailsText } from "./accept.js";
+
+test("Send back has its own words beside Accept", () => {
+  expect(WORDS.sendBack).toBe("Send back…");
+  expect(WORDS.sendBackGo).toBe("Send back");
+  expect(WORDS.sendBackAsk).toBe("What should change?");
+});
+
+test("Details lists the agent's own details, then the answered choices under their label", () => {
+  const choices = [{ question: "Ship it?", value: "Ship", at: 1, v: 1 }, { question: "Owner", value: "Name: Ann", at: 2, v: 2 }];
+  expect(choiceLine(choices[0])).toBe("Ship it? Ship");
+  expect(choiceLine(choices[1])).toBe("Owner: Name: Ann");
+  expect(detailsText({ choices }, "")).toBe("**Your choices**\n\n- Ship it? Ship\n- Owner: Name: Ann");
+  expect(detailsText({ choices }, "- Tests pass")).toBe("- Tests pass\n\n**Your choices**\n\n- Ship it? Ship\n- Owner: Name: Ann");
+  expect(detailsText({}, "- Tests pass")).toBe("- Tests pass");
+  expect(detailsText({ choices: [] }, "")).toBe("");
+});
+
+// SHEP-89: the card leads with ready's plain-words explanation and What to check; technical details fold below
+import { simple, paragraphs } from "./accept.js";
+
+test("the simple explanation and what to check, read from the evidence; none on an older ready", () => {
+  expect(simple({ explain: "  卡片先讲人话。\n就像先看封面。 ", to_check: [" 打开卡片 ", "", null, "看看  手机"] }))
+    .toEqual({ explain: "卡片先讲人话。\n就像先看封面。", toCheck: ["打开卡片", "看看 手机"] });
+  expect(simple({ summary: "Old", details: "- x" })).toEqual({ explain: "", toCheck: [] });
+  expect(simple(undefined)).toEqual({ explain: "", toCheck: [] });
+  expect(simple({ to_check: "not a list" })).toEqual({ explain: "", toCheck: [] });
+  expect(paragraphs("One.\n\nTwo.\n")).toEqual(["One.", "Two."]);
+  expect(paragraphs("")).toEqual([]);
+});
+
+test("plain labels: What to check, then Technical details folded", () => {
+  expect(WORDS.toCheck).toBe("What to check");
+  expect(WORDS.details).toBe("Technical details");
+  const mod = read("mods/accept-card/main.js"), web = read("web/src/screens/Accept.tsx");
+  expect(mod).toContain("simple(e)");
+  expect(web).toContain("A.simple(e)");
+  // the lead comes before the proof and the technical sections in both cards
+  const order = (src, marks) => marks.map((m) => src.indexOf(m));
+  const inMod = order(mod, ["this.lead(t, w, e)", "ACCEPT.proof, this.proof", "ACCEPT.changes, this.changes", "this.detailsSection(t"]);
+  expect(inMod.every((x) => x > 0)).toBe(true);
+  expect([...inMod].sort((a, b) => a - b)).toEqual(inMod);
+  for (const w of ["What to check", "Technical details"]) {
+    for (const q of ['"', "'", ">"]) {
+      expect(mod).not.toContain(q + w);
+      expect(web).not.toContain(q + w);
+    }
+  }
+});

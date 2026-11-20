@@ -1,7 +1,7 @@
 // The rename dialog's icon picker (rename.js): the chat's emoji picker (mods/chat-react, copied:
 // categories on top that jump to their section, a search over every emoji's name and words, then
 // the sections), with a reset at the bottom ("#" for a space, the folder for a section). Opened as
-// a popup with props { view: "icon", for (the dialog's overlay), current, section, machine ("server" |
+// a popup with props { view: "icon", for (the dialog's overlay), keysBack (its keyboard holder), current, section, machine ("server" |
 // "monitor": a machine's), width, height }.
 // The pick goes back to the dialog through shared "spaces-chat.iconpick" = { for, emoji, at };
 // Save there stores it.
@@ -10,6 +10,7 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, VirtualListScrollHandle, v_virtual_list, Scrollbar } from "gpui-base";
 import { theme, props, closeOverlay, setShared, appHome, readTextFile, settings } from "herdr";
 import { PICK } from "./rename.js";
+import { dialogKeys } from "./keyholder.js";
 
 const PER = 9, CELL = 36, HEAD = 28, PAD = 6;
 
@@ -40,10 +41,12 @@ export class IconPicker {
     this.search = InputState.new({ placeholder: "Search all emoji" });
     this.search.on("change", (_e, cx) => { this.scroll.scroll_to_item(0, "top"); cx.notify(); });
     cx.timer.after(0, () => this.search.focus());
+    // Its search keeps the keyboard; the dialog under it (props.keysBack) holds it again after (SHEP-92).
+    this.dropKeys = dialogKeys("dialog:icon", cx, this.p.keysBack ?? null);
     if (!GROUPS.length) cx.spawn(async (cx) => { await loadGroups(); cx.notify(); });
   }
 
-  close() { this.search.release(); this.scroll.release(); }
+  close() { this.dropKeys?.(); this.search.release(); this.scroll.release(); }
 
   pick(emoji) {
     setShared(PICK, { for: this.p.for, emoji, at: Date.now() });

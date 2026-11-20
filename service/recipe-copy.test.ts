@@ -31,7 +31,7 @@ const dir = mkdtempSync(join(tmpdir(), "recipe-copy-"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir, "recipe-view.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir, "recipe.js"));
 writeFileSync(join(dir, "recipe-data.js"), `export default ${JSON.stringify(RECIPE)};\n`);
-writeFileSync(join(dir, "artifact.js"), "export const asset = (s) => s; export const reply = async () => true;\n");
+writeFileSync(join(dir, "artifact.js"), "export const asset = (s) => s; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n");
 const { default: RecipeView } = await import(join(dir, "recipe-view.js"));
 
 let clipboard: string[] = [];
@@ -86,5 +86,69 @@ describe("Copy buttons on code in the window's recipe view (SHEP-228)", () => {
     timers[0][1](cx);
     draw(v);
     expect(label("copy-c-c0")).toBe("Copied");
+  });
+});
+
+// SHEP-87: the window's view keeps the person's answers (artifact.js answer/answers: herdr-artifact note --answer and
+// answers), shows a kept pick with when, lets a choice change, and draws check blocks and coloured diffs.
+const RECIPE2 = {
+  recipe: 1,
+  blocks: [
+    { type: "choice", id: "ship", question: "Ship it?", options: [{ label: "Ship" }, { label: "Wait" }] },
+    { type: "check", id: "ok", command: "bun test", exit: 0, summary: "12 pass", output: "all good" },
+    { type: "check", id: "bad", command: "make", exit: 2 },
+    { type: "code", id: "d", lang: "diff", text: "@@ -1 +1 @@\n-old\n+new" },
+  ],
+};
+const dir2 = mkdtempSync(join(tmpdir(), "recipe-answers-"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir2, "recipe-view.js"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir2, "recipe.js"));
+writeFileSync(join(dir2, "recipe-data.js"), `export default ${JSON.stringify(RECIPE2)};\n`);
+writeFileSync(join(dir2, "artifact.js"), `export const asset = (s) => s;
+export const sent = [];
+export let kept = { ship: { value: "Ship", at: ${new Date(2026, 0, 1, 9, 5).getTime()}, by: "web" } };
+export const answer = async (key, value, text) => { sent.push([key, value, text]); return true; };
+export const answers = async () => kept;
+`);
+const { default: RecipeView2 } = await import(join(dir2, "recipe-view.js"));
+const art2: any = await import(join(dir2, "artifact.js"));
+
+describe("Answers, check blocks and diffs in the window's recipe view (SHEP-87)", () => {
+  const cx2: any = new Proxy({ spawn: (f: (cx: any) => unknown) => f(cx2), timer: { after: () => {} } }, { get: (t, k) => (t as any)[k] ?? (() => {}) });
+  const texts = () => built.flatMap((e) => e.kids.filter((k: unknown) => typeof k === "string")) as string[];
+  let v: any;
+  beforeEach(async () => { art2.sent.length = 0; v = new RecipeView2(); v.init({}, cx2); await Bun.sleep(0); draw2(); });
+  const draw2 = () => { built.length = 0; return v.render(cx2); };
+
+  test("a kept pick shows picked, with when it was chosen", () => {
+    expect(texts()).toContain("✓ Ship");
+    expect(texts()).toContain("Wait");
+    expect(texts().some((s) => /^You chose this (at|on) .*09:05$/.test(s))).toBe(true);
+  });
+
+  test("another option can be chosen: kept and sent with its key and value; the picked one does nothing", async () => {
+    dispatch(byId("ch-ship-0")!, "on_click", cx2);
+    expect(art2.sent).toEqual([]);
+    dispatch(byId("ch-ship-1")!, "on_click", cx2);
+    await Bun.sleep(0);
+    expect(art2.sent).toEqual([["ship", "Wait", "Ship it?: Wait"]]);
+    draw2();
+    expect(texts()).toContain("✓ Wait");
+    expect(texts()).toContain("Ship");
+  });
+
+  test("a check says Passed or Failed with its exit code; its output folds", () => {
+    expect(texts()).toContain("Passed");
+    expect(texts()).toContain("Failed · exit 2");
+    expect(texts()).toContain("$ bun test");
+    expect(texts()).toContain("▸ Output");
+    dispatch(byId("out-ok")!, "on_click", cx2);
+    draw2();
+    expect(texts()).toContain("▾ Output");
+    expect(texts()).toContain("all good");
+  });
+
+  test("a diff's lines each in their colour", () => {
+    expect(texts()).toEqual(expect.arrayContaining(["@@ -1 +1 @@", "-old", "+new"]));
   });
 });

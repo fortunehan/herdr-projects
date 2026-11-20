@@ -37,6 +37,7 @@ import { TEXT, RADIUS, H, button, link, toggleSwitch, segmented, menuRow } from 
 import { webSection } from "./web-section.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
+import { dialogKeys } from "./keyholder.js";
 // Every page's, row's and button's words, and the rows' choices: core/settings.js, shared with the web app.
 // herdr-task's merge policy (MERGE): "ask" waits for the person's Accept (which merges), the others merge without it.
 // NOTES: what a task's agent is told to do first and last (tasks.start_notes / finish_notes): herdr-task puts them
@@ -70,6 +71,8 @@ if [ -f "$f" ] && ! grep -q '"pushed_from"' "$f"; then echo own; exit 0; fi
 if [ -f "$f" ] && [ "$(cat "$f")" = "$1" ]; then exit 0; fi
 umask 077; printf '%s\n' "$1" > "$f.tmp" && mv "$f.tmp" "$f"`;
 
+const HOLDER = "dialog:settings";
+
 export default class ShepherdrSettings extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -92,6 +95,8 @@ export default class ShepherdrSettings extends View {
     this.folders = {}; // space id -> its task folder (repo root)
     this.handle = cx.focus_handle();
     this.handle.focus();
+    // The keyboard is this window's while it is open (Tasks > Branch names...): the chat behind takes nothing back (SHEP-92).
+    this.dropKeys = dialogKeys(HOLDER, cx);
     // Secrets: its boxes and list (secrets-section.js); a space's settings add for that space.
     this.sec = secretsInit(cx);
     this.secFor();
@@ -393,6 +398,7 @@ export default class ShepherdrSettings extends View {
   close() {
     const saving = Promise.all([this.flushNotes(), autopilotFlush(this)]);
     this.sec?.value.set_value("");
+    this.dropKeys?.();
     closeOverlay(props().overlay);
     return saving;
   }
@@ -400,7 +406,7 @@ export default class ShepherdrSettings extends View {
   // A text file in an editor over this window (mods/coordinator's instructions view); this
   // window and the layout stay as they are.
   edit(f) {
-    openOverlay({ mod: "coordinator", kind: "dialog", width: 760, height: 0.8, props: { view: "instructions", file: f.file, role: f.id, title: f.title } });
+    openOverlay({ mod: "coordinator", kind: "dialog", width: 760, height: 0.8, props: { view: "instructions", file: f.file, role: f.id, title: f.title, keysBack: HOLDER } });
   }
 
   // Pieces --------------------------------------------------------------------

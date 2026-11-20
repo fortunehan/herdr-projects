@@ -113,7 +113,16 @@ WORKER_MD_BEFORE_LOGIN = WORKER_MD_BEFORE_ASK.replace(ASK_OLD, ASK_RULE)
 # Reviewer commands carry the same login environment as task launches.
 LOGIN_RULE = ("its command exactly as the Reviewer line gives it, including its `sh -c` login-environment wrapper around "
               "`codex --no-daemon --sandbox read-only …` or `claude --permission-mode plan …` (never")
-WORKER_MD = WORKER_MD_BEFORE_LOGIN.replace(COMMAND_RULE, LOGIN_RULE)
+WORKER_MD_BEFORE_EXPLAIN = WORKER_MD_BEFORE_LOGIN.replace(COMMAND_RULE, LOGIN_RULE)
+# Since the Accept card leads with ready's plain-words explanation and what to check, technical details below (SHEP-89).
+EXPLAIN_OLD = "never one dense paragraph. That puts the task in Ready"
+EXPLAIN_RULE = ("never one dense paragraph. Explain it simply too, as to someone who isn't an expert, in the language the "
+                "person writes in: `--explain \"…\"`, 2-4 short plain sentences on what changed for them, why it matters "
+                "and what they should look at, with an everyday comparison where it helps; no file names, flags or jargon "
+                "(code names stay as they are). Each thing to check goes in its own `--check \"…\"`, a short plain line. "
+                "The Accept card leads with these, then your proof, then your details folded under Technical details. "
+                "That puts the task in Ready")
+WORKER_MD = WORKER_MD_BEFORE_EXPLAIN.replace(EXPLAIN_OLD, EXPLAIN_RULE)
 # The fork's worker.md before upstream's #1000 ask rule: the login wrapper on the older text.
 WORKER_MD_LOGIN_BEFORE_ASK = WORKER_MD_BEFORE_ASK.replace(COMMAND_RULE, LOGIN_RULE)
 
@@ -148,7 +157,7 @@ OLD_WORKER_READY = """You work on one Herdr task. Stay within the task's scope a
 - When the work is finished, run the `herdr-task ready` command given at the end of your brief, with a short summary. That puts the task in Ready for the person, who accepts it. Never mark a task done yourself.
 """
 OLD_WORKER_MD = OLD_WORKER_READY.split("- When the work is finished")[0]
-OLD_WORKERS = (WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
+OLD_WORKERS = (WORKER_MD_BEFORE_EXPLAIN, WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
 
 
 TEMPLATE_HEADS = {

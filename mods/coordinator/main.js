@@ -14,6 +14,7 @@ import { TEXT, H, RADIUS, button as uiButton, heading, dialogFooter } from "./ui
 import { SWITCH_AGENT } from "./core/menus.js";
 // The instructions view's words (its note per role, Saved., Done): core/settings.js (the web app's editor reads the same).
 import { INSTRUCTIONS } from "./core/settings.js";
+import { dialogKeys } from "./keyholder.js";
 
 // The instructions view edits props.file (default: the assistant template); props.role picks its note.
 // Panes saved before the roles became templates name the old files: they open the templates.
@@ -41,6 +42,8 @@ export default class Coordinator extends View {
         cx.notify();
       });
     } else if (view === "instructions") {
+      // As a dialog its editor keeps the keyboard; opened from Settings, Settings holds it again after (SHEP-92).
+      this.dropKeys = dialogKeys("dialog:instructions", cx, props()?.keysBack ?? null);
       this.load(cx);
       // Someone else edited the file (another pane, an editor): show theirs unless we're mid-edit.
       cx.spawn(async (cx) => {
