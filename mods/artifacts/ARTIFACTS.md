@@ -98,7 +98,10 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
   "what changed"`. Each version is kept with its note.
 - **Mark up**: the person can point at a block (or a spot) and write what should change. It
   reaches you as `<hc from="artifact" id=… version=… title=… on="the table “Coverage”">note</hc>`,
-  sometimes with a path to a picture of it. Change it and `update`.
+  sometimes with a path to a picture of it. Several spots at once come as one message
+  `<hc from="artifact" … notes="3">`: numbered notes (`1. On <where>:` then the words, the same
+  numbers drawn on the picture when there is one), then `About all of it:` when they wrote that.
+  Change it and `update`.
 - Don't repeat the title inside it: the viewer shows it right above. Start with the content (a
   one-line summary, the numbers, the picture). No emojis. Data goes in the recipe; it isn't read
   live.
