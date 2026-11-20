@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ListWidth, carry, anchorRow, SETTLE_MS, STEP } from "./chat-resize.js";
+import { ListWidth, carry, anchorRow, SETTLE_MS, STEP, HoverHold, MEASURE_MS, scrollEstimate } from "./chat-resize.js";
 
 describe("the rows are laid out again once a drag settles, not on every pixel", () => {
   test("the first width is laid out at once", () => {
@@ -69,5 +69,43 @@ describe("the row read at the top stays there", () => {
     expect(anchorRow([], 0, 0)).toBe(-1);
     expect(anchorRow(sizes, 3, 400)).toBe(3);
     expect(anchorRow(sizes, 9, 0)).toBe(3);
+  });
+});
+
+describe("hovering a long message moves nothing (SHEP-94)", () => {
+  test("a settled row's new height waits while the pointer is on the list", () => {
+    const hold = new HoverHold();
+    expect(hold.waits(true, true, 0, MEASURE_MS)).toBe(true);
+    expect(hold.waits(false, true, 0, MEASURE_MS)).toBe(false);
+    expect(hold.waits(true, false, 0, MEASURE_MS)).toBe(false);
+    expect(hold.waits(true, true, 0, MEASURE_MS - 1)).toBe(false);
+  });
+
+  test("held heights are let go once, only for the width they were measured at", () => {
+    const hold = new HoverHold();
+    hold.keep("a", 900, 3);
+    hold.keep("b", 40, 2);
+    hold.keep("c", 50, 3);
+    hold.drop("c");
+    expect(hold.take(3)).toEqual([["a", 900]]);
+    expect(hold.take(3)).toEqual([]);
+  });
+
+  // A long message (row 2, 1600 px) read halfway down: the list measures row 0, then draws rows 2 and 3.
+  const sizes = [40, 60, 1600, 30];
+  test("redraws keep the place read inside a long row", () => {
+    let at = 900;
+    for (let f = 0; f < 5; f++) {
+      at = scrollEstimate(sizes, { start: 0, end: 1 }, at);
+      at = scrollEstimate(sizes, { start: 2, end: 4 }, at);
+    }
+    expect(at).toBe(900);
+  });
+
+  test("an estimate outside the first row drawn comes back to its nearer edge", () => {
+    expect(scrollEstimate(sizes, { start: 2, end: 4 }, 20)).toBe(100);
+    expect(scrollEstimate(sizes, { start: 2, end: 4 }, 5000)).toBe(1699);
+    expect(scrollEstimate(sizes, { start: 0, end: 2 }, 500)).toBe(39);
+    expect(scrollEstimate(sizes, { start: 0, end: 0 }, 500)).toBe(500);
   });
 });

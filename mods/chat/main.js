@@ -66,7 +66,7 @@ import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
 import { ScreenWatch, screenStrips, openCard, cardsOf, starting, cliOf } from "./screens.js";
 import { dayLabel, dayOf } from "./days.js";
-import { ListWidth, carry, anchorRow } from "./core/chat-resize.js";
+import { ListWidth, carry, anchorRow, HoverHold, MEASURE_MS, scrollEstimate } from "./core/chat-resize.js";
 import { followed } from "./core/thread-bind.js";
 import { CallScreen } from "./call-screen.js";
 import { on as addonOn } from "./addons.js";
@@ -305,6 +305,8 @@ export default class Chat extends View {
     this.heights = new Map();
     // When each row's height was first measured: kept measuring a few seconds after (measurer).
     this.measuredAt = new Map();
+    // Heights measured again while the pointer is on the list: they wait until it leaves (core/chat-resize.js).
+    this.hold = new HoverHold();
     // The width the rows are laid out at, apart from the live one while a drag goes on (core/chat-resize.js); the
     // last heights stay as the rows' sizes until each is measured at the new width (no jump to an estimate).
     this.listW = new ListWidth();
@@ -4737,7 +4739,7 @@ export default class Chat extends View {
           const b = Math.floor(unzoom(e.local_position?.y ?? 0) / 6);
           if (b !== this.hoverBand) { this.hoverBand = b; cx.notify(); }
         })
-        .on_hover((hovered, cx) => { if (!hovered) { this.hoverBand = null; cx.notify(); } })
+        .on_hover((hovered, cx) => { if (!hovered) { this.hoverBand = null; this.letGo(); cx.notify(); } })
         .on_scroll_wheel((e, cx) => {
           const y = e.delta?.y ?? 0;
           // Where the list is scrolled to, as near as known (the list doesn't say): wheel moves it.
@@ -4751,8 +4753,7 @@ export default class Chat extends View {
           this.range = range;
           if (rows.length && !(range.end > range.start)) this.blank = true;
           // The first row on screen bounds the scroll position: keep the estimate inside it.
-          const top = sizes.slice(0, range.start).reduce((a, b) => a + b, 0);
-          if ((this.scrollTop ?? 0) < top || (this.scrollTop ?? 0) >= top + (sizes[range.start] ?? 0)) this.scrollTop = top;
+          this.scrollTop = scrollEstimate(sizes, range, this.scrollTop);
           return rows.slice(range.start, range.end).map((x, j) => {
             const flash = this.flash && (x.id === this.flash.id || String(x.id).startsWith(`${this.flash.id}:`));
             return div().relative().w_full().h(sizes[range.start + j]).when(!x.bar || x.kind === "band", (el) => el.overflow_hidden())
@@ -4811,6 +4812,19 @@ export default class Chat extends View {
     cx.timer.after(ms + 10, (cx) => { this.settleTimer = false; if (this.listW.wait(Date.now()) === 0) cx.notify(); else this.settleSoon(cx); });
   }
 
+  // The pointer left the list: the heights measured while it was there take their place now.
+  letGo() {
+    let moved = false;
+    for (const [k, h] of this.hold.take(this.measureGen)) {
+      if (!this.heights.has(k) || this.heights.get(k) === h) continue;
+      this.heights.set(k, h);
+      moved = true;
+    }
+    if (!moved) return;
+    if (this.pinned) this.stick = true;
+    if (this.anchor && Date.now() < this.anchor.until) this.reanchor = true;
+  }
+
   // Rows not measured yet, drawn once out of sight at the list's width; their heights go to
   // the list, which then places every row exactly. Those near what is shown go first.
   measurer(rows, keys, t) {
@@ -4824,14 +4838,20 @@ export default class Chat extends View {
     const lo = Math.max(0, (this.range?.start ?? rows.length) - 2), hi = Math.min(rows.length, (this.range?.end ?? 0) + 2);
     const fresh = rows.map((_, i) => i).filter((i) => !this.heights.has(keys[i]))
       .sort((a, b) => Math.abs(a - near) - Math.abs(b - near)).slice(0, 30);
-    const again = rows.map((_, i) => i).filter((i) => this.heights.has(keys[i]) && ((i >= lo && i < hi) || now - (this.measuredAt.get(keys[i]) ?? 0) < 4000));
+    const again = rows.map((_, i) => i).filter((i) => this.heights.has(keys[i]) && ((i >= lo && i < hi) || now - (this.measuredAt.get(keys[i]) ?? 0) < MEASURE_MS));
     const order = [...new Set([...fresh, ...again])].slice(0, 60);
     return div().absolute().top(0).left(0).w(this.width).h(0).overflow_hidden().opacity(0)
       .child(v_flex().w_full().children(order.map((i) => div().id(`m${this.measureGen}-${keys[i]}`).flex_none().w_full()
         .on_size_change((size, cx) => {
-          if (!this.measuredAt.has(keys[i])) this.measuredAt.set(keys[i], Date.now());
+          const at = Date.now();
+          if (!this.measuredAt.has(keys[i])) this.measuredAt.set(keys[i], at);
           const h = unzoom(size.height);
-          if (this.heights.get(keys[i]) === h) return;
+          if (this.heights.get(keys[i]) === h) { this.hold.drop(keys[i]); return; }
+          // The pointer on the list: a settled row's new height waits for it to leave, so hovering moves nothing.
+          if (this.hold.waits(this.hoverBand != null, this.heights.has(keys[i]), this.measuredAt.get(keys[i]), at)) {
+            this.hold.keep(keys[i], h, this.measureGen);
+            return;
+          }
           this.heights.set(keys[i], h);
           if (this.pinned) this.stick = true;
           if (this.anchor && Date.now() < this.anchor.until) this.reanchor = true;

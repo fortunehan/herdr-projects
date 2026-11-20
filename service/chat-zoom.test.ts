@@ -33,9 +33,10 @@ mock.module("gpui-base", () => fakeGpuiBase({ v_flex: el, h_flex: el, v_virtual_
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
 const { default: Chat } = await import("../mods/chat/main.js");
+const { HoverHold } = await import("../mods/chat/core/chat-resize.js");
 const chat = () => {
   const c: any = Object.create(Chat.prototype);
-  Object.assign(c, { heights: new Map(), measuredAt: new Map(), measureGen: 0, width: 600, range: null, pinned: false, cardW: new Map() });
+  Object.assign(c, { heights: new Map(), measuredAt: new Map(), measureGen: 0, width: 600, range: null, pinned: false, cardW: new Map(), hold: new HoverHold() });
   c.row = () => el();
   return c;
 };
