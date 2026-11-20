@@ -211,7 +211,9 @@ export function reasonOf(item, req = null) {
   if (item.kind === "ask") return req ? reqReason(req) : REASONS.question;
   if (item.kind === "blocked") {
     // A task worker: herdr-task's reason (its tool call, question, plan, or its report's kind).
-    const t = (shared("inbox.tasks") ?? []).find((x) => x.kind === "asks" && x.live?.includes(item.terminal));
+    // Its task read as still waiting (inbox.tasks lags up to 20 s): that why, its last words, before a standard one.
+    const mine = (shared("inbox.tasks") ?? []).filter((x) => x.live?.includes(item.terminal));
+    const t = mine.find((x) => x.kind === "asks") ?? mine.find((x) => x.kind === "waiting");
     if (t?.why) return t.why;
     const report = terminals().find((k) => k.address === item.terminal)?.report;
     const kind = report?.kind;
@@ -258,7 +260,7 @@ async function readTasksNow() {
         : x.needs === "asks" ? "asks" : null;
       if (!kind) continue;
       const last = x.agents?.[x.agents.length - 1];
-      tasks.push({ kind, machine, folder: g.folder, name: g.name, ref: x.ref ?? `#${x.id}`, title: x.title, attention: x.attention ?? null, why: x.why ?? null,
+      tasks.push({ kind, machine, folder: g.folder, name: g.name, ref: x.ref ?? `#${x.id}`, key: x.key ?? null, title: x.title, attention: x.attention ?? null, why: x.why ?? null,
         pr: x.pr ?? null, space: pre(machine, x.space), tab: pre(machine, x.tab), live: (x.live ?? []).map((a) => pre(machine, a.address)),
         merging: Boolean(x.merge_requested && x.live?.length), at: x.ready_at ?? last?.ended ?? last?.at ?? x.started ?? x.created ?? 0 });
     }
@@ -309,20 +311,54 @@ async function json(cmd, args) {
 
 // Every item now, most urgent first: asks and waiting agents, then problems. These are Tasks'
 // "Needs you" and the red counts; a task ready to merge isn't one (it's in Ready: ready()).
+// A task is one item (SHEP-93, as the web app's needsYou()): an agent's ask or wait carries its
+// task (machine, folder, ref, name, space), and stands for it; a second agent's, or the task's own item
+// (inbox.tasks is read every 20 s, so it can still say "waiting" while its agent asks), is left out.
 export function items() {
   const asks = shared("inbox.asks") ?? [];
   const asking = new Set(asks.map((a) => a.terminal));
-  const out = asks.map((a) => ({ key: `ask:${a.id}`, kind: "ask", id: a.id, terminal: a.terminal, at: Number(a.id.split(".")[1]) * 1000 || 0 }));
   const all = terminals();
+  const tasks = shared("inbox.tasks") ?? [];
+  const taskOf = agentTasks(all, tasks);
+  const out = [], taken = new Set();
+  const add = (it) => {
+    const t = it.terminal ? taskOf(it.terminal) : null;
+    const x = t ? { ...it, machine: t.machine ?? null, folder: t.folder, ref: t.ref, name: t.name, title: t.title, space: t.space ?? null } : it;
+    if (x.kind !== "pull" && x.folder && x.ref) {
+      const id = `${x.machine ?? ""}:${x.folder}:${x.ref}`;
+      if (taken.has(id)) return;
+      taken.add(id);
+    }
+    out.push(x);
+  };
+  for (const a of asks) add({ key: `ask:${a.id}`, kind: "ask", id: a.id, terminal: a.terminal, at: Number(a.id.split(".")[1]) * 1000 || 0 });
   forgetUnblocked(all);
   for (const k of all)
     if (k.state === "live" && k.status === "blocked" && !asking.has(k.address))
-      out.push({ key: `blocked:${k.address}`, kind: "blocked", terminal: k.address, at: blockedSince(k.address) });
-  const tasks = shared("inbox.tasks") ?? [];
-  for (const x of tasks) if (x.kind !== "merge" && x.kind !== "asks") out.push({ key: `${x.kind}:${x.machine ?? ""}:${x.folder}:${x.ref}`, ...x });
+      add({ key: `blocked:${k.address}`, kind: "blocked", terminal: k.address, at: blockedSince(k.address) });
+  for (const x of tasks) if (x.kind !== "merge" && x.kind !== "asks") add({ key: `${x.kind}:${x.machine ?? ""}:${x.folder}:${x.ref}`, ...x });
   for (const p of shared("inbox.provider") ?? []) if (!asking.has(p.terminal)) out.push({ key: `provider:${p.terminal}`, kind: "provider", ...p });
   for (const a of shared("inbox.autos") ?? []) out.push({ key: `auto:${a.machine ?? ""}:${a.id}`, kind: "auto", ...a, at: a.error?.at ?? 0 });
   return out;
+}
+
+// terminal -> the inbox.tasks entry it works on: one whose live agents include it, else one its
+// herdr.task label names ("<slug>#<id>", on the same machine).
+function agentTasks(all, tasks) {
+  const byLive = new Map(), byKey = new Map();
+  for (const t of tasks) {
+    if (t.kind === "pull") continue;
+    for (const a of t.live ?? []) if (!byLive.has(a)) byLive.set(a, t);
+    if (t.key) byKey.set(`${t.machine ?? ""} ${t.key}`, t);
+  }
+  const labels = new Map(all.map((k) => [k.address, k.labels?.["herdr.task"]]));
+  return (address) => {
+    if (byLive.has(address)) return byLive.get(address);
+    const label = labels.get(address);
+    if (!label) return null;
+    const m = String(address).includes("/") ? String(address).split("/")[0] : "";
+    return byKey.get(`${m} ${label}`) ?? null;
+  };
 }
 
 export const count = () => items().length;
