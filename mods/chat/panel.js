@@ -20,8 +20,9 @@
 // task side panel. All are one switcher (only one shows at a time), the main chat's header switch
 // (ui.js segmented); Pull request only once the task has one. They show the task the header
 // publishes (shared "tasks.thread.where", from its record: lib/taskwhere.js).
-// The slim bar's VS Code, iTerm2 and Finder icons open the task's folder in that app on this machine
-// (core/open-editor.js, SHEP-27, SHEP-38).
+// The slim bar's VS Code, iTerm2, Finder and Xcode icons open the task's folder in that app on this machine
+// (core/open-editor.js, SHEP-27, SHEP-38); before them Copy path and Copy panel ID, as an Assistant's pane header
+// has them (SHEP-91).
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -34,7 +35,7 @@ import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
 import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
-import { APPS, cantOpen, folderOf, openCommand, openProblem } from "./core/open-editor.js";
+import { APPS, COPIES, cantOpen, copyOf, folderOf, openCommand, openProblem } from "./core/open-editor.js";
 import { SH } from "./core/paths.js";
 import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
@@ -273,6 +274,30 @@ export class PanelHost {
       .child(svg(`mods/chat/${a.icon}`).size(14).flex_none());
   }
 
+  // Copy path or Copy panel ID (core/open-editor.js copyOf()): the task's folder or its worker's terminal address,
+  // said in a toast as an Assistant's pane header says it (mods/pane-chat copy()).
+  copy(what, addr, cx) {
+    const c = copyOf(what, this.rec, addr);
+    if (c.problem) { toast({ title: "Couldn't copy", body: c.problem, level: "warning" }); return; }
+    try {
+      cx.write_to_clipboard(c.text);
+      toast({ title: COPIES[what].done, level: "success", timeout: 1600 });
+    } catch (e) {
+      toast({ title: "Couldn't copy", body: plainError(e), level: "error" });
+    }
+  }
+
+  // One of the bar's copy icons, drawn as its open icons; Copy panel ID is dim while no worker runs (a click says why).
+  copyIcon(t, what, addr) {
+    const c = COPIES[what];
+    return h_flex().id(`thread-copy-${what}`).size(24).flex_none().items_center().justify_center().rounded(RADIUS.control)
+      .text_color(t.muted).accessibility_label(c.name)
+      .when(what === "id" && !addr, (el) => el.opacity(0.5))
+      .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.copy(what, addr, cx); cx.notify(); })
+      .child(svg(`mods/chat/${c.icon}`).size(14).flex_none());
+  }
+
   // Another worker asked for: the old chat is closed and released, a new one made for the task shown once that's done
   // (read then, not when render asked: the person may have opened another meanwhile).
   async swap(cx) {
@@ -473,7 +498,8 @@ export class PanelHost {
   }
 
   // The slim bar: ‹ Tasks back to the list on the left (its chevron on the shared edge, its hover
-  // reaching past it), and on the right the VS Code, iTerm2 and Finder icons, the task's base and Accept
+  // reaching past it), and on the right Copy path and Copy panel ID, the VS Code, iTerm2, Finder and Xcode icons,
+  // the task's base and Accept
   // (no Pin: the task's row menu pins it, SHEP-62).
   barRow(t, st, addr) {
     return h_flex().id("thread-bar").h(24).flex_none().pl(EDGE - 6).pr(EDGE).gap(4).items_center()
@@ -484,6 +510,7 @@ export class PanelHost {
         .child("Tasks"))
       .child(div().flex_1())
       .when(Boolean(this.rec), (el) => el.child(h_flex().id("thread-open").flex_none().gap(2).items_center()
+        .children(Object.keys(COPIES).map((what) => this.copyIcon(t, what, addr)))
         .children(Object.keys(APPS).map((app) => this.openIcon(t, app)))))
       // A task's own base (herdr-task add --base), where it merges into; the folder's default isn't shown.
       .when(Boolean(this.rec?.base_set && this.rec?.base), (el) => el.child(div().id("thread-base").flex_none().max_w(160).truncate().pr(4)

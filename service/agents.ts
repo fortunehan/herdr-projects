@@ -106,7 +106,7 @@ export class Agents {
     const c = current(kind, t.foreground?.argv ?? t.argv ?? [], reader?.conv?.meta, dflts[kind], t.created_ms);
     const chosen = { ...c, model: rowFor(kind, c), launcher: launcherOf(launchArgv(t)) };
     return { current: { ...chosen, agent: choiceKey(chosen) }, menus: choiceMenus(dflts, chosen),
-      permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" }, picks: this.picks(), offline: machine && !(await this.reachable(machine)) ? machine : null };
+      permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "full", "claude-magpie": dflts.claude?.mode ?? "manual", "claude-cdnd": dflts.claude?.mode ?? "manual" }, picks: this.picks(), offline: machine && !(await this.reachable(machine)) ? machine : null };
   }
 
   /** whether another machine answers now (hc machine ls: connected) */

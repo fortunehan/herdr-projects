@@ -61,6 +61,76 @@ def task_artifacts(s, t, proof=None):
             if a.get("id") and a["id"] != skip and (a.get("task") or "").upper() == ref and (a.get("at") or 0) >= since]
 
 
+def with_ids(blocks):
+    """The blocks in order, each with its id (b1, b2... where it had none, as core/recipe.js withIds()), nested ones too."""
+    out, n = [], [0]
+
+    def walk(bs):
+        for b in bs if isinstance(bs, list) else []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("id") is None:
+                n[0] += 1
+            out.append({**b, "id": b["id"] if b.get("id") is not None else f"b{n[0]}"})
+            if b.get("type") == "columns":
+                for c in b.get("columns") or []:
+                    walk(c)
+            elif b.get("type") == "tabs":
+                for tab in b.get("tabs") or []:
+                    walk((tab or {}).get("blocks"))
+            elif b.get("type") == "details":
+                walk(b.get("blocks"))
+    walk(blocks)
+    return out
+
+
+def answer_words(b, value):
+    """(what was asked, what the person answered) in words, for the Accept card."""
+    if b.get("type") == "form" and isinstance(value, dict):
+        said = []
+        for f in b.get("fields") or []:
+            v = value.get(f.get("name"))
+            said.append(f"{f.get('label') or f.get('name')}: " + (("yes" if v else "no") if f.get("kind") == "checkbox" else str(v or "").strip() or "(empty)"))
+        return b.get("title") or b.get("submit") or "Form", "; ".join(said)
+    if b.get("type") == "choice":
+        return b.get("question") or "Choice", str(value)
+    return b.get("label") or "Button", "pressed"
+
+
+def choices_of(folder, proof):
+    """The person's answers in its proof (SHEP-87: answers.json beside each version), newest per block:
+    [{question, value, at, v}] in the order they were answered. Its agent's recipe says what each block asked."""
+    a = next((x for x in artifacts_of(folder) if x.get("id") == proof.get("id")), None) if proof else None
+    if not a:
+        return []
+    found = {}
+    for v in sorted(x.get("v") for x in a.get("versions") or [] if isinstance(x.get("v"), int)):
+        d = os.path.join(ARTIFACTS, "files", a["id"], f"v{v}")
+        try:
+            with open(os.path.join(d, "answers.json")) as f:
+                answers = json.load(f)
+            with open(os.path.join(d, "recipe.json")) as f:
+                blocks = with_ids(json.load(f).get("blocks"))
+        except (OSError, ValueError, AttributeError):
+            continue
+        keys = {}
+        for b in blocks:
+            keys[b["id"]] = b
+            if b.get("type") == "buttons":
+                for i, x in enumerate(b.get("items") or []):
+                    if isinstance(x, dict):
+                        keys[f"{b['id']}-{i}"] = {**x, "type": "button"}
+        for key, ans in (answers if isinstance(answers, dict) else {}).items():
+            b = keys.get(key)
+            if not b or not isinstance(ans, dict) or ans.get("value") is None:
+                continue
+            question, value = answer_words(b, ans["value"])
+            at = ans.get("at") or 0
+            if key not in found or at >= found[key]["at"]:
+                found[key] = {"question": question, "value": value, "at": at, "v": v}
+    return sorted(found.values(), key=lambda x: x["at"])
+
+
 def numstat(out, files):
     """git --numstat lines added into files {path: [added, removed]} (binary files count 0)."""
     for line in out.splitlines():
@@ -102,6 +172,7 @@ def evidence(s, t):
     merges its branch first: an open pull request or commits past its base; the button says so)}."""
     main, out = s.loc["folder"], {"summary": t.get("summary"), "details": t.get("details"), "proof": t.get("proof") or find_proof(s, t)}
     out["artifacts"] = task_artifacts(s, t, out["proof"])
+    out["choices"] = choices_of(main, out["proof"])
     commits, files = [], {}
     fmt = "--format=%h%x09%s"
     if s.loc["kind"] != "repo":
