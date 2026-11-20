@@ -157,6 +157,8 @@ export function watchTitle(title: string): string {
 export type PushAction = { action: string; title: string; type?: 'text'; placeholder?: string }
 export const REPLY: PushAction = { action: 'reply', title: 'Reply', type: 'text', placeholder: 'Reply…' }
 export const ACCEPT: PushAction = { action: 'accept', title: 'Accept' }
+/** SHEP-95: the same button on a task with nothing to merge: its Accept only marks it done */
+export const MARK_DONE: PushAction = { action: 'accept', title: 'Mark done' }
 
 /** a card answered from a button, as on its card: never a plan, a merge or a form, which stay a deliberate pick in the
  *  app (sendsOnTap's rule) */

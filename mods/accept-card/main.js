@@ -1,12 +1,15 @@
 // Accept shows what you approve (as Shepherdr's merge card): a Ready task's Accept (the Tasks
 // panel's row, the task chat's header, the Assistant chat's live row) opens this dialog first.
-// Props { ref, folder, machine?, title? }. It reads `herdr-task show --evidence` (from Git,
+// Props { ref, folder, machine?, title?, markDone? }. It reads `herdr-task show --evidence` (from Git,
 // GitHub and the task's artifacts, never the agent's own words but its summary, explanation and details): the
 // short summary first, then (SHEP-89) its plain-words explanation and What to check, then small sections: Proof
 // (opens its proof artifact in a modal of a fitting size over this card: the artifact viewer's toolbar,
 // mods/chat-image's bar, over the artifact's mod), Code changes (commits, files), Automatic checks and a folded
 // Technical details with the agent's long text, as short markdown bullets. A task without an explanation (an older
 // ready) shows its summary alone first, as before.
+// A task with nothing to merge (SHEP-95: it worked in the folder itself, a research or design task) says Mark done and
+// leads with what it made: its proof and other artifacts first, then the summary and explanation; its changes and
+// checks show only when it has some. Props' markDone (from its row) says so until its evidence is read.
 // Accept runs `herdr-task accept --background` (merges first when there is something to merge, in a detached
 // herdr-task: the card closes at once); Send back… (SHEP-87) beside it opens a note box, and Send back sends the
 // task back to its agent with that note (`herdr-task send-back`: Ready to Working). Cancel, the X and Esc close it. A task that isn't Ready (accepted from elsewhere a moment ago, say) says so
@@ -20,7 +23,7 @@ import { note } from "./usage.js";
 import { dialogKeys } from "./keyholder.js";
 import { button, dialogFooter, green, red, amber, H, RADIUS, TEXT } from "./ui.js";
 // The card's words, the summary cut and the details as bullets: core/accept.js, shared with the web app's card.
-import { ACCEPT, acceptLabel, words, simple, paragraphs, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
+import { ACCEPT, acceptLabel, busyLabel, cardTitle, markDone, hasChanges, hasChecks, words, simple, paragraphs, readable, detailsText, commitsLine, filesLine, moreLine, proofTitle, whereNow, canAccept } from "./core/accept.js";
 import { settle } from "./core/pending.js";
 
 export { words, readable };
@@ -241,7 +244,7 @@ export default class AcceptCard extends View {
         { kind: "primary", size: "lg", disabled: !live, onClick: (_e, cx) => this.sendBack(cx) })))
       .when(!this.back, (el) => el
         .child(button("send-back", ACCEPT.sendBack, { kind: "secondary", size: "lg", disabled: !live, onClick: () => { this.back = true; this.note.focus?.(); } }))
-        .child(button("accept", this.busy ? ACCEPT.accepting : acceptLabel(e), { kind: "primary", size: "lg", disabled: !live, onClick: (_e, cx) => this.accept(cx) })));
+        .child(button("accept", this.busy ? busyLabel(e, props()?.markDone) : acceptLabel(e, props()?.markDone), { kind: "primary", size: "lg", disabled: !live, onClick: (_e, cx) => this.accept(cx) })));
   }
 
   // Send back's note box: what should change, and that its agent gets it.
@@ -384,14 +387,20 @@ export default class AcceptCard extends View {
     const ready = canAccept(x);
     const settled = Boolean(x && !ready);
     const w = e ? words(e) : null;
+    const done = markDone(e, p.markDone);
+    // Nothing to merge: what it made first (its proof, its other artifacts), each under a quiet label, then the lead.
+    const made = (el) => el
+      .child(v_flex().w_full().gap(6).child(div().text_size(TEXT.label).font_medium().text_color(t.muted).child(ACCEPT.proof)).child(this.proof(t, e)))
+      .when(Boolean(e.artifacts?.length), (el) => el.child(this.section(t, ACCEPT.artifacts, this.artifacts(t, e))));
     const body = !x
       ? div().text_color(this.error ? red() : t.dim).child(this.error ?? ACCEPT.reading)
       : v_flex().w_full().gap(16).pb(4)
-        .child(this.lead(t, w, e))
-        .child(this.section(t, ACCEPT.proof, this.proof(t, e)))
-        .when(Boolean(e.artifacts?.length), (el) => el.child(this.section(t, ACCEPT.artifacts, this.artifacts(t, e))))
-        .child(this.section(t, ACCEPT.changes, this.changes(t, e)))
-        .child(this.section(t, ACCEPT.checks, this.checks(t, e)))
+        .when(done, made)
+        .child(done ? div().w_full().pt(14).border_t(1).border_color(t.border).child(this.lead(t, w, e)) : this.lead(t, w, e))
+        .when(!done, (el) => el.child(this.section(t, ACCEPT.proof, this.proof(t, e)))
+          .when(Boolean(e.artifacts?.length), (el) => el.child(this.section(t, ACCEPT.artifacts, this.artifacts(t, e)))))
+        .when(!done || hasChanges(e), (el) => el.child(this.section(t, ACCEPT.changes, this.changes(t, e))))
+        .when(!done || hasChecks(e), (el) => el.child(this.section(t, ACCEPT.checks, this.checks(t, e))))
         .when(Boolean(detailsText(e, w.details)), (el) => el.child(this.detailsSection(t, detailsText(e, w.details))));
     return v_flex().id("accept-card").track_focus(this.handle)
       .on_key_down((ev, cx) => {
@@ -404,7 +413,7 @@ export default class AcceptCard extends View {
       .child(h_flex().flex_none().gap(12).items_start()
         .child(v_flex().flex_1().min_w(0).gap(4)
           .child(div().text_size(TEXT.title).font_semibold().text_color(t.foreground)
-            .child(!p.ref ? ACCEPT.accept : settled ? p.ref : ACCEPT.title(p.ref)))
+            .child(!p.ref ? ACCEPT.accept : settled ? p.ref : cardTitle(p.ref, e, p.markDone)))
           .child(div().min_w(0).truncate().text_color(t.muted).child(x?.title ?? p.title ?? "")))
         .child(div().mt(-2).mr(-6).child(this.closeButton(t))))
       .child(div().id("accept-body").flex_1().min_h(0).overflow_y_scrollbar().pr(6).child(body))

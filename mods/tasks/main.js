@@ -30,7 +30,7 @@ import { machinesInOrder, machineOrderOf, chatPane } from "./core/spaces.js";
 // The rules for a task's status, order and words: shared with the web app (core/tasks.js).
 import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, machineName, refOf, taskKey, autoPrefix, place,
   queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems,
-  acceptAgain, dependencies } from "./core/tasks.js";
+  acceptAgain, dependencies, nothingToMerge } from "./core/tasks.js";
 import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
 import { settle } from "./core/pending.js";
@@ -1004,7 +1004,7 @@ export default class Tasks extends View {
   // accept from its own Accept; the list reads the change as it reads any.
   accept(p, _cx) {
     openOverlay({ mod: "accept-card", kind: "dialog", modal: true, width: 640, height: 640,
-      props: { ref: refOf(p.list, p.task), folder: p.list.folder, machine: p.list.machine ?? null, title: p.task.title } });
+      props: { ref: refOf(p.list, p.task), folder: p.list.folder, machine: p.list.machine ?? null, title: p.task.title, markDone: nothingToMerge(p.task) } });
   }
 
   // One row (as Shepherdr's web Tasks list), three parts with one job each:

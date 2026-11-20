@@ -123,3 +123,13 @@ test("each alert carries its topic and space", () => {
   expect([...alertsOf(after, new Set(["sp2"])).values()].map((x) => x.topic)).toEqual(["autopilot"]);
   expect([...alertsOf(after).values()].map((x) => x.topic)).toEqual(["assistant"]);
 });
+
+// SHEP-95: a Ready task with nothing to merge offers Mark done on its alert, never Accept (the same accept underneath)
+test("a nothing-to-merge task's ready alert says Mark done", () => {
+  const snap = { places: [{ id: "sp1", name: "tt-repo", chat: "p:sp1" }], needs: [], last: {}, read: {}, settings: [],
+    tasks: [{ id: "HERD-4", name: "Fix login", status: "ready", place: "sp1" }, { id: "HERD-6", name: "Research", status: "ready", place: "sp1", markDone: true }] };
+  const a = alertsOf(snap);
+  expect(a.get("ready:HERD-4")!.actions).toEqual([{ action: "accept", title: "Accept" }]);
+  expect(a.get("ready:HERD-6")!.actions).toEqual([{ action: "accept", title: "Mark done" }]);
+  expect(a.get("ready:HERD-6")!.accept).toEqual({ task: "HERD-6" });
+});

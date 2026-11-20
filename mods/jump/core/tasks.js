@@ -132,6 +132,10 @@ export function mergeWaitLine(task) {
 // Ready one does. As herdr-task's ado_flow.ACCEPT_AGAIN.
 // SHEP-64: and a background Accept that didn't finish (herdr-task's commands.ACCEPT_FAILED), on any forge.
 const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps", "Accept didn't finish"];
+// SHEP-95: a Ready task with nothing to merge: it worked in the folder itself (a research or design task started
+// --here), or its branch has nothing of its own (herdr-task ready's nothing_to_merge), and no pull request. Its Accept
+// only marks it done: the card and its row say so ("Mark done"), never merging.
+export const nothingToMerge = (task) => Boolean(task && !task.pr && (task.mode === "here" || task.nothing_to_merge));
 export const acceptAgain = (p) => p.section === "needs" && p.needs === "attention" && p.task.state === "ready"
   && ACCEPT_AGAIN.some((x) => String(p.task.attention ?? "").startsWith(x));
 
@@ -369,7 +373,7 @@ export function secondLine(p, w, queued = null, now = Date.now()) {
   return section === "needs" || section === "merging" ? p.why : section === "working" ? p.why ?? w?.text ?? null
     : section === "queued" ? queued
     : section === "scheduled" ? startsLine(p.task.scheduled_for, now)
-    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : "Ready to accept") : null;
+    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : nothingToMerge(p.task) ? "Ready to mark done" : "Ready to accept") : null;
 }
 
 // The minutes left under a working row's dot ("6m"), once its agent gave them; a scheduled one's time until it starts
