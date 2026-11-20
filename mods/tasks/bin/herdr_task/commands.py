@@ -651,14 +651,18 @@ def cmd_status(args):
     if args.done is not None and not 0 <= args.done <= 100:
         raise Fail("--done is a percentage, 0 to 100.")
     left = parse_left(args.left) if args.left else None
+    cant = " ".join(str(getattr(args, "cant_fix", None) or "").split())
     with open_store(args) as s:
         t = s.find(args.id)
         if t["state"] not in ("running", "ready"):
             raise Fail(f"{s.ref(t)} isn't being worked on ({STATUSES.get(t['state'], t['state'])}); nothing to report.")
         shown = fit(text)
-        # set: when it was said ("at" moves on while it waits, for the minutes left).
+        # set: when it was said ("at" moves on while it waits, for the minutes left). A --cant-fix line is its agent
+        # giving up (SHEP-96): by marks it so it never reads as the agent on it (on_it()), and the task Needs you.
         t["progress"] = {"text": shown, "at": now(), "set": now(), **({"done": args.done} if args.done is not None else {}),
-                         **({"left": left} if left is not None else {})}
+                         **({"left": left} if left is not None and not cant else {}), **({"by": "cant-fix"} if cant else {})}
+        if cant:
+            ado_flow.cant_fix(s, t, cant)
         s.dirty = True
         v = view(s, t, [detail(k) for k in live_agents(s.key(t))])
     note = f" Cut to {LINE_MAX} characters: \"{shown}\". Keep it shorter next time." if shown != text else ""
@@ -718,7 +722,7 @@ def back_to_work(s, t, why, said=WORKING_AGAIN, auto=False):
     if t["state"] != "ready":
         return False
     t["state"] = "running"
-    for k in ("ready_turns", "merge_requested", "accepting"):
+    for k in ("ready_turns", "merge_requested", "accepting", "pr_requested"):
         t.pop(k, None)
     t["back"] = {"at": now(), "why": why, **({"auto": True, "progress": t.get("progress")} if auto else {})}
     # by: Herdr's words, not its agent's (on_it() counts only an agent's own line).
@@ -735,8 +739,14 @@ def finalize(s, t):
     merges: auto (now), checks (once its checks pass) or ask (the person). Returns what to say."""
     wt = t.get("worktree")
     local = t.get("mode") != "worktree" or not wt or t.get("nothing_to_merge")
-    repo = github(s) if not local and os.path.isdir(wt) else None
+    # SHEP-96: on Azure DevOps ready pushes nothing and opens no pull request; the person's Accept has its agent open it.
+    later = not local and os.path.isdir(wt) and ado_flow.pr_on_accept(s, t)
+    repo = github(s) if not local and not later and os.path.isdir(wt) else None
     failed = None
+    if later:
+        t["pr_on_accept"] = True
+    else:
+        t.pop("pr_on_accept", None)
     if repo:
         # Pushed and opened before it shows Ready: the push lets the task list go while its hooks run
         # (#1007), and a Ready task without its pull request yet could be accepted (merged here) meanwhile.
@@ -749,8 +759,11 @@ def finalize(s, t):
         # merge it here while a pull request, its agent's, stays open there).
         failed = f"Couldn't reach GitHub to open its pull request: {github_unreachable(s)}"
     t["state"], t["ready_at"] = "ready", now()
-    for k in ("attention", "merge_requested", "review", "merge_wait", "accepting"):
-        t.pop(k, None)
+    # An accepted Azure DevOps pull request keeps waiting to merge (auto-complete stays on there).
+    waits = bool(t.get("merge_wait") and repo and ado.owns(repo))
+    for k in ("attention", "merge_requested", "review", "merge_wait", "accepting", "pr_requested", "stuck_head"):
+        if not (k == "merge_wait" and waits):
+            t.pop(k, None)
     (t.get("pr") or {}).pop("wait", None)
     s.dirty = True
     msg = f"{s.ref(t)} is ready."
@@ -763,6 +776,9 @@ def finalize(s, t):
     if failed:
         t["attention"] = failed
         return f"{s.ref(t)} {READY_BUT} {failed} Tell the person."
+    if later:
+        msg += (" On Azure DevOps nothing is pushed yet: the person reviews your branch, and once they accept it you're asked "
+                "to open its pull request with the ado-push-pr skill.")
     if repo:
         pr["checked"] = 0
         # Working until its checks are done and its forge knows it can merge (the tick: pr_wait()).
@@ -777,6 +793,13 @@ def finalize(s, t):
                 err = merge_now(s, t)
                 return msg + (f" Merging it waits: {err}" if err else " Merged; done.")
             return msg + " It merges by itself once its checks pass."
+        if later:
+            # Accepted at once: Azure DevOps' auto-complete merges it once its checks pass, as "after checks" asks.
+            try:
+                ado_flow.request_pr(s, t, None)
+                return msg + " Settings say merge it by itself: the next message asks you to open its pull request."
+            except Fail as e:
+                return msg + f" {e}"
         try:
             sent, started = tell(s, t, local_merge_msg(s, t), None)
             t["merge_requested"] = now()
@@ -1312,6 +1335,7 @@ def cmd_accept(args):
             "approval": f"{s.ref(t)} accepted: it merges once it's approved.",
             "queue": f"{s.ref(t)} accepted: pull request #{(t.get('pr') or {}).get('number')} is in GitHub's merge queue; done once GitHub merges it.",
             "waiting": f"{s.ref(t)} accepted: waiting to merge: {v.get('why') or 'Azure DevOps completes it'} (auto-complete is on).",
+            "opening": f"{s.ref(t)} accepted: {sent} opens its pull request on Azure DevOps" + (" (its agent started again)" if started else "") + ".",
             "agent": f"{s.ref(t)} accepted: merge asked of {sent}" + (" (a new agent)" if started else "")}[how]
     say(args, {**v, "accepted": how, "terminal": sent, "new_agent": started}, text)
 
@@ -1370,7 +1394,7 @@ def accept_precheck(args):
             s.dirty = True
         # A pull request's problems are read fresh (merge_now()): one fixed since, or a merge that
         # failed once, doesn't stand in the way. Without one, only a failed try doesn't.
-        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED, ACCEPT_FAILED)):
+        elif t.get("attention") and not t.get("pr") and not t["attention"].startswith(("Couldn't ask for the merge", MERGE_FAILED, ACCEPT_FAILED, ado_flow.OPEN_FAILED)):
             raise Fail(f"{s.ref(t)} needs attention first: {t['attention']}")
     if back:
         raise Fail(f"{s.ref(t)} is working again: its agent took up more work after it said ready. Accept it once it says ready again.")
@@ -1413,6 +1437,13 @@ def accept_run(args, worker=False):
             if not t["merged"]:
                 t["nothing_to_merge"] = True
             finish(s, t, even_if_busy=True)
+        elif ado_flow.pr_on_accept(s, t):
+            # SHEP-96: Azure DevOps: its agent opens the pull request (ado-push-pr, auto-complete on); never merged here.
+            how = "opening"
+            try:
+                sent, started = ado_flow.request_pr(s, t, args)
+            except Fail as e:
+                error = str(e)
         elif ff_merge(s, t):
             how = "merged"
             t["merged"] = True
@@ -1442,6 +1473,8 @@ def send_back_refusal(s, t):
         return f"{s.ref(t)} is in GitHub's merge queue and may merge any moment: take it out there first."
     if t.get("merge_wait"):
         return f"{s.ref(t)} is set to complete on Azure DevOps: cancel its auto-complete there first."
+    if t.get("pr_requested") and not t.get("pr"):
+        return f"{s.ref(t)} was accepted and its agent is opening its pull request: tell its agent instead."
     return None
 
 

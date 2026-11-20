@@ -220,6 +220,24 @@ test("a background Accept: Accepting… while it runs, Accept again once it didn
   expect(acceptAgain(failed)).toBe(true);
 });
 
+// SHEP-96: on Azure DevOps Accept has the task's agent open its pull request: Opening pull request while it does (its
+// agent at work on it is no "working again"), Needs you with Accept again when it couldn't; its fix rounds keep it merging.
+test("Azure DevOps: its agent opens the pull request after Accept and fixes its checks while it waits to merge", () => {
+  const task = { id: 1, state: "ready", ready_at: NOW - 60_000, ready_turns: { t1: 0 }, pr_on_accept: true, pr_requested: NOW - 1000 };
+  const working = [{ address: "t1", status: "working", turn: 1 }];
+  expect(at(task, working)).toMatchObject({ section: "working", why: "Opening pull request" });
+  expect(busyAgain(task, working, NOW)).toBe(false);
+  const failed = at({ ...task, pr_requested: undefined, attention: "Couldn't open the pull request: no valid work item", attention_at: NOW - 60_000 });
+  expect(failed).toMatchObject({ section: "needs", needs: "attention" });
+  expect(acceptAgain(failed)).toBe(true);
+  const waiting = { id: 1, state: "ready", ready_at: NOW - 60_000, ready_turns: { t1: 0 }, merge_wait: NOW - 1000,
+    pr: { number: 41, repo: "ado:contoso/My Proj/web", fix_rounds: 1 } };
+  expect(at(waiting, working).section).toBe("merging");
+  expect(busyAgain(waiting, working, NOW)).toBe(false);
+  // GitHub's: unchanged
+  expect(busyAgain({ ...waiting, merge_wait: undefined, pr: { number: 3, repo: "o/r" } }, working, NOW)).toBe(true);
+});
+
 // SHEP-38: a task that starts by itself at a time (herdr-task --at / --in) is Scheduled: its row says when ("Starts
 // Today 18:00"), its time until then under its mark ("6h"), the next to start first.
 test("a scheduled task says when it starts", () => {

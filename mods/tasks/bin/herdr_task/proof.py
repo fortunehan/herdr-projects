@@ -146,6 +146,10 @@ def checks_of(t):
     """GitHub's checks on its pull request, in words: {state, text}; failed and running say so,
     so a green one is never assumed."""
     if not t.get("pr"):
+        if t.get("pr_on_accept"):
+            # SHEP-96: on Azure DevOps its agent opens the pull request once the person accepts it.
+            from .ado_flow import OPENED_ON_ACCEPT
+            return {"state": "none", "text": OPENED_ON_ACCEPT}
         return {"state": "none", "text": "No GitHub checks here"}
     v = pr_view(t)
     if not v:

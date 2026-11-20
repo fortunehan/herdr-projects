@@ -277,6 +277,8 @@ def main():
     c.add_argument("text", help=f"what it is doing, at most {LINE_MAX} characters (longer is cut at a word)")
     c.add_argument("--done", type=int, help="how far through the whole task, 0-100 (%%)")
     c.add_argument("--left", help="your best guess of how long is left: 5m, 90s, 1h30m; on every status, the first too (a rough guess beats none)")
+    c.add_argument("--cant-fix", dest="cant_fix", metavar="WHY",
+                   help="Azure DevOps: you can't open its pull request after Accept, or can't fix its failing checks: the task needs the person, with why")
     c = cmd("alert", cmd_alert, "tell the person something that can't wait: a toast and a sound (an Assistant's follow its space's Notify): alert \"Deploy is down\" --body \"why\"", id=False)
     c.add_argument("title", help="what can't wait, a few words")
     c.add_argument("--body", help="why, a line or two")
@@ -311,6 +313,10 @@ def main():
     c.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)  # that detached herdr-task (commands.accept_in_background)
     cmd("reopen", lambda a: cmd_state(a, "reopen"), "undo done or ready; a queued or scheduled task goes back to to do")
     cmd("unarchive", cmd_unarchive, "bring an archived task back into its list (only when the person asks; writing to it does too)")
+    c = cmd("pr", ado_flow.cmd_pr, "Azure DevOps: a task's agent records the pull request it opened after the person's Accept "
+            "(ado-push-pr): pr 4 --url <its URL>; the task then waits for Azure DevOps to merge it")
+    c.add_argument("--url", help="the pull request's URL (…/_git/<repo>/pullrequest/<number>)")
+    c.add_argument("--number", type=int, help="its number, instead of --url")
     cmd("dismiss", ado_flow.cmd_dismiss, "dismiss a Done task's Needs you card: the main checkout couldn't pull its merge (Azure DevOps)")
     c = cmd("edit", cmd_edit, "change a task")
     c.add_argument("--title")

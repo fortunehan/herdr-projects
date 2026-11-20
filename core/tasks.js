@@ -78,10 +78,11 @@ export function starting(task, now = Date.now()) {
 // herdr-task fix or resume) is Working again until its next ready, as herdr-task's busy_again(). Herdr counts an
 // agent's finished turns (its terminal's turn): ready keeps, per agent, the turn it is on once the one it said
 // ready in has ended (task.ready_turns); working on that turn or a later one is new work. Not while it merges as
-// asked, nor a reviewer's turn; a ready said before turns were kept: any work once STARTING_MS have passed.
+// asked, opens its pull request after Accept or fixes its checks while Azure DevOps merges it (SHEP-96), nor a
+// reviewer's turn; a ready said before turns were kept: any work once STARTING_MS have passed.
 export const WORKING_AGAIN = "Working again";
 export function busyAgain(task, live, now = Date.now()) {
-  if (task.state !== "ready" || task.merge_requested) return false;
+  if (task.state !== "ready" || task.merge_requested || task.pr_requested || task.merge_wait) return false;
   const seen = task.ready_turns;
   if (!seen && now - (task.ready_at ?? 0) < STARTING_MS) return false;
   return live.some((a) => a.status === "working" && a.role !== "reviewer" && (a.turn ?? 0) >= (seen?.[a.address] ?? 0));
@@ -131,7 +132,9 @@ export function mergeWaitLine(task) {
 // A Needs-you problem the person's Accept itself fixes (it turns auto-complete on again): its row offers Accept, as a
 // Ready one does. As herdr-task's ado_flow.ACCEPT_AGAIN.
 // SHEP-64: and a background Accept that didn't finish (herdr-task's commands.ACCEPT_FAILED), on any forge.
-const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps", "Accept didn't finish"];
+// SHEP-96: and its agent couldn't open the pull request after Accept (herdr-task's ado_flow.OPEN_FAILED): Accept asks again.
+const ACCEPT_AGAIN = ["Couldn't turn on auto-complete in Azure DevOps", "Auto-complete was turned off in Azure DevOps", "Accept didn't finish",
+  "Couldn't open the pull request"];
 export const acceptAgain = (p) => p.section === "needs" && p.needs === "attention" && p.task.state === "ready"
   && ACCEPT_AGAIN.some((x) => String(p.task.attention ?? "").startsWith(x));
 
@@ -143,6 +146,8 @@ export function readyWait(task, live = [], now = Date.now()) {
   // SHEP-64: the person's Accept finishing in a detached herdr-task (task.accepting: when it began). One older than
   // ACCEPTING_MS was left by a worker that died: the task is Ready again.
   if (task.accepting && now - task.accepting < ACCEPTING_MS) return "Accepting…";
+  // SHEP-96: accepted on Azure DevOps, its agent opening the pull request (ado-push-pr).
+  if (task.pr_requested && !task.pr) return "Opening pull request";
   if (task.merge_requested && live.length) return "Merging";
   if (task.merge_queued && task.pr) return "In GitHub's merge queue";
   // #743: waits calmly for a review GitHub requires.
