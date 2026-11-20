@@ -275,7 +275,7 @@ export default class NewSpace extends View {
   pickIcon(at) {
     this.listOpen = false; this.browse = null; this.hi = -1;
     openOverlay({ mod: "spaces-chat", kind: "popup", width: 360, height: 420, at: at ? { x: at.x, y: at.y + at.height + 4 } : "pointer",
-      props: { view: "icon", for: props()?.overlay, current: this.icon, section: false, width: 360, height: 420 } });
+      props: { view: "icon", for: props()?.overlay, keysBack: HOLDER, current: this.icon, section: false, width: 360, height: 420 } });
   }
 
   // Enter picks the highlighted suggestion, else makes the space.

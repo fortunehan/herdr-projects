@@ -6,7 +6,7 @@
 // an overlay above the panes (the artifact viewer, a modal): even the chat's pane getting focus again doesn't take it
 // back, as Herdr's focus can move under an overlay. markup.js and recipe-view.js are copied into each artifact on
 // their own and can't import this file: they write the same record (keep them in step).
-import { shared, setShared } from "herdr";
+import { shared, setShared, props } from "herdr";
 
 export const KEY_HOLDER = "keyboard.holder";
 
@@ -39,9 +39,28 @@ export function keepKeys(who, now = Date.now()) {
   setShared(KEY_HOLDER, { who, at: now });
 }
 
-// The dialog closing: nobody holds the keyboard, so the chat behind it gives its box the keyboard back.
-export function dropKeys(who) {
-  if (shared(KEY_HOLDER)?.who === who) setShared(KEY_HOLDER, { who: null, at: Date.now() });
+// The dialog closing: nobody holds the keyboard, so the chat behind it gives its box the keyboard back. back: the dialog
+// it was opened over (Settings under its instructions editor), which holds the keyboard again instead.
+export function dropKeys(who, back = null) {
+  if (shared(KEY_HOLDER)?.who === who) setShared(KEY_HOLDER, { who: back, at: Date.now() });
+}
+
+/**
+ * A dialog or popup with a text field over the panes holds the keyboard from now until the drop() this returns (call it
+ * from its close()), renewed every 2 s; only as an overlay. SHEP-92: Settings never held it, and the Assistant's chat
+ * behind it took its field's keyboard back. back: as dropKeys().
+ */
+export function dialogKeys(who, cx, back = null) {
+  // A copy in a pane (the instructions editor can be one) is over nothing: it keeps nothing from the chat's box.
+  if (!props()?.overlay) return () => {};
+  let open = true;
+  keepKeys(who);
+  cx.timer.every(2000, () => { if (open) keepKeys(who); });
+  return () => {
+    if (!open) return;
+    open = false;
+    dropKeys(who, back);
+  };
 }
 
 // A dialog holds the keyboard now.
