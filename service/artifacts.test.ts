@@ -15,3 +15,27 @@ test("each version says its kind and its window picture: a converted one was a p
   expect(a.kind).toBe("recipe");
   expect(a.versions.map((x) => [x.n, x.kind, x.picture])).toEqual([[2, "recipe", undefined], [1, "gpui", 5]]);
 });
+
+// SHEP-87: the person's answers kept with a version (answers.json), read where the artifact lives
+import { Artifacts } from "./artifacts.ts";
+
+test("answers: another machine's are read there, beside the version; none, unreadable or a bad id is {}", async () => {
+  const a = new Artifacts();
+  const calls: any[] = [];
+  let out = JSON.stringify({ ship: { value: "Ship", at: 5, by: "web" } });
+  a.hub = { call: async (_m: string, p: any) => { calls.push(p); return { code: 0, stdout: Buffer.from(out).toString("base64"), stderr: "" }; } } as any;
+  expect(await a.answers("plan-1a2b", 2, "vm")).toEqual({ ship: { value: "Ship", at: 5, by: "web" } });
+  expect(calls[0].on).toBe("vm");
+  expect(calls[0].argv.slice(-3)).toEqual(["answers", "plan-1a2b", "2"]);
+  expect(calls[0].argv.join(" ")).toContain('/files/$1/v$2/answers.json');
+  out = "";
+  expect(await a.answers("plan-1a2b", 2, "vm")).toEqual({});
+  out = "[1,2]";
+  expect(await a.answers("plan-1a2b", 2, "vm")).toEqual({});
+  expect(await a.answers("../x", 2, "vm")).toEqual({});
+  expect(await a.answers("plan-1a2b", 0, "vm")).toEqual({});
+  expect(await a.answers("plan-1a2b", 2, "bad machine")).toEqual({});
+  expect(calls.length).toBe(3);
+  // this machine's: none kept for an artifact it doesn't have
+  expect(await a.answers("no-such-artifact-shep87", 1)).toEqual({});
+});

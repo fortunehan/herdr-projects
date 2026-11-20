@@ -1834,6 +1834,146 @@ class BackToWork(unittest.TestCase):
         self.assertIn("isDraft", asked[0][asked[0].index("--json") + 1].split(","))
 
 
+class SendBack(unittest.TestCase):
+    """SHEP-87: the Accept card's Send back (herdr-task send-back): a Ready task goes back to Working with the
+    person's note for its agent (started again when it ended), the task keeps a "Sent back" record, nothing merges it
+    meanwhile, and a task merging on its forge, or being accepted, is refused. In memory, as BackToWork."""
+
+    setUp, agent, ready = BackToWork.setUp, BackToWork.agent, BackToWork.ready
+
+    def args(self, **kw):
+        import argparse
+        base = dict(note="The screenshot still shows the old layout.", on=None, space=None, agent=None, argv=None, parent=None)
+        return argparse.Namespace(id="SHEP-7", json=True, folder=None, **{**base, **kw})
+
+    def told(self):
+        said = []
+        p = self.mock.patch.object(self.commands, "tell", lambda s, t, msg, args: (said.append(msg), ("t1", False))[1])
+        p.start()
+        self.addCleanup(p.stop)
+        return said
+
+    def test_a_ready_task_goes_back_to_work_with_the_note(self):
+        pr = {"number": 12, "repo": "o/r", "url": "https://github.com/o/r/pull/12", "wait": "Checks running"}
+        t = self.ready(mode="worktree", worktree="/w", branch="b", pr=pr, auto_merge="checks", merge_requested=5,
+                       proof={"id": "shep-7-proof-1a2b", "title": "SHEP-7: Web client · Proof"})
+        self.store.loc["folder"] = "/main"
+        said = self.told()
+        self.commands.cmd_send_back(self.args(on="the picture “After”"))
+        self.assertEqual(t["state"], "running")
+        self.assertEqual(t["back"]["why"], "sent back: The screenshot still shows the old layout.")
+        self.assertNotIn("auto", t["back"])
+        self.assertTrue(t["progress"]["text"].startswith("Sent back: The screenshot"))
+        for k in ("ready_turns", "merge_requested", "auto_merge"):
+            self.assertNotIn(k, t)
+        # its pull request stays open, its wait for checks goes until its next ready
+        self.assertEqual(t["pr"]["number"], 12)
+        self.assertNotIn("wait", t["pr"])
+        rec = t["sent_back"][-1]
+        self.assertEqual((rec["note"], rec["on"], rec["to"]), ("The screenshot still shows the old layout.", "the picture “After”", "t1"))
+        msg = said[0]
+        self.assertIn('<hc from="person" kind="send-back" task="SHEP-7" on="the picture “After”">', msg)
+        self.assertIn("The screenshot still shows the old layout.", msg)
+        self.assertIn("herdr-artifact update shep-7-proof-1a2b", msg)
+        self.assertIn("herdr-task ready 7 --folder /main", msg)
+
+    def test_each_send_back_is_kept(self):
+        t = self.ready()
+        self.told()
+        self.commands.cmd_send_back(self.args(note="First"))
+        t["state"] = "ready"
+        self.commands.cmd_send_back(self.args(note="Second"))
+        self.assertEqual([x["note"] for x in t["sent_back"]], ["First", "Second"])
+
+    def test_an_ended_agent_is_started_again_with_the_note(self):
+        t = self.ready(space="sp1")
+        started = []
+        for name, value in (("workers", lambda s, t: []), ("just_started", lambda t: None), ("unarchive", lambda s, t: None),
+                            ("start_again", lambda s, t, space, key=None, argv_json=None, message=None, **k: (started.append((space, message)), ({"address": "t5"}, True))[1])):
+            p = self.mock.patch.object(self.commands, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.commands.cmd_send_back(self.args())
+        self.assertEqual(t["state"], "running")
+        self.assertEqual(started[0][0], "sp1")
+        self.assertIn('kind="send-back"', started[0][1])
+        self.assertEqual((t["sent_back"][-1]["to"], t["sent_back"][-1]["new_agent"]), ("t5", True))
+
+    def test_refused_unless_ready_and_not_merging(self):
+        said = self.told()
+        for more, words in (({"state": "running"}, "isn't Ready"), ({"accepting": 10**13}, "being accepted"),
+                            ({"merged": True}, "already merged"), ({"merge_queued": 5, "pr": {"number": 1}}, "merge queue"),
+                            ({"merge_wait": 5}, "auto-complete")):
+            t = self.ready(**more)
+            with self.assertRaisesRegex(self.commands.Fail, words):
+                self.commands.cmd_send_back(self.args())
+            self.assertNotIn("sent_back", t)
+            self.assertEqual(t["state"], more.get("state", "ready"))
+        with self.assertRaisesRegex(self.commands.Fail, "what should change"):
+            self.commands.cmd_send_back(self.args(note="  "))
+        self.assertEqual(said, [])
+
+    def test_the_tick_keeps_it_working_until_its_agent_says_ready(self):
+        """Never settled back to Ready by the tick (a fix asked for, not its agent's own turn)."""
+        t = self.ready(mode="worktree", worktree=tempfile.mkdtemp(), branch="b", head="abc")
+        p = self.mock.patch.object(self.tick, "git", lambda cwd, *a: (True, "abc" if a[0] == "rev-parse" else "", ""))
+        p.start()
+        self.addCleanup(p.stop)
+        self.told()
+        self.commands.cmd_send_back(self.args())
+        self.live = [dict(self.agent({"address": "t1", "status": "idle", "turn": 6, "role": "worker"}), agent="claude")]
+        self.tick.tick_store(self.store, {"started": []})
+        self.assertEqual(t["state"], "running")
+
+
+class ProofChoices(unittest.TestCase):
+    """SHEP-87: the Accept card's evidence lists the choices the person answered in its proof (answers.json beside
+    each version), the newest per block, in words from the agent's recipe."""
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.proof as proof
+        self.proof, self.dir = proof, tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+        p = mock.patch.object(proof, "ARTIFACTS", self.dir)
+        p.start()
+        self.addCleanup(p.stop)
+        self.art = {"id": "p-1a2b", "title": "SHEP-7: X · Proof", "version": 2, "versions": [{"v": 1}, {"v": 2}]}
+        p = mock.patch.object(proof, "artifacts_of", lambda folder: [self.art])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def write(self, v, recipe, answers):
+        d = os.path.join(self.dir, "files", "p-1a2b", f"v{v}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "recipe.json"), "w") as f:
+            json.dump(recipe, f)
+        if answers is not None:
+            with open(os.path.join(d, "answers.json"), "w") as f:
+                json.dump(answers, f)
+
+    def test_answered_choices_forms_and_buttons_in_words(self):
+        r1 = {"recipe": 1, "blocks": [{"type": "text", "md": "hi"}, {"type": "choice", "question": "Ship it?", "options": [{"label": "Ship"}, {"label": "Wait"}]}]}
+        self.write(1, r1, {"b2": {"value": "Wait", "at": 10}})
+        r2 = {"recipe": 1, "blocks": [
+            {"type": "details", "summary": "More", "blocks": [{"type": "choice", "id": "ship", "question": "Ship it?", "options": [{"label": "Ship"}]}]},
+            {"type": "form", "id": "who", "title": "Owner", "fields": [{"name": "n", "label": "Name"}, {"name": "ok", "kind": "checkbox", "label": "Sure"}]},
+            {"type": "buttons", "items": [{"label": "Looks good", "reply": "ok"}, {"label": "Later", "reply": "later"}]},
+        ]}
+        self.write(2, r2, {"ship": {"value": "Ship", "at": 30}, "who": {"value": {"n": "Ann", "ok": True}, "at": 20},
+                           "b2-1": {"value": "Later", "at": 40}, "gone": {"value": "x", "at": 50}})
+        got = self.proof.choices_of("/main", {"id": "p-1a2b"})
+        self.assertEqual([(c["question"], c["value"], c["v"]) for c in got], [
+            ("Ship it?", "Wait", 1), ("Owner", "Name: Ann; Sure: yes", 2), ("Ship it?", "Ship", 2), ("Later", "pressed", 2)])
+
+    def test_none_without_a_proof_or_answers(self):
+        self.write(1, {"recipe": 1, "blocks": [{"type": "text", "md": "hi"}]}, None)
+        self.assertEqual(self.proof.choices_of("/main", None), [])
+        self.assertEqual(self.proof.choices_of("/main", {"id": "p-1a2b"}), [])
+        self.assertEqual(self.proof.choices_of("/main", {"id": "other"}), [])
+
+
 class OwnBackgroundWork(unittest.TestCase):
     """SHEP-53: an agent quiet with its own work still running (a background shell, a Monitor,
     Codex's background terminal), or whose fresh status line says it waits on CI or a review, is
@@ -5040,6 +5180,36 @@ class SettingsFollowTheSpace(unittest.TestCase):
         argv = self.settings.argv_for({"agent": "claude", "launcher": "magpie", "model": "copilot/claude-sonnet-5.5"})
         self.assertEqual(self.settings.argv_model(argv)[0], "copilot/claude-sonnet-5.5")
 
+    def write_worker(self, worker):
+        with open(self.file, "w") as f:
+            json.dump({"version": 1, "everywhere": {"worker": worker}, "spaces": {}}, f)
+
+    def test_a_codex_worker_runs_without_its_sandbox_unless_a_mode_was_chosen(self):
+        # SHEP-85: Codex's sandbox blocks what a task needs (on a Mac, the window server: Chrome aborted at every start)
+        full = "--dangerously-bypass-approvals-and-sandbox"
+        self.write_worker({"agent": "codex", "model": "gpt-5"})
+        argv = self.settings.worker_argv(self.s, {})
+        self.assertIn(full, argv)
+        self.assertNotIn("workspace-write", argv)
+        # a mode the person chose stays theirs
+        self.write_worker({"agent": "codex", "model": "gpt-5", "perm": "auto"})
+        argv = self.settings.worker_argv(self.s, {})
+        self.assertNotIn(full, argv)
+        self.assertIn("workspace-write", argv)
+
+    def test_a_tasks_own_agent_keeps_the_persons_permission_mode(self):
+        # CODE-1: Settings' worker is Claude with full access, the task's own agent Codex: it ran in Codex's sandbox
+        self.write_worker({"agent": "claude", "model": "opus", "perm": "bypassPermissions"})
+        argv = self.settings.worker_argv(self.s, {"agent": "codex", "model": "gpt-6.2-sol"})
+        self.assertEqual(argv[0], "codex")
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.write_worker({"agent": "claude", "model": "opus", "perm": "plan"})
+        argv = self.settings.worker_argv(self.s, {"agent": "codex"})
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        self.write_worker({"agent": "codex", "perm": "full"})
+        argv = self.settings.worker_argv(self.s, {"agent": "claude"})
+        self.assertIn("--dangerously-skip-permissions", argv)
+
 
 class AssistantSettings(unittest.TestCase):
     """SHEP-42/SHEP-49: a space's Assistant is told its settings (Reactions among them): the block its
@@ -6634,7 +6804,7 @@ class ExpectedChecks(unittest.TestCase):
         import herdr_task.github as github
         self.github = github
         self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
         self.git = lambda *a: subprocess.run(["git", "-C", self.dir, "-c", "user.name=T", "-c", "user.email=t@example.com", *a],
                                              check=True, capture_output=True, text=True).stdout.strip()
         self.git("init", "-q", "-b", "main")
@@ -7002,6 +7172,110 @@ class ReadyMergeGit(unittest.TestCase):
         self.assertEqual(t["start"], self.git(self.main, "rev-parse", "main"))
 
 
+class ForkPullRequests(unittest.TestCase):
+    """SHEP-84: a fork's pull requests go to the repo its branches are pushed to (origin), never to gh's default
+    (often the upstream, someone else's repo). TaskFlow's throwaway repo with origin and upstream remotes; gh faked."""
+    setUp, patch, git, commit, args = TaskFlow.setUp, TaskFlow.patch, TaskFlow.git, TaskFlow.commit, TaskFlow.args
+
+    def fork(self, origin="https://github.com/me/fork.git", upstream="https://github.com/them/up.git", branch_there=True):
+        import herdr_task.github as github
+        self.github = github
+        self.git(self.main, "remote", "add", "origin", origin)
+        self.git(self.main, "remote", "add", "upstream", upstream)
+        self.store.loc["kind"] = "repo"
+        self.patch(github.shutil, "which", lambda x: "/usr/bin/gh")
+        self.patch(github, "pr_push", lambda s, t, repo: None)
+        self.calls = []
+
+        def gh(*a, **k):
+            self.calls.append(a)
+            if a[:2] == ("repo", "view"):
+                # an explicit repo is that one; none: gh's default here, set to the upstream (gh repo set-default)
+                return True, (a[2] if not a[2].startswith("-") else "them/up"), ""
+            if a[:1] == ("api",) and "/git/ref/heads/" in a[1]:
+                return (True, "refs/heads/task/1", "") if branch_there else (False, "", "gh: Not Found (HTTP 404)")
+            if a[:2] == ("pr", "create"):
+                repo = a[a.index("--repo") + 1]
+                return True, f"https://github.com/{repo}/pull/5", ""
+            return True, "[]", ""
+        self.patch(github, "gh", gh)
+        return github
+
+    def created(self):
+        return [c[c.index("--repo") + 1] for c in self.calls if c[:2] == ("pr", "create")]
+
+    def test_gh_default_upstream_still_opens_on_origin(self):
+        github = self.fork()
+        repo = github.github(self.store)
+        self.assertEqual(repo, "me/fork")
+        self.assertEqual(github.pr_open(self.store, self.task, repo)["url"], "https://github.com/me/fork/pull/5")
+        self.assertEqual(self.created(), ["me/fork"])
+        self.assertNotIn(("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"), self.calls)
+
+    def test_ssh_and_https_remote_urls(self):
+        import herdr_task.github as github
+        for url in ("https://github.com/me/fork.git", "https://github.com/me/fork", "https://user@github.com/me/fork.git/",
+                    "git@github.com:me/fork.git", "git@github.com:me/fork", "ssh://git@github.com/me/fork.git",
+                    "ssh://git@ssh.github.com:443/me/fork.git", "git://github.com/me/fork.git", "HTTPS://GitHub.com/me/fork.git"):
+            self.assertEqual(github.parse_github(url), "me/fork", url)
+        for url in ("https://gitlab.com/me/fork.git", "git@my-alias:me/fork.git", "/srv/fork.git",
+                    "https://github.com/me", "https://dev.azure.com/o/p/_git/r", ""):
+            self.assertIsNone(github.parse_github(url), url)
+        self.fork(origin="git@github.com:me/fork.git", upstream="git@github.com:them/up.git")
+        self.assertEqual(self.github.github(self.store), "me/fork")
+
+    def test_the_push_remote_is_the_first_one_without_origin(self):
+        github = self.fork()
+        self.git(self.main, "remote", "remove", "origin")
+        self.git(self.main, "remote", "add", "aaa", "https://github.com/me/other.git")
+        self.assertEqual(github.github(self.store), "me/other")
+
+    def test_a_cached_wrong_repo_is_asked_again(self):
+        github = self.fork()
+        self.store.data["github"] = {"repo": "them/up", "at": github.now()}
+        self.assertEqual(github.github(self.store), "me/fork")
+        self.assertEqual(self.store.data["github"]["repo"], "me/fork")
+        # the right one stays remembered: no gh call within the hour
+        self.calls.clear()
+        self.assertEqual(github.github(self.store), "me/fork")
+        self.assertEqual(self.calls, [])
+
+    def test_never_opens_on_another_repo_than_the_push_remotes(self):
+        github = self.fork()
+        with self.assertRaises(github.Fail) as e:
+            github.pr_open(self.store, self.task, "them/up")
+        self.assertIn("pushed to origin, which is me/fork", str(e.exception))
+        self.assertEqual(self.created(), [])
+        self.assertNotIn("pr", self.task)
+
+    def test_branch_missing_on_the_target_no_create(self):
+        github = self.fork(branch_there=False)
+        with self.assertRaises(github.Fail) as e:
+            github.pr_open(self.store, self.task, "me/fork")
+        self.assertIn("task/1 isn't on me/fork", str(e.exception))
+        self.assertEqual(self.created(), [])
+        self.assertNotIn("pr", self.task)
+
+    def test_ready_says_why_on_the_task(self):
+        """The refusal reaches the person as Needs you, in plain words."""
+        github = self.fork(branch_there=False)
+        self.store.data["tasks"] = [self.task]
+        self.commit(self.task["worktree"], "work", "a.txt")
+        self.patch(self.commands, "github", github.github)
+        self.patch(self.commands, "merge_policy", lambda s, t: "ask")
+        self.commands.finalize(self.store, self.task)
+        self.assertIn("task/1 isn't on me/fork", self.task.get("attention") or "")
+        self.assertEqual(self.created(), [])
+
+    def test_azure_devops_unchanged(self):
+        import herdr_task.github as github
+        self.git(self.main, "remote", "add", "origin", "https://dev.azure.com/org/proj/_git/repo")
+        self.git(self.main, "remote", "add", "upstream", "https://github.com/them/up.git")
+        self.store.loc["kind"] = "repo"
+        self.patch(github, "gh", lambda *a, **k: self.fail("gh asked about an Azure DevOps folder"))
+        self.assertEqual(github.github(self.store), "ado:org/proj/repo")
+
+
 class ProcessTable(unittest.TestCase):
     """GitHub #1013: finding an agent's session walked its process tree with a `pgrep -P` per process (each one
     reading every process), per agent, per task, from every tracker and list. One read of the process table now
@@ -7249,3 +7523,329 @@ class LinkActions(unittest.TestCase):
         r = self.link.again("vmb", ["list"], lambda: subprocess.CompletedProcess([], *answers.pop(0)))
         self.assertEqual((r.returncode, r.stdout), (0, "[]"))
         self.assertFalse(self.link.lost(subprocess.CompletedProcess([], 1, "", "herdr-task: no such task")))
+
+
+class SelfUpdate(unittest.TestCase):
+    """SHEP-83: this machine's Shepherdr checkout updates itself after a task there merges (herdr_task/self_update.py).
+    A real throwaway origin and checkout; install.sh and bin/shepherdr doctor are fakes there that log their runs. The
+    clock, the worker's start, the Assistant's notice and the alert are stubs: nothing reaches hc."""
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.self_update as su
+        import herdr_task.settings as settings
+        import herdr_task.github as github
+        self.su, self.github, self.mock = su, github, mock
+        self.tmp = tempfile.mkdtemp()
+        store = os.path.join(self.tmp, "tasks")
+        os.makedirs(store)
+        self.log = os.path.join(self.tmp, "runs.log")
+        self.settings = os.path.join(self.tmp, "settings.json")
+        self.record = os.path.join(self.tmp, "installed.json")
+        self.clock = [1_000_000_000]
+        self.spawned, self.sent, self.alerts = [], [], []
+        env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "SU_LOG": self.log,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        for p in (mock.patch.dict(os.environ, env),
+                  mock.patch.object(settings, "SETTINGS", self.settings),
+                  mock.patch.multiple(su, STORE=store, STATE=os.path.join(store, ".self-update.json"),
+                                      RUN_LOCK=os.path.join(store, ".self-update.run.lock"), LOG=os.path.join(store, ".self-update.jsonl"),
+                                      RECORDS=(self.record,), now=lambda: self.clock[0], spawn=lambda: self.spawned.append(1),
+                                      send=lambda space, text: self.sent.append((space, text)) or True,
+                                      alert=lambda res: self.alerts.append(res), defer_reason=lambda: None),
+                  mock.patch.object(github, "now", lambda: self.clock[0])):
+            p.start()
+            self.addCleanup(p.stop)
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self.checkout = os.path.join(self.tmp, "shepherdr")
+        self.g(self.tmp, "init", "-q", "--bare", "-b", "main", self.origin)
+        self.g(self.tmp, "clone", "-q", self.origin, self.checkout)
+        self.g(self.checkout, "switch", "-q", "-c", "main")
+        os.makedirs(os.path.join(self.checkout, "lib"))
+        os.makedirs(os.path.join(self.checkout, "bin"))
+        self.write(self.checkout, "lib/addons.json", "{}\n")
+        self.write(self.checkout, "install.sh", 'echo install >> "$SU_LOG"\necho "  backup of what it replaced: /bk/1"\n'
+                   '[ -z "$SU_INSTALL_FAIL" ] || { echo "the build failed" >&2; exit 1; }\n')
+        self.write(self.checkout, "bin/shepherdr", 'import os, sys\nopen(os.environ["SU_LOG"], "a").write(sys.argv[1] + "\\n")\n'
+                   'bad = os.environ.get("SU_DOCTOR_FAIL")\nprint("  ✗ missing: x" if bad else "  ✓ whole")\nsys.exit(1 if bad else 0)\n')
+        self.write(self.checkout, "README", "one\n")
+        self.g(self.checkout, "add", "-A")
+        self.g(self.checkout, "commit", "-qm", "first")
+        self.g(self.checkout, "push", "-q", "origin", "main")
+        # the local main carries a commit origin lacks (an AGENTS.md note): a fast-forward would skip
+        self.write(self.checkout, "NOTES", "local note\n")
+        self.g(self.checkout, "add", "NOTES")
+        self.g(self.checkout, "commit", "-qm", "docs: a local note")
+        with open(self.record, "w") as f:
+            json.dump({"source": self.checkout, "version": "9.9.9"}, f)
+        self.other = os.path.join(self.tmp, "other")
+        os.makedirs(self.other)
+        self.n = 0
+
+    def g(self, cwd, *args):
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def write(self, root, rel, text):
+        with open(os.path.join(root, rel), "w") as f:
+            f.write(text)
+
+    def turn(self, on):
+        with open(self.settings, "w") as f:
+            json.dump({"machines": {"local": {"self_update": True}}} if on else {}, f)
+
+    def land(self, name="feature.txt", text="new\n"):
+        """A pull request merges on origin (another clone pushes to main)."""
+        self.n += 1
+        other = os.path.join(self.tmp, f"pusher{self.n}")
+        self.g(self.tmp, "clone", "-q", self.origin, other)
+        self.write(other, name, text)
+        self.g(other, "add", "-A")
+        self.g(other, "commit", "-qm", f"feat: {name}")
+        self.g(other, "push", "-q", "origin", "main")
+
+    def merged(self, folder=None):
+        """A task in folder merges through its pull request: what every merge path calls (github.watch_main)."""
+        self.ids = getattr(self, "ids", 0) + 1
+        n = self.ids
+
+        class S:
+            loc = {"folder": folder or self.checkout}
+            data, dirty = {}, False
+
+            def ref(self, t):
+                return f"SHEP-{t['id']}"
+        t = {"id": n, "title": f"task {n}", "base": "main", "space": "sp1", "pr": {"number": n, "repo": "o/shepherdr"}}
+        self.github.watch_main(S(), t, "abc")
+
+    def runs(self):
+        try:
+            with open(self.log) as f:
+                return f.read().split()
+        except OSError:
+            return []
+
+    def later(self, ms):
+        self.clock[0] += ms
+
+    def tick(self):
+        self.su.self_update_pass({})
+
+    def go(self):
+        """The pass's due run, done here at once (the worker spawn() would start)."""
+        self.later(self.su.QUIET_MS + 1)
+        self.tick()
+        self.assertEqual(len(self.spawned), 1)
+        self.spawned.clear()
+        return self.su.run_worker()
+
+    def test_setting_off_does_nothing(self):
+        self.turn(False)
+        self.land()
+        self.merged()
+        self.later(self.su.QUIET_MS * 10)
+        self.tick()
+        self.assertFalse(os.path.exists(self.su.STATE))
+        self.assertEqual((self.spawned, self.runs(), self.sent), ([], [], []))
+
+    def test_other_folders_merges_do_nothing(self):
+        self.turn(True)
+        self.land()
+        self.merged(self.other)
+        self.later(self.su.QUIET_MS * 10)
+        self.tick()
+        self.assertEqual((self.spawned, self.runs()), ([], []))
+
+    def test_clean_merge_runs_once_with_doctor(self):
+        self.turn(True)
+        self.land()
+        self.merged()
+        self.tick()
+        self.assertEqual(self.spawned, [], "waits for the quiet window")
+        res = self.go()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.runs(), ["install", "doctor"])
+        self.assertTrue(os.path.exists(os.path.join(self.checkout, "feature.txt")))
+        self.assertTrue(os.path.exists(os.path.join(self.checkout, "NOTES")), "a merge commit keeps the local commits")
+        self.assertEqual(len(self.g(self.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split()), 3)
+        self.assertEqual((res["version"], res["backup"], res["refs"]), ("9.9.9", "/bk/1", ["SHEP-1"]))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][0], "sp1")
+        self.assertIn('event="self-update"', self.sent[0][1])
+        self.assertIn("9.9.9", self.sent[0][1])
+        self.assertEqual(self.alerts, [])
+        self.later(self.su.QUIET_MS * 10)
+        self.tick()
+        self.assertEqual(self.spawned, [], "nothing more to run")
+
+    def test_two_merges_in_the_window_are_one_run(self):
+        self.turn(True)
+        self.land("a.txt")
+        self.merged()
+        self.later(self.su.QUIET_MS - 1000)
+        self.land("b.txt")
+        self.merged()
+        self.later(2000)
+        self.tick()
+        self.assertEqual(self.spawned, [], "the second merge re-armed the window")
+        res = self.go()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["refs"], ["SHEP-1", "SHEP-2"])
+        self.assertEqual(self.runs(), ["install", "doctor"])
+
+    def stopped(self, step):
+        res = self.go()
+        self.assertFalse(res["ok"], res)
+        self.assertEqual(res["step"], step)
+        self.assertEqual(self.runs(), [], "nothing installed")
+        self.assertEqual(len(self.alerts), 1)
+        self.assertIn('event="self-update-stopped"', self.sent[0][1])
+        self.assertIn("To finish by hand", self.sent[0][1])
+        self.assertIsNone(self.su.in_progress(self.checkout), "never left mid-merge")
+        # never tried again by itself
+        self.later(self.su.QUIET_MS * 10)
+        self.tick()
+        self.assertEqual(self.spawned, [])
+        return res
+
+    def test_dirty_tree_stops(self):
+        self.turn(True)
+        self.land()
+        self.write(self.checkout, "README", "changed by hand\n")
+        self.merged()
+        res = self.stopped("check")
+        self.assertIn("uncommitted changes (README)", res["why"])
+        self.assertFalse(os.path.exists(os.path.join(self.checkout, "feature.txt")))
+
+    def test_mid_merge_stops(self):
+        self.turn(True)
+        self.land("README", "theirs\n")
+        self.write(self.checkout, "README", "ours\n")
+        self.g(self.checkout, "commit", "-qam", "ours")
+        self.g(self.checkout, "fetch", "-q")
+        subprocess.run(["git", "-C", self.checkout, "merge", "origin/main"], capture_output=True)
+        self.assertEqual(self.su.in_progress(self.checkout), "merge")
+        self.merged()
+        res = self.go()
+        self.assertFalse(res["ok"])
+        self.assertIn("in the middle of a merge", res["why"])
+        self.assertEqual(self.runs(), [])
+        self.assertEqual(self.su.in_progress(self.checkout), "merge", "the person's own merge is left as it was")
+        self.assertEqual(len(self.alerts), 1)
+
+    def test_conflict_is_aborted_and_stops(self):
+        self.turn(True)
+        self.land("README", "theirs\n")
+        self.write(self.checkout, "README", "ours\n")
+        self.g(self.checkout, "commit", "-qam", "ours")
+        head = self.g(self.checkout, "rev-parse", "HEAD")
+        self.merged()
+        res = self.stopped("merge")
+        self.assertIn("conflicts in README", res["why"])
+        self.assertEqual(self.g(self.checkout, "rev-parse", "HEAD"), head)
+        self.assertEqual(self.g(self.checkout, "status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_wrong_branch_stops(self):
+        self.turn(True)
+        self.land()
+        self.g(self.checkout, "switch", "-q", "-c", "elsewhere")
+        self.merged()
+        res = self.stopped("check")
+        self.assertIn("is on elsewhere, not main", res["why"])
+
+    def test_install_and_doctor_failures_stop_with_the_backup(self):
+        self.turn(True)
+        self.land()
+        self.merged()
+        with self.mock.patch.dict(os.environ, {"SU_INSTALL_FAIL": "1"}):
+            res = self.go()
+        self.assertEqual((res["ok"], res["step"], res["backup"]), (False, "install", "/bk/1"))
+        self.assertIn("/bk/1", self.sent[-1][1])
+        self.assertEqual(self.runs(), ["install"])
+        self.land("c.txt")
+        self.merged()
+        with self.mock.patch.dict(os.environ, {"SU_DOCTOR_FAIL": "1"}):
+            res = self.go()
+        self.assertEqual((res["ok"], res["step"]), (False, "doctor"))
+        self.assertIn("missing: x", res["why"])
+        self.assertEqual(len(self.alerts), 2)
+
+    def test_a_merge_during_a_run_is_exactly_one_follow_up(self):
+        self.turn(True)
+        self.land("a.txt")
+        self.merged()
+        real = self.su.steps
+        calls = []
+
+        def steps(p):
+            calls.append(p["refs"])
+            if len(calls) == 1:
+                # a run in progress: the pass starts no second one, and more merges arm one follow-up
+                self.assertTrue(self.su.running())
+                self.land("b.txt")
+                self.merged()
+                self.land("c.txt")
+                self.merged()
+                self.later(self.su.QUIET_MS + 1)
+                self.tick()
+                self.assertEqual(self.spawned, [])
+            return real(p)
+        with self.mock.patch.object(self.su, "steps", steps):
+            self.assertTrue(self.go()["ok"])
+            self.assertTrue(self.go()["ok"])
+            self.later(self.su.QUIET_MS * 10)
+            self.tick()
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(calls, [["SHEP-1"], ["SHEP-2", "SHEP-3"]])
+        self.assertEqual(self.runs(), ["install", "doctor", "install", "doctor"])
+        self.assertTrue(os.path.exists(os.path.join(self.checkout, "c.txt")))
+
+    def test_held_back_while_someone_types_at_most_an_hour(self):
+        self.turn(True)
+        self.land()
+        self.merged()
+        with self.mock.patch.object(self.su, "defer_reason", lambda: "you're typing in a chat"):
+            self.later(self.su.QUIET_MS + 1)
+            self.tick()
+            self.assertEqual(self.spawned, [])
+            self.assertEqual(self.su.read_state()["pending"]["deferred"], "you're typing in a chat")
+            self.later(self.su.DEFER_MAX_MS)
+            self.tick()
+        self.assertEqual(self.spawned, [1])
+
+    def test_notice_waits_for_the_assistant(self):
+        self.turn(True)
+        self.land()
+        self.merged()
+        with self.mock.patch.object(self.su, "send", lambda space, text: False):
+            self.assertTrue(self.go()["ok"])
+        self.assertEqual(self.sent, [])
+        self.tick()
+        self.assertEqual(len(self.sent), 1)
+        self.tick()
+        self.assertEqual(len(self.sent), 1, "sent once")
+
+    def test_a_pushed_settings_file_reads_its_own_machine(self):
+        with open(self.settings, "w") as f:
+            json.dump({"pushed_from": "herdr-app", "here": "mini", "machines": {"mini": {"self_update": True}}}, f)
+        self.assertTrue(self.su.enabled())
+        with open(self.settings, "w") as f:
+            json.dump({"here": "mini", "machines": {"local": {"self_update": True}}}, f)
+        self.assertFalse(self.su.enabled())
+
+    def test_a_run_cut_off_is_a_stop_the_person_hears_of(self):
+        self.turn(True)
+        with self.su.state() as st:
+            st["running"] = {"at": self.clock[0], "refs": ["SHEP-1"], "folder": self.checkout, "base": "main", "space": "sp1"}
+        self.tick()
+        self.assertEqual(self.alerts, [], "a worker just started gets its grace")
+        self.later(self.su.SPAWN_GRACE_MS + 1)
+        self.tick()
+        self.assertEqual(len(self.alerts), 1)
+        st = self.su.read_state()
+        self.assertNotIn("running", st)
+        self.assertEqual((st["last"]["ok"], st["last"]["step"]), (False, "cut off"))
+        self.assertIn('event="self-update-stopped"', self.sent[-1][1])
+        self.assertIn("./install.sh --yes", self.sent[-1][1])

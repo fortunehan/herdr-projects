@@ -32,7 +32,7 @@ export const InputState = { new: (o) => {
 export const theme = () => new Proxy({}, { get: () => "#000" });
 // the fork's viewer keeps the keyboard holder (SHEP-9): shared, setShared and props from herdr
 export const shared = () => null, setShared = () => {}, props = () => ({});
-export const asset = (x) => x, reply = async () => true;
+export const asset = (x) => x, reply = async () => true, answer = async () => true, answers = async () => ({});
 """
 
 HARNESS = r"""

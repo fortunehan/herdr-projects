@@ -26,6 +26,7 @@
 # --install  makes sure a working agent-browser and Chrome are here (installs them), and says what it found
 # --status   what's here, as JSON, installing nothing (shepherdr doctor)
 # --bin      the agent-browser it runs, installing nothing (herdr-task's tick)
+# --check    starts Chrome once with a scratch profile and session, and says why when it can't (shepherdr doctor)
 
 PIN=0.41.1
 # The pinned release's binaries (github.com/vercel-labs/agent-browser/releases), by platform: sha256.
@@ -261,7 +262,90 @@ EOF
   return 1
 }
 
+# The window server (SHEP-85). On a Mac, Chrome registers with it as it starts (TransformProcessType); in a process
+# whose sandbox denies that lookup (Codex's Seatbelt sandbox, which runs a Codex worker's commands) it aborts there,
+# and macOS shows "Google Chrome quit unexpectedly" for each try. Such a caller never starts it.
+# Prints 1 when a live process can't reach the window server (sandbox_check, as the sandbox itself answers), else 0.
+gui_probe='
+import ctypes, platform, sys
+pid = int(sys.argv[1])
+f = ctypes.CDLL("/usr/lib/libSystem.B.dylib").sandbox_check
+f.restype = ctypes.c_int
+name = b"com.apple.windowserver.active"
+if platform.machine() == "arm64":
+    # its one variadic argument goes on the stack on Apple arm64: five fillers take the registers left
+    f.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int] + [ctypes.c_long] * 5 + [ctypes.c_char_p]
+    r = f(pid, b"mach-lookup", 2, 0, 0, 0, 0, 0, name)
+else:
+    f.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p]
+    r = f(pid, b"mach-lookup", 2, name)
+print(1 if r == 1 else 0)
+'
+# Whether a process (this one when none is given) can't reach the window server. Never on other systems.
+# HERDR_BROWSER_GUI_PROBE: a stand-in program for tests, given the pid, printing 1 or 0.
+gui_blocked() {
+  _gp=${1:-$$}
+  if [ -n "${HERDR_BROWSER_GUI_PROBE:-}" ]; then [ "$("$HERDR_BROWSER_GUI_PROBE" "$_gp" 2>/dev/null)" = 1 ]; return; fi
+  [ "$(uname -s)" = Darwin ] || return 1
+  [ "$(python3 -I -c "$gui_probe" "$_gp" 2>/dev/null)" = 1 ]
+}
+
+# agent-browser's sidecar files: $AGENT_BROWSER_SOCKET_DIR, else $XDG_RUNTIME_DIR/agent-browser, else ~/.agent-browser
+sock_dir() {
+  if [ -n "${AGENT_BROWSER_SOCKET_DIR:-}" ]; then echo "$AGENT_BROWSER_SOCKET_DIR"
+  elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then echo "$XDG_RUNTIME_DIR/agent-browser"
+  else echo "$HOME/.agent-browser"; fi
+}
+# A session's running daemon (its pid), or nothing
+daemon_of() {
+  _dp=$(cat "$(sock_dir)/$1.pid" 2>/dev/null)
+  case "$_dp" in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$_dp" 2>/dev/null && ps -o command= -p "$_dp" 2>/dev/null | grep -q agent-browser && echo "$_dp"
+}
+# Its browser is up: Chrome runs as the daemon's child
+browser_up() { [ -n "$(pgrep -P "$1" 2>/dev/null)" ]; }
+# Ends a daemon (it takes its Chrome along), waiting a few seconds for it to go
+stop_daemon() {
+  kill "$1" 2>/dev/null || return 0
+  _n=0
+  while kill -0 "$1" 2>/dev/null && [ "$_n" -lt 30 ]; do sleep 0.1; _n=$((_n + 1)); done
+}
+
+# The Chrome agent-browser starts, as a path and its change time: a new Chrome, a new try after a failed start
+chrome_id() {
+  _c=$(chrome_bin)
+  [ -z "$_c" ] && [ "$(uname -s)" = Darwin ] && _c="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  echo "$_c $(stat -c %Y "$_c" 2>/dev/null || stat -f %m "$_c" 2>/dev/null)"
+}
+# What a failed start depends on; when it changes, the browser may try again
+cause() { printf '%s %s %s %s' "$bin" "$ver" "$(chrome_id)" "${AGENT_BROWSER_ARGS:-}"; }
+# agent-browser's words for a browser that didn't start (plain on stderr, or JSON on stdout), the first line of them
+LAUNCH_FAIL='Chrome exited|DevToolsActivePort|DevTools URL|Failed to launch|Could not find Chrome|No Chrome'
+launch_why() {
+  cat "$@" 2>/dev/null | grep -m 1 -E "$LAUNCH_FAIL" | sed 's/^{"error":"//; s/\\n.*//; s/","success".*//; s/^[^A-Za-z]*//'
+}
+
 case "${1-}" in
+  --check)
+    # One quick start of Chrome with a scratch profile and session (shepherdr doctor), then it's closed again
+    pick
+    usable || { problem >&2; exit 1; }
+    if gui_blocked; then
+      echo "herdr-browser: can't check whether Chrome starts from here: this process's sandbox blocks the window server Chrome needs. Run it from a terminal." >&2
+      exit 1
+    fi
+    _t=$(mktemp -d "${TMPDIR:-/tmp}/herdr-browser-check.XXXXXX") || exit 1
+    _o=$(AGENT_BROWSER_SOCKET_DIR="$_t/s" AGENT_BROWSER_ARGS="${AGENT_BROWSER_ARGS:---force-prefers-reduced-motion}" \
+         "$bin" --session herdr-check --profile "$_t/p" open about:blank 2>&1 </dev/null)
+    _rc=$?
+    _p=$(AGENT_BROWSER_SOCKET_DIR="$_t/s" daemon_of herdr-check)
+    [ -n "$_p" ] && stop_daemon "$_p"
+    rm -rf "$_t"
+    if [ "$_rc" = 0 ]; then echo "herdr-browser: the task browser starts here ($(chrome_id | sed 's/ [0-9]*$//'))."; exit 0; fi
+    _why=$(printf '%s\n' "$_o" | grep -m 1 -E "$LAUNCH_FAIL" | sed 's/^[^A-Za-z]*//')
+    [ -n "$_why" ] || _why=$(printf '%s\n' "$_o" | grep . | head -n 1 | sed 's/^[^A-Za-z]*//')
+    echo "herdr-browser: Chrome can't start here: ${_why:-agent-browser said nothing}. Fix it: $fix, or set AGENT_BROWSER_EXECUTABLE_PATH to a Chrome that starts here." >&2
+    exit 1 ;;
   --install)
     if ensure; then
       libs_check >&2 || exit 1
@@ -329,6 +413,14 @@ if [ -n "${show-}" ]; then
   exit 0
 fi
 
+# This process can't reach the window server (SHEP-85): a Codex agent in its Seatbelt sandbox. Chrome would abort as
+# it starts (a "Google Chrome quit unexpectedly" dialog each time), so nothing starts here. Codex workers run without
+# the sandbox unless a permission mode was chosen. (The sandbox can't see a running daemon either: no ps, no signals.)
+if gui_blocked; then
+  echo "herdr-browser: This task's browser couldn't start: this agent runs in a sandbox that blocks the window server Chrome needs. Give the task's agent Full access (Settings > Worker, or the task's agent), or run herdr-browser outside the sandbox." >&2
+  exit 5
+fi
+
 # Its session and profile are Herdr's: another one would start a second browser beside it.
 for a in "$@"; do
   case "$a" in
@@ -375,7 +467,12 @@ fi
 # A browser opened before names were cut (a name of 33-64 characters still fit agent-browser's socket path) holds the
 # profile: closed once, quietly, so the new session can open it (sign-ins are in the profile and stay).
 if [ "$session" != "herdr-$name" ] && [ ! -f "$root/$name.session" ]; then
-  [ ${#name} -le 64 ] && "$bin" --session "herdr-$name" close >/dev/null 2>&1
+  _op=
+  [ ${#name} -le 64 ] && _op=$(daemon_of "herdr-$name")
+  # only a browser that is up is closed by agent-browser (its close starts one first otherwise, SHEP-85)
+  if [ -n "$_op" ]; then
+    if browser_up "$_op"; then "$bin" --session "herdr-$name" close >/dev/null 2>&1; else stop_daemon "$_op"; fi
+  fi
   printf '%s\n' "$session" > "$root/$name.session" 2>/dev/null
 fi
 
@@ -451,4 +548,42 @@ export AGENT_BROWSER_ARGS="${AGENT_BROWSER_ARGS:---force-prefers-reduced-motion}
 # so the stream's own are kept small and cheap.
 export AGENT_BROWSER_STREAM_MAX_WIDTH="${AGENT_BROWSER_STREAM_MAX_WIDTH:-320}"
 export AGENT_BROWSER_STREAM_QUALITY="${AGENT_BROWSER_STREAM_QUALITY:-40}"
-exec "$bin" --session "$session" --profile "$profile" "$@"
+
+# A browser that couldn't start (SHEP-85) stops there: agent-browser starts Chrome again for any command, so each
+# later command (the agent's, the Browser view's, the tick's) crashed it again. <name>.broken keeps why and what it
+# depended on (cause): later commands fail at once with that, until it changes or `close` asks for a new try.
+broken="$root/$name.broken"
+pid=$(daemon_of "$session")
+# A daemon started inside a sandbox that blocks the window server can never start Chrome: ended, quietly.
+if [ -n "$pid" ] && gui_blocked "$pid"; then stop_daemon "$pid"; pid=; fi
+if [ "$verb" = close ]; then
+  # close never starts a browser: agent-browser's own close starts Chrome first when it isn't up
+  [ -z "$own" ] && rm -f "$broken"
+  if [ -z "$pid" ]; then echo "✓ Browser closed"; exit 0; fi
+  if ! browser_up "$pid"; then stop_daemon "$pid"; echo "✓ Browser closed"; exit 0; fi
+  exec "$bin" --session "$session" --profile "$profile" "$@"
+fi
+if [ -f "$broken" ]; then
+  if [ "$(head -n 1 "$broken")" = "$(cause)" ]; then
+    echo "herdr-browser: This task's browser couldn't start: $(tail -n +2 "$broken"). It won't try again until Chrome or agent-browser changes; \`herdr-browser close\` lets it try once more." >&2
+    exit 5
+  fi
+  rm -f "$broken"
+fi
+
+out=$(mktemp "$root/.out.XXXXXX") && err=$(mktemp "$root/.err.XXXXXX") || exit 1
+trap 'rm -f "$out" "$err"' EXIT
+"$bin" --session "$session" --profile "$profile" "$@" >"$out" 2>"$err"
+rc=$?
+cat "$out"
+cat "$err" >&2
+if [ "$rc" -ne 0 ]; then
+  why=$(launch_why "$err" "$out")
+  if [ -n "$why" ]; then
+    printf '%s\n%s\n' "$(cause)" "$why" > "$broken" 2>/dev/null
+    pid=$(daemon_of "$session")
+    [ -n "$pid" ] && stop_daemon "$pid"
+    echo "herdr-browser: This task's browser couldn't start: $why. It won't try again until Chrome or agent-browser changes; \`herdr-browser close\` lets it try once more." >&2
+  fi
+fi
+exit "$rc"

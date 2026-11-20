@@ -2,14 +2,15 @@
 // web app draws as HTML (web/src/screens/Recipe.tsx). herdr-artifact copies this file, recipe.js and a main.js that
 // its recipe (recipe-data.js, from recipe.json) into each recipe artifact it installs, so the viewer, its versions and Mark up stay as they are.
 // Colors from theme() only; text 12-15 px; works from 320 px wide. A choice, a form or a button sends its words to
-// the agent that made it (artifact.js reply), from a click only.
+// the agent that keeps it (artifact.js answer), from a click only, kept with the version first (answers.json,
+// SHEP-87): reopened, the chosen option shows picked with when, and a choice or a form can be changed.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
 import { image } from "gpui-kit";
 import { theme, shared, setShared, props } from "herdr";
-import { asset, reply } from "./artifact.js";
+import { asset, answer, answers } from "./artifact.js";
 import data from "./recipe-data.js";
-import { chartShapes, choiceReply, formReply, isLink, mdParts, mediaKind, withIds } from "./recipe.js";
+import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, isDiff, isLink, mdParts, mediaKind, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
 // it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
@@ -24,12 +25,13 @@ function holdKeys() {
 const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
 
 export default class RecipeView extends View {
-  init() {
+  init(_props, cx) {
     this.recipe = null;
     this.error = null;
     this.tab = new Map();      // a tabs block's picked tab
     this.open = new Set();     // details blocks unfolded
-    this.sent = new Map();     // a choice's or form's words, once sent
+    this.sending = new Set();  // a block's answer on its way
+    this.answers = {};         // this version's kept answers (answers.json): { key: { value, at, by } }
     this.inputs = new Map();   // a form field's InputState
     this.checks = new Map();   // a form checkbox's value
     this.copied = null;        // the code box just copied, for its "Copied" a moment
@@ -42,6 +44,27 @@ export default class RecipeView extends View {
       else if (b?.type === "details") walk(b.blocks);
     });
     walk(this.recipe?.blocks);
+    // the answers kept with this version, then its forms' fields as sent
+    cx?.spawn?.(async (cx) => {
+      this.answers = { ...(await answers()), ...this.answers };
+      this.fill(this.recipe?.blocks);
+      cx.notify();
+    });
+  }
+
+  // a form answered before: its fields as sent
+  fill(blocks) {
+    (Array.isArray(blocks) ? blocks : []).forEach((b) => {
+      if (b?.type === "form") {
+        const a = answerOf(this.answers, b.id);
+        if (a && a.value && typeof a.value === "object") (b.fields ?? []).forEach((f) => {
+          if (f.kind === "checkbox") this.checks.set(`${b.id}:${f.name}`, Boolean(a.value[f.name]));
+          else this.input(b, f).set_value?.(String(a.value[f.name] ?? ""));
+        });
+      } else if (b?.type === "columns") (b.columns ?? []).forEach((c) => this.fill(c));
+      else if (b?.type === "tabs") (b.tabs ?? []).forEach((x) => this.fill(x?.blocks));
+      else if (b?.type === "details") this.fill(b.blocks);
+    });
   }
 
   async close() {
@@ -76,11 +99,54 @@ export default class RecipeView extends View {
     cx.timer.after(1500, (cx) => { if (this.copied === key) { this.copied = null; cx.notify(); } });
   }
 
-  send(key, text, cx) {
-    if (this.sent.has(key)) return;
-    this.sent.set(key, text);
+  // an answer: kept with the version and sent to the agent (artifact.js answer); shown as answered at once, taken
+  // back when it didn't go
+  send(key, value, text, cx) {
+    if (this.sending.has(key)) return;
+    const was = this.answers[key];
+    this.sending.add(key);
+    this.answers = { ...this.answers, [key]: { value, at: Date.now(), by: "window" } };
     cx.notify();
-    cx.spawn(async (cx) => { if (!(await reply(text))) this.sent.delete(key); cx.notify(); });
+    cx.spawn(async (cx) => {
+      const ok = await answer(key, value, text);
+      this.sending.delete(key);
+      if (!ok) { const next = { ...this.answers }; if (was) next[key] = was; else delete next[key]; this.answers = next; }
+      cx.notify();
+    });
+  }
+
+  // when the person answered, under its block: "You chose this at 14:05"
+  answered(kind, key, t) {
+    const a = answerOf(this.answers, key);
+    return a ? div().text_size(12).text_color(t.muted).child(answerLine(kind, a.at)) : null;
+  }
+
+  // a diff's lines, + and - in their own colour, @@ dim
+  diff(b, t) {
+    const color = { add: t.done, del: t.blocked, hunk: t.muted, file: t.foreground };
+    return v_flex().w_full().min_w(0).p(10).rounded(8).bg(t.surface).font_family("JetBrains Mono").text_size(12)
+      .children(diffLines(b.text).map((l) => div().w_full().min_w(0).whitespace_normal()
+        .text_color(color[l.kind] ?? t.foreground).when(l.kind === "file", (e) => e.font_semibold())
+        .child(l.text || " ")));
+  }
+
+  // a command that ran: its status (green Passed, red Failed · exit N), the command, its summary; its output folded
+  check(b, t) {
+    const s = checkStatus(b), c = s.ok ? t.done : t.blocked, open = this.open.has(b.id);
+    return v_flex().w_full().min_w(0).gap(4)
+      .child(v_flex().w_full().min_w(0).gap(6).p(10).rounded(8).bg(t.surface)
+        .child(h_flex().w_full().min_w(0).flex_wrap().gap(8).items_center()
+          .child(h_flex().flex_none().gap(6).items_center().px(8).h(20).rounded(10).border_1().border_color(c)
+            .child(div().size(7).rounded(4).bg(c))
+            .child(div().text_size(12).font_medium().text_color(c).child(s.label)))
+          .when(!!b.summary, (e) => e.child(div().min_w(0).text_size(13).whitespace_normal().child(String(b.summary)))))
+        .child(div().w_full().min_w(0).font_family("JetBrains Mono").text_size(12).text_color(t.muted).whitespace_normal().child(`$ ${b.command}`))
+        .when(!!b.output, (e) => e
+          .child(div().id(`out-${b.id}`).cursor_pointer().text_size(12).text_color(t.muted).hover((x) => x.text_color(t.foreground))
+            .on_click((_e, cx) => { if (open) this.open.delete(b.id); else this.open.add(b.id); cx.notify(); })
+            .child(`${open ? "▾" : "▸"} Output`))
+          .when(open, (e) => e.child(this.code(`${b.id}-out`, b.output, t)))))
+      .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(String(b.caption))));
   }
 
   // a form field's InputState, made in init() (render only reads it)
@@ -163,7 +229,8 @@ export default class RecipeView extends View {
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
           : image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border))
         .child(div().text_size(12).text_color(t.muted).child(x.caption ?? w))));
-      case "code": return this.code(b.id, b.text, t);
+      case "code": return isDiff(b) ? this.diff(b, t) : this.code(b.id, b.text, t);
+      case "check": return this.check(b, t);
       case "callout": return v_flex().gap(4).p(12).rounded(8).bg(t[TONE[b.tone ?? "info"]] ? t.surface : t.surface).border_l(3).border_color(t[TONE[b.tone ?? "info"]] ?? t.border)
         .when(!!b.title, (e) => e.child(div().text_size(13).font_semibold().child(b.title)))
         .when(!!b.md, (e) => e.child(this.md(b.id, b.md, t)));
@@ -187,17 +254,24 @@ export default class RecipeView extends View {
       }
       case "divider": return div().w_full().h(1).bg(t.border);
       case "choice": {
-        const sent = this.sent.get(b.id);
+        // the kept pick, picked (another can still be chosen: it replaces it and goes to the agent too)
+        const chosen = answerOf(this.answers, b.id)?.value ?? null, busy = this.sending.has(b.id);
+        const note = this.answered("choice", b.id, t);
         return v_flex().gap(6)
           .child(div().text_size(13).font_semibold().whitespace_normal().child(b.question))
-          .children(b.options.map((o, i) => v_flex().id(`ch-${b.id}-${i}`).p(10).gap(2).rounded(8).border_1().border_color(t.border)
-            .bg(sent === choiceReply(b, o.label) ? t.surface : t.background).when(!sent, (e) => e.cursor_pointer().hover((s) => s.bg(t.surface)))
-            .on_click((_e, cx) => this.send(b.id, choiceReply(b, o.label), cx))
-            .child(div().text_size(13).font_medium().child(sent === choiceReply(b, o.label) ? `${o.label} · Sent` : o.label))
-            .when(!!o.description, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(o.description)))));
+          .children(b.options.map((o, i) => {
+            const on = chosen === o.label, live = !on && !busy;
+            return v_flex().id(`ch-${b.id}-${i}`).p(10).gap(2).rounded(8).border_1().border_color(on ? t.foreground : t.border)
+              .bg(on ? t.surface : t.background).when(live, (e) => e.cursor_pointer().hover((s) => s.bg(t.surface)))
+              .on_click((_e, cx) => { if (live) this.send(b.id, o.label, choiceReply(b, o.label), cx); })
+              .child(div().text_size(13).font_medium().child(on ? `✓ ${o.label}` : o.label))
+              .when(!!o.description, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(o.description)));
+          }))
+          .when(!!note, (e) => e.child(note));
       }
       case "form": {
-        const sent = this.sent.has(b.id);
+        const kept = answerOf(this.answers, b.id), busy = this.sending.has(b.id);
+        const note = this.answered("form", b.id, t);
         return v_flex().gap(8)
           .children(b.fields.map((f) => f.kind === "checkbox"
             ? h_flex().id(`cb-${b.id}-${f.name}`).gap(8).items_center().cursor_pointer()
@@ -206,11 +280,14 @@ export default class RecipeView extends View {
               .child(div().text_size(13).child(f.label ?? f.name))
             : v_flex().gap(4).child(div().text_size(12).text_color(t.muted).child(f.label ?? f.name))
               .child(div().px(8).py(5).rounded(6).border_1().border_color(t.border).child(Input.new(this.input(b, f)).w_full().text_size(13)))))
-          .child(div().id(`fs-${b.id}`).self_start().px(12).py(6).rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(13)
-            .when(!sent, (e) => e.cursor_pointer()).on_click((_e, cx) => {
-              const values = Object.fromEntries(b.fields.map((f) => [f.name, f.kind === "checkbox" ? !!this.checks.get(`${b.id}:${f.name}`) : this.input(b, f).value()]));
-              this.send(b.id, formReply(b, values), cx);
-            }).child(sent ? "Sent" : b.submit ?? "Send"));
+          .child(h_flex().flex_wrap().gap(10).items_center()
+            .child(div().id(`fs-${b.id}`).self_start().px(12).py(6).rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(13)
+              .when(!busy, (e) => e.cursor_pointer()).on_click((_e, cx) => {
+                if (busy) return;
+                const values = Object.fromEntries(b.fields.map((f) => [f.name, f.kind === "checkbox" ? !!this.checks.get(`${b.id}:${f.name}`) : this.input(b, f).value()]));
+                this.send(b.id, values, formReply(b, values), cx);
+              }).child(busy ? "Sending…" : kept ? "Send again" : b.submit ?? "Send"))
+            .when(!!note, (e) => e.child(note)));
       }
       case "button": return this.button(b, b.id, t).self_start();
       case "buttons": return h_flex().flex_wrap().gap(8).items_center().children(b.items.map((x, i) => this.button(x, `${b.id}-${i}`, t)));
@@ -222,7 +299,7 @@ export default class RecipeView extends View {
   // plain link the person acts on themselves. quiet: the softer look, beside the one to press.
   button(b, key, t) {
     const link = isLink(b.href) ? b.href : null;
-    const sent = this.sent.has(key);
+    const sent = Boolean(answerOf(this.answers, key)) || this.sending.has(key);
     const answers = typeof b.reply === "string";
     const live = link || !sent;
     return div().id(`bt-${key}`).px(12).py(6).rounded(6).text_size(13)
@@ -230,7 +307,7 @@ export default class RecipeView extends View {
       .when(!!b.quiet, (e) => e.border_1().border_color(t.border).text_color(t.foreground))
       .when(live, (e) => e.cursor_pointer()).on_click((_e, cx) => {
         if (link) cx.open_url(link);
-        if (answers) this.send(key, b.reply, cx);
+        if (answers && !sent) this.send(key, b.label, b.reply, cx);
       }).child(sent && !link ? `${b.label} · Sent` : link ? `${b.label} ↗` : b.label);
   }
 

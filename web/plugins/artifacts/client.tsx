@@ -3,7 +3,7 @@
 // list per place, and one per chat (its ⋯ → Artifacts). A newer version swaps in live: only its data changed, the page takes the new data without a reload.
 // Shown in the side panel, it fills a place's Artifacts list (or a task's Artifacts tab) beside the chat.
 import clsx from 'clsx'
-import { Recipe, UNREADABLE } from '@client/screens/Recipe.tsx'
+import { Recipe, UNREADABLE, type Answers } from '@client/screens/Recipe.tsx'
 import { enterHint, sendsNow } from '@client/enter.ts'
 import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
@@ -390,15 +390,21 @@ export function ArtifactFrame(p: Parameters<typeof PageFrame>[0]) {
 function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   const [recipe, setRecipe] = useState<{ blocks: unknown[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [answers, setAnswers] = useState<Answers>({})
   // another machine's: the service reads its files there
   const on = art.machine ? `&on=${encodeURIComponent(art.machine)}` : ''
   useEffect(() => {
     let gone = false
     setRecipe(null)
     setError(null)
+    setAnswers({})
     fetch(`api/artifacts/${encodeURIComponent(art.id)}/recipe?v=${v}${on}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('gone'))))
       .then((r) => !gone && setRecipe(withIds(r)), () => !gone && setError(UNREADABLE))
+    // the person's answers kept with this version (SHEP-87): none yet is {}
+    fetch(`api/artifacts/${encodeURIComponent(art.id)}/answers?v=${v}${on}`)
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((a) => !gone && a && typeof a === 'object' && setAnswers(a as Answers), () => undefined)
     return () => { gone = true }
   }, [art.id, v, on])
   if (error) return <p className="p-4 text-fg3">{error}</p>
@@ -406,7 +412,8 @@ function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   return (
     <div className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
       <Recipe recipe={recipe} asset={(src) => `api/artifacts/${encodeURIComponent(art.id)}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${v}${on}`}
-        reply={(text) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text })} />
+        answers={answers}
+        reply={(text, keep) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text, ...(keep ? { answer: keep.key, value: keep.value } : {}) })} />
     </div>
   )
 }

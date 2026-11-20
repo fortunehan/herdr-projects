@@ -268,6 +268,10 @@ def cmd_show(args):
         text.append(f"needs the person: {ado_flow.card(v['pull'])}\n  run: {v['pull'].get('command')}\n  (it goes once the main checkout has the merge, or: herdr-task dismiss {s.ref(t)})")
     if v.get("proof"):
         text.append(f"proof: {v['proof']['title']} ({v['proof']['id']})")
+    for b in v.get("sent_back") or []:
+        # SHEP-87: each time the person sent it back from its Accept card, with their note
+        text.append(f"{SENT_BACK} {time.strftime('%Y-%m-%d %H:%M', time.localtime(b['at'] / 1000))}: {b['note']}"
+                    + (f" (about {b['on']})" if b.get("on") else ""))
     if v.get("archived"):
         text.append(f"archived: {time.strftime('%Y-%m-%d %H:%M', time.localtime(v['archived'] / 1000))} (still kept; writing to it brings it back)")
     for k in v["live"]:
@@ -1417,6 +1421,61 @@ def accept_run(args, worker=False):
             sent, started = tell(s, t, local_merge_msg(s, t), args)
         v = view(s, t)
     return s, t, how, error, sent, started, v
+
+
+SENT_BACK = "Sent back"
+
+
+def send_back_refusal(s, t):
+    """Why a task can't be sent back now, or None. Only a Ready task the person could accept: not while Accept
+    runs, nor once its pull request is merging on its forge (GitHub's merge queue, Azure DevOps's auto-complete),
+    which would merge it under its agent; a task already merged is done."""
+    if t["state"] != "ready":
+        return f"{s.ref(t)} isn't Ready (it's {t['state']}): only a Ready task can be sent back. Tell its agent instead."
+    if accepting(t):
+        return f"{s.ref(t)} is being accepted right now."
+    if t.get("merged"):
+        return f"{s.ref(t)} already merged."
+    if t.get("merge_queued"):
+        return f"{s.ref(t)} is in GitHub's merge queue and may merge any moment: take it out there first."
+    if t.get("merge_wait"):
+        return f"{s.ref(t)} is set to complete on Azure DevOps: cancel its auto-complete there first."
+    return None
+
+
+def cmd_send_back(args):
+    """The Accept card's Send back (SHEP-87): a Ready task back to Working with the person's note for its agent
+    (resumed first when it ended), recorded on the task (sent_back). Its pull request stays open; nothing merges it
+    meanwhile (no auto merge until its next ready, whose finalize() sets the merge policy again)."""
+    note = (args.note or "").strip()
+    if not note:
+        raise Fail("Say what should change: --note \"...\".")
+    with open_store(args) as s:
+        t = s.find(args.id)
+        why = send_back_refusal(s, t)
+        if why:
+            raise Fail(why)
+        main = s.loc["folder"]
+        proof = (t.get("proof") or {}).get("id")
+        on = (args.on or "").strip()
+        tag = f'<hc from="person" kind="send-back" task="{s.ref(t)}"' + (f' on="{on.replace(chr(34), "”")}"' if on else "") + ">"
+        msg = (f"{tag}\n{note}\n</hc>\n\n"
+               f"The person sent {s.ref(t)} back from its Accept card instead of accepting it" + (f" (about {on})" if on else "") + ". "
+               f"Fix what they asked, run the checks and commit; then update your proof with "
+               f"`herdr-artifact update {proof or '<proof id>'} <dir> --note \"<what this version answers>\"` and run "
+               f"`herdr-task ready {t['id']} --folder {shlex.quote(main)}` again.")
+        t["handed_at"] = now()
+        sent, started = tell(s, t, msg, args)
+        back_to_work(s, t, f"sent back: {note}", fit(f"{SENT_BACK}: {note}"))
+        for k in ("auto_merge",):
+            t.pop(k, None)
+        (t.get("pr") or {}).pop("wait", None)
+        t.setdefault("sent_back", []).append({"at": now(), "note": note[:4000], **({"on": on[:300]} if on else {}),
+                                              "to": sent, **({"new_agent": True} if started else {})})
+        s.dirty = True
+        v = view(s, t)
+    say(args, {**v, "terminal": sent, "new_agent": started},
+        f"{s.ref(t)}: sent back to {sent}" + (" (its agent started again)" if started else "") + ".")
 
 
 def cmd_fix(args):
