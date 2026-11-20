@@ -19,15 +19,16 @@ type Pt = { x: number; y: number }
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y)
 const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
 
-export function PictureViewer({ pics, at, onClose }: { pics: Picture[]; at: number; onClose: () => void }) {
+/** device: the page's shape (data-device), which the viewer, outside the page, carries itself */
+export function PictureViewer({ pics, at, device, onClose }: { pics: Picture[]; at: number; device?: string; onClose: () => void }) {
   const [i, setI] = useState(Math.min(Math.max(0, at), pics.length - 1))
   const p = pics[i]
   // over a full-screen artifact too: only what is inside the full-screen element shows
   const host = document.fullscreenElement ?? document.body
-  return createPortal(<Stage key={p.url} pics={pics} i={i} go={(n) => setI((n + pics.length) % pics.length)} onClose={onClose} />, host)
+  return createPortal(<Stage key={p.url} pics={pics} i={i} device={device} go={(n) => setI((n + pics.length) % pics.length)} onClose={onClose} />, host)
 }
 
-function Stage({ pics, i, go, onClose }: { pics: Picture[]; i: number; go: (n: number) => void; onClose: () => void }) {
+function Stage({ pics, i, device, go, onClose }: { pics: Picture[]; i: number; device?: string; go: (n: number) => void; onClose: () => void }) {
   const p = pics[i]
   const many = pics.length > 1
   const box = useRef<HTMLDivElement>(null)
@@ -166,7 +167,7 @@ function Stage({ pics, i, go, onClose }: { pics: Picture[]; i: number; go: (n: n
   const own = { onPointerDown: (e: ReactPointerEvent) => e.stopPropagation(), onPointerUp: (e: ReactPointerEvent) => e.stopPropagation() }
   const zoomed = v.s > 1.001
   return (
-    <div data-picture-viewer="" role="dialog" aria-modal="true" aria-label={p.name} className="fixed inset-0 z-[60] flex flex-col bg-black/92 text-white">
+    <div data-picture-viewer="" data-device={device} role="dialog" aria-modal="true" aria-label={p.name} className="fixed inset-0 z-[60] flex flex-col bg-black text-white">
       <div {...own} className="flex shrink-0 items-center gap-1 pt-[calc(env(safe-area-inset-top)+6px)] pr-2 pb-1.5 pl-4 phone:gap-0.5 phone:pl-3 [[data-topbar]~*_&]:pt-1.5">
         <div className="flex min-w-0 flex-1 flex-col phone:pr-1 sm:flex-row sm:items-baseline sm:gap-2">
           <span className="truncate text-[0.875rem] font-medium">{p.name}</span>

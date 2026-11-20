@@ -301,6 +301,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   // every picture in it, for the viewer to page through; the one open
   const pics = useMemo(() => (pictures(recipe) as { src: string; caption: string }[]).map((x) => ({ src: x.src, url: asset(x.src), name: x.caption || x.src.split('/').pop()!, file: x.src.split('/').pop()! })), [recipe, asset])
   const [shown, setShown] = useState<number | null>(null)
+  // the viewer sits outside the page (over everything): it takes the page's device shape with it
+  const root = useRef<HTMLDivElement>(null)
   const reply: Reply | undefined = send && (async (text, keep) => {
     const r = await send(text, keep)
     if (keep) setMine((m) => ({ ...m, [keep.key]: { value: keep.value, at: Date.now(), by: 'web' } }))
@@ -356,8 +358,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   )
   return (
     <OpenPicture.Provider value={(src) => setShown(Math.max(0, pics.findIndex((x) => x.src === src)))}>
-      <div className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">{recipe.blocks.map(wrap)}</div>
-      {shown !== null && pics.length ? <PictureViewer pics={pics} at={shown} onClose={() => setShown(null)} /> : null}
+      <div ref={root} className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">{recipe.blocks.map(wrap)}</div>
+      {shown !== null && pics.length ? <PictureViewer pics={pics} at={shown} device={root.current?.closest('[data-device]')?.getAttribute('data-device') ?? undefined} onClose={() => setShown(null)} /> : null}
     </OpenPicture.Provider>
   )
 }
