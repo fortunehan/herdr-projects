@@ -1834,6 +1834,146 @@ class BackToWork(unittest.TestCase):
         self.assertIn("isDraft", asked[0][asked[0].index("--json") + 1].split(","))
 
 
+class SendBack(unittest.TestCase):
+    """SHEP-87: the Accept card's Send back (herdr-task send-back): a Ready task goes back to Working with the
+    person's note for its agent (started again when it ended), the task keeps a "Sent back" record, nothing merges it
+    meanwhile, and a task merging on its forge, or being accepted, is refused. In memory, as BackToWork."""
+
+    setUp, agent, ready = BackToWork.setUp, BackToWork.agent, BackToWork.ready
+
+    def args(self, **kw):
+        import argparse
+        base = dict(note="The screenshot still shows the old layout.", on=None, space=None, agent=None, argv=None, parent=None)
+        return argparse.Namespace(id="SHEP-7", json=True, folder=None, **{**base, **kw})
+
+    def told(self):
+        said = []
+        p = self.mock.patch.object(self.commands, "tell", lambda s, t, msg, args: (said.append(msg), ("t1", False))[1])
+        p.start()
+        self.addCleanup(p.stop)
+        return said
+
+    def test_a_ready_task_goes_back_to_work_with_the_note(self):
+        pr = {"number": 12, "repo": "o/r", "url": "https://github.com/o/r/pull/12", "wait": "Checks running"}
+        t = self.ready(mode="worktree", worktree="/w", branch="b", pr=pr, auto_merge="checks", merge_requested=5,
+                       proof={"id": "shep-7-proof-1a2b", "title": "SHEP-7: Web client · Proof"})
+        self.store.loc["folder"] = "/main"
+        said = self.told()
+        self.commands.cmd_send_back(self.args(on="the picture “After”"))
+        self.assertEqual(t["state"], "running")
+        self.assertEqual(t["back"]["why"], "sent back: The screenshot still shows the old layout.")
+        self.assertNotIn("auto", t["back"])
+        self.assertTrue(t["progress"]["text"].startswith("Sent back: The screenshot"))
+        for k in ("ready_turns", "merge_requested", "auto_merge"):
+            self.assertNotIn(k, t)
+        # its pull request stays open, its wait for checks goes until its next ready
+        self.assertEqual(t["pr"]["number"], 12)
+        self.assertNotIn("wait", t["pr"])
+        rec = t["sent_back"][-1]
+        self.assertEqual((rec["note"], rec["on"], rec["to"]), ("The screenshot still shows the old layout.", "the picture “After”", "t1"))
+        msg = said[0]
+        self.assertIn('<hc from="person" kind="send-back" task="SHEP-7" on="the picture “After”">', msg)
+        self.assertIn("The screenshot still shows the old layout.", msg)
+        self.assertIn("herdr-artifact update shep-7-proof-1a2b", msg)
+        self.assertIn("herdr-task ready 7 --folder /main", msg)
+
+    def test_each_send_back_is_kept(self):
+        t = self.ready()
+        self.told()
+        self.commands.cmd_send_back(self.args(note="First"))
+        t["state"] = "ready"
+        self.commands.cmd_send_back(self.args(note="Second"))
+        self.assertEqual([x["note"] for x in t["sent_back"]], ["First", "Second"])
+
+    def test_an_ended_agent_is_started_again_with_the_note(self):
+        t = self.ready(space="sp1")
+        started = []
+        for name, value in (("workers", lambda s, t: []), ("just_started", lambda t: None), ("unarchive", lambda s, t: None),
+                            ("start_again", lambda s, t, space, key=None, argv_json=None, message=None, **k: (started.append((space, message)), ({"address": "t5"}, True))[1])):
+            p = self.mock.patch.object(self.commands, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.commands.cmd_send_back(self.args())
+        self.assertEqual(t["state"], "running")
+        self.assertEqual(started[0][0], "sp1")
+        self.assertIn('kind="send-back"', started[0][1])
+        self.assertEqual((t["sent_back"][-1]["to"], t["sent_back"][-1]["new_agent"]), ("t5", True))
+
+    def test_refused_unless_ready_and_not_merging(self):
+        said = self.told()
+        for more, words in (({"state": "running"}, "isn't Ready"), ({"accepting": 10**13}, "being accepted"),
+                            ({"merged": True}, "already merged"), ({"merge_queued": 5, "pr": {"number": 1}}, "merge queue"),
+                            ({"merge_wait": 5}, "auto-complete")):
+            t = self.ready(**more)
+            with self.assertRaisesRegex(self.commands.Fail, words):
+                self.commands.cmd_send_back(self.args())
+            self.assertNotIn("sent_back", t)
+            self.assertEqual(t["state"], more.get("state", "ready"))
+        with self.assertRaisesRegex(self.commands.Fail, "what should change"):
+            self.commands.cmd_send_back(self.args(note="  "))
+        self.assertEqual(said, [])
+
+    def test_the_tick_keeps_it_working_until_its_agent_says_ready(self):
+        """Never settled back to Ready by the tick (a fix asked for, not its agent's own turn)."""
+        t = self.ready(mode="worktree", worktree=tempfile.mkdtemp(), branch="b", head="abc")
+        p = self.mock.patch.object(self.tick, "git", lambda cwd, *a: (True, "abc" if a[0] == "rev-parse" else "", ""))
+        p.start()
+        self.addCleanup(p.stop)
+        self.told()
+        self.commands.cmd_send_back(self.args())
+        self.live = [dict(self.agent({"address": "t1", "status": "idle", "turn": 6, "role": "worker"}), agent="claude")]
+        self.tick.tick_store(self.store, {"started": []})
+        self.assertEqual(t["state"], "running")
+
+
+class ProofChoices(unittest.TestCase):
+    """SHEP-87: the Accept card's evidence lists the choices the person answered in its proof (answers.json beside
+    each version), the newest per block, in words from the agent's recipe."""
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        import herdr_task.proof as proof
+        self.proof, self.dir = proof, tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+        p = mock.patch.object(proof, "ARTIFACTS", self.dir)
+        p.start()
+        self.addCleanup(p.stop)
+        self.art = {"id": "p-1a2b", "title": "SHEP-7: X · Proof", "version": 2, "versions": [{"v": 1}, {"v": 2}]}
+        p = mock.patch.object(proof, "artifacts_of", lambda folder: [self.art])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def write(self, v, recipe, answers):
+        d = os.path.join(self.dir, "files", "p-1a2b", f"v{v}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "recipe.json"), "w") as f:
+            json.dump(recipe, f)
+        if answers is not None:
+            with open(os.path.join(d, "answers.json"), "w") as f:
+                json.dump(answers, f)
+
+    def test_answered_choices_forms_and_buttons_in_words(self):
+        r1 = {"recipe": 1, "blocks": [{"type": "text", "md": "hi"}, {"type": "choice", "question": "Ship it?", "options": [{"label": "Ship"}, {"label": "Wait"}]}]}
+        self.write(1, r1, {"b2": {"value": "Wait", "at": 10}})
+        r2 = {"recipe": 1, "blocks": [
+            {"type": "details", "summary": "More", "blocks": [{"type": "choice", "id": "ship", "question": "Ship it?", "options": [{"label": "Ship"}]}]},
+            {"type": "form", "id": "who", "title": "Owner", "fields": [{"name": "n", "label": "Name"}, {"name": "ok", "kind": "checkbox", "label": "Sure"}]},
+            {"type": "buttons", "items": [{"label": "Looks good", "reply": "ok"}, {"label": "Later", "reply": "later"}]},
+        ]}
+        self.write(2, r2, {"ship": {"value": "Ship", "at": 30}, "who": {"value": {"n": "Ann", "ok": True}, "at": 20},
+                           "b2-1": {"value": "Later", "at": 40}, "gone": {"value": "x", "at": 50}})
+        got = self.proof.choices_of("/main", {"id": "p-1a2b"})
+        self.assertEqual([(c["question"], c["value"], c["v"]) for c in got], [
+            ("Ship it?", "Wait", 1), ("Owner", "Name: Ann; Sure: yes", 2), ("Ship it?", "Ship", 2), ("Later", "pressed", 2)])
+
+    def test_none_without_a_proof_or_answers(self):
+        self.write(1, {"recipe": 1, "blocks": [{"type": "text", "md": "hi"}]}, None)
+        self.assertEqual(self.proof.choices_of("/main", None), [])
+        self.assertEqual(self.proof.choices_of("/main", {"id": "p-1a2b"}), [])
+        self.assertEqual(self.proof.choices_of("/main", {"id": "other"}), [])
+
+
 class OwnBackgroundWork(unittest.TestCase):
     """SHEP-53: an agent quiet with its own work still running (a background shell, a Monitor,
     Codex's background terminal), or whose fresh status line says it waits on CI or a review, is
@@ -6664,7 +6804,7 @@ class ExpectedChecks(unittest.TestCase):
         import herdr_task.github as github
         self.github = github
         self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
         self.git = lambda *a: subprocess.run(["git", "-C", self.dir, "-c", "user.name=T", "-c", "user.email=t@example.com", *a],
                                              check=True, capture_output=True, text=True).stdout.strip()
         self.git("init", "-q", "-b", "main")
