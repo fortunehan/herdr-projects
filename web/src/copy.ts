@@ -6,7 +6,10 @@
     3. Neither worked (a plain http link, a frame without clipboard rights, a browser that says no): the words show
        selected in a small box with "Press and hold to copy" (touch) or "Press ⌘C", so the person can still copy them.
 
-    It resolves true only when the words really reached the clipboard: a button says "Copied" only then. */
+    It resolves true only when the words really reached the clipboard: a button says "Copied" only then.
+
+    A picture (the artifact picture viewer's Copy, SHEP-90) goes on the clipboard as a PNG, the one picture type every
+    browser's clipboard takes: copyPicture. */
 
 import { useEffect, useRef, useState } from 'react'
 
@@ -161,4 +164,70 @@ function showManual(text: string) {
   area.focus({ preventScroll: true })
   area.select()
   area.setSelectionRange(0, text.length)
+}
+
+/* ---------- a picture ---------- */
+
+/** what the browser lends the viewer for Copy */
+export type ClipEnv = {
+  secure: boolean
+  write?: (items: unknown[]) => Promise<void>
+  Item?: new (parts: Record<string, Promise<Blob> | Blob>) => unknown
+}
+
+const clipEnv = (): ClipEnv => ({
+  secure: typeof window !== 'undefined' && window.isSecureContext,
+  write: typeof navigator !== 'undefined' && navigator.clipboard?.write ? (items) => navigator.clipboard.write(items as ClipboardItem[]) : undefined,
+  Item: typeof ClipboardItem === 'undefined' ? undefined : (ClipboardItem as unknown as ClipEnv['Item']),
+})
+
+/** whether Copy can work here: a page over https (or this computer) whose browser can put a picture on the clipboard.
+ *  Over plain http it can't, so the button isn't there at all. */
+export const canCopyPicture = (env: ClipEnv = clipEnv()) => env.secure && !!env.write && !!env.Item
+
+/** Puts the picture at `url` on the clipboard as a PNG. The clipboard is asked for at once, in the click, with the
+ *  picture still to come (Safari forgets the click after an await); a non-PNG is drawn into a PNG first. Throws a
+ *  plain-words Error (copyProblem). */
+export async function copyPicture(url: string, toPng: (b: Blob) => Promise<Blob> = pngOf, env: ClipEnv = clipEnv()) {
+  if (!canCopyPicture(env)) throw new Error(copyProblem(null, env))
+  const png = fetch(url)
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`the picture didn't load (${r.status})`))))
+    .then(toPng)
+  // the clipboard reads it; a browser that refused first never does
+  png.catch(() => undefined)
+  try {
+    await env.write!([new env.Item!({ 'image/png': png })])
+  } catch (e) {
+    throw new Error(copyProblem(e, env))
+  }
+}
+
+/** why Copy failed, in plain words */
+export function copyProblem(e: unknown, env: ClipEnv = clipEnv()) {
+  if (!env.secure) return 'Copying a picture needs the app over https.'
+  if (!env.write || !env.Item) return "This browser can't put a picture on the clipboard: save it instead."
+  const name = (e as { name?: string })?.name
+  if (name === 'NotAllowedError') return "The browser didn't allow it: click the picture, then Copy again."
+  const msg = String((e as Error)?.message ?? '').trim()
+  return msg ? `${msg[0].toUpperCase()}${msg.slice(1)}${/[.!?]$/.test(msg) ? '' : '.'}` : 'Something went wrong.'
+}
+
+/** a picture drawn into a PNG (an SVG with no size of its own at 1024 wide) */
+async function pngOf(b: Blob): Promise<Blob> {
+  if (b.type === 'image/png') return b
+  const url = URL.createObjectURL(b)
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode().catch(() => Promise.reject(new Error("the browser can't read this picture")))
+    const w = img.naturalWidth || 1024
+    const h = img.naturalHeight || Math.round(w * 0.75)
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    c.getContext('2d')!.drawImage(img, 0, 0, w, h)
+    return await new Promise<Blob>((ok, no) => c.toBlob((x) => (x ? ok(x) : no(new Error("the picture couldn't be made a PNG"))), 'image/png'))
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
