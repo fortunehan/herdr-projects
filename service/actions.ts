@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag } from "../core/send.js";
 import { kindOf } from "../core/chat-reader.js";
 import { WORDS } from "../core/chat-view.js";
+import { NOTES_MAX } from "../core/markup.js";
 import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
@@ -659,6 +660,14 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
   }
   if ((b?.type === "artifact-send" || b?.type === "artifact-note" || b?.type === "artifact-say") && typeof b.artifact === "string" && compat.artifacts) {
     // a recipe's answer or a note on one of its blocks: to the agent that keeps the artifact
+    if (b.type === "artifact-note" && Array.isArray(b.notes)) {
+      // Mark up's Send all (SHEP-88): numbered notes, each its words and its spot in words, plus words about all of it
+      if (!b.notes.length || b.notes.length > NOTES_MAX) throw new Error(`Send 1 to ${NOTES_MAX} notes.`);
+      const notes = b.notes.map((n: any) => ({ text: str(n?.note ?? n?.text ?? "", 4000).trim(), spot: str(n?.target ?? n?.spot ?? "", 300).trim() }));
+      const general = str(b.text ?? "", 4000).trim();
+      if (!general && !notes.some((n: { text: string }) => n.text)) throw new Error("Nothing to send.");
+      return compat.artifacts.notes(str(b.artifact, 100), Number(b.v) || 1, notes, general);
+    }
     const text = str(b.text ?? b.note, 4000).trim();
     if (!text) throw new Error("Nothing to send.");
     // an answer is kept with its version (answers.json) before its words go: a block's key and its value, at most 4000 characters as JSON

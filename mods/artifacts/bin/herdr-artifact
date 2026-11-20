@@ -66,8 +66,9 @@ APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config", "herdr-a
 GUIDE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "ARTIFACTS.md")
 # Mark up (the person points at a spot and writes to the agent), laid over every installed artifact.
 MARKUP = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "markup.js")
-# What Mark up imports beside it (markup.js's dirs.js, and dirs.js's core/paths.js): each copy carries them too (#870).
-MARKUP_HELPERS = ("dirs.js", os.path.join("core", "paths.js"))
+# What Mark up imports beside it (markup.js's dirs.js and core/markup.js, and dirs.js's core/paths.js): each copy carries
+# them too (#870).
+MARKUP_HELPERS = ("dirs.js", os.path.join("core", "paths.js"), os.path.join("core", "markup.js"))
 # A recipe artifact (recipe.json, Shepherdr 3.1) is drawn by the shared recipe view: copied into its installed mod.
 RECIPE_VIEW = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "recipe-view.js")
 RECIPE_CORE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "core", "recipe.js")
@@ -1494,8 +1495,60 @@ def rect(s):
     return v
 
 
+NOTES_MAX = 30  # core/markup.js NOTES_MAX
+
+
+def read_notes(v):
+    """--notes: a JSON list of {"text", "spot"} (spot: where on it, in words; may be left out), given as JSON, @file or
+    - (stdin). Numbered in its order, as marked on the artifact."""
+    if v == "-":
+        v = sys.stdin.read()
+    elif v.startswith("@"):
+        try:
+            with open(os.path.expanduser(v[1:])) as f:
+                v = f.read()
+        except OSError as e:
+            raise Fail(f"Can't read {v[1:]}: {e.strerror}")
+    try:
+        d = json.loads(v)
+    except ValueError:
+        raise Fail("--notes isn't JSON: give a list of {\"text\": …, \"spot\": …}.")
+    if isinstance(d, dict) and isinstance(d.get("notes"), list):
+        d = d["notes"]
+    if not isinstance(d, list) or not all(isinstance(n, (dict, str)) for n in d):
+        raise Fail("--notes must be a list of {\"text\": …, \"spot\": …}.")
+    if len(d) > NOTES_MAX:
+        raise Fail(f"At most {NOTES_MAX} notes at once.")
+    out = []
+    for n in d:
+        n = {"text": n} if isinstance(n, str) else n
+        text = str(n.get("text") or "").strip()[:4000]
+        spot = str(n.get("spot") or "").strip()[:300]
+        out.append({"text": text, "spot": spot})
+    return out
+
+
+def note_lines(notes, general):
+    """Several notes in one message: each with its number (as marked on the artifact), where it is and its words, then
+    the general words."""
+    lines = [f"{len(notes)} notes, numbered as marked on it:"]
+    for i, n in enumerate(notes, 1):
+        where = f"On {n['spot']}" if n["spot"] else "On it"
+        lines.append(f"{i}. {where}:\n{n['text'] or '(no words: just this spot)'}")
+    if general:
+        lines.append(f"About all of it:\n{general}")
+    return lines
+
+
 def cmd_note(o):
-    """The person's note on an artifact (the viewer's Mark up), sent to the agent that keeps it."""
+    """The person's note on an artifact (the viewer's Mark up), sent to the agent that keeps it. Several numbered notes
+    (--notes) go as one message; one note without --text is sent as a single note, as before."""
+    notes = read_notes(o.notes) if o.notes is not None else []
+    text, spot = (o.text or "").strip(), o.spot
+    if len(notes) == 1 and not text:
+        text, spot, notes = notes[0]["text"], notes[0]["spot"] or o.spot, []
+    if not text and not notes:
+        raise Fail("Nothing to send: give --text or --notes.")
     image = o.image
     if o.shot:
         os.makedirs(NOTES, exist_ok=True)
@@ -1507,7 +1560,9 @@ def cmd_note(o):
                 pass
         out = os.path.join(NOTES, f"{o.id}-v{o.version or 0}-{now()}.png")
         try:
-            if o.panel and o.area and crop_shot(o.shot, rect(o.panel), rect(o.area), out):
+            # several notes: their numbered marks are in the shot already, so only the panel is cut
+            area = rect(o.area) if o.area and not notes else None
+            if o.panel and (area or notes) and crop_shot(o.shot, rect(o.panel), area, out):
                 image = out
         finally:
             try:
@@ -1515,7 +1570,8 @@ def cmd_note(o):
             except OSError:
                 pass
     if o.machine:
-        args = ["note", o.id, "--text", o.text, "--json"] + (["--version", str(o.version)] if o.version else []) + (["--spot", o.spot] if o.spot else [])
+        args = ["note", o.id, "--json"] + (["--text", text] if text else []) + (["--version", str(o.version)] if o.version else []) \
+            + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else [])
         if o.answer:
             args += ["--answer", o.answer, "--value", o.value or "null", "--by", o.by or "window"]
         if image:
@@ -1543,17 +1599,24 @@ def cmd_note(o):
         # kept first (SHEP-87): the answer stays with the version even when its agent is gone
         keep_answer(a["id"], v, o.answer, o.value, o.by)
     to, why = keeper(a, loc["folder"])
-    on = f' on="{attr(o.spot)}"' if o.spot else ""
-    lines = [o.text.strip()]
+    if notes:
+        on = f' notes="{len(notes)}"'
+        lines = note_lines(notes, text)
+    else:
+        on = f' on="{attr(spot)}"' if spot else ""
+        lines = [text]
     if v != a["version"]:
         lines.append(f"(Written on v{v}; the latest is v{a['version']}.)")
     if image:
-        lines.append(f"The artifact as they saw it, the spot outlined in blue: {image}")
+        lines.append(f"The artifact as they saw it, each note's spot marked with its number in blue: {image}" if notes
+                     else f"The artifact as they saw it, the spot outlined in blue: {image}")
     body = f'<hc from="artifact" id="{attr(a["id"])}" version="{v}" title="{attr(a["title"])}"{on}>\n' + "\n\n".join(lines) + "\n</hc>"
     r = run(["hc", "send", to, body])
     if r.returncode != 0:
         raise Fail(r.stderr.strip() or r.stdout.strip() or f"Couldn't send it to {to}.")
     out = {"to": to, "why": why, "version": v, "image": image}
+    if notes:
+        out["notes"] = len(notes)
     print(json.dumps(out) if o.json else f"Sent to {to} ({why}).")
     return 0
 
@@ -2509,7 +2572,9 @@ def main():
     c.add_argument("--version", type=int, help="an older version (default: the latest)")
     c = cmd("note", cmd_note, "send the person's note on an artifact to the agent that keeps it (the viewer's Mark up)")
     c.add_argument("id")
-    c.add_argument("--text", required=True, help="what the person wrote")
+    c.add_argument("--text", help="what the person wrote (with --notes: their words about all of it, optional)")
+    c.add_argument("--notes", help='several numbered notes sent as one message: a JSON list of {"text": …, "spot": …} '
+                   "(spot: where on it, in words), as JSON, @file or - for stdin")
     c.add_argument("--version", type=int, help="the version they were looking at (default: the latest)")
     c.add_argument("--spot", help="where on it, in words")
     c.add_argument("--image", help="a picture of it, a path the agent can read")

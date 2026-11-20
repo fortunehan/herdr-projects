@@ -1350,14 +1350,30 @@ export function SecretField({ label, value, onChange, onEnter, className, autoFo
 }
 
 /** The numbered mark Mark up leaves on what you picked */
-export function MarkBadge({ x, y }: { x: number; y: number }) {
+export function MarkBadge({ x, y, n = 1, on, onPick }: { x: number; y: number; n?: number; on?: boolean; onPick?: () => void }) {
+  const cls = clsx(
+    'absolute grid h-[18px] min-w-[18px] place-items-center rounded-full bg-focus px-[5px] text-[0.6875rem] font-semibold text-white tabular-nums phone:h-[22px] phone:min-w-[22px] phone:text-[0.8125rem]',
+    on && 'ring-2 ring-bg',
+  )
+  if (!onPick)
+    return (
+      <span className={clsx('pointer-events-none', cls)} style={{ left: x - 9, top: y - 9 }}>
+        {n}
+      </span>
+    )
+  // a note's number on the artifact: a press picks that note instead of starting a new one
   return (
-    <span
-      className="pointer-events-none absolute grid h-[18px] min-w-[18px] place-items-center rounded-full bg-focus px-[5px] text-[0.6875rem] font-semibold text-white tabular-nums phone:h-[22px] phone:min-w-[22px] phone:text-[0.8125rem]"
+    <button
+      type="button"
+      aria-label={`Note ${n}`}
+      className={clsx('cursor-pointer', cls)}
       style={{ left: x - 9, top: y - 9 }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onClick={onPick}
     >
-      1
-    </span>
+      {n}
+    </button>
   )
 }
 
