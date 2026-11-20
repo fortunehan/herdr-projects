@@ -6,6 +6,9 @@
 // (ArtifactFrame): beside the rest on a wide screen, its own scroll; under the summary on a narrow one, all in one
 // scroll. Accept stays in view under it either way. Send back… (SHEP-87) beside it opens a note box: the task goes back
 // to its agent with that note (`herdr-task send-back`), Ready to Working.
+// A task with nothing to merge (SHEP-95: research or a design done in the folder itself) says Mark done and leads with
+// what it made: its proof (and other artifacts) first, then the summary and explanation; its changes and checks show
+// only when it has some. Its row (markDone) says so until its evidence is read.
 import clsx from 'clsx'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { act, closeArtifact, getState, openArtifact, taskOf, useStore } from '../kernel.ts'
@@ -130,10 +133,10 @@ function Lead({ summary, e }: { summary: string; e: Evidence }) {
 
 // The proof right in the card, as the viewer draws it: a quiet line with its title and a small Open ↗ (the viewer,
 // over the card), over the proof in a well. Wide: it fills its column and scrolls inside; narrow: as tall as it is.
-function InlineProof({ art }: { art: Artifact }) {
+function InlineProof({ art, headWide }: { art: Artifact; /** its title line only on a wide card (a narrow one leads with it already) */ headWide?: boolean }) {
   return (
     <section aria-label={A.ACCEPT.proof} className="flex min-w-0 flex-col gap-1.5 @3xl:min-h-0 @3xl:flex-1">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className={clsx('min-w-0 items-center gap-2', headWide ? 'hidden @3xl:flex' : 'flex')}>
         <h3 className="shrink-0 text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.proof}</h3>
         <p className="min-w-0 flex-1 truncate text-[0.8125rem] text-fg2 phone:text-sm">{A.proofTitle(art.title).replace(/\s*·\s*Proof$/i, '')}</p>
         <button type="button" onClick={() => openArtifact(art.id)} className="press-dim -my-1 flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-xs text-fg3 hover:bg-hover hover:text-fg phone:h-9 phone:text-[0.8125rem]">
@@ -184,6 +187,9 @@ export function AcceptCard() {
   if (!task) return null
   const ready = A.canAccept(t) && (current?.status === 'ready' || !!current?.acceptAgain)
   const e = t?.evidence ?? {}
+  // nothing to merge: Mark done, what it made first (its evidence once read, its row until then)
+  const hint = !!current?.markDone
+  const done = A.markDone(e, hint) as boolean
   // its proof as the app knows it, to draw in the card; one it doesn't know (yet) stays a row that opens it
   const proofArt = e.proof ? artifacts?.find((a) => a.id === e.proof!.id) : undefined
 
@@ -231,25 +237,41 @@ export function AcceptCard() {
   // back's box open it closes the box
   const cancel = () => (getState().ui.viewer ? closeArtifact() : back !== null ? setBack(null) : close())
   // what follows the lead (and the proof, when it shows in the card)
+  const artifactList = <div className="flex flex-col gap-1.5">{e.artifacts?.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
+  const artifactRows = e.artifacts?.length ? <Section label={A.ACCEPT.artifacts}>{artifactList}</Section> : null
+  // what a nothing-to-merge task made, before its lead: its proof as a row (drawn in the card too, on a wide one beside
+  // it already), then its other artifacts
+  const made = (
+    <div className={clsx('flex min-w-0 flex-col gap-4', proofArt && !e.artifacts?.length && '@3xl:hidden')}>
+      <section className={clsx('flex flex-col gap-1.5', proofArt && '@3xl:hidden')}>
+        <h3 className="text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.proof}</h3>
+        {e.proof ? <ArtifactRow a={e.proof} /> : <p className="text-fg3">{A.ACCEPT.noProof}</p>}
+      </section>
+      {e.artifacts?.length ? (
+        <section className="flex flex-col gap-1.5">
+          <h3 className="text-[0.8125rem] font-medium text-fg3 phone:text-sm">{A.ACCEPT.artifacts}</h3>
+          {artifactList}
+        </section>
+      ) : null}
+    </div>
+  )
   const rest = (
     <>
-      {proofArt ? null : (
+      {proofArt || done ? null : (
         <Section label={A.ACCEPT.proof}>
           {e.proof ? <ArtifactRow a={e.proof} /> : <p className="text-fg3">{A.ACCEPT.noProof}</p>}
         </Section>
       )}
-      {e.artifacts?.length ? (
-        <Section label={A.ACCEPT.artifacts}>
-          <div className="flex flex-col gap-1.5">{e.artifacts.map((a) => <ArtifactRow key={a.id} a={a} />)}</div>
+      {done ? null : artifactRows}
+      {!done || A.hasChanges(e) ? <Section label={A.ACCEPT.changes}><Changes e={e} /></Section> : null}
+      {!done || A.hasChecks(e) ? (
+        <Section label={A.ACCEPT.checks}>
+          <p className="flex items-center gap-2">
+            {e.checks && e.checks.state !== 'none' ? <span className={clsx('size-[7px] shrink-0 rounded-full', CHECK[e.checks.state])} /> : null}
+            <span className={clsx(!e.checks || e.checks.state === 'none' ? 'text-fg3' : '')}>{e.checks?.text ?? A.ACCEPT.noChecks}</span>
+          </p>
         </Section>
       ) : null}
-      <Section label={A.ACCEPT.changes}><Changes e={e} /></Section>
-      <Section label={A.ACCEPT.checks}>
-        <p className="flex items-center gap-2">
-          {e.checks && e.checks.state !== 'none' ? <span className={clsx('size-[7px] shrink-0 rounded-full', CHECK[e.checks.state])} /> : null}
-          <span className={clsx(!e.checks || e.checks.state === 'none' ? 'text-fg3' : '')}>{e.checks?.text ?? A.ACCEPT.noChecks}</span>
-        </p>
-      </Section>
       {more ? (
         <section className="flex flex-col gap-2 border-t border-line pt-3">
           <button type="button" aria-expanded={details} onClick={() => setDetails(!details)} className="flex items-center gap-1.5 self-start text-[0.8125rem] font-medium text-fg3 hover:text-fg phone:text-sm">
@@ -263,7 +285,7 @@ export function AcceptCard() {
   )
 
   return (
-    <Dialog title={settled ? ref : A.ACCEPT.title(ref)} sub={t?.title ?? named ?? ''} closer wide large={!!proofArt} onCancel={cancel} safe
+    <Dialog title={settled ? ref : A.cardTitle(ref, e, hint)} sub={t?.title ?? named ?? ''} closer wide large={!!proofArt} onCancel={cancel} safe
       cancel={settled ? A.ACCEPT.close : A.ACCEPT.cancel}
       foot={t && (error || settled || (back !== null && !settled)) ? (
         <>
@@ -288,7 +310,7 @@ export function AcceptCard() {
       ) : (
         <>
           <Primary soft disabled={!ready || busy} onClick={() => setBack('')}>{A.ACCEPT.sendBack}</Primary>
-          <Primary disabled={!ready || busy} onClick={accept}>{busy ? A.ACCEPT.accepting : A.acceptLabel(e)}</Primary>
+          <Primary disabled={!ready || busy} onClick={accept}>{busy ? A.busyLabel(e, hint) : A.acceptLabel(e, hint)}</Primary>
         </>
       )}>
       {!t ? (
@@ -299,8 +321,9 @@ export function AcceptCard() {
         <div className="@container flex min-h-0 flex-1 flex-col pt-2 text-fg">
           <div className="min-h-0 flex-1 overflow-y-auto @3xl:overflow-hidden">
             <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 pb-1 @3xl:h-full @3xl:grid-cols-[minmax(0,1fr)_360px] @3xl:grid-rows-[minmax(0,1fr)] @3xl:gap-x-6 @3xl:pb-0">
-              <div className="order-2 @3xl:order-none @3xl:col-start-1 @3xl:row-start-1 @3xl:flex @3xl:min-h-0 @3xl:flex-col"><InlineProof art={proofArt} /></div>
+              <div className="order-2 @3xl:order-none @3xl:col-start-1 @3xl:row-start-1 @3xl:flex @3xl:min-h-0 @3xl:flex-col"><InlineProof art={proofArt} headWide={done} /></div>
               <div className="contents @3xl:col-start-2 @3xl:row-start-1 @3xl:flex @3xl:min-h-0 @3xl:min-w-0 @3xl:flex-col @3xl:gap-4 @3xl:overflow-y-auto @3xl:pb-1">
+                {done ? <div className="order-0 @3xl:order-none">{made}</div> : null}
                 <div className="order-1 @3xl:order-none"><Lead summary={w.summary} e={e} /></div>
                 <div className="order-3 flex min-w-0 flex-col gap-4 @3xl:order-none">{rest}</div>
               </div>
@@ -309,6 +332,7 @@ export function AcceptCard() {
         </div>
       ) : (
         <div className="flex max-h-[60dvh] min-w-0 flex-col gap-4 overflow-y-auto pt-2 pb-1 text-fg">
+          {done ? made : null}
           <Lead summary={w.summary} e={e} />
           {rest}
         </div>

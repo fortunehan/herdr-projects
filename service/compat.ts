@@ -399,6 +399,8 @@ export class Compat {
         ...(r.pinned ? { pinned: 1 } : {}),
         ...(r.archived ? { archived: r.done_at ?? 1 } : {}),
         ...(r.acceptAgain ? { acceptAgain: true } : {}),
+        // SHEP-95: nothing to merge (core/tasks.js nothingToMerge): its Accept says Mark done
+        ...(r.markDone ? { markDone: true } : {}),
         // what its agent last said, as the window's task header (mods/chat/panel.js reportLine): working, its words (a
         // provider retry's line first) and minutes left; needing you, frozen with the % it stopped at
         ...(r.said ? { report: { msg: r.section === "working" && r.why ? r.why : r.said.text, ...(r.said.done != null ? { progress: r.said.done } : {}),

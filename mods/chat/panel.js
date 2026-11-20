@@ -29,7 +29,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces, machines } from "herdr";
 import { terminals, agents } from "./live.js";
 import { taskDot, ownProgress, estimated } from "./dot.js";
-import { place, acceptAgain, machineOf, RANK } from "./core/tasks.js";
+import { place, acceptAgain, machineOf, nothingToMerge, RANK } from "./core/tasks.js";
 import { button, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
@@ -242,7 +242,7 @@ export class PanelHost {
   accept(_cx) {
     const r = this.rec;
     openOverlay({ mod: "accept-card", kind: "dialog", modal: true, width: 640, height: 640,
-      props: { ref: r.ref, folder: r.folder, machine: r.machine ?? null, title: r.title } });
+      props: { ref: r.ref, folder: r.folder, machine: r.machine ?? null, title: r.title, markDone: nothingToMerge(r) } });
   }
 
   // Open in VS Code, iTerm2 or Finder (core/open-editor.js APPS): the task's folder, on this machine only. Every

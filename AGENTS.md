@@ -61,6 +61,15 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 - `docs/**` is in the dev Mac's global gitignore: a new docs/ page needs `git add -f`.
+- The dev Mac's command guard (dcg) also blocks heredoc-fed edits (`python3 - <<EOF`, `cat > f <<EOF`): write the script
+  to /tmp with your editor tool and run `python3 /tmp/x.py`.
+- Reproduce a Codex worker's sandbox on a Mac: `CODEX_HOME=<scratch>` with a `[permissions.<name>]` profile (filesystem +
+  `network.enabled`) and `codex sandbox -P <name> -C <dir> -- <cmd>`; `hc exec` ends processes carrying HC_SCOPE when
+  the command ends.
+- Window-mod dialog keyboard tests: `service/settings-keys.test.ts` runs Shepherdr Settings' real init()/close() with
+  fake-herdr and a Proxy InputState. In zsh, pass a list of unittest ids as `${=ids}` (zsh doesn't word-split `$ids`).
+- Before-check of a mods/chat service test: `git archive main` into a `mktemp -d` folder, symlink the worktree's
+  node_modules, copy the test into its service/ and run `bun test` there.
 - On a busy dev Mac, Bun tests can pass the default 5 s timeout: rerun the failed files with `bun test --timeout 60000`.
 - A quick before/after of herdr-task settings logic without a second worktree: a `python3 -I` script that puts each tree's
   `mods/tasks/bin` on `sys.path`, sets `HERDR_TASK_SETTINGS` to a scratch file and stubs `herdr_task.autopilot.window_spaces`.
@@ -106,6 +115,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `claude --model haiku`) as the target.
 - Web dictation on the dev VM: agent-browser's fake-mic flags don't apply; override
   `navigator.mediaDevices.getUserMedia` with an oscillator `MediaStreamDestination` via eval.
+- Headless image-clipboard proof on the dev Mac: agent-browser denies clipboard-read and its Meta+v fires no paste; run
+  Google Chrome `--headless=new` with its own `--user-data-dir` and CDP, `Browser.grantPermissions` clipboardReadWrite for
+  the origin, click via `Input.dispatchMouseEvent`, then read `navigator.clipboard`.
 - Headless clipboard checks: agent-browser's `clipboard read` is blocked; focus a textarea and `press Control+v` to
   read what was copied. Phone long-press: CDP `Emulation.setTouchEmulationEnabled` + `Input.dispatchTouchEvent`.
 - Another machine in herdr-task tests: run herdr-task as a subprocess with `HERDR_TASK_STORE=<tmp>` and a fake hc first on
@@ -142,6 +154,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   shell alias there: use `/usr/bin/diff`.
 - Web stub: a place's `chat` is its chat key string (the chat object goes only in the watch reply). Headless screenshots
   never show native `title=` tooltips: check with `document.querySelectorAll('[title]')`.
+- A web stub for artifact Mark up: `/api/action` POST logs the act, `/api/artifacts/<id>/recipe` returns the recipe;
+  agent-browser `mouse move/down/up` drives clicks and drags on the layer. `herdr-artifact preview` takes no `--folder`.
 - `herdr-artifact preview` with a branch's viewer: copy mods/artifacts into a scratch folder with `web/dist/artifact-viewer.html`
   beside it as viewer.html, and run that copy with `HOME=<scratch>` so it uses a throwaway store.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`

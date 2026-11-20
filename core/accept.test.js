@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACCEPT, acceptLabel, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle, canAccept } from "./accept.js";
+import { ACCEPT, acceptLabel, busyLabel, cardTitle, hasChanges, hasChecks, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle, canAccept } from "./accept.js";
+import { nothingToMerge } from "./tasks.js";
 
 const root = join(import.meta.dir, "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
@@ -41,11 +42,46 @@ test("the card's words", () => {
 // SHEP-225 (#1046): the button says what pressing it does
 test("Accept says whether it merges", () => {
   expect(acceptLabel({ merges: true })).toBe("Accept and merge");
-  expect(acceptLabel({ merges: false })).toBe("Accept");
-  expect(acceptLabel(undefined)).toBe("Accept"); // still being read
+  expect(acceptLabel(undefined)).toBe("Accept"); // still being read, no row to go by
   const mod = read("mods/accept-card/main.js"), web = read("web/src/screens/Accept.tsx");
-  expect(mod).toContain("acceptLabel(e)");
-  expect(web).toContain("A.acceptLabel(e)");
+  expect(mod).toContain("acceptLabel(e, props()?.markDone)");
+  expect(web).toContain("A.acceptLabel(e, hint)");
+});
+
+// SHEP-95: a task with nothing to merge (research or a design done in the folder itself) is marked done, never merged
+test("nothing to merge: Mark done, never a word about merging", () => {
+  const here = { id: 1, state: "ready", mode: "here" };
+  const research = { id: 2, state: "ready", mode: "worktree", branch: "task/2", nothing_to_merge: true };
+  const code = { id: 3, state: "ready", mode: "worktree", branch: "task/3", pr: { number: 9 } };
+  expect([nothingToMerge(here), nothingToMerge(research), nothingToMerge(code), nothingToMerge({ mode: "here", pr: { number: 1 } })])
+    .toEqual([true, true, false, false]);
+  // its evidence decides once read
+  expect(acceptLabel({ merges: false })).toBe("Mark done");
+  expect(acceptLabel({ merges: true }, here)).toBe("Accept and merge");
+  expect(cardTitle("SHEP-86", { merges: false })).toBe("Mark SHEP-86 done?");
+  expect(cardTitle("SHEP-86", { merges: true })).toBe("Accept SHEP-86?");
+  expect(busyLabel({ merges: false })).toBe("Marking done…");
+  expect(busyLabel({ merges: true })).toBe("Accepting…");
+  // while it is read: its row (the web's snapshot hint, a boolean, or the window's task record)
+  expect([acceptLabel({}, true), acceptLabel({}, false), acceptLabel(undefined, here), acceptLabel(undefined, code)])
+    .toEqual(["Mark done", "Accept", "Mark done", "Accept"]);
+  expect(cardTitle("SHEP-86", undefined, here)).toBe("Mark SHEP-86 done?");
+  for (const w of [ACCEPT.markDone, ACCEPT.marking, ACCEPT.markTitle("X-1")]) expect(w.toLowerCase()).not.toContain("merg");
+  // what such a card still shows under its lead
+  expect([hasChanges({ git: true, commits: { count: 0 }, diff: { files: 0 } }), hasChanges({ git: true, commits: { count: 2 } }), hasChanges({ git: false })])
+    .toEqual([false, true, false]);
+  expect([hasChecks({ checks: { state: "none" } }), hasChecks({ checks: { state: "passed" } }), hasChecks({})]).toEqual([false, true, false]);
+});
+
+test("both cards lead a nothing-to-merge task with what it made, and its rows tell the card before it is read", () => {
+  const mod = read("mods/accept-card/main.js"), web = read("web/src/screens/Accept.tsx");
+  expect(mod).toContain("markDone(e, p.markDone)");
+  expect(mod).toContain(".when(done, made)");
+  expect(web).toContain("{done ? made : null}");
+  expect(web).toContain("A.cardTitle(ref, e, hint)");
+  expect(read("mods/tasks/main.js")).toContain("markDone: nothingToMerge(p.task)");
+  expect(read("mods/chat/panel.js")).toContain("markDone: nothingToMerge(r)");
+  expect(read("service/model.ts")).toContain("markDone: nothingToMerge(task)");
 });
 
 test("the window's card and the web's read their words from here, not their own", () => {
