@@ -107,7 +107,7 @@ function Lead({ summary, e }: { summary: string; e: Evidence }) {
     <div className="flex min-w-0 flex-col gap-3">
       <p className={clsx('max-w-[560px] text-pretty', !summary && 'text-fg3', s.explain && 'text-[1.0625rem]/6 font-semibold')}>{summary || A.ACCEPT.noSummary}</p>
       {s.explain ? (
-        <div data-selectable className="flex max-w-[560px] flex-col gap-2 text-[0.9375rem]/6 text-pretty text-fg2 phone:text-base/7">
+        <div data-selectable className="flex max-w-[560px] flex-col gap-2 text-[0.9375rem]/6 text-pretty text-fg phone:text-base/7">
           {(A.paragraphs(s.explain) as string[]).map((x, i) => <p key={i}>{x}</p>)}
         </div>
       ) : null}
