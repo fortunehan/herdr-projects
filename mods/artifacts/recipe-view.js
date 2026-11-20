@@ -4,13 +4,16 @@
 // Colors from theme() only; text 12-15 px; works from 320 px wide. A choice, a form or a button sends its words to
 // the agent that keeps it (artifact.js answer), from a click only, kept with the version first (answers.json,
 // SHEP-87): reopened, the chosen option shows picked with when, and a choice or a form can be changed.
+// A click on a picture opens the window's picture viewer (mods/chat-image: zoom, copy, open, show in folder, previous
+// and next through every picture in the recipe, SHEP-90).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
 import { image } from "gpui-kit";
-import { theme, shared, setShared, props } from "herdr";
+import { theme, shared, setShared, props, openOverlay, appHome, exec, settings } from "herdr";
+import * as fs from "fs/promises";
 import { asset, answer, answers } from "./artifact.js";
 import data from "./recipe-data.js";
-import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, isDiff, isLink, mdParts, mediaKind, withIds } from "./recipe.js";
+import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, imageSize, isDiff, isLink, mdParts, mediaKind, pictures, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
 // it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
@@ -23,6 +26,27 @@ function holdKeys() {
 }
 
 const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
+
+// A picture file's first bytes, for its size (recipe.js imageSize): fs when it gives bytes, else od, which every Mac and
+// Linux has. null when neither can read it.
+async function head(path) {
+  try {
+    const b = await fs.readFile(path);
+    if (b instanceof Uint8Array) return b;
+    if (b instanceof ArrayBuffer) return new Uint8Array(b);
+  } catch {}
+  const r = await exec("od", ["-An", "-v", "-tu1", "-N", "131072", path]).catch(() => null);
+  if (!r || r.code !== 0) return null;
+  return Uint8Array.from(String(r.stdout).trim().split(/\s+/).filter(Boolean).map(Number));
+}
+
+// The window's size for an overlay (at zoom 1, as artview.js sizes its modal).
+function windowSize() {
+  let v = null;
+  try { v = globalThis.window?.viewport_size?.(); } catch {}
+  const zoom = Number(settings()?.zoom) || 1;
+  return v?.width > 0 && v?.height > 0 ? { width: Math.round(v.width / zoom), height: Math.round(v.height / zoom) } : { width: 1200, height: 800 };
+}
 
 export default class RecipeView extends View {
   init(_props, cx) {
@@ -44,6 +68,7 @@ export default class RecipeView extends View {
       else if (b?.type === "details") walk(b.blocks);
     });
     walk(this.recipe?.blocks);
+    this.pics = pictures(this.recipe);
     // the answers kept with this version, then its forms' fields as sent
     cx?.spawn?.(async (cx) => {
       this.answers = { ...(await answers()), ...this.answers };
@@ -69,6 +94,31 @@ export default class RecipeView extends View {
 
   async close() {
     if (shared(HOLDER)?.who === ME) setShared(HOLDER, null);
+  }
+
+  // A picture: a click opens it in the picture viewer, at its place among the recipe's pictures.
+  picture(src, el) {
+    return div().id(`pic-${src}`).w_full().min_w(0).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.openPicture(src, cx); }).child(el);
+  }
+
+  // The window's picture viewer (mods/chat-image) over the whole window, on every picture in the recipe from this one:
+  // each by its file in this mod's folder, so copy, open and show in folder act on it.
+  openPicture(src, cx) {
+    if (this.opening) return;
+    this.opening = true;
+    cx.spawn(async () => {
+      try {
+        const home = appHome();
+        const images = await Promise.all(this.pics.map(async (p) => {
+          const rel = asset(p.src), path = `${home}/${rel}`;
+          const size = imageSize(await head(path)) ?? { w: 1200, h: 800 };
+          return { rel, w: size.w, h: size.h, name: p.caption || p.src.split("/").pop(), path };
+        }));
+        const index = Math.max(0, this.pics.findIndex((p) => p.src === src));
+        const { width, height } = windowSize();
+        openOverlay({ mod: "chat-image", kind: "dialog", frame: "none", width, height, props: { images, index, width, height } });
+      } finally { this.opening = false; }
+    });
   }
 
   // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
@@ -223,11 +273,11 @@ export default class RecipeView extends View {
       case "audio": return this.media(b, t, "♪", "Sound", null);
       case "pdf": return this.media(b, t, "PDF", "PDF", null);
       case "image": return v_flex().gap(4)
-        .child(image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border))
+        .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border)))
         .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(b.caption)));
       case "pair": return h_flex().flex_wrap().gap(10).children([["Before", b.before], ["After", b.after]].map(([w, x]) => v_flex().flex_1().min_w(240).gap(4)
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
-          : image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border))
+          : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border)))
         .child(div().text_size(12).text_color(t.muted).child(x.caption ?? w))));
       case "code": return isDiff(b) ? this.diff(b, t) : this.code(b.id, b.text, t);
       case "check": return this.check(b, t);

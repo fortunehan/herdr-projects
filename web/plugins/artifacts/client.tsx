@@ -31,12 +31,14 @@ import {
   useUI,
 } from '@client/kernel.ts'
 import { useDialogFocus } from '@client/focus.ts'
+import { useFullscreen } from '@client/fullscreen.ts'
 import { useMotion } from '@client/motion.ts'
 import { isDark, useDark } from '@client/theme.ts'
 import {
   BackIcon,
   CheckIcon,
   DownIcon,
+  FitIcon,
   NextIcon,
   dimmed,
   FilterBox,
@@ -50,6 +52,7 @@ import {
   Row,
   RowText,
   TextBox,
+  UnfitIcon,
   UpIcon,
   XIcon,
 } from '@client/ui.tsx'
@@ -436,22 +439,36 @@ function MarkUpButton({ on, onClick, round }: { on: boolean; onClick: () => void
   )
 }
 
+/** Full screen / Exit full screen, in the viewer's bar and the panel's (SHEP-90): the browser's own full screen of the
+ *  artifact, or where it has none (an iPhone) the artifact over the whole page (useFullscreen); Esc leaves it too */
+function FullButton({ on, onClick, className }: { on: boolean; onClick: () => void; className?: string }) {
+  return (
+    <IconButton label={on ? 'Exit full screen' : 'Full screen'} pressed={on} onClick={onClick} className={clsx('rounded-full!', className)}>
+      {on ? <UnfitIcon className={ic} /> : <FitIcon className={ic} />}
+    </IconButton>
+  )
+}
+
 /** An artifact in the side panel, under the window's sidebar bar: ‹ Artifacts back to the list, its title, which
  *  version (‹ v2 of 5 ›, · Latest ›), and Mark up / Done, which marks it up right there */
 function PanelArtifact({ art, onBack }: { art: Artifact; onBack: () => void }) {
   const [v, setV] = useState<number | undefined>(undefined)
   const [marking, setMarking] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const full = useFullscreen(ref)
   const shown = v && art.versions.some((x) => x.n === v) ? v : art.v
   return (
-    <div role="region" aria-label={art.title} className="flex h-full min-h-0 flex-1 flex-col">
+    <div ref={ref} role="region" aria-label={art.title}
+      className={clsx('flex h-full min-h-0 flex-1 flex-col bg-bg', full.how === 'page' && 'fixed inset-0 z-50 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]')}>
       <div className="flex shrink-0 items-center gap-1.5 border-b border-line py-1 pr-2 pl-1 coarse:py-0.5">
-        <button type="button" onClick={() => { setMarking(false); onBack() }} className="press-dim flex h-8 shrink-0 items-center gap-0.5 rounded-full pr-2 pl-1 text-[0.8125rem] text-fg2 hover:bg-hover hover:text-fg phone:h-11 phone:text-[0.9375rem]">
+        <button type="button" onClick={() => { setMarking(false); if (full.on) full.toggle(); onBack() }} className="press-dim flex h-8 shrink-0 items-center gap-0.5 rounded-full pr-2 pl-1 text-[0.8125rem] text-fg2 hover:bg-hover hover:text-fg phone:h-11 phone:text-[0.9375rem]">
           <BackIcon className={ic} />
           Artifacts
         </button>
         <div className="min-w-0 flex-1 truncate font-semibold">{art.title}</div>
         <Stepper art={art} shown={shown} bar="sidebar" onStep={(n) => { setMarking(false); setV(n) }} />
         <MarkUpButton on={marking} onClick={() => setMarking(!marking)} />
+        <FullButton on={full.on} onClick={full.toggle} />
       </div>
       <div className="relative min-h-0 flex-1">
         <div className="absolute inset-0">
@@ -826,13 +843,19 @@ function Viewer() {
   const barBtn = phone ? 'rounded-full! bg-bubble' : 'rounded-full!'
   return (
     <ViewerShell label={art.title} phone={phone}>
-      {/* the whole screen is the page's, but for a slim bar on top (the window's artifact viewer bar) */}
-      <div className="flex w-full min-w-0 flex-col overflow-hidden pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
+      {(full) => (
+      /* the whole screen is the page's, but for a slim bar on top (the window's artifact viewer bar); full screen
+         without the browser's own (an iPhone): no bar either, only a button to leave it */
+      <div className="relative flex w-full min-w-0 flex-col overflow-hidden pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
+        {full.how === 'page' ? (
+          <FullButton on onClick={full.toggle} className="absolute top-[calc(env(safe-area-inset-top)+--spacing(2))] right-[calc(env(safe-area-inset-right)+--spacing(2))] z-10 bg-bubble/90 shadow-box backdrop-blur-sm" />
+        ) : (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-line pt-[calc(env(safe-area-inset-top)+--spacing(1))] pr-2 [[data-topbar]~*_&]:pt-1 pb-1 pl-4 phone:gap-2 phone:px-3">
           <PageIcon className={clsx(ic, 'shrink-0 text-fg2 phone:hidden')} />
           <div className="min-w-0 flex-1 truncate font-medium">{art.title || 'Artifact'}</div>
           <Stepper art={art} shown={shown} bar="viewer" onStep={(n) => openArtifact(art.id, n)} />
           <MarkUpButton on={markup} onClick={() => setMarkup(!markup)} round />
+          <FullButton on={full.on} onClick={full.toggle} className={phone ? 'bg-bubble' : undefined} />
           {/* beside the chat, in the Artifacts panel */}
           {phone ? null : (
             <IconButton label="Open in sidebar" onClick={() => showInPanel(art.id)} className="rounded-full!">
@@ -843,27 +866,30 @@ function Viewer() {
             <XIcon className={ic} />
           </IconButton>
         </div>
+        )}
         <div className="relative min-h-0 flex-1">
           <div className="absolute inset-0">
             <ArtifactFrame art={art} v={shown} full />
           </div>
-          {markup ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarkup(false)} /> : null}
+          {markup && full.how !== 'page' ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarkup(false)} /> : null}
         </div>
       </div>
+      )}
     </ViewerShell>
   )
 }
 
 /** the viewer over the whole screen: it pushes in on a phone and fades in wider, takes the focus and keeps Tab in it,
- *  and gives the focus back when it closes */
-function ViewerShell({ label, phone, children }: { label: string; phone: boolean; children: ReactNode }) {
+ *  and gives the focus back when it closes. Its full screen (useFullscreen) is this whole element, bar and all. */
+function ViewerShell({ label, phone, children }: { label: string; phone: boolean; children: (full: ReturnType<typeof useFullscreen>) => ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
   useMotion(ref, phone ? 'page' : 'fade')
   // a phone has no keyboard to move: nothing takes the focus there (it would only show a ring)
   useDialogFocus(ref, { focus: !phone })
+  const full = useFullscreen(ref)
   return (
-    <div ref={ref} role="dialog" aria-modal="true" aria-label={label} className="fixed inset-0 z-40 flex bg-bg">
-      {children}
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={label} className={clsx('fixed inset-0 flex bg-bg', full.how === 'page' ? 'z-50' : 'z-40')}>
+      {children(full)}
     </div>
   )
 }

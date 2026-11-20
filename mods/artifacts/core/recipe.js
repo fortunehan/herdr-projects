@@ -252,3 +252,71 @@ export function preview(recipe, { max = 3, chars = 280 } = {}) {
   walk(recipe?.blocks);
   return { images, videos, lines };
 }
+
+/** Every picture a recipe shows, in reading order (image blocks and the picture sides of a pair, inside columns, tabs
+ *  and details too), each once: what the picture viewer pages through (SHEP-90). [{ src, caption }]; a pair's side
+ *  without a caption is "Before" or "After". */
+export function pictures(recipe) {
+  const out = [], seen = new Set();
+  const add = (src, caption) => {
+    if (!str(src) || mediaKind(src) !== "image" || seen.has(src)) return;
+    seen.add(src);
+    out.push({ src, caption: str(caption) ? caption : "" });
+  };
+  const walk = (bs) => (Array.isArray(bs) ? bs : []).forEach((b) => {
+    if (b?.type === "image") add(b.src, b.caption);
+    else if (b?.type === "pair") { add(b.before?.src, b.before?.caption ?? "Before"); add(b.after?.src, b.after?.caption ?? "After"); }
+    else if (b?.type === "columns") (b.columns ?? []).forEach(walk);
+    else if (b?.type === "tabs") (b.tabs ?? []).forEach((t) => walk(t?.blocks));
+    else if (b?.type === "details") walk(b.blocks);
+  });
+  walk(recipe?.blocks);
+  return out;
+}
+
+/** A picture's size from its first bytes (a Uint8Array: PNG, GIF, JPEG, WebP or SVG), for the window's picture viewer,
+ *  which fits a picture by its size before it draws it. { w, h }, or null when it can't tell (a cut-off file). */
+export function imageSize(b) {
+  if (!b || b.length < 24) return null;
+  const svg = svgSize(b);
+  if (svg !== undefined) return svg;
+  const be16 = (i) => (b[i] << 8) | b[i + 1], le16 = (i) => b[i] | (b[i + 1] << 8);
+  const be32 = (i) => ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+  const size = (w, h) => (w > 0 && h > 0 ? { w, h } : null);
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return size(be32(16), be32(20));
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return size(le16(6), le16(8));
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
+    const kind = String.fromCharCode(b[12], b[13], b[14], b[15]);
+    if (kind === "VP8X" && b.length >= 30) return size(1 + (b[24] | (b[25] << 8) | (b[26] << 16)), 1 + (b[27] | (b[28] << 8) | (b[29] << 16)));
+    if (kind === "VP8 " && b.length >= 30) return size(le16(26) & 0x3fff, le16(28) & 0x3fff);
+    if (kind === "VP8L" && b.length >= 25) return size(1 + (b[21] | ((b[22] & 0x3f) << 8)), 1 + (((b[22] >> 6) | (b[23] << 2) | ((b[24] & 0x0f) << 10))));
+    return null;
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    // the frame header (SOF0-15, not DHT 0xC4, JPG 0xC8 or DAC 0xCC) after the segments before it
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) return null;
+      const m = b[i + 1];
+      if (m === 0xff) { i += 1; continue; }
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return size(be16(i + 7), be16(i + 5));
+      if (m === 0xd8 || (m >= 0xd0 && m <= 0xd7) || m === 0x01) { i += 2; continue; }
+      i += 2 + be16(i + 2);
+    }
+  }
+  return null;
+}
+
+// An SVG's own size: its width and height in px (or plain numbers), else its viewBox's. undefined: not an SVG.
+function svgSize(b) {
+  let head = "";
+  for (let i = 0; i < Math.min(b.length, 4096); i++) head += String.fromCharCode(b[i]);
+  const tag = /<svg\b[^>]*>/i.exec(head)?.[0];
+  if (!tag) return /^\s*(<\?xml|<!--|<!doctype svg)/i.test(head) ? null : undefined;
+  const attr = (n) => new RegExp(`\\s${n}\\s*=\\s*["']([^"']*)["']`, "i").exec(tag)?.[1];
+  const px = (v) => (v && /^\s*[\d.]+\s*(px)?\s*$/.test(v) ? Math.round(parseFloat(v)) : 0);
+  const w = px(attr("width")), h = px(attr("height"));
+  if (w > 0 && h > 0) return { w, h };
+  const vb = String(attr("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+  return vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? { w: Math.round(vb[2]), h: Math.round(vb[3]) } : null;
+}

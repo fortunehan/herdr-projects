@@ -960,14 +960,15 @@
       "web": {
         "files": [
           "plugins/artifacts/client.tsx",
-          "src/screens/Recipe.tsx"
+          "src/screens/Recipe.tsx",
+          "src/screens/Pictures.tsx"
         ]
       },
       "forms": {
-        "herdr": "Sidebar list; viewer over the pane; versions; Mark up",
-        "desktop": "Artifacts column; viewer over the chat",
+        "herdr": "Sidebar list; viewer over the pane; versions; Mark up; full screen; a picture opens the picture viewer",
+        "desktop": "Artifacts column; viewer over the chat; full screen; a picture opens large (zoom, copy, open, save)",
         "tablet": "Same",
-        "phone": "Artifacts tab; full-screen viewer"
+        "phone": "Artifacts tab; full-screen viewer; a picture opens large (pinch, swipe, copy, save)"
       },
       "service": [
         "artifacts.ts"
