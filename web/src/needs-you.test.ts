@@ -176,4 +176,21 @@ describe('Needs you is one rule: the web app and the glance feed list the same (
     expect(app.doc.items.some((i) => (i.type as string) === 'msg')).toBe(false)
     expect(app.doc.unread).toBeGreaterThan(0)
   })
+
+  test('a task whose agent waits on a question card is one row and one count (SHEP-93)', () => {
+    const sds = task('vma:SDS-17', 'need', 'p:vma:home', { sub: 'How should the sidebar make the link…' })
+    const snap = fleet({
+      tasks: [sds], alerts: [], automations: {}, last: {},
+      needs: [
+        { id: 'attention', chat: 'vma:SDS-17/worker', place: 'p:vma:home', task: 'vma:SDS-17', at: NOW - 5 * MIN, text: sds.sub },
+        { id: 'q9', chat: 'vma:SDS-17/worker', place: 'p:vma:home', task: 'vma:SDS-17', at: NOW - 4 * MIN, question: q('q9', 'How should the sidebar make the link?') },
+      ],
+    })
+    const web = panel(snap), app = phone(snap)
+    expect(web.needs).toEqual(['task:vma:SDS-17'])
+    expect(app.needs).toEqual(['task:vma:SDS-17'])
+    expect(web.counts.needs).toBe(1)
+    expect(needsYou(snap, NOW)).toHaveLength(1)
+    expect(snap.places.reduce((n, p) => n + counts(snap, p.id).ownNeed, 0)).toBe(1)
+  })
 })
