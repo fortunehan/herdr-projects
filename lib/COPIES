@@ -32,6 +32,7 @@ core/chat-reader.js: chat
 core/clean-env.js: chat changes-review tabs-tasks newspace shepherdr-settings
 core/worktree.js: task-pr
 core/recipe.js: artifacts chat
+core/markup.js: artifacts
 core/task-artifacts.js: chat task-artifacts
 core/newspace.js: newspace
 core/machine-add.js: machine-add-chat

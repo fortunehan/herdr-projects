@@ -172,4 +172,17 @@ export class Artifacts {
     if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
     try { return JSON.parse(r.out.trim().split("\n").pop() ?? "{}"); } catch { return {}; }
   }
+
+  /** Mark up's Send all (SHEP-88): numbered notes ({text, spot}) and the words about all of it as one message
+   *  (herdr-artifact note --notes); one note without general words goes as the single note it always was. */
+  async notes(id: string, v: number, notes: { text: string; spot?: string }[], general = "", machine: string | null = null) {
+    if (notes.length === 1 && !general && notes[0].text) return this.say(id, v, notes[0].text, notes[0].spot || undefined, undefined, machine);
+    if (!/^\w[\w.-]{0,119}$/.test(id)) throw new Error("Not an artifact.");
+    machine ??= this.machineOf(id);
+    if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");
+    const args = [...(machine ? ["--on", machine] : []), "note", id, "--notes", JSON.stringify(notes), "--version", String(v), "--json", ...(general ? ["--text", general] : [])];
+    const r = await run(args);
+    if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
+    try { return JSON.parse(r.out.trim().split("\n").pop() ?? "{}"); } catch { return {}; }
+  }
 }

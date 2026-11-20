@@ -67,7 +67,7 @@ class Answers(unittest.TestCase):
 
     def note(self, **k):
         base = dict(id=self.aid, text="Ship it?: Ship", version=None, spot=None, image=None, shot=None, panel=None, area=None,
-                    machine=None, json=True, answer=None, value=None, by=None)
+                    machine=None, json=True, answer=None, value=None, by=None, notes=None)
         o = types.SimpleNamespace(**{**base, **k})
 
         def run(argv, **_):
@@ -129,7 +129,7 @@ class Answers(unittest.TestCase):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, json.dumps({"to": "t3", "why": "made it", "version": 1, "image": None}) + "\n", "")
         o = types.SimpleNamespace(id=self.aid, text="Ship it?: Ship", version=1, spot=None, image=None, shot=None, panel=None, area=None,
-                                  machine="vm", json=True, answer="ship", value='"Ship"', by="window")
+                                  machine="vm", json=True, answer="ship", value='"Ship"', by="window", notes=None)
         with mock.patch.object(A, "run", side_effect=run), mock.patch("sys.stdout", io.StringIO()):
             A.cmd_note(o)
         argv = calls[0]
