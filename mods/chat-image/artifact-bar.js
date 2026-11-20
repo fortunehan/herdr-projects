@@ -1,7 +1,8 @@
 // The artifact viewer's toolbar (props.artifact; artview.js opens it): its icon,
 // title and which version; the version stepper (‹ v3 of 5 ›, as Shepherdr steps back through
 // versions; "· Latest ›" when an older one shows); Mark up (mods/artifacts/markup.js draws the
-// layer over the artifact while shared "artifacts.markup" names it); Open in the sidebar; close.
+// layer over the artifact while shared "artifacts.markup" names it); Full screen (the whole window,
+// SHEP-90: the same button or Esc puts it back); Open in the sidebar; close.
 // An older version is its own mod (art-<id>--v<n>, herdr-artifact pull --version): stepping
 // reopens the viewer on that mod. mods/artifacts/main.js has the sidebar's copy of the stepper
 // (mods can't import each other's files; keep the two in step). Colors are the theme's.
@@ -62,6 +63,22 @@ function step(view, a, v, cx) {
   });
 }
 
+// Full screen on or off: the viewer opened again on the whole window (artview.js, artifact.full), or back over the
+// chat pane or as the modal it was. Its Mark up ends, as stepping a version.
+export function toggleFull(a) {
+  if (shared(MARKUP)?.mod === a.mod) setShared(MARKUP, null);
+  closeOverlay(props().overlay);
+  showViewer({ ...a, full: !a.full });
+}
+
+// Esc while full screen leaves full screen instead of closing the viewer.
+export function artifactBarKey(e, cx) {
+  const a = props()?.artifact;
+  if (!a?.full || e.key !== "escape") return;
+  cx.stop_propagation();
+  toggleFull(a);
+}
+
 // ---- drawing ---------------------------------------------------------------------------------
 
 function iconBtn(id, icon, act, t, off = false) {
@@ -103,6 +120,7 @@ export function artifactBar(view, a, handle) {
   // the sidebar": the dialog under it covers the sidebar.
   return h_flex().id("bar").size_full().pl(16).pr(8).gap(2).items_center().bg(a.modal ? t.popover : `${t.background}f2`)
     .track_focus(handle)
+    .on_key_down((e, cx) => artifactBarKey(e, cx))
     .child(h_flex().flex_1().min_w(0).gap(8).items_center().text_size(TEXT.body)
       .child(svg("mods/artifacts/artifacts.svg").size(14).flex_none().text_color(t.muted))
       .child(div().min_w(0).truncate().font_medium().text_color(t.foreground).child(title))
@@ -128,6 +146,7 @@ export function artifactBar(view, a, handle) {
       .child(marking ? svg("mods/chat-image/check.svg").size(16).flex_none().text_color(t.accent) : svg("mods/chat-image/markup.svg").size(16).flex_none())
       .child(marking ? "Done" : "Mark up"))
     .child(rule(t))
+    .child(iconBtn("full", a.full ? "mods/chat-image/minimize.svg" : "mods/chat-image/maximize.svg", () => toggleFull(a), t))
     .when(!a.modal && hasSidebarView(), (el) => el
       .child(iconBtn("sidebar", "mods/chat-image/panel-right.svg", () => {
         if (marking) setShared(MARKUP, null);

@@ -269,8 +269,8 @@ export default class Artifacts extends View {
 
   // Over an artifact in the sidebar: ‹ Artifacts back to the list, its title, which version with
   // the version stepper (‹ v3 of 5 ›, then "· Latest ›" when an older one shows), and Mark up
-  // (markup.js lays its layer over the artifact while shared "artifacts.markup" names it). The
-  // full-screen viewer has the same (mods/chat-image/artifact-bar.js; keep the two in step).
+  // (markup.js lays its layer over the artifact while shared "artifacts.markup" names it), and
+  // Full screen (the viewer over the whole window). The full-screen viewer has the same (mods/chat-image/artifact-bar.js; keep the two in step).
   viewHead(cx) {
     const t = theme();
     const v = shared("artifacts.view") ?? null;
@@ -344,7 +344,17 @@ export default class Artifacts extends View {
         .hover((s) => s.bg(marking ? `${t.accent}33` : t.hover).text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); setShared("artifacts.markup", marking ? null : { mod: v.mod, where: "panel", at: Date.now() }); cx.notify(); })
         .child(marking ? svg("mods/artifacts/check.svg").size(14).flex_none().text_color(t.accent) : svg("mods/artifacts/markup.svg").size(14).flex_none())
-        .child(marking ? "Done" : "Mark up")));
+        .child(marking ? "Done" : "Mark up")))
+      // Full screen: this version in the viewer over the whole window (SHEP-90); its button or Esc there puts it back
+      // over the chat, and its sidebar button back here
+      .when(Boolean(v), (el) => el.child(div().id("art-full").size(24).flex_none().flex().items_center().justify_center().rounded(RADIUS.control)
+        .cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          if (marking) setShared("artifacts.markup", null);
+          showViewer({ mod: v.mod, base, id: v.id, title: v.title, version: shown, latest, machine: v.machine ?? null, full: true });
+        })
+        .child(svg("mods/chat-image/maximize.svg").size(14))));
   }
 
   blankView() {
