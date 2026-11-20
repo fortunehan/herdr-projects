@@ -115,6 +115,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `claude --model haiku`) as the target.
 - Web dictation on the dev VM: agent-browser's fake-mic flags don't apply; override
   `navigator.mediaDevices.getUserMedia` with an oscillator `MediaStreamDestination` via eval.
+- Headless image-clipboard proof on the dev Mac: agent-browser denies clipboard-read and its Meta+v fires no paste; run
+  Google Chrome `--headless=new` with its own `--user-data-dir` and CDP, `Browser.grantPermissions` clipboardReadWrite for
+  the origin, click via `Input.dispatchMouseEvent`, then read `navigator.clipboard`.
 - Headless clipboard checks: agent-browser's `clipboard read` is blocked; focus a textarea and `press Control+v` to
   read what was copied. Phone long-press: CDP `Emulation.setTouchEmulationEnabled` + `Input.dispatchTouchEvent`.
 - Another machine in herdr-task tests: run herdr-task as a subprocess with `HERDR_TASK_STORE=<tmp>` and a fake hc first on
