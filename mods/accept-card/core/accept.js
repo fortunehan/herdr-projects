@@ -1,4 +1,4 @@
-// The Accept card's words and its summary and details as read: what the person approves before a Ready task merges.
+// The Accept card's words and its summary, plain-words explanation and details as read: what the person approves before a Ready task merges.
 // mods/accept-card draws it in the window, web/src/screens/Accept.tsx in the web app; both read the same words and
 // the same reading of `herdr-task show --evidence` from here.
 // Shared core: the source is core/accept.js; bin/sync-shared copies it into the mods in lib/COPIES. Edit it here,
@@ -14,11 +14,13 @@ export const ACCEPT = {
   title: (ref) => `Accept ${ref}?`,
   reading: "Reading the task…",
   noSummary: "No summary.",
-  changes: "Changes",
-  checks: "Checks",
+  changes: "Code changes",
+  checks: "Automatic checks",
   proof: "Proof",
   artifacts: "Artifacts",
-  details: "Details",
+  // SHEP-89: ready's plain-words explanation leads, then what to check; the agent's own details fold below
+  toCheck: "What to check",
+  details: "Technical details",
   notGit: "Not a git folder.",
   noCommits: "No commits.",
   noFiles: "· Couldn't read the files",
@@ -72,6 +74,18 @@ export function whereNow(x) {
   if (x.state === "done") return x.accepted_at ? "Already accepted." : "Already done.";
   return `Not ready right now: it's in ${x.status_text ?? x.state}.`;
 }
+
+// { explain, toCheck }: what ready said for someone who isn't an expert (SHEP-89: --explain, in plain sentences, and
+// one --check per thing to look at), which the card leads with. An older ready has neither: the card shows its summary
+// first, as before.
+export function simple(e) {
+  const explain = String(e?.explain ?? "").trim();
+  const toCheck = (Array.isArray(e?.to_check) ? e.to_check : [])
+    .map((c) => String(c ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  return { explain, toCheck };
+}
+// The explanation's paragraphs, one per line the agent wrote.
+export const paragraphs = (text) => String(text ?? "").split(/\n+/).map((x) => x.trim()).filter(Boolean);
 
 // herdr-task ready's SUMMARY_MAX (as Shepherdr's): an older, longer summary shows its first sentence and folds the
 // rest under Details.

@@ -257,7 +257,14 @@ def main():
                                      "(no file names, flags or jargon); longer is refused")
     c.add_argument("--details", help="optional: a few short bullets in plain words (one \"- \" per line): what changed for the "
                                      "person first, then how it was checked; file names only where they help; never one dense "
-                                     "paragraph. Folded under Details in the Accept card")
+                                     "paragraph. Folded under Technical details in the Accept card")
+    c.add_argument("--explain", help="optional: explain it simply, as to someone who isn't an expert, in the person's language: "
+                                     "what changed for them, why it matters and what to look at, in 2-4 short plain sentences, "
+                                     "with an everyday comparison where it helps; no file names, flags or jargon. The Accept "
+                                     "card leads with it")
+    c.add_argument("--check", action="append", metavar="WHAT", help="optional, repeatable: one thing the person should check, "
+                                     "a short plain line (\"Open a task's card on the phone: the words come first\"); listed "
+                                     "under What to check in the Accept card")
     c.add_argument("--proof", help="its proof artifact's id (herdr-artifact publish prints it); default: its newest artifact titled \"... · Proof\"")
     c.add_argument("--agents-md", help="\"For AGENTS.md\": one line about setting up or testing this repo that the next agent "
                                        "would need and AGENTS.md lacks; the Assistant decides whether to add it")

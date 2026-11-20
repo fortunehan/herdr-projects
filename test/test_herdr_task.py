@@ -3250,7 +3250,7 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
 
     # SHEP-96: a task with no commits beyond its base (research, an artifact only) still waits in
     # Ready for the person's Accept, its words kept; Accept just marks it done and cleans up.
-    def ready_said(self, summary="Found three options.", details="- Read five sources"):
+    def ready_said(self, summary="Found three options.", details="- Read five sources", **more):
         import argparse
         from unittest import mock
         with mock.patch.object(self.commands, "review_refusal", lambda *a: None), \
@@ -3261,8 +3261,32 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
                 mock.patch.object(self.commands, "tell", lambda *a: (_ for _ in ()).throw(AssertionError("asked to merge"))), \
                 mock.patch.object(self.commands, "pr_open", lambda *a: (_ for _ in ()).throw(AssertionError("a pull request opened"))):
             self.commands.cmd_ready(argparse.Namespace(id="SHEP-1", json=True, folder=None, summary=summary, details=details,
-                                                       proof=None, agents_md=None))
+                                                       proof=None, agents_md=None, **more))
         return self.task["state"]
+
+    # SHEP-89: ready's plain-words explanation (--explain) and what to check (--check, repeatable) are kept on the
+    # task and in the Accept card's evidence; a new summary without them drops an older one's, and a task without
+    # them (an older ready) gives none, so the card falls back to today's view.
+    def test_ready_keeps_the_simple_explanation_and_what_to_check(self):
+        from unittest import mock
+        import herdr_task.proof as proof
+        self.github([])
+        self.assertEqual(self.ready_said(explain="  卡片先用大白话讲清楚改了什么。\n就像先看封面再翻书。 ",
+                                         check=["  打开一张卡片 ", "", "在手机上看一眼"]), "ready")
+        self.assertEqual(self.task["explain"], "卡片先用大白话讲清楚改了什么。\n就像先看封面再翻书。")
+        self.assertEqual(self.task["to_check"], ["打开一张卡片", "在手机上看一眼"])
+        with mock.patch.object(proof, "artifacts_of", lambda folder: []):
+            e = proof.evidence(self.store, self.task)
+            self.assertEqual((e["explain"], e["to_check"]), (self.task["explain"], self.task["to_check"]))
+            # only details, no new summary: the explanation stays
+            self.ready_said(summary=None, details="- One more check")
+            self.assertEqual((self.task["details"], self.task["to_check"]), ("- One more check", ["打开一张卡片", "在手机上看一眼"]))
+            # a new summary without them: the old explanation would be stale
+            self.ready_said(summary="Found four options.")
+            self.assertNotIn("explain", self.task)
+            self.assertNotIn("to_check", self.task)
+            e = proof.evidence(self.store, self.task)
+            self.assertEqual((e["explain"], e["to_check"]), (None, []))
 
     def accept_now(self):
         import argparse
