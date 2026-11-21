@@ -247,7 +247,7 @@ test("Agents and Tasks say the window's words: the model button, Other CLI, Must
   s.start();
   s.choices = C.choicesFrom({ claude: { model: "opus[1m]", effort: "high", per: {} }, codex: { models: [{ id: "gpt-5", label: "GPT-5", efforts: ["low", "high"] }] } });
   const agents = s.sections(null).find((x) => x.name === "Agents" && x.level === "all")!;
-  expect(agents.rows.map((r) => r.label)).toEqual(["Assistant", "Workers", "Reviewer", "Backup agent", "Reactions", "Suggested next message", "Feedback offers", "Feedback repo"]);
+  expect(agents.rows.map((r) => r.label)).toEqual(["Assistant", "Workers", "Reviewer", "Backup agent", "Reactions", "Suggested next message", "Output language", "Feedback offers", "Feedback repo"]);
   expect(agents.rows[0].value).toBe("Opus 5.5 · 1M · High");
   expect(agents.rows[2]).toMatchObject({ value: "Other CLI (Codex)", agent: { unset: true, other: false } });
   const tasks = s.sections(null).find((x) => x.name === "Tasks" && x.level === "all")!;
@@ -321,4 +321,40 @@ test("Feedback offers and its repo", () => {
   expect(() => s.set("agents.feedback_repo", "acme/x", "sp7", sp)).toThrow();
   s.set("agents.feedback_repo", "", "all");
   expect(JSON.parse(readFileSync(file, "utf8")).everywhere?.agents).toBeUndefined();
+});
+
+// SHEP-101: Output language, one Agents row for every agent: follows the person by default, a language Everywhere, a
+// space's own "Follow the person" over it, Reset back; a language set by hand (not in the list) still shows
+test("Output language: follows the person by default, Everywhere's or a space's own", () => {
+  writeFileSync(file, "{}");
+  const s = new Settings();
+  s.start();
+  const sp = { id: "sp7", name: "shop", machine: null, folder: "/shop" };
+  const row = (level: string) => s.sections(null, [sp]).find((x) => x.name === "Agents" && x.level === level)!.rows.find((r) => r.key === "agents.language")!;
+  expect(row("all")).toMatchObject({ label: "Output language", value: "Follow the person", hint: CORE.LANGUAGE.about,
+    options: ["Follow the person", "English", "Chinese", "Japanese", "Korean"] });
+  s.set("agents.language", "Chinese", "all");
+  let f = JSON.parse(readFileSync(file, "utf8"));
+  expect(f.everywhere.agents).toEqual({ language: "Chinese" });
+  expect(row("sp7")).toMatchObject({ value: "Chinese", from: "Everywhere" });
+  s.set("agents.language", "Follow the person", "sp7", sp);
+  f = JSON.parse(readFileSync(file, "utf8"));
+  expect(f.spaces.sp7.agents).toEqual({ language: "" });
+  expect(row("sp7")).toMatchObject({ value: "Follow the person", inherits: { value: "Chinese", from: "Everywhere" } });
+  expect(row("all").others).toEqual([{ id: "sp7", name: "shop" }]);
+  // the same as what it would inherit unsets it; back on Everywhere the default is no value at all
+  s.set("agents.language", "Chinese", "sp7", sp);
+  s.set("agents.language", "Follow the person", "all");
+  f = JSON.parse(readFileSync(file, "utf8"));
+  expect(f.spaces.sp7.agents).toBeUndefined();
+  expect(f.everywhere.agents).toBeUndefined();
+  expect(() => s.set("agents.language", "Klingon", "all")).toThrow();
+  writeFileSync(file, JSON.stringify({ everywhere: { agents: { language: "Thai" } } }));
+  const t = new Settings();
+  t.start();
+  const r = t.sections(null, []).find((x) => x.name === "Agents")!.rows.find((x) => x.key === "agents.language")!;
+  expect(r.value).toBe("Thai");
+  expect(r.options).toContain("Thai");
+  t.set("agents.language", "Thai", "all");
+  expect(JSON.parse(readFileSync(file, "utf8")).everywhere.agents).toEqual({ language: "Thai" });
 });

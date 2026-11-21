@@ -391,13 +391,17 @@ def trust_asked(live):
     return None
 
 
+WIDE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]")
+
+
 def fit(text, n=LINE_MAX):
     """One line of at most n characters, cut at a word ("…" at the end) when longer."""
     text = " ".join(str(text or "").split())
     if len(text) <= n:
         return text
     cut = text[:n - 1]
-    if " " in cut and text[n - 1] != " ":
+    # SHEP-101: Chinese and Japanese put no spaces between words, so a cut between two of their characters is a word's end
+    if " " in cut and text[n - 1] != " " and not (WIDE.match(cut[-1]) or WIDE.match(text[n - 1])):
         cut = cut[:cut.rindex(" ")]
     return cut.rstrip(" ,;:.-") + "…"
 
