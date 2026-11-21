@@ -275,7 +275,12 @@ export function dependencies(placed) {
     byRef.get(key).push(p);
   }
   const out = new Map(placed.map((p) => [keyOf(p), { waitsFor: [], unblocks: [] }]));
-  const describe = (p, ref = refOf(p.list, p.task)) => ({ key: keyOf(p), ref, title: p.task.title, state: p.task.state, section: p.section });
+  // pct: a working task's % done (its pie, where the row it names is out of sight)
+  const pctOf = (p) => (p && p.section === "working" ? reportOf(p.task, p.section)?.done ?? null : null);
+  const describe = (p, ref = refOf(p.list, p.task)) => {
+    const pct = pctOf(p);
+    return { key: keyOf(p), ref, title: p.task.title, state: p.task.state, section: p.section, ...(pct != null ? { pct } : {}) };
+  };
   for (const p of placed) {
     if (!["queued", "todo", "scheduled"].includes(p.task.state)) continue;
     const waits = out.get(keyOf(p)).waitsFor;
@@ -302,9 +307,57 @@ export function dependencies(placed) {
       const target = candidates.length === 1 ? candidates[0] : null;
       const state = ext.state ?? "unknown";
       const section = state === "running" ? "working" : Object.hasOwn(STATUS, state) ? state : null;
-      add({ ...(target ? { key: keyOf(target) } : {}), ref: ext.ref, title: ext.title ?? target?.task.title ?? null, state, section, external: true }, target);
+      const pct = state === "running" ? pctOf(target) : null;
+      // where: another folder's task on this machine says its folder ("WEB-2 · web"); another machine's ref says its machine
+      const where = target && !String(ext.ref).includes(":") ? String(target.list.folder).split("/").filter(Boolean).pop() ?? null : null;
+      add({ ...(target ? { key: keyOf(target) } : {}), ref: ext.ref, title: ext.title ?? target?.task.title ?? null, state, section, external: true,
+        ...(pct != null ? { pct } : {}), ...(where ? { where } : {}) }, target);
     }
   }
+  return out;
+}
+
+// A prerequisite's state in words, where its own row isn't in sight (filtered out, folded, another folder's or
+// machine's): "Working 40%", "Ready", else the scheduler's last word for it ("unreachable").
+export function relationState(d) {
+  const word = STATUS[d.section] ?? d.state ?? "unknown";
+  return d.section === "working" && Number.isFinite(d.pct) ? `${word} ${Math.round(d.pct)}%` : word;
+}
+
+// One task's own "↑ after" and "↓ then" from its list file alone (doc: herdr-task's list, { prefix, tasks }), as the
+// window's task header shows them (SHEP-103). after: the tasks it waits for that aren't done (another folder's or
+// machine's with the scheduler's last state for it), only while it hasn't started; then: this list's tasks waiting for it.
+// A running task reads as Working, its % done from what its agent last said.
+const WAITING = ["queued", "todo", "scheduled"];
+export function ownRelations(doc, id) {
+  const tasks = Array.isArray(doc?.tasks) ? doc.tasks : [];
+  const me = tasks.find((x) => x.id === id);
+  if (!me) return { after: [], then: [] };
+  const ref = (x) => (doc.prefix ? `${doc.prefix}-${x.id}` : String(x.id));
+  const sectionOf = (state) => (state === "running" ? "working" : Object.hasOwn(STATUS, state) ? state : null);
+  const pctOf = (x) => (x.state === "running" && Number.isFinite(x.progress?.done) ? { pct: x.progress.done } : {});
+  const after = [];
+  if (WAITING.includes(me.state)) {
+    for (const i of new Set(me.after ?? [])) {
+      const b = tasks.find((x) => x.id === i);
+      if (!b || i === id || b.state === "done") continue;
+      after.push({ id: i, ref: ref(b), title: b.title ?? null, state: b.state, section: sectionOf(b.state), ...pctOf(b) });
+    }
+    for (const e of me.after_ext ?? []) {
+      if (["done", "gone"].includes(e.state)) continue;
+      after.push({ ref: e.ref, title: e.title ?? null, state: e.state ?? "unknown", section: sectionOf(e.state), external: true });
+    }
+  }
+  const then = me.state === "done" ? [] : tasks.filter((x) => x.id !== id && WAITING.includes(x.state) && (x.after ?? []).includes(id))
+    .map((x) => ({ id: x.id, ref: ref(x), title: x.title ?? null }));
+  return { after, then };
+}
+
+// Rows joined by a short line (SHEP-103): each row whose very next row in the same list waits for it.
+// rows: [{ key, waits: [prerequisite keys] }] in their shown order; returns the keys whose next row follows them.
+export function linkedToNext(rows) {
+  const out = new Set();
+  for (let i = 0; i + 1 < rows.length; i++) if (rows[i + 1].waits.includes(rows[i].key)) out.add(rows[i].key);
   return out;
 }
 
