@@ -225,7 +225,8 @@ function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, le
           end sits at the second line's end, so the title has the whole first line */}
       <div className={clsx('pointer-events-none relative grid min-h-[inherit] w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 px-2 phone:px-3', two && 'gap-y-0.5 py-2')}>
         <span aria-hidden className="col-start-1 row-start-1 grid h-5 w-3.5 place-items-center phone:h-6 phone:w-4">{glyph}</span>
-        {top ? <span aria-hidden={!!onOpen} className="col-start-2 col-end-4 row-start-1 min-w-0">{top}</span> : null}
+        {/* read out, and its ids are buttons of their own, as Review is */}
+        {top ? <span className="col-start-2 col-end-4 row-start-1 min-w-0">{top}</span> : null}
         {/* the time left under the glyph, as tall as the second line so it sits level with it */}
         {two && left ? (
           <span aria-hidden className={clsx('col-start-1 row-start-2 flex h-5 w-3.5 items-center justify-center font-mono text-[0.6875rem] font-semibold whitespace-nowrap tabular-nums phone:h-6 phone:w-4 phone:text-[0.75rem]', leftQuiet ? 'text-fg3' : 'text-work-fg')}>{left}</span>
@@ -245,11 +246,11 @@ function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, le
           </span>
         ) : null}
         {end ? <span className={clsx('col-start-3 flex items-center', o ? 'row-start-2' : 'row-start-1', rows > 1 && (rows === 3 ? 'row-span-3' : 'row-span-2'), rows > 1 && (o ? '@max-[24rem]:row-span-1 @max-[24rem]:row-start-3' : '@max-[24rem]:row-span-1 @max-[24rem]:row-start-2'))}>{end}</span> : null}
-        {bottom ? <span aria-hidden={!!onOpen} className="col-start-2 col-end-4 min-w-0" style={{ gridRow: rows + 1 + o }}>{bottom}</span> : null}
+        {bottom ? <span className="col-start-2 col-end-4 min-w-0" style={{ gridRow: rows + 1 + o }}>{bottom}</span> : null}
       </div>
       {/* from under this glyph to the top of the next row's: a thin line, its arrowhead at the end */}
       {link ? (
-        <span aria-hidden className="pointer-events-none absolute top-7 -bottom-[9px] left-[11px] z-1 flex w-2 flex-col items-center text-fg3/70 phone:top-8 phone:left-4">
+        <span aria-hidden className={clsx('pointer-events-none absolute -bottom-[9px] left-[11px] z-1 flex w-2 flex-col items-center text-fg3/70 phone:left-4', two && left ? 'top-[46px] phone:top-[58px]' : 'top-7 phone:top-8')}>
           <span className="w-px flex-1 bg-current" />
           <svg viewBox="0 0 7 4" className="h-1 w-[7px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"><path d="M0.7 0.6 3.5 3.3 6.3 0.6" /></svg>
         </span>

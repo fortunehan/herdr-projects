@@ -293,13 +293,14 @@ export default class Tasks extends View {
     this.frame.dependencyTargets = new Map(placed.map((p) => [taskKey(p.list, p.task), p]));
     // Which task rows this frame shows (SHEP-103): a row's "↑ after" names a prerequisite in sight by its id alone, one out
     // of sight (filtered out, folded, another folder's) with its dot and status. Rows are made before the groups that
-    // hold them decide what shows, so the rows read the last frame's set (this.seen), and a change draws once more.
-    this.frame.built = new Set();
-    this.frame.hidden = new Set();
+    // hold them decide what shows, so the rows read the last frame's set (this.seen): the rows put on screen (a group's
+    // open rows, a chip's list, the Archived view), and a change draws once more.
+    this.frame.shown = new Set();
     this.frame.rowKeys = new WeakMap();
     // Each task's status as its list says it now, archived ones too: a Needs-you item the list has moved past is stale.
     const truth = new Map(placed.map((p) => [`${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`, p]));
     this.frame.truth = truth;
+    this.publishThreadDeps(placed, cx);
     if (here) placed = placed.filter((p) => inSpace(here, { machine: p.list.machine ?? null, folder: p.list.folder, space: p.task.space }));
     // Archived tasks (herdr-task: Done ones archive themselves after a while) leave every list and
     // count: only the Archived view and a search show them, the latest archived first.
@@ -377,7 +378,7 @@ export default class Tasks extends View {
     else if (filter !== "all") {
       const rows = rowsFor(filter);
       const what = filter === "needs" ? "tasks that need you" : filter === "automations" ? "automations" : `${STATUS[filter]} tasks`;
-      body.push(rows.length ? v_flex().flex_none().gap(1).children(rows) : note(`No ${what} match “${q}”.`));
+      body.push(rows.length ? v_flex().flex_none().gap(1).children(this.onScreen(rows)) : note(`No ${what} match “${q}”.`));
     }
     else {
       const rest = placed.filter((p) => !isPin(p));
@@ -432,7 +433,7 @@ export default class Tasks extends View {
       if (q && !body.length && this.ready) body.push(note(`No tasks match “${q}”.`));
     }
 
-    const seen = new Set([...this.frame.built].filter((k) => !this.frame.hidden.has(k)));
+    const seen = this.frame.shown;
     if (!this.seen || seen.size !== this.seen.size || [...seen].some((k) => !this.seen.has(k))) {
       this.seen = seen;
       cx.timer.after(0, (cx) => cx.notify());
@@ -632,7 +633,7 @@ export default class Tasks extends View {
           .child(svg("mods/workspace-chrome/chevron-left.svg").size(14).flex_none()))
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.dim).child("Archived"))
         .child(div().flex_none().text_color(t.dim).child(ps.length ? String(ps.length) : "")))
-      .children(ps.map((p) => this.row(p, t)))
+      .children(this.onScreen(ps.map((p) => this.row(p, t))))
       .when(!ps.length, (el) => el.child(note(q ? `No archived tasks match “${q}”.` : "No archived tasks. Done tasks come here on their own.")))
       .child(note("Archived tasks keep their chat and summary. Search finds them too."));
   }
@@ -662,7 +663,7 @@ export default class Tasks extends View {
     const all = open || this.allDone.has(key);
     const cut = !all && done > DONE_SHOWN ? done - DONE_SHOWN : 0;
     const shown = cut ? rows.slice(0, rows.length - cut) : rows;
-    for (const r of shut ? rows : rows.slice(shown.length)) this.unseen(r);
+    if (!shut) this.onScreen(shown);
     return v_flex().flex_none().gap(1)
       // a step of room over each group, so groups read as sections (as the web's)
       .pt(6)
@@ -708,7 +709,7 @@ export default class Tasks extends View {
           .child(div().min_w(0).truncate().font_medium().text_color(t.muted).child(placeName(list)))
           .when(Boolean(note), (el) => el.child(div().flex_none().text_color(t.dim).child(`· ${note}`)))
           .child(div().flex_none().text_color(t.dim).child(String(rows.length)))))
-      .children(rows);
+      .children(this.onScreen(rows));
   }
 
   // For you's Done, shut: one quiet line, "3 done today" (or "12 done", some older); a click shows them.
@@ -756,7 +757,11 @@ export default class Tasks extends View {
   needRow(x, t) {
     // Where it is: a task's folder, an agent's space (and its machine, when not this computer).
     const at = this.whereOf(x.machine ?? machineOf(x.terminal), x.name ?? (x.terminal ? agents().find((a) => a.address === x.terminal)?.space_name : null), true);
-    const v = (glyph, title, go, ref = x.ref, sub = reasonOf(x), action = null) => this.line(`need-${x.key}`, { glyph, ref, title, go, where: at, sub, action }, t);
+    // A task's own item says what waits for it ("↓ then"), as its row would.
+    const p0 = x.ref && x.folder ? this.frame?.truth?.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`) : null;
+    const then = p0 ? this.frame?.dependencies?.get(taskKey(p0.list, p0.task))?.unblocks : null;
+    const bottom = then?.length ? this.relationLine("then", then, t, `need-${x.key}`) : null;
+    const v = (glyph, title, go, ref = x.ref, sub = reasonOf(x), action = null) => this.line(`need-${x.key}`, { glyph, ref, title, go, where: at, sub, action, bottom }, t);
     // An agent's item: its task's title when it works on one, else its name.
     const who = (address) => this.taskTitle(address) ?? agentName(address);
     switch (x.kind) {
@@ -908,16 +913,44 @@ export default class Tasks extends View {
   // alone too); else its last agent's conversation, read from that agent's own log, with Resume
   // (mods/chat); a task that never started says why it waits. Nowhere in a layout without the view.
   target(p) {
+    const args = this.threadArgs(p);
+    return args ? () => openThread(args) : null;
+  }
+
+  // What opening a task in this panel puts in shared "tasks.thread" (openThread), but its time: null without the view.
+  threadArgs(p) {
     if (!threads()) return null;
     const { list, task } = p;
     const m = list.machine ?? null;
     const key = { machine: m, folder: list.folder, slug: list.slug, id: task.id };
-    const open = (terminal, more = {}) => () => openThread({ terminal, task: refOf(list, task), title: task.title, key, ...more });
+    const open = (terminal, more = {}) => ({ terminal, task: refOf(list, task), title: task.title, key, log: null, note: null, ...more });
     const worker = p.live.find((x) => x.role !== "reviewer" && x.status === "blocked") ?? p.live.find((x) => x.role !== "reviewer") ?? p.live[0];
     if (worker) return open(worker.address);
     const last = task.agents?.[task.agents.length - 1];
     if (last?.address) return open(m ? `${m}/${last.address}` : last.address, { log: last.log ? { path: last.log, kind: last.agent ?? null } : null });
     return open(null, { note: p.section === "queued" ? capital(this.queueReason(list, task)) : "This task hasn't started." });
+  }
+
+  // The open task's "↑ after" and "↓ then" for its header (mods/chat/panel.js, SHEP-103), from every list read here, so
+  // another folder's and machine's count too: shared "tasks.thread.deps" = { key (its task key), after, then }, each
+  // { ref, title, state, section, pct, where, external, open (threadArgs of a task read here, else null) }.
+  publishThreadDeps(placed, cx) {
+    const th = shared("tasks.thread");
+    if (!th) return;
+    const k = th.key;
+    const p = k ? this.frame.dependencyTargets.get(`${k.machine ?? ""}:${k.folder}#${k.id}`)
+      : th.terminal ? placed.find((q) => q.live.some((a) => a.address === th.terminal)) : null;
+    if (!p) return;
+    const key = taskKey(p.list, p.task);
+    const rel = this.frame.dependencies.get(key);
+    if (!rel) return;
+    const item = (d) => {
+      const target = d.key ? this.frame.dependencyTargets.get(d.key) : null;
+      return { ref: d.ref, title: d.title ?? null, state: d.state ?? null, section: d.section ?? null, pct: d.pct ?? null,
+        where: d.where ?? null, external: Boolean(d.external), open: target ? this.threadArgs(target) : null };
+    };
+    const v = { key, after: rel.waitsFor.map(item), then: rel.unblocks.map(item) };
+    if (JSON.stringify(v) !== JSON.stringify(shared("tasks.thread.deps") ?? null)) cx.timer.after(0, () => setShared("tasks.thread.deps", v));
   }
 
   // A run of task rows in one list: a row whose very next row waits for it gets the short line down to it (SHEP-103).
@@ -930,16 +963,18 @@ export default class Tasks extends View {
     return ps.map((p) => this.row(p, t, bare, links.has(taskKey(p.list, p.task))));
   }
 
-  // A row made this frame, by its task's key; one its group doesn't show (folded, behind Show more) is out of sight.
+  // A row made this frame, by its task's key; it is in sight once a group, a chip's list or the Archived view shows it
+  // (onScreen), not when folded, behind Show more or under another chip.
   shownRow(key, el) {
-    if (!this.frame?.built || !el || typeof el !== "object") return el;
-    this.frame.built.add(key);
-    this.frame.rowKeys.set(el, key);
+    if (this.frame?.rowKeys && el && typeof el === "object") this.frame.rowKeys.set(el, key);
     return el;
   }
-  unseen(el) {
-    const key = el && typeof el === "object" ? this.frame?.rowKeys?.get(el) : null;
-    if (key) this.frame.hidden.add(key);
+  onScreen(rows) {
+    for (const el of rows) {
+      const key = el && typeof el === "object" ? this.frame?.rowKeys?.get(el) : null;
+      if (key) this.frame.shown.add(key);
+    }
+    return rows;
   }
   // A Needs-you item about a task shows that task.
   shownNeed(x, el) {
@@ -980,7 +1015,8 @@ export default class Tasks extends View {
   // ("● SHEP-12 · Working 40%", "WEB-2 · web · Working"). Each id opens its task.
   relationLine(kind, ds, t, key) {
     const after = kind === "after";
-    return h_flex().h(16).min_w(0).gap(6).items_center().overflow_hidden().whitespace_nowrap().text_size(TEXT.label)
+    // Ids that don't fit (long machine names in a narrow panel) scroll sideways; the row keeps its height.
+    return h_flex().id(`${kind}-line-${key}`).h(16).min_w(0).gap(6).items_center().overflow_x_scroll().whitespace_nowrap().text_size(TEXT.label)
       .text_color(after ? t.muted : t.dim)
       .child(div().flex_none().text_color(t.dim).child(after ? "↑ after" : "↓ then"))
       .children(ds.map((d, i) => {
@@ -1095,7 +1131,8 @@ export default class Tasks extends View {
         .when(Boolean(bottom), (el) => el.child(bottom)))
       .when(Boolean(end), (el) => el.child(end))
       // From under this glyph (8 + 20) to the top of the next row's (1 apart, 8 in): a thin line, its arrowhead at the end.
-      .when(Boolean(link), (el) => el.child(v_flex().absolute().top(27).bottom(-10).left(11).w(8).items_center()
+      // With the time left under the glyph, from under it (8 + 20 + 2 + 16).
+      .when(Boolean(link), (el) => el.child(v_flex().absolute().top(left ? 45 : 27).bottom(-10).left(11).w(8).items_center()
         .child(div().w(1).flex_1().bg(linkColor(t)))
         .child(svg("mods/tasks/then-arrow.svg").w(7).h(4).flex_none().text_color(linkColor(t)))));
   }

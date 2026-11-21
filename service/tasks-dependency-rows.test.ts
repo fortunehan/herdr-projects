@@ -42,7 +42,7 @@ function panel(seen: number[]) {
   tasks.names = { machine: false, space: false };
   tasks.seen = new Set(seen.map((id) => taskKey(list, { id })));
   tasks.frame = { dependencies: dependencies(placed), dependencyTargets: new Map(placed.map((p: any) => [taskKey(p.list, p.task), p])),
-    built: new Set(), hidden: new Set(), rowKeys: new WeakMap() };
+    shown: new Set(), rowKeys: new WeakMap(), truth: new Map(placed.map((p: any) => [`${p.list.machine ?? ""}:${p.list.folder}:${p.list.prefix}-${p.task.id}`, p])) };
   return tasks;
 }
 
@@ -84,18 +84,20 @@ test("a prerequisite out of sight carries its dot and status; another folder's i
   expect(words(shown)).not.toContain("· Working 40%");
 });
 
-test("a folded group's rows count as out of sight for the next frame", () => {
+test("only rows put on screen count as in sight for the next frame: not a folded group's, not under another chip", () => {
   const tasks = panel([]);
   tasks.shutKeys = new Set(["working"]);
   tasks.allDone = new Set();
   const rows = tasks.rows([of(12)], theme);
   tasks.group("working", "Working", rows, theme, {});
   const key = taskKey(list, { id: 12 });
-  expect(tasks.frame.built.has(key)).toBe(true);
-  expect(tasks.frame.hidden.has(key)).toBe(true);
+  expect(tasks.frame.shown.has(key)).toBe(false);
   const cc = tasks.rows([of(13)], theme);
   tasks.group("queued", "Queued", cc, theme, {});
-  expect(tasks.frame.hidden.has(taskKey(list, { id: 13 }))).toBe(false);
+  expect(tasks.frame.shown.has(taskKey(list, { id: 13 }))).toBe(true);
+  // a row only made (Needs you's, while the Queued chip shows) stays out of sight
+  tasks.rows([of(14)], theme);
+  expect(tasks.frame.shown.has(taskKey(list, { id: 14 }))).toBe(false);
 });
 
 test("an id opens its task, without opening the row it sits on", () => {
@@ -103,9 +105,30 @@ test("an id opens its task, without opening the row it sits on", () => {
   const opened: string[] = [];
   tasks.target = (p: any) => () => opened.push(`SHEP-${p.task.id}`);
   const cc = tasks.rows([of(13)], theme)[0];
-  const item = built.find((e) => within(cc, e) && e.calls.some((c: any) => c[0] === "id" && String(c[1][0]).startsWith("after-")))!;
+  const item = built.find((e) => within(cc, e) && e.calls.some((c: any) => c[0] === "id" && /^after-(?!line-)/.test(String(c[1][0]))))!;
   let stopped = false;
   item.calls.find((c: any) => c[0] === "on_click")[1][0]({}, { stop_propagation: () => { stopped = true; }, notify: () => {} });
   expect(opened).toEqual(["SHEP-12"]);
   expect(stopped).toBe(true);
+});
+
+test("a task's Needs you row still says what waits for it", () => {
+  const tasks = panel([12, 13]);
+  tasks.asks = new Map();
+  const row = tasks.needRow({ kind: "stopped", key: "stopped:SHEP-12", ref: "SHEP-12", folder: list.folder, machine: null, title: "Add dependency data to the task list" }, theme);
+  expect(words(row).slice(-3)).toEqual(["↓ then", "SHEP-13", "SHEP-15"]);
+});
+
+test("the open task's header gets its relations from every list, another folder's with a way to open it", () => {
+  const tasks = panel([12, 13, 14, 15, 16]);
+  tasks.queueReason = () => "after WEB-2";
+  shared.set("tasks.thread", { terminal: null, task: "SHEP-16", key: { machine: null, folder: list.folder, slug: "shepherdr", id: 16 } });
+  const later: (() => void)[] = [];
+  tasks.publishThreadDeps(placed, { timer: { after: (_ms: number, f: () => void) => later.push(f) } });
+  later.forEach((f) => f());
+  const v: any = shared.get("tasks.thread.deps");
+  expect(v.key).toBe(taskKey(list, { id: 16 }));
+  expect(v.after).toEqual([{ ref: "WEB-2", title: "Chains route", state: "running", section: "working", pct: null, where: "web", external: true,
+    open: { terminal: "t1", task: "WEB-2", title: "Chains route", key: { machine: null, folder: "/work/web", slug: "web", id: 2 }, log: null, note: null } }]);
+  expect(v.then).toEqual([]);
 });

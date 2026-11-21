@@ -484,7 +484,7 @@ export class PanelHost {
     // Three rows on one left edge (EDGE): a slim bar (‹ Tasks; base, Accept), the task (its
     // dot, id and title, and under them what its agent is doing), then the switcher.
     // Their height is the "tasks-thread-head" block's size in layouts/shepherdr.json (127): keep them in step.
-    const deps = this.rec?.deps;
+    const deps = this.depsOf(this.rec);
     const depRows = deps ? (deps.after.length ? 1 : 0) + (deps.then.length ? 1 : 0) : 0;
     this.fitHead(depRows, cx);
     return v_flex().id("thread-head-rows").size_full().pt(8).pb(12).gap(12).bg(t.background).border_b(1).border_color(t.border)
@@ -505,6 +505,16 @@ export class PanelHost {
     cx.timer.after(0, () => { try { run("layout.resize", { id: HEAD, px }); } catch {} });
   }
 
+  // Its "↑ after" and "↓ then": what the Tasks panel worked out from every list it reads (shared "tasks.thread.deps",
+  // mods/tasks publishThreadDeps: another folder's and machine's too, each one that is read here can be opened), else
+  // what its own list says (core ownRelations: this list's tasks only).
+  depsOf(rec) {
+    if (!rec) return null;
+    const all = shared("tasks.thread.deps");
+    if (all && all.key === `${rec.machine ?? ""}:${rec.folder}#${rec.id}`) return { after: all.after ?? [], then: all.then ?? [] };
+    return rec.deps ?? null;
+  }
+
   // B of SHEP-100's mock-up (SHEP-103): what the task waits for, "↑ after" with each one's dot, id, title and % done,
   // and what waits for it, "↓ then" with their ids; another folder's or machine's says its status. This list's open.
   depsBlock(t, deps) {
@@ -513,12 +523,13 @@ export class PanelHost {
       .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); go(); cx.notify(); }))
       .children(kids);
     const ref = (d) => div().flex_none().font_family(ID_FONT).text_size(TEXT.id).text_color(t.foreground).child(d.ref);
-    const go = (d) => (d.id != null && !d.external ? () => this.openDep(d.id) : null);
+    const go = (d) => (d.open ? () => this.openThreadOf(d.open) : d.id != null && !d.external ? () => this.openDep(d.id) : null);
     const line = (key, label, pills) => h_flex().id(`thread-${key}`).h(24).min_w(0).gap(6).items_center().overflow_hidden().whitespace_nowrap()
       .text_size(TEXT.label).child(div().flex_none().text_color(t.dim).child(label)).children(pills);
     return v_flex().id("thread-deps").flex_none().mx(EDGE).pt(8).border_t(1).border_color(t.border)
       .when(deps.after.length > 0, (el) => el.child(line("after", "↑ after", deps.after.map((d, i) => pill(`thread-after-${i}`, [
         taskDot(d.section, { pct: d.pct, size: 12 }), ref(d),
+        ...(d.where ? [div().flex_none().text_color(t.dim).child(`· ${d.where}`)] : []),
         ...(d.title ? [div().min_w(0).truncate().text_color(t.muted).child(d.title)] : []),
         ...(d.section === "working" && Number.isFinite(d.pct) ? [div().flex_none().text_color(amber()).child(`${Math.round(d.pct)}%`)]
           : d.external ? [div().flex_none().text_color(t.dim).child(`· ${relationState(d)}`)] : []),
@@ -526,21 +537,26 @@ export class PanelHost {
       .when(deps.then.length > 0, (el) => el.child(line("then", "↓ then", deps.then.map((d, i) => pill(`thread-then-${i}`, [ref(d)], go(d)).flex_none()))));
   }
 
-  // Opens another task of this list in the header's place, as a click on its Tasks row does (mods/tasks target()): its
-  // worker while one runs, else its last agent's chat, else why it waits.
+  // Opens a task in the header's place, as a click on its Tasks row does (mods/tasks openThread).
+  openThreadOf(args) {
+    setShared("tasks.thread", { ...args, at: Date.now() });
+    if (find(layout(), BODY)) run("layout.select", { stack: BODY, child: CHAT });
+  }
+
+  // Another task of this list, when the Tasks panel hasn't said (mods/tasks target()): its worker on this list's
+  // machine while one runs, else its last agent's chat, else why it waits.
   openDep(id) {
     const rec = this.rec, doc = this.listDoc;
     const x = doc?.tasks?.find((y) => y.id === id);
     if (!rec || !x) return;
     const m = rec.machine ?? null;
-    const live = terminals().filter((k) => k.labels?.["herdr.task"] === `${rec.slug}#${id}` && k.state === "live");
+    const live = terminals().filter((k) => k.labels?.["herdr.task"] === `${rec.slug}#${id}` && k.state === "live" && machineOf(k.address) === m);
     const worker = live.find((k) => k.labels?.["herdr.role"] !== "reviewer") ?? live[0];
     const last = x.agents?.[x.agents.length - 1];
     const terminal = worker?.address ?? (last?.address ? (m ? `${m}/${last.address}` : last.address) : null);
     const note = terminal ? null : x.state === "queued" ? capital(queueReason(doc, x, 0)) : "This task hasn't started.";
-    setShared("tasks.thread", { terminal, task: doc.prefix ? `${doc.prefix}-${id}` : String(id), title: x.title ?? null,
-      key: { machine: m, folder: rec.folder, slug: rec.slug, id }, log: !worker && last?.log ? { path: last.log, kind: last.agent ?? null } : null, note, at: Date.now() });
-    if (find(layout(), BODY)) run("layout.select", { stack: BODY, child: CHAT });
+    this.openThreadOf({ terminal, task: doc.prefix ? `${doc.prefix}-${id}` : String(id), title: x.title ?? null,
+      key: { machine: m, folder: rec.folder, slug: rec.slug, id }, log: !worker && last?.log ? { path: last.log, kind: last.agent ?? null } : null, note });
   }
 
   // "Artifacts", with how many once the shown task has some ("Artifacts 3").

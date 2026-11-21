@@ -15,7 +15,8 @@ const open = (d: TaskRelation) => (e: { stopPropagation: () => void }) => { e.st
 export function RelationLine({ kind, items, shown }: { kind: 'after' | 'then'; items: TaskRelation[]; shown?: ReadonlySet<string> }) {
   const after = kind === 'after'
   return (
-    <span className={clsx('flex h-4 min-w-0 items-center gap-1.5 overflow-hidden text-[0.75rem]/4 whitespace-nowrap phone:h-6 phone:text-[0.8125rem]/5', after ? 'text-fg2' : 'text-fg3')}>
+    // ids that don't fit (long machine names on a phone) scroll sideways: the row keeps its height
+    <span className={clsx('pointer-events-auto relative z-1 flex h-4 min-w-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden text-[0.75rem]/4 whitespace-nowrap [scrollbar-width:none] phone:h-6 phone:text-[0.8125rem]/5', after ? 'text-fg2' : 'text-fg3')}>
       <span className="shrink-0 text-fg3">{after ? '↑ after' : '↓ then'}</span>
       {items.map((d, i) => {
         const away = after && (d.external || !d.task || !shown?.has(d.task))
@@ -40,7 +41,7 @@ export function RelationLine({ kind, items, shown }: { kind: 'after' | 'then'; i
 export function TaskDepsHead({ task }: { task: Task }) {
   const d = task.dependencies
   if (!d || (!d.waitsFor.length && !d.unblocks.length)) return null
-  const pill = 'flex h-[22px] min-w-0 items-center gap-1.5 overflow-hidden rounded-md bg-bubble px-[7px] text-fg'
+  const pill = 'flex h-[22px] min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md bg-bubble px-[7px] text-fg'
   const Pill = ({ r, children, grow }: { r: TaskRelation; children: ReactNode; grow?: boolean }) => r.task
     ? <button type="button" onClick={open(r)} className={clsx(pill, grow ? 'shrink' : 'shrink-0', 'hover:bg-sel keys:focus-visible:outline-2 keys:focus-visible:outline-focus')}><span className="sr-only">Open </span>{children}</button>
     : <span className={clsx(pill, grow ? 'shrink' : 'shrink-0')}>{children}</span>
@@ -53,7 +54,7 @@ export function TaskDepsHead({ task }: { task: Task }) {
           {d.waitsFor.map((r, i) => (
             <Pill key={`${r.ref}:${i}`} r={r} grow>
               <Dot s={r.status ?? 'todo'} p={r.status === 'work' ? r.pct : undefined} className="size-3" />
-              {id(r)}
+              {id(r)}{r.where ? <span className="shrink-0 text-fg3">· {r.where}</span> : null}
               {r.title ? <span className="min-w-0 truncate text-fg2">{r.title}</span> : null}
               {r.status === 'work' && r.pct !== undefined ? <span className="shrink-0 text-work-fg">{Math.round(r.pct)}%</span>
                 : r.external ? <span className="shrink-0 text-fg3">· {r.word ?? r.state}</span> : null}
@@ -62,7 +63,7 @@ export function TaskDepsHead({ task }: { task: Task }) {
         </div>
       ) : null}
       {d.unblocks.length ? (
-        <div className="flex min-h-[26px] min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-fg3">
+        <div className="flex min-h-[26px] min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 whitespace-nowrap text-fg3">
           <span className="shrink-0">↓ then</span>
           {d.unblocks.map((r, i) => <Pill key={`${r.ref}:${i}`} r={r}>{id(r)}</Pill>)}
         </div>
