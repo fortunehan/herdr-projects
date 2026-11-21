@@ -28,7 +28,7 @@ export function RelationLine({ kind, items, shown }: { kind: 'after' | 'then'; i
           </>
         )
         return d.task ? (
-          <button key={`${d.ref}:${i}`} type="button" onClick={open(d)} aria-label={`Open ${d.ref}${d.title ? ` ${d.title}` : ''}`}
+          <button key={`${d.ref}:${i}`} type="button" onClick={open(d)} aria-label={`Open ${d.ref}${d.where ? ` in ${d.where}` : ''}${d.title ? ` ${d.title}` : ''}${away ? `, ${d.word ?? d.state}` : ''}`}
             className="pointer-events-auto relative z-1 flex shrink-0 items-center gap-1 rounded text-fg2 hover:text-fg keys:focus-visible:outline-2 keys:focus-visible:outline-focus">{body}</button>
         ) : <span key={`${d.ref}:${i}`} className="flex shrink-0 items-center gap-1 text-fg2">{body}</span>
       })}
@@ -49,8 +49,10 @@ export function TaskDepsHead({ task }: { task: Task }) {
   return (
     <div data-task-deps className="flex shrink-0 flex-col border-b border-line px-4 py-2 text-[0.75rem] phone:px-5 phone:text-[0.8125rem]">
       {d.waitsFor.length ? (
-        <div className="flex min-h-[26px] min-w-0 items-center gap-1.5 whitespace-nowrap text-fg2">
-          <span className="shrink-0 text-fg3">↑ after</span>
+        // its pills wrap, each at most the line's width (its title gives way), so every id and status stays readable
+        <div className="flex min-h-[26px] min-w-0 items-start gap-1.5 whitespace-nowrap text-fg2">
+          <span className="flex h-[26px] shrink-0 items-center text-fg3">↑ after</span>
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 py-0.5">
           {d.waitsFor.map((r, i) => (
             <Pill key={`${r.ref}:${i}`} r={r} grow>
               <Dot s={r.status ?? 'todo'} p={r.status === 'work' ? r.pct : undefined} className="size-3" />
@@ -60,6 +62,7 @@ export function TaskDepsHead({ task }: { task: Task }) {
                 : r.external ? <span className="shrink-0 text-fg3">· {r.word ?? r.state}</span> : null}
             </Pill>
           ))}
+          </span>
         </div>
       ) : null}
       {d.unblocks.length ? (

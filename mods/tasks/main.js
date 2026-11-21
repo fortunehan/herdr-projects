@@ -300,7 +300,7 @@ export default class Tasks extends View {
     // Each task's status as its list says it now, archived ones too: a Needs-you item the list has moved past is stale.
     const truth = new Map(placed.map((p) => [`${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`, p]));
     this.frame.truth = truth;
-    this.publishThreadDeps(placed, cx);
+    this.publishDeps(cx);
     if (here) placed = placed.filter((p) => inSpace(here, { machine: p.list.machine ?? null, folder: p.list.folder, space: p.task.space }));
     // Archived tasks (herdr-task: Done ones archive themselves after a while) leave every list and
     // count: only the Archived view and a search show them, the latest archived first.
@@ -758,7 +758,7 @@ export default class Tasks extends View {
     // Where it is: a task's folder, an agent's space (and its machine, when not this computer).
     const at = this.whereOf(x.machine ?? machineOf(x.terminal), x.name ?? (x.terminal ? agents().find((a) => a.address === x.terminal)?.space_name : null), true);
     // A task's own item says what waits for it ("↓ then"), as its row would.
-    const p0 = x.ref && x.folder ? this.frame?.truth?.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`) : null;
+    const p0 = this.needTask(x);
     const then = p0 ? this.frame?.dependencies?.get(taskKey(p0.list, p0.task))?.unblocks : null;
     const bottom = then?.length ? this.relationLine("then", then, t, `need-${x.key}`) : null;
     const v = (glyph, title, go, ref = x.ref, sub = reasonOf(x), action = null) => this.line(`need-${x.key}`, { glyph, ref, title, go, where: at, sub, action, bottom }, t);
@@ -931,26 +931,21 @@ export default class Tasks extends View {
     return open(null, { note: p.section === "queued" ? capital(this.queueReason(list, task)) : "This task hasn't started." });
   }
 
-  // The open task's "↑ after" and "↓ then" for its header (mods/chat/panel.js, SHEP-103), from every list read here, so
-  // another folder's and machine's count too: shared "tasks.thread.deps" = { key (its task key), after, then }, each
-  // { ref, title, state, section, pct, where, external, open (threadArgs of a task read here, else null) }.
-  publishThreadDeps(placed, cx) {
-    const th = shared("tasks.thread");
-    if (!th) return;
-    const k = th.key;
-    const p = k ? this.frame.dependencyTargets.get(`${k.machine ?? ""}:${k.folder}#${k.id}`)
-      : th.terminal ? placed.find((q) => q.live.some((a) => a.address === th.terminal)) : null;
-    if (!p) return;
-    const key = taskKey(p.list, p.task);
-    const rel = this.frame.dependencies.get(key);
-    if (!rel) return;
+  // Every task's "↑ after" and "↓ then" for its header (mods/chat/panel.js, SHEP-103), from every list read here, so
+  // another folder's and machine's count too, whichever way the task was opened: shared "tasks.deps" = { <task key>:
+  // { after, then } } for the tasks that have any, each { ref, title, state, section, pct, where, external, open
+  // (threadArgs of a task read here, else null) }.
+  publishDeps(cx) {
     const item = (d) => {
       const target = d.key ? this.frame.dependencyTargets.get(d.key) : null;
       return { ref: d.ref, title: d.title ?? null, state: d.state ?? null, section: d.section ?? null, pct: d.pct ?? null,
         where: d.where ?? null, external: Boolean(d.external), open: target ? this.threadArgs(target) : null };
     };
-    const v = { key, after: rel.waitsFor.map(item), then: rel.unblocks.map(item) };
-    if (JSON.stringify(v) !== JSON.stringify(shared("tasks.thread.deps") ?? null)) cx.timer.after(0, () => setShared("tasks.thread.deps", v));
+    const v = {};
+    for (const [key, rel] of this.frame.dependencies) {
+      if (rel.waitsFor.length || rel.unblocks.length) v[key] = { after: rel.waitsFor.map(item), then: rel.unblocks.map(item) };
+    }
+    if (JSON.stringify(v) !== JSON.stringify(shared("tasks.deps") ?? {})) cx.timer.after(0, () => setShared("tasks.deps", v));
   }
 
   // A run of task rows in one list: a row whose very next row waits for it gets the short line down to it (SHEP-103).
@@ -976,9 +971,18 @@ export default class Tasks extends View {
     }
     return rows;
   }
+  // The task a Needs-you item is about: by its folder and id, else by its agent (a worker's question).
+  needTask(x) {
+    const f = this.frame;
+    if (!f) return null;
+    if (x.ref && x.folder) return f.truth?.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`) ?? null;
+    if (!x.terminal) return null;
+    for (const p of f.dependencyTargets?.values() ?? []) if (p.live.some((a) => a.address === x.terminal)) return p;
+    return null;
+  }
   // A Needs-you item about a task shows that task.
   shownNeed(x, el) {
-    const p = x.ref && x.folder ? this.frame?.truth?.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`) : null;
+    const p = this.needTask(x);
     return p ? this.shownRow(taskKey(p.list, p.task), el) : el;
   }
 

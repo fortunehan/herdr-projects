@@ -12,6 +12,9 @@ const tree = { id: "root", children: [{ id: "tasks-thread-head" }, { id: "tasks-
 const terms = [
   { address: "t1", state: "live", labels: { "herdr.task": "project#12" } },
   { address: "vm-b/t1", state: "live", labels: { "herdr.task": "project#12" } },
+  // vm-c: a worker's helper listed before the worker
+  { address: "vm-c/t7", state: "live", parent: "vm-c/t8", labels: { "herdr.task": "project#12", "herdr.role": "helper" } },
+  { address: "vm-c/t8", state: "live", labels: { "herdr.task": "project#12" } },
 ];
 mock.module("herdr", () => fakeHerdr({
   run: (cmd: string, args: any) => { ran.push([cmd, args]); }, layout: () => tree, exec: none, hc: none, settings: () => ({}),
@@ -40,13 +43,15 @@ test("a link to a task of this list opens its worker on the list's own machine",
   host(null).openDep(12);
   expect(shared.get("tasks.thread")).toMatchObject({ terminal: "t1", key: { machine: null, id: 12 } });
   expect(ran).toContainEqual(["layout.select", { stack: "tasks-thread-body", child: "tasks-thread-chat" }]);
+  host("vm-c").openDep(12);
+  expect(shared.get("tasks.thread")).toMatchObject({ terminal: "vm-c/t8" });
 });
 
 test("the Tasks panel's relations win when they are about this task; else its own list's", () => {
   const h = host(null);
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
-  shared.set("tasks.thread.deps", { key: ":/repo#13", after: [{ ref: "WEB-1", external: true, open: { terminal: "t5" } }], then: [] });
+  shared.set("tasks.deps", { ":/repo#13": { after: [{ ref: "WEB-1", external: true, open: { terminal: "t5" } }], then: [] } });
   expect(h.depsOf(h.rec).after[0].ref).toBe("WEB-1");
-  shared.set("tasks.thread.deps", { key: ":/repo#99", after: [{ ref: "X-1" }], then: [] });
+  shared.set("tasks.deps", { ":/repo#99": { after: [{ ref: "X-1" }], then: [] } });
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
 });

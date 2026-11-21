@@ -119,16 +119,30 @@ test("a task's Needs you row still says what waits for it", () => {
   expect(words(row).slice(-3)).toEqual(["↓ then", "SHEP-13", "SHEP-15"]);
 });
 
-test("the open task's header gets its relations from every list, another folder's with a way to open it", () => {
+test("every task's header gets its relations from every list, another folder's with a way to open it", () => {
   const tasks = panel([12, 13, 14, 15, 16]);
   tasks.queueReason = () => "after WEB-2";
-  shared.set("tasks.thread", { terminal: null, task: "SHEP-16", key: { machine: null, folder: list.folder, slug: "shepherdr", id: 16 } });
   const later: (() => void)[] = [];
-  tasks.publishThreadDeps(placed, { timer: { after: (_ms: number, f: () => void) => later.push(f) } });
+  tasks.publishDeps({ timer: { after: (_ms: number, f: () => void) => later.push(f) } });
   later.forEach((f) => f());
-  const v: any = shared.get("tasks.thread.deps");
-  expect(v.key).toBe(taskKey(list, { id: 16 }));
+  const all: any = shared.get("tasks.deps");
+  expect(all[taskKey(list, { id: 13 })].then.map((d: any) => d.ref)).toEqual(["SHEP-14", "SHEP-15"]);
+  expect(all[taskKey(web, { id: 2 })].then.map((d: any) => d.ref)).toEqual(["SHEP-16"]);
+  const v = all[taskKey(list, { id: 16 })];
   expect(v.after).toEqual([{ ref: "WEB-2", title: "Chains route", state: "running", section: "working", pct: null, where: "web", external: true,
     open: { terminal: "t1", task: "WEB-2", title: "Chains route", key: { machine: null, folder: "/work/web", slug: "web", id: 2 }, log: null, note: null } }]);
   expect(v.then).toEqual([]);
+});
+
+test("a worker's question in Needs you counts as its task's row and says what waits for it", () => {
+  const tasks = panel([13]);
+  tasks.asks = new Map();
+  tasks.taskTitle = () => "Add dependency data to the task list";
+  tasks.taskRef = () => "SHEP-12";
+  tasks.toWorker = () => {};
+  const x = { kind: "blocked", key: "blocked:t1", terminal: "t1" };
+  const row = tasks.shownNeed(x, tasks.needRow(x, theme));
+  expect(words(row).slice(-3)).toEqual(["↓ then", "SHEP-13", "SHEP-15"]);
+  tasks.onScreen([row]);
+  expect(tasks.frame.shown.has(taskKey(list, { id: 12 }))).toBe(true);
 });

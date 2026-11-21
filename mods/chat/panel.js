@@ -140,7 +140,7 @@ export class PanelHost {
     const cur = this.cur;
     // A terminal gone from the core has no labels left: the task's key, as the list sent it.
     const k = (addr && this.taskOf(addr)) || cur?.key || null;
-    let rec = null;
+    let rec = null, doc = null;
     if (k) {
       const text = k.machine
         ? (await exec("sh", ["-c", SH + 'cat "$SHEP_TASKS/$1.json"', "sh", k.slug], { on: k.machine }).catch(() => null))?.stdout
@@ -150,10 +150,12 @@ export class PanelHost {
         const t = d?.tasks?.find((x) => x.id === k.id);
         // its "↑ after" and "↓ then" (SHEP-103), from its own list
         rec = t ? { ...t, slug: k.slug, folder: d.folder, machine: k.machine, ref: d.prefix ? `${d.prefix}-${t.id}` : String(t.id), deps: ownRelations(d, t.id) } : null;
-        this.listDoc = t ? d : null;
+        doc = t ? d : null;
       } catch {}
     }
     if (this.cur !== cur) return;
+    // its list with it, only for the task still shown (a link opens another of its tasks from it)
+    this.listDoc = doc;
     // Where the task's side views look (taskwhere.js): its worktree, else its list's folder.
     if (this.head) {
       const w = rec ? { terminal: addr, ref: rec.ref, folder: rec.worktree || rec.folder || null, machine: rec.machine ?? null,
@@ -499,19 +501,21 @@ export class PanelHost {
   // The header's block as tall as its rows: 127, and with "↑ after" / "↓ then" 8 apart, a line and 8 over 24 each.
   fitHead(rows, cx) {
     if (!this.head) return;
+    // the layout's own height until a task with dependencies shows
+    this.headPx ??= HEAD_PX;
     const px = HEAD_PX + (rows ? 17 + 24 * rows : 0);
     if (px === this.headPx || !find(layout(), HEAD)) return;
     this.headPx = px;
     cx.timer.after(0, () => { try { run("layout.resize", { id: HEAD, px }); } catch {} });
   }
 
-  // Its "↑ after" and "↓ then": what the Tasks panel worked out from every list it reads (shared "tasks.thread.deps",
-  // mods/tasks publishThreadDeps: another folder's and machine's too, each one that is read here can be opened), else
+  // Its "↑ after" and "↓ then": what the Tasks panel worked out from every list it reads (shared "tasks.deps",
+  // mods/tasks publishDeps: another folder's and machine's too, each one that is read here can be opened), else
   // what its own list says (core ownRelations: this list's tasks only).
   depsOf(rec) {
     if (!rec) return null;
-    const all = shared("tasks.thread.deps");
-    if (all && all.key === `${rec.machine ?? ""}:${rec.folder}#${rec.id}`) return { after: all.after ?? [], then: all.then ?? [] };
+    const all = shared("tasks.deps")?.[`${rec.machine ?? ""}:${rec.folder}#${rec.id}`];
+    if (all) return { after: all.after ?? [], then: all.then ?? [] };
     return rec.deps ?? null;
   }
 
@@ -524,7 +528,8 @@ export class PanelHost {
       .children(kids);
     const ref = (d) => div().flex_none().font_family(ID_FONT).text_size(TEXT.id).text_color(t.foreground).child(d.ref);
     const go = (d) => (d.open ? () => this.openThreadOf(d.open) : d.id != null && !d.external ? () => this.openDep(d.id) : null);
-    const line = (key, label, pills) => h_flex().id(`thread-${key}`).h(24).min_w(0).gap(6).items_center().overflow_hidden().whitespace_nowrap()
+    // pills that don't fit scroll sideways (long machine names); the header keeps its height
+    const line = (key, label, pills) => h_flex().id(`thread-${key}`).h(24).min_w(0).gap(6).items_center().overflow_x_scroll().whitespace_nowrap()
       .text_size(TEXT.label).child(div().flex_none().text_color(t.dim).child(label)).children(pills);
     return v_flex().id("thread-deps").flex_none().mx(EDGE).pt(8).border_t(1).border_color(t.border)
       .when(deps.after.length > 0, (el) => el.child(line("after", "↑ after", deps.after.map((d, i) => pill(`thread-after-${i}`, [
@@ -550,7 +555,9 @@ export class PanelHost {
     const x = doc?.tasks?.find((y) => y.id === id);
     if (!rec || !x) return;
     const m = rec.machine ?? null;
-    const live = terminals().filter((k) => k.labels?.["herdr.task"] === `${rec.slug}#${id}` && k.state === "live" && machineOf(k.address) === m);
+    // as the Tasks row picks (mods/tasks live()): never a shell or a worker's own helper or reviewer; the worker first
+    const live = terminals().filter((k) => k.labels?.["herdr.task"] === `${rec.slug}#${id}` && k.state === "live" && machineOf(k.address) === m
+      && !k.program?.shell && k.program?.key !== "shell" && !(["reviewer", "helper"].includes(k.labels?.["herdr.role"]) && !!k.parent));
     const worker = live.find((k) => k.labels?.["herdr.role"] !== "reviewer") ?? live[0];
     const last = x.agents?.[x.agents.length - 1];
     const terminal = worker?.address ?? (last?.address ? (m ? `${m}/${last.address}` : last.address) : null);
