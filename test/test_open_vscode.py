@@ -55,8 +55,8 @@ def run(rec, result=OK, app="vscode", platform="macos"):
     return json.loads(out)
 
 
-def opened(bundle, folder=WT):
-    return [["/bin/test", "-d", folder], ["/usr/bin/open", "-b", bundle, "--", folder]]
+def opened(find, folder=WT):
+    return [["/usr/bin/open", *find, "--", folder]]
 
 
 class OpenInVSCode(unittest.TestCase):
@@ -69,13 +69,13 @@ class OpenInVSCode(unittest.TestCase):
 
     def test_a_worktree_task_opens_its_worktree_without_a_word(self):
         out = run(TASK)
-        self.assertEqual(out["calls"], opened("com.microsoft.VSCode"))
+        self.assertEqual(out["calls"], opened(["-b", "com.microsoft.VSCode"]))
         self.assertEqual(out["toasts"], [])
         self.assertFalse(out["opening"])
 
     def test_a_here_task_opens_its_folder(self):
         out = run({"mode": "here", "folder": "/h/dev/shop", "machine": None, "state": "running"})
-        self.assertEqual(out["calls"], opened("com.microsoft.VSCode", "/h/dev/shop"))
+        self.assertEqual(out["calls"], opened(["-b", "com.microsoft.VSCode"], "/h/dev/shop"))
 
     def test_another_machines_task_runs_nothing_and_says_where(self):
         out = run({**TASK, "machine": "vm-demo"})
@@ -84,24 +84,23 @@ class OpenInVSCode(unittest.TestCase):
                                           "body": "This task runs on vm-demo: VS Code opens only this machine's folders.", "level": "error"}])
 
     def test_a_done_tasks_removed_worktree_says_so(self):
-        out = run({**TASK, "state": "done"}, FAIL("/bin/test"))
-        self.assertEqual(out["calls"], [["/bin/test", "-d", WT]])
+        out = run({**TASK, "state": "done"}, FAIL("/usr/bin/open", stderr=f"The file {WT} does not exist."))
         self.assertEqual(out["toasts"][0]["body"], f"Its folder is gone (a finished task's worktree is removed): {WT}")
         self.assertEqual(out["toasts"][0]["level"], "error")
 
     def test_no_vs_code_says_so_with_its_bundle_id(self):
         out = run(TASK, FAIL("/usr/bin/open", stderr="LSCopyApplicationURLsForBundleIdentifier() failed while trying to determine the application with bundle identifier com.microsoft.VSCode."))
-        self.assertTrue(out["toasts"][0]["body"].startswith("VS Code isn't installed: macOS has no app with the bundle id com.microsoft.VSCode."))
+        self.assertEqual(out["toasts"][0]["body"], f"VS Code isn't installed. (open -b com.microsoft.VSCode -- {WT})")
 
-    def test_exec_rejecting_says_which_step(self):
+    def test_exec_rejecting_says_so(self):
         out = run(TASK, None)
-        self.assertEqual(out["toasts"][0]["body"], f"Checking the folder failed: /bin/test couldn't run: ENOENT (test -d {WT})")
+        self.assertEqual(out["toasts"][0]["body"], f"/usr/bin/open couldn't run: ENOENT (open -b com.microsoft.VSCode -- {WT})")
         self.assertFalse(out["opening"])
 
     def test_a_failed_launch_shows_its_stderr_and_command(self):
         out = run(TASK, FAIL("/usr/bin/open", stderr="LSOpenURLsWithRole() failed with error -600"), app="iterm")
         self.assertEqual(out["toasts"], [{"title": "Couldn't open iTerm2", "level": "error",
-                                          "body": f"Opening iTerm2 failed: LSOpenURLsWithRole() failed with error -600 (open -b com.googlecode.iterm2 -- {WT})"}])
+                                          "body": f"Opening iTerm2 failed: LSOpenURLsWithRole() failed with error -600 (open -a iTerm -- {WT})"}])
 
     def test_off_macos_vs_code_uses_its_code_command(self):
         out = run(TASK, platform="linux")
@@ -117,12 +116,12 @@ class OpenInVSCode(unittest.TestCase):
 
     def test_iterm_opens_the_worktree(self):
         out = run(TASK, app="iterm")
-        self.assertEqual(out["calls"], opened("com.googlecode.iterm2"))
+        self.assertEqual(out["calls"], opened(["-a", "iTerm"]))
         self.assertEqual(out["toasts"], [])
 
     def test_finder_opens_a_here_tasks_folder(self):
         out = run({"mode": "here", "folder": "/h/dev/shop", "machine": None, "state": "running"}, app="finder")
-        self.assertEqual(out["calls"], opened("com.apple.finder", "/h/dev/shop"))
+        self.assertEqual(out["calls"], opened(["-b", "com.apple.finder"], "/h/dev/shop"))
 
     def test_another_machines_task_runs_nothing_in_iterm_or_finder(self):
         for app, name in (("iterm", "iTerm2"), ("finder", "Finder")):
@@ -141,7 +140,7 @@ class OpenInVSCode(unittest.TestCase):
 
     def test_xcode_opens_the_worktree(self):
         out = run(TASK, app="xcode")
-        self.assertEqual(out["calls"], opened("com.apple.dt.Xcode"))
+        self.assertEqual(out["calls"], opened(["-b", "com.apple.dt.Xcode"]))
         self.assertEqual(out["toasts"], [])
 
 

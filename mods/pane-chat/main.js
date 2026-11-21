@@ -24,8 +24,8 @@ import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
 import { endAgent, agentTitle } from "./core/menus.js";
 import { CODE_VIEW, codeOfPane, baseName } from "./code-tabs.js";
-// Open in Terminal, VS Code, Finder and Xcode run the task view's commands (core/open-editor.js).
-import { openFolder, title as openTitle } from "./core/open-editor.js";
+// Open in VS Code, iTerm2, Finder and Xcode run the task view's commands (core/open-editor.js).
+import { APPS, openFolder, title as openTitle } from "./core/open-editor.js";
 
 const CHAT = "chat";
 const LABEL = "herdr.chat";
@@ -76,7 +76,8 @@ function parked(terminal) {
   return { program: k.program, status: st, cwd: k.foreground?.cwd ?? k.cwd ?? null, title: k.title ?? "" };
 }
 
-const OPEN_ACTIONS = [["terminal", "Terminal"], ["vscode", "VS Code"], ["finder", "Finder"], ["xcode", "Xcode"]];
+// The task view's apps, in its order (core/open-editor.js).
+const OPEN_APPS = Object.keys(APPS);
 
 function openUnavailable(target) {
   const unavailable = copyUnavailable(target, "path");
@@ -193,18 +194,15 @@ export default class Pane extends View {
   openDirectory(pane, action, cx) {
     const target = copyTarget(pane);
     const unavailable = openUnavailable(target);
-    const title = openTitle(action);
     if (unavailable) {
-      notify({ title, body: unavailable, level: "warning" });
+      notify({ title: openTitle(action), body: unavailable, level: "warning" });
       return;
     }
     if (this.launching) return;
     this.launching = true;
     const overlay = props()?.overlay;
     cx.spawn(async (cx) => {
-      // A failed step comes back with its command and what it printed, never a bare "failed".
-      const problem = await openFolder(exec, action, target.path, { platform: window()?.platform })
-        .catch((e) => ({ title, body: String(e?.message ?? e) }));
+      const problem = await openFolder(exec, action, target.path, { platform: window()?.platform });
       if (problem) notify({ ...problem, level: "error" });
       else closeOverlay(overlay);
       this.launching = false;
@@ -219,17 +217,17 @@ export default class Pane extends View {
     return v_flex().id("pane-open-menu").track_focus(this.openFocus).w_full().p(4).bg(t.popover)
       .on_key_down((e, cx) => {
         if (e.key === "escape") closeOverlay(props()?.overlay);
-        else if (e.key === "enter") this.openDirectory(pane, OPEN_ACTIONS[this.openIndex][0], cx);
+        else if (e.key === "enter") this.openDirectory(pane, OPEN_APPS[this.openIndex], cx);
         else if (e.key === "down" || e.key === "up") {
           if (!openUnavailable(copyTarget(pane))) {
-            this.openIndex = (this.openIndex + (e.key === "down" ? 1 : OPEN_ACTIONS.length - 1)) % OPEN_ACTIONS.length;
+            this.openIndex = (this.openIndex + (e.key === "down" ? 1 : OPEN_APPS.length - 1)) % OPEN_APPS.length;
             this.openKeyed = true;
           }
         } else return;
         cx.stop_propagation();
         cx.notify();
       })
-      .children(OPEN_ACTIONS.map(([action, name], i) => menuRow(`ph-open-${action}`, `Open in ${name}`, {
+      .children(OPEN_APPS.map((action, i) => menuRow(`ph-open-${action}`, `Open in ${APPS[action].name}`, {
         disabled: Boolean(unavailable) || Boolean(this.launching), onClick: (_e, cx) => this.openDirectory(pane, action, cx),
       }).when(this.openKeyed && this.openIndex === i && !unavailable, (el) => el.bg(t.hover))))
       .when(Boolean(unavailable), (el) => el.child(div().id("pane-open-reason").px(8).py(6).text_size(TEXT.label).text_color(t.muted).child(unavailable)));
