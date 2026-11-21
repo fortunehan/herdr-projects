@@ -37,7 +37,7 @@ const COPY = svg(
 )
 const DONE = svg(['M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z'], 'done')
 
-const PATH_HREF = '#path='
+const PATH_HREF = '#shepherdr-path='
 const pathHref = (p: string) => PATH_HREF + encodeURIComponent(p)
 
 /** the reply as safe HTML: a copy button on each code block, and a bit of inline code copies when tapped. The marks

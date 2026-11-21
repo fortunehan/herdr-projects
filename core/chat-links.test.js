@@ -1,6 +1,6 @@
 // SHEP-99: paths and links in an agent's reply are clickable (core/chat-links.js).
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -29,7 +29,10 @@ describe("finding links in a reply", () => {
     expect(L.find("Docs: https://example.com/x.").map((x) => x.url)).toEqual(["https://example.com/x"]);
     expect(L.find("(see https://example.com/y)").map((x) => x.url)).toEqual(["https://example.com/y"]);
     expect(L.find("https://en.wikipedia.org/wiki/A_(b), ok").map((x) => x.url)).toEqual(["https://en.wikipedia.org/wiki/A_(b)"]);
-    expect(L.find("网址 https://example.com/中文，好").map((x) => x.url)).toEqual(["https://example.com/"]);
+    // a URL keeps its CJK path and [] query; full-width punctuation still ends it
+    expect(L.find("网址 https://example.com/中文，好").map((x) => x.url)).toEqual(["https://example.com/中文"]);
+    expect(L.find("见 https://example.com/?tag[]=a。").map((x) => x.url)).toEqual(["https://example.com/?tag[]=a"]);
+    expect(L.find("[see https://x.y/z]").map((x) => x.url)).toEqual(["https://x.y/z"]);
   });
 
   test("a line and column suffix is kept in the words, not the target", () => {
@@ -57,8 +60,32 @@ describe("finding links in a reply", () => {
     expect(md("```\n/tmp/a/b")).toBe("```\n/tmp/a/b");
   });
 
-  test("links the agent wrote and HTML stay whole", () => {
-    expect(md("[the page](/tmp/a/b.html) and <https://x.y/z> and ![p](/tmp/p/q.png)")).toBe("[the page](/tmp/a/b.html) and <https://x.y/z> and ![p](/tmp/p/q.png)");
+  test("URL links the agent wrote, pictures and HTML stay whole", () => {
+    expect(md("[docs](https://x.y/z) and <https://x.y/z> and ![p](/tmp/p/q.png)")).toBe("[docs](https://x.y/z) and <https://x.y/z> and ![p](/tmp/p/q.png)");
+  });
+
+  test("a path link the agent wrote opens the same way; where paths aren't links, just its words", () => {
+    expect(md("[the page](/tmp/a/b.html) and [code](~/x/a.ts:3)")).toBe("[the page](file:///tmp/a/b.html) and [code](file:///Users/me/x/a.ts)");
+    expect(md("[the page](/tmp/a/b.html)", { paths: false })).toBe("the page");
+  });
+
+  test("inline code holding only a path takes it whole: spaces, CJK, the top folders", () => {
+    expect(md("`/tmp/My Report/index.html`")).toBe("[`/tmp/My Report/index.html`](file:///tmp/My%20Report/index.html)");
+    expect(md("`/tmp/中文/index.html`")).toBe("[`/tmp/中文/index.html`](file:///tmp/%E4%B8%AD%E6%96%87/index.html)");
+    expect(md("`/tmp` and `~/`")).toBe("[`/tmp`](file:///tmp) and [`~/`](file:///Users/me)");
+    // a slash command or a command line isn't a path
+    expect(md("`/model` and `/usr/bin/open -R x` and `/bin/ls -la`")).toBe("`/model` and `/usr/bin/open -R x` and `/bin/ls -la`");
+  });
+
+  test("a file URL's parts are decoded once, its #fragment dropped", () => {
+    expect(L.find("file:///tmp/a%23b.html")[0].path).toBe("/tmp/a#b.html");
+    expect(md("Open file:///tmp/build.html#preview.")).toBe("Open [file:///tmp/build.html#preview](file:///tmp/build.html).");
+  });
+
+  test("code in a quote or a list, and indented code, is left as it is", () => {
+    expect(md("> ~~~sh\n> cat /tmp/a/b.txt\n> ~~~")).toBe("> ~~~sh\n> cat /tmp/a/b.txt\n> ~~~");
+    expect(md("- Example\n\n    ~~~sh\n    cat /tmp/a/b.txt\n    ~~~")).toBe("- Example\n\n    ~~~sh\n    cat /tmp/a/b.txt\n    ~~~");
+    expect(md("Run:\n\n    open /tmp/a/b.html\n\nthen /tmp/c/d.pdf")).toBe("Run:\n\n    open /tmp/a/b.html\n\nthen [/tmp/c/d.pdf](file:///tmp/c/d.pdf)");
   });
 
   test("URLs: link words escaped, brackets in the target encoded", () => {
@@ -161,5 +188,12 @@ describe("the opener script", () => {
     expect(run("reveal", `${home}/..`, true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp/..", true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp", true).code).toBe(0);
+  });
+  test("the guard follows a link to where it leads, and opens that", () => {
+    symlinkSync("/etc/hosts", join(home, "site", "hosts.txt"));
+    expect(run("browser", `${home}/site/hosts.txt`, true)).toEqual({ code: 5, ran: "" });
+    symlinkSync(join(home, "site", "index.html"), join(home, "link.html"));
+    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
+    expect(run("browser", `${home}/link.html`, true)).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${real}/index.html` });
   });
 });

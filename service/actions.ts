@@ -216,7 +216,9 @@ export async function openPath(hub: Hub, addr: string, path: unknown) {
   if (!/^(\/|~\/)/.test(p) || p.length > 4096 || /[\0\n\r]/.test(p)) throw new Error("That isn't a path.");
   const action = CL.actionOf(p);
   const [prog, args] = CL.command(action, "linux", p, true);
-  const r = await exec(hub, [prog, ...args], addr.includes("/") ? addr.split("/")[0] : null).catch(() => null);
+  // a finished task's chat is its log ("log:<machine>|<kind>|<path>", service/chats.ts), else a terminal ("<machine>/t…")
+  const machine = addr.startsWith("log:") ? addr.slice(4).split("|")[0] || null : addr.includes("/") ? addr.split("/")[0] : null;
+  const r = await exec(hub, [prog, ...args], machine).catch(() => null);
   // macOS or Linux: the script asks uname; only its words for a failure depend on which
   const why = CL.problem(action, "macos", p, r);
   return why ? { ok: false, title: why.title, error: why.body } : { ok: true };

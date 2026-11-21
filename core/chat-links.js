@@ -10,21 +10,40 @@
 /** File types the default browser opens (by extension, lower case). */
 export const BROWSER_EXT = new Set(["html", "htm", "svg", "pdf", "png", "jpg", "jpeg", "gif", "webp", "txt", "json"]);
 
-/** Characters a path or URL never holds here: spaces, quotes, brackets, and CJK text and full-width punctuation, so a
- *  path in a Chinese sentence ends where the sentence goes on. */
-const STOP = "\\s<>\"'`\\[\\]{}|\\\\\\u2018-\\u201f\\u3000-\\u303f\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\uff00-\\uffef";
-const URL_RE = new RegExp(`https?://[^${STOP}]+`, "g");
+/** Where a path or URL in a sentence ends: spaces, quotes, and full-width punctuation (，。）「 and the rest). */
+const END = "\\s<>\"'`\\\\\\u2018-\\u201f\\u3000-\\u303f\\uff00-\\uffef";
+/** A path in plain text also ends at CJK text, so one in a Chinese sentence ends where the sentence goes on (inline code
+ *  holding only a path takes it whole: linkCode()). */
+const CJK = "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af";
+const URL_RE = new RegExp(`https?://[^${END}{}|]+`, "g");
 // A path starts a word: not after a letter, digit or another path's characters (and/or, 1/2, a URL's own path).
 // An absolute one has at least two parts (/tmp/x, /Users/me/): a lone /model is a slash command, not a path.
-const PATH_RE = new RegExp(`(?<![\\w.~/:@%+=#?&-])(file://(?:localhost)?/[^${STOP}(),;:]*|~/[^${STOP}(),;:]*|/[^${STOP}(),;:/]+/[^${STOP}(),;:]*)(:\\d+(?::\\d+)?)?`, "g");
+const NOT = `${END}${CJK}\\[\\]{}|(),;:`;
+const P = `[^${NOT}]`, PART = `[^${NOT}/]`;
+const PATH_RE = new RegExp(`(?<![\\w.~/:@%+=#?&-])(file://(?:localhost)?/${P}*|~/${P}*|/${PART}+/${P}*)(:\\d+(?::\\d+)?)?`, "g");
 
-/** A URL's end without the sentence's punctuation, and a closing ) only when the URL opened one. */
+/** A URL's end without the sentence's punctuation, and a closing ) or ] only when the URL opened one. */
 function trimUrl(u) {
   for (;;) {
     const t = u.replace(/[.,;:!?*_~]+$/, "");
-    if (t.endsWith(")") && (t.match(/\(/g) ?? []).length < (t.match(/\)/g) ?? []).length) { u = t.slice(0, -1); continue; }
+    const open = { ")": "(", "]": "[" }[t.slice(-1)];
+    if (open && t.split(open).length < t.split(t.slice(-1)).length) { u = t.slice(0, -1); continue; }
     return t;
   }
+}
+
+/** A file:// URL's path, each part decoded once (its ?query and #fragment dropped), or null. */
+function filePath(u) {
+  try { return u.replace(/^file:\/\/(localhost)?/i, "").replace(/[?#].*$/, "").split("/").map(decodeURIComponent).join("/"); } catch { return null; }
+}
+
+const LINE = /:(\d+)(?::(\d+))?$/;
+/** One path as written (with its :line:col): { path, line, col }, or null. */
+function pathOf(body, suffix) {
+  const path = /^file:\/\//i.test(body) ? filePath(body) : body;
+  if (!path || path === "~/" || !/^(\/|~\/)/.test(path)) return null;
+  const [, line, col] = LINE.exec(suffix) ?? [];
+  return { path, line: line ? Number(line) : null, col: col ? Number(col) : null };
 }
 
 /** The links in plain text: [{ start, end, text, kind: "url", url } | { ..., kind: "path", path, line, col }].
@@ -39,18 +58,12 @@ export function find(text) {
   const inUrl = (i) => out.some((x) => i >= x.start && i < x.end);
   for (const m of s.matchAll(PATH_RE)) {
     if (inUrl(m.index)) continue;
-    let body = m[1];
     const suffix = m[2] ?? "";
-    if (!suffix) body = body.replace(/[.!?*_~]+$/, "");
-    let path = body;
-    if (path.startsWith("file://")) {
-      path = path.replace(/^file:\/\/(localhost)?/, "");
-      try { path = decodeURI(path); } catch {}
-    }
-    if (path === "~/" || !/^(\/|~\/)/.test(path)) continue;
-    const [, line, col] = /^:(\d+)(?::(\d+))?$/.exec(suffix) ?? [];
+    const body = suffix ? m[1] : m[1].replace(/[.!?*_~]+$/, "");
+    const p = pathOf(body, suffix);
+    if (!p) continue;
     const len = body.length + suffix.length;
-    out.push({ start: m.index, end: m.index + len, text: s.slice(m.index, m.index + len), kind: "path", path, line: line ? Number(line) : null, col: col ? Number(col) : null });
+    out.push({ start: m.index, end: m.index + len, text: s.slice(m.index, m.index + len), kind: "path", ...p });
   }
   return out.sort((a, b) => a.start - b.start);
 }
@@ -61,10 +74,10 @@ export function absolute(path, home) {
   return path.startsWith("/") ? path : null;
 }
 
+const HEX = { "(": "%28", ")": "%29", "<": "%3C", ">": "%3E", " ": "%20", "#": "%23", "?": "%3F", "[": "%5B", "]": "%5D" };
+const escHref = (u) => u.replace(/[()<> [\]]/g, (c) => HEX[c]);
 /** The window's link target for a path: a file:// URL. */
-const HEX = { "(": "%28", ")": "%29", "<": "%3C", ">": "%3E", " ": "%20", "#": "%23", "?": "%3F" };
-const escHref = (u) => u.replace(/[()<> ]/g, (c) => HEX[c]);
-export const fileHref = (abs) => `file://${encodeURI(abs).replace(/[()#?]/g, (c) => HEX[c])}`;
+export const fileHref = (abs) => `file://${encodeURI(abs).replace(/[()#?[\]]/g, (c) => HEX[c])}`;
 const escText = (t) => t.replace(/[\\*_[\]~<>]/g, "\\$&");
 
 /** Links in one stretch of plain markdown text (no code, no links in it). */
@@ -87,50 +100,86 @@ function hrefOf(l, { home, paths = true, pathHref = fileHref }) {
   return abs ? pathHref(abs) : null;
 }
 
-/** An inline code span that is a link and nothing else (`/tmp/x/index.html`): the link around it, else null. */
+/** An inline code span that is a link and nothing else: the link around it, else null. A span holding only a path takes
+ *  it whole (`/tmp/中文/index.html`, `~/`, `/tmp`); a space in it only when its last part names a file or a folder
+ *  (`/tmp/My Report/index.html`, not `/usr/bin/open -R x`). */
 function linkCode(span, inner, opts) {
   const t = inner.trim();
   const ls = find(t);
-  if (ls.length !== 1 || ls[0].start !== 0 || ls[0].end !== t.length) return null;
-  const href = hrefOf(ls[0], opts);
+  if (ls.length === 1 && ls[0].start === 0 && ls[0].end === t.length) {
+    const href = hrefOf(ls[0], opts);
+    return href ? `[${span}](${href})` : null;
+  }
+  if (/[\n`]/.test(t)) return null;
+  const m = /^(.*?)((?::\d+){1,2})?$/.exec(t);
+  const body = m[1];
+  if (!/^(\/|~$|~\/|file:\/\/)/.test(body)) return null;
+  if (/\s/.test(body) && (/\s-/.test(body) || !(body.endsWith("/") || /\.\w+$/.test(body.split("/").pop())))) return null;
+  // one part alone only for the usual top folders: `/model` is a slash command
+  if (/^\/[^/]+\/?$/.test(body) && !/^\/(tmp|Users|home|opt|var|etc|usr|private|Applications|Volumes|Library|srv|mnt)\/?$/.test(body)) return null;
+  const p = body === "~" || body === "~/" ? { path: "~" } : pathOf(body, m[2] ?? "");
+  if (!p) return null;
+  const href = hrefOf({ kind: "path", path: p.path }, opts);
   return href ? `[${span}](${href})` : null;
 }
 
+/** A link the agent wrote itself (`[the page](/tmp/a/b.html)`): a path's target as one of ours, so it opens the same
+ *  way; where paths aren't links (a phone, another machine's agent) just its words. A URL's or anything else's as it
+ *  is. */
+function linkAuthored(m, opts) {
+  const [whole, img, words, target] = m;
+  if (img) return whole;
+  const p = /^(\/|~\/|file:\/\/)/i.test(target) ? pathOf(target.replace(LINE, ""), (LINE.exec(target) ?? [""])[0]) : null;
+  if (!p) return whole;
+  const href = hrefOf({ kind: "path", path: p.path }, opts);
+  return href ? `[${words}](${href})` : words;
+}
+
 // Within a line run outside fences: code spans, links and pictures, autolinks and HTML tags are left whole.
-const INLINE = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|!?\[[^\]\n]*\]\([^)\n]*\)|<[^>\n]*>/g;
+const INLINE = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|(!?)\[([^\]\n]*)\]\(([^)\s]*)(?:\s+"[^"\n]*")?\)|<[^>\n]*>/g;
 
 function linkInline(text, opts) {
   let out = "", at = 0;
   for (const m of text.matchAll(INLINE)) {
     out += linkText(text.slice(at, m.index), opts);
-    out += m[1] ? (linkCode(m[0], m[2], opts) ?? m[0]) : m[0];
+    out += m[1] ? (linkCode(m[0], m[2], opts) ?? m[0]) : m[4] !== undefined ? linkAuthored([m[0], m[3], m[4], m[5]], opts) : m[0];
     at = m.index + m[0].length;
   }
   return out + linkText(text.slice(at), opts);
 }
 
-/** Markdown with its URLs and paths as links, fenced code blocks left as they are.
+/** Markdown with its URLs and paths as links, code blocks left as they are: fenced ones (also in a quote or a list)
+ *  and indented ones after a blank line.
  *  opts: home (expands ~/; null: no home paths), paths (false: URLs only, as on a phone or for another machine's
  *  agent), pathHref(abs) (a path's link target; the window's file:// URL by default). */
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   const out = [];
-  let run = [], fence = null;
+  let run = [], fence = null, blank = true, indented = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
   for (const line of lines) {
-    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    const f = /^[\s>]*?(`{3,}|~{3,})/.exec(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ""));
     if (fence) {
       out.push(line);
-      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.trim().slice(f[1].length).trim()) fence = null;
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.replace(/^[\s>]*/, "").slice(f[1].length).trim()) fence = null;
     } else if (f) {
       flush();
       fence = f[1];
       out.push(line);
-    } else run.push(line);
+    } else if (/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) {
+      flush();
+      indented = true;
+      out.push(line);
+    } else {
+      if (line.trim()) indented = false;
+      run.push(line);
+    }
+    blank = !line.trim();
   }
   flush();
   return out.join("\n");
 }
+
 
 /** A clicked link's target: { kind: "url", url } or { kind: "path", path } (absolute, its line suffix gone), or null.
  *  href: a link's URL (an http(s) or file:// URL, or an absolute or ~/ path an agent wrote as a link). */
@@ -160,7 +209,8 @@ export function label(kind, os) {
 }
 
 /** sh: $1 "browser" or "reveal", $2 the path (~/ expanded here), $3 "guard": only paths in the home folder or /tmp.
- *  Exits 3 when the path isn't there, 4 when nothing can open it, 5 when the guard refuses it.
+ *  Exits 3 when the path isn't there, 4 when nothing can open it, 5 when the guard refuses it. The guard checks where
+ *  the path really leads (links and .. resolved) and opens that.
  *  macOS: the default browser's app for http URLs (LaunchServices) opens the file, since plain `open` would pick the
  *  file type's app; a folder opens in Finder, anything else is revealed there. A folder with an extension (an app or
  *  another bundle, which `open` would run) is only revealed. Linux: the browser, xdg-open, or the file manager's
@@ -170,9 +220,11 @@ case $p in "~") p=$HOME ;; "~/"*) p="$HOME/\${p#"~/"}" ;; esac
 [ -e "$p" ] || exit 3
 if [ "$3" = guard ]; then
   if [ -d "$p" ]; then r=$(cd "$p" 2>/dev/null && pwd -P) || exit 3
-  else r="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || exit 3; fi
+  elif command -v realpath >/dev/null 2>&1; then r=$(realpath "$p" 2>/dev/null) || exit 3
+  else [ -L "$p" ] && exit 5; r="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || exit 3; fi
   h=$(cd "$HOME" 2>/dev/null && pwd -P)
   case "$r/" in "$h"/*|/tmp/*|/private/tmp/*) ;; *) exit 5 ;; esac
+  p=$r
 fi
 if [ "$(uname)" = Darwin ]; then
   if [ -d "$p" ]; then

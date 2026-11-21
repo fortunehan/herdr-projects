@@ -6,7 +6,7 @@ import { act } from "./actions.ts";
 function stub(code = 0) {
   const calls: { argv: string[]; on?: string }[] = [];
   const hub = { call: async (_m: string, p: any) => { calls.push(p); return { code, stdout: "", stderr: "" }; } };
-  const compat = { addrOf: (k: string) => ({ "p:mini:shop": "mini/t1a", "p:shop": "t2b" } as Record<string, string>)[k] ?? null };
+  const compat = { addrOf: (k: string) => ({ "p:mini:shop": "mini/t1a", "p:shop": "t2b", "done-mini": "log:mini|claude|/home/me/a.jsonl", "done-here": "log:|claude|/Users/me/a.jsonl" } as Record<string, string>)[k] ?? null };
   return { calls, hub: hub as never, compat: compat as never };
 }
 
@@ -39,4 +39,11 @@ test("only a path, for a chat that's here", async () => {
     await expect(act(hub, { type: "open-path", chat: "p:shop", path }, compat)).rejects.toThrow("That isn't a path.");
   await expect(act(hub, { type: "open-path", chat: "p:gone", path: "/tmp/a" }, compat)).rejects.toThrow("That chat isn't here any more.");
   expect(calls).toEqual([]);
+});
+
+test("a finished task's chat (its log) opens on the machine the log is on", async () => {
+  const { calls, hub, compat } = stub();
+  await act(hub, { type: "open-path", chat: "done-mini", path: "/tmp/a.html" }, compat);
+  await act(hub, { type: "open-path", chat: "done-here", path: "/tmp/a.html" }, compat);
+  expect(calls.map((c) => c.on)).toEqual(["mini", undefined]);
 });
