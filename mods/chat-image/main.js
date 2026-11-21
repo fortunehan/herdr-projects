@@ -158,7 +158,7 @@ export default class ImageViewer extends View {
         }
         p = problem(action, t, r, cmd);
       } catch (e) {
-        p = { title: TITLES[action], body: plainError(e) || String(e?.message ?? e ?? "").trim().split("\n").pop() };
+        p = { title: TITLES[action], body: plainError(e) };
       }
       toast({ title: p.title, ...(p.body ? { body: p.body } : {}), level: "error" });
       this.say(p.body ? `${p.title}: ${p.body}` : p.title, true, cx);

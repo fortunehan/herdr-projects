@@ -166,20 +166,29 @@ test("window mods call only the fs functions the window has (SHEP-98)", () => {
 // SHEP-104: exec resolves a bare program on the window's PATH, and the dev Mac's puts cmux's `open` wrapper before
 // /usr/bin/open. macOS programs a mod runs are absolute; a folder check uses the shell's own `[ -d ]` (macOS 26 has
 // no /usr/bin/test, and a remote machine's test may live elsewhere).
-const MAC_PROGRAMS = ["open", "osascript", "pbcopy", "pbpaste", "test"];
+const MAC_PROGRAMS = ["open", "osascript", "pbcopy", "pbpaste", "launchctl", "test"];
 function barePrograms(src: string): string[] {
   const names = MAC_PROGRAMS.join("|");
   const found: string[] = [];
+  // As a program with its argument list: exec("open", [p]), exec("open", args), return ["open", [p]].
   for (const m of src.matchAll(new RegExp(`["'\`](${names})["'\`]\\s*,\\s*\\[`, "g"))) found.push(`"${m[1]}", [...]`);
-  for (const m of src.matchAll(new RegExp(`\\bexec\\s+(${names})\\s`, "g"))) found.push(`exec ${m[1]}`);
+  for (const m of src.matchAll(new RegExp(`\\bexec\\(\\s*["'\`](${names})["'\`]\\s*,\\s*[^\\[\\s]`, "g"))) found.push(`exec("${m[1]}", ...)`);
+  // Inside a shell script (sh's own `test` is a builtin, no PATH): after exec, &&, || or ; (`open` only before an
+  // argument, as JS has `|| open ?`), or a macOS-only program followed by an argument.
+  for (const m of src.matchAll(/(?:\bexec|&&|\|\||;)\s+(?:(open)\s+[-<>"'$/]|(osascript|pbcopy|pbpaste|launchctl)\s)/g)) found.push(`sh: ${m[1] ?? m[2]}`);
+  for (const m of src.matchAll(/(?<![\w/.$-])(osascript|pbcopy|pbpaste|launchctl)\s+[-<>"'$]/g)) found.push(`sh: ${m[1]}`);
   return found;
 }
 
 test("window mods run macOS programs by absolute path, never a bare name a PATH can shadow (SHEP-104)", () => {
   expect(barePrograms('exec("open", [p])')).toEqual(['"open", [...]']);
+  expect(barePrograms('exec("open", args)')).toEqual(['exec("open", ...)']);
   expect(barePrograms('return ["osascript", ["-l"]]')).toEqual(['"osascript", [...]']);
   expect(barePrograms("exec('test', ['-d', p])")).toEqual(['"test", [...]']);
-  expect(barePrograms('sh -c "mkdir -p x && exec osascript -l JavaScript"')).toEqual(["exec osascript"]);
+  expect(barePrograms('sh -c "mkdir -p x && exec osascript -l JavaScript"')).toEqual(["sh: osascript", "sh: osascript"]);
+  expect(barePrograms('exec("sh", ["-c", "pbcopy < file"])')).toEqual(["sh: pbcopy"]);
+  expect(barePrograms('"systemctl --user start x || launchctl kickstart y"')).toEqual(["sh: launchctl"]);
+  expect(barePrograms('"cat f | /usr/bin/pbcopy; exec /usr/bin/osascript -e x"; // macOS (osascript): its copy')).toEqual([]);
   expect(barePrograms('exec("/usr/bin/open", [p]); this.btn("open", "external-link")')).toEqual([]);
   const bad: string[] = [];
   const walk = (dir: string) => {

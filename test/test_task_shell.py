@@ -189,7 +189,7 @@ class ShellView(unittest.TestCase):
         r = run_mod([{}, {}], where=dict(TASK, terminal="vm/t3", machine="vm"))
         (call,) = runs(r["calls"])
         self.assertEqual(call[call.index("--on") + 1], "vm")
-        self.assertIn(["exec", "test", "-d", "/work/wt-25", "vm"], r["calls"])
+        self.assertIn(["exec", "sh", "-c", '[ -d "$1" ]', "test", "/work/wt-25", "vm"], r["calls"])
         self.assertEqual(r["out"][-1]["view"], "vm/t90")
 
 
