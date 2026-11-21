@@ -167,7 +167,8 @@ test("window mods call only the fs functions the window has (SHEP-98)", () => {
 // /usr/bin/open. macOS programs a mod runs are absolute; a folder check uses the shell's own `[ -d ]` (macOS 26 has
 // no /usr/bin/test, and a remote machine's test may live elsewhere).
 const MAC_PROGRAMS = ["open", "osascript", "pbcopy", "pbpaste", "launchctl", "test"];
-function barePrograms(src: string): string[] {
+function barePrograms(code: string): string[] {
+  const src = code.split("\n").filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join("\n");
   const names = MAC_PROGRAMS.join("|");
   const found: string[] = [];
   // As a program with its argument list: exec("open", [p]), exec("open", args), return ["open", [p]].
@@ -176,6 +177,9 @@ function barePrograms(src: string): string[] {
   // Inside a shell script (sh's own `test` is a builtin, no PATH): after exec, &&, || or ; (`open` only before an
   // argument, as JS has `|| open ?`), or a macOS-only program followed by an argument.
   for (const m of src.matchAll(/(?:\bexec|&&|\|\||;)\s+(?:(open)\s+[-<>"'$/]|(osascript|pbcopy|pbpaste|launchctl)\s)/g)) found.push(`sh: ${m[1] ?? m[2]}`);
+  // A script that starts with one ('open "$1"'), or a pipe into one ('cat "$1" | pbcopy').
+  for (const m of src.matchAll(/(?<=["'`]\s*)(open|osascript|pbcopy|pbpaste|launchctl)\s+[-<>"'$/]/g)) found.push(`sh: ${m[1]}`);
+  for (const m of src.matchAll(/(?<!\|)\|\s*(open|osascript|pbcopy|pbpaste|launchctl)\b/g)) found.push(`sh: ${m[1]}`);
   for (const m of src.matchAll(/(?<![\w/.$-])(osascript|pbcopy|pbpaste|launchctl)\s+[-<>"'$]/g)) found.push(`sh: ${m[1]}`);
   return found;
 }
@@ -186,7 +190,9 @@ test("window mods run macOS programs by absolute path, never a bare name a PATH 
   expect(barePrograms('return ["osascript", ["-l"]]')).toEqual(['"osascript", [...]']);
   expect(barePrograms("exec('test', ['-d', p])")).toEqual(['"test", [...]']);
   expect(barePrograms('sh -c "mkdir -p x && exec osascript -l JavaScript"')).toEqual(["sh: osascript", "sh: osascript"]);
-  expect(barePrograms('exec("sh", ["-c", "pbcopy < file"])')).toEqual(["sh: pbcopy"]);
+  expect(barePrograms('exec("sh", ["-c", "pbcopy < file"])')).toEqual(["sh: pbcopy", "sh: pbcopy"]);
+  expect(barePrograms(`exec("sh", ["-c", 'open "$1"', "viewer", p])`)).toEqual(["sh: open"]);
+  expect(barePrograms(`exec("sh", ["-c", 'cat "$1" | pbcopy', "clipboard", p])`)).toEqual(["sh: pbcopy"]);
   expect(barePrograms('"systemctl --user start x || launchctl kickstart y"')).toEqual(["sh: launchctl"]);
   expect(barePrograms('"cat f | /usr/bin/pbcopy; exec /usr/bin/osascript -e x"; // macOS (osascript): its copy')).toEqual([]);
   expect(barePrograms('exec("/usr/bin/open", [p]); this.btn("open", "external-link")')).toEqual([]);
