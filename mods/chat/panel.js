@@ -498,33 +498,40 @@ export class PanelHost {
         .child(this.switcher(t, segs)));
   }
 
-  // The header's block as tall as its rows: 127, and with "↑ after" / "↓ then" 8 apart, a line and 8 over 24 each.
+  // The header's block as tall as its rows: 127, and with "↑ after" / "↓ then" 8 apart, a line and 8 over 24 each. Herdr
+  // keeps a block's size across restarts, so it is compared with the layout's, not only with the last one asked for.
   fitHead(rows, cx) {
     if (!this.head) return;
-    // the layout's own height until a task with dependencies shows
-    this.headPx ??= HEAD_PX;
+    const node = find(layout(), HEAD);
+    if (!node) return;
     const px = HEAD_PX + (rows ? 17 + 24 * rows : 0);
-    if (px === this.headPx || !find(layout(), HEAD)) return;
+    if (px === (node.size?.px ?? HEAD_PX) || px === this.headPx) { this.headPx = px; return; }
     this.headPx = px;
     cx.timer.after(0, () => { try { run("layout.resize", { id: HEAD, px }); } catch {} });
   }
 
-  // Its "↑ after" and "↓ then". Its own list, read again every few seconds (core ownRelations), says which hold now;
-  // what the Tasks panel worked out from every list it reads (shared "tasks.deps", mods/tasks publishDeps) adds how
-  // each one is opened and another folder's or machine's task waiting for it. That may be older than the list: it never
-  // brings back one the list says is done or gone, nor this list's tasks the list no longer has waiting.
+  // Its "↑ after" and "↓ then". Its own list, read again every few seconds (core ownRelations), says which hold now and
+  // their state; what the Tasks panel worked out from every list it reads (shared "tasks.deps", mods/tasks publishDeps)
+  // may be older, so it only adds how each one opens, another folder's name, and other lists' tasks waiting for it.
+  // Tasks are matched by machine, folder and id, never by their ids' words: another machine's task says its machine
+  // ("vm-b:SHEP-13"), so two machines' SHEP-13 never read as one.
   depsOf(rec) {
     if (!rec) return null;
     const own = rec.deps ?? { after: [], then: [] };
-    const all = shared("tasks.deps")?.[`${rec.machine ?? ""}:${rec.folder}#${rec.id}`];
-    if (!all) return own;
-    const mine = (ref) => !String(ref).includes(":") && String(ref).startsWith(`${String(rec.ref).replace(/-\d+$/, "")}-`);
-    const richer = new Map((all.after ?? []).map((d) => [d.ref, d]));
-    const after = own.after.map((d) => ({ ...d, ...(richer.get(d.ref) ?? {}) }));
-    const ownThen = new Set(own.then.map((d) => d.ref));
+    const all = shared("tasks.deps")?.[`${rec.machine ?? ""}:${rec.folder}#${rec.id}`] ?? { after: [], then: [] };
+    const m = rec.machine ?? null;
+    const label = (ref, machine) => { const bare = String(ref).split(":").pop(); return machine ? `${machine}:${bare}` : bare; };
+    const inList = (d) => Boolean(d.open?.key) && (d.open.key.machine ?? null) === m && d.open.key.folder === rec.folder;
+    const local = (x) => (x.id != null ? (d) => inList(d) && d.open.key.id === x.id : (d) => !inList(d) && d.ref === x.ref);
+    const extra = (d) => (d ? { ...(d.open ? { open: d.open } : {}), ...(d.where ? { where: d.where } : {}) } : {});
+    const after = own.after.map((x) => {
+      const d = (all.after ?? []).find(local(x));
+      return { ...x, ...extra(d), ...(x.id != null ? { ref: label(x.ref, m) } : {}), title: x.title ?? d?.title ?? null };
+    });
     const then = rec.state === "done" ? [] : [
-      ...own.then.map((d) => ({ ...d, ...((all.then ?? []).find((x) => x.ref === d.ref) ?? {}) })),
-      ...(all.then ?? []).filter((d) => !mine(d.ref) && !ownThen.has(d.ref)),
+      ...own.then.map((x) => ({ ...x, ...extra((all.then ?? []).find(local(x))), ref: label(x.ref, m) })),
+      ...(all.then ?? []).filter((d) => d.open?.key ? !inList(d) : String(d.ref).includes(":"))
+        .map((d) => ({ ...d, ref: d.open?.key ? label(d.ref, d.open.key.machine ?? null) : d.ref })),
     ];
     return { after, then };
   }

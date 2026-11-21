@@ -47,32 +47,63 @@ test("a link to a task of this list opens its worker on the list's own machine",
   expect(shared.get("tasks.thread")).toMatchObject({ terminal: "vm-c/t8" });
 });
 
-test("its own list says which hold; the Tasks panel's relations add links and other lists' dependents", () => {
+const open = (machine: string | null, folder: string, id: number) => ({ terminal: null, key: { machine, folder, slug: "x", id } });
+
+test("its own list says which hold and their state; the Tasks panel's relations add links and other lists' dependents", () => {
   const h = host(null);
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
-  // the list still has it waiting for WEB-1: the panel's entry adds how to open it
-  h.rec.deps = { after: [{ ref: "WEB-1", state: "running", section: "working", external: true }], then: [{ id: 14, ref: "PRJ-14", title: "Docs" }] };
+  h.rec.deps = {
+    after: [{ id: 12, ref: "PRJ-12", title: "Build", state: "ready", section: "ready" }, { ref: "WEB-1", title: null, state: "running", section: "working", external: true }],
+    then: [{ id: 14, ref: "PRJ-14", title: "Docs" }],
+  };
+  // an older entry: PRJ-12 still Working there; it only adds how each opens and WEB-1's folder
   shared.set("tasks.deps", { ":/repo#13": {
-    after: [{ ref: "WEB-1", external: true, where: "web", open: { terminal: "t5" } }],
-    then: [{ ref: "PRJ-14", open: { terminal: null } }, { ref: "APP-3", open: { terminal: "t9" } }],
+    after: [{ ref: "PRJ-12", section: "working", pct: 40, open: open(null, "/repo", 12) },
+      { ref: "WEB-1", title: "Route", external: true, where: "web", open: open(null, "/web", 1) }],
+    then: [{ ref: "PRJ-14", open: open(null, "/repo", 14) }, { ref: "APP-3", open: open(null, "/app", 3) }],
   } });
   const d = h.depsOf(h.rec);
-  expect(d.after).toEqual([{ ref: "WEB-1", state: "running", section: "working", external: true, where: "web", open: { terminal: "t5" } }]);
-  expect(d.then.map((x: any) => x.ref)).toEqual(["PRJ-14", "APP-3"]);
-  // another task's entry is no help
-  shared.set("tasks.deps", { ":/repo#99": { after: [{ ref: "X-1" }], then: [] } });
-  expect(h.depsOf(h.rec).after.map((x: any) => x.open)).toEqual([undefined]);
+  expect(d.after).toEqual([
+    { id: 12, ref: "PRJ-12", title: "Build", state: "ready", section: "ready", open: open(null, "/repo", 12) },
+    { ref: "WEB-1", title: "Route", state: "running", section: "working", external: true, where: "web", open: open(null, "/web", 1) },
+  ]);
+  expect(d.then.map((x: any) => [x.ref, x.open.key.folder])).toEqual([["PRJ-14", "/repo"], ["APP-3", "/app"]]);
+});
+
+test("two machines' tasks of the same id stay two, each saying its machine and opening its own", () => {
+  // vm-b:PRJ-12, waited for by vm-b:PRJ-13 (its own list) and by this computer's PRJ-13
+  const h = host("vm-b");
+  h.rec = { ...h.rec, id: 12, ref: "PRJ-12", state: "running", deps: { after: [], then: [{ id: 13, ref: "PRJ-13", title: "Ship" }] } };
+  shared.set("tasks.deps", { "vm-b:/repo#12": { after: [], then: [
+    { ref: "PRJ-13", open: open(null, "/repo", 13) },
+    { ref: "PRJ-13", open: open("vm-b", "/repo", 13) },
+  ] } });
+  const d = h.depsOf(h.rec);
+  expect(d.then.map((x: any) => [x.ref, x.open.key.machine])).toEqual([["vm-b:PRJ-13", "vm-b"], ["PRJ-13", null]]);
 });
 
 test("an older entry never brings back a prerequisite the list says is done, nor a dependent that started", () => {
   const h = host(null);
-  // the list read now: PRJ-12 done, PRJ-14 started; the panel's entry is from before
   h.rec.deps = { after: [], then: [] };
   shared.set("tasks.deps", { ":/repo#13": {
-    after: [{ ref: "PRJ-12", section: "working", pct: 40, open: { terminal: "t1" } }],
-    then: [{ ref: "PRJ-14", open: null }, { ref: "vm-b:APP-3", open: null }],
+    after: [{ ref: "PRJ-12", section: "working", pct: 40, open: open(null, "/repo", 12) }],
+    then: [{ ref: "PRJ-14", open: open(null, "/repo", 14) }, { ref: "vm-b:APP-3", open: open("vm-b", "/app", 3) }],
   } });
-  expect(h.depsOf(h.rec)).toEqual({ after: [], then: [{ ref: "vm-b:APP-3", open: null }] });
+  expect(h.depsOf(h.rec)).toEqual({ after: [], then: [{ ref: "vm-b:APP-3", open: open("vm-b", "/app", 3) }] });
   h.rec.state = "done";
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
+});
+
+test("the header block follows the layout's saved height back to its own", () => {
+  const h = host(null);
+  const later: (() => void)[] = [];
+  const cx = { timer: { after: (_ms: number, f: () => void) => later.push(f) } };
+  (tree.children[0] as any).size = { px: 192 };
+  h.fitHead(0, cx);
+  later.forEach((f) => f());
+  expect(ran).toContainEqual(["layout.resize", { id: "tasks-thread-head", px: 127 }]);
+  ran.length = 0; later.length = 0;
+  (tree.children[0] as any).size = { px: 127 };
+  h.fitHead(0, cx);
+  expect(later).toHaveLength(0);
 });

@@ -36,7 +36,8 @@ export function RelationLine({ kind, items, shown }: { kind: 'after' | 'then'; i
   )
 }
 
-const PILL = 'flex min-h-[22px] max-w-full min-w-0 items-center gap-x-1.5 overflow-hidden rounded-md bg-bubble px-[7px] text-fg'
+// its parts wrap inside it when they don't fit on one line: a long id first, then its status under it; only a title is cut
+const PILL = 'flex min-h-[22px] max-w-full min-w-0 flex-wrap items-center gap-x-1.5 overflow-hidden rounded-md bg-bubble px-[7px] py-0.5 text-fg'
 
 /** One prerequisite or dependent in a task's header: a button when its task can be opened. At module scope, so a
  *  snapshot that changes nothing keeps its button (and the keyboard's focus on it). */
@@ -47,7 +48,7 @@ function Pill({ r, children }: { r: TaskRelation; children: ReactNode }) {
 }
 
 /** Its id: a long one (a machine's long name) breaks onto a second line in its pill rather than being cut. */
-const Ref = ({ r, solo }: { r: TaskRelation; solo?: boolean }) => <span className={clsx(solo ? "min-w-0" : "max-w-[calc(100%-1.25rem)] shrink-0", "font-mono text-[0.6875rem] break-all whitespace-normal text-fg phone:text-[0.75rem]")}>{r.ref}</span>
+const Ref = ({ r, solo }: { r: TaskRelation; solo?: boolean }) => <span className={clsx(solo ? "min-w-0" : "max-w-full shrink-0", "font-mono text-[0.6875rem] break-all whitespace-normal text-fg phone:text-[0.75rem]")}>{r.ref}</span>
 
 /** A task's own "↑ after" and "↓ then" under its header (SHEP-103): what it waits for, each with its dot, id, title and %
  *  done; what waits for it, by id. Each opens its task. */
@@ -66,7 +67,7 @@ export function TaskDepsHead({ task }: { task: Task }) {
                 <Dot s={r.status ?? 'todo'} p={r.status === 'work' ? r.pct : undefined} className="size-3 shrink-0" />
                 <Ref r={r} />
                 {r.where ? <span className="shrink-0 text-fg3">· {r.where}</span> : null}
-                {r.title ? <span className="min-w-0 truncate text-fg2">{r.title}</span> : null}
+                {r.title ? <span className="max-w-max min-w-12 flex-1 basis-0 truncate text-fg2">{r.title}</span> : null}
                 {r.status === 'work' && r.pct !== undefined ? <span className="shrink-0 text-work-fg">{Math.round(r.pct)}%</span>
                   : r.external ? <span className="shrink-0 text-fg3">· {r.word ?? r.state}</span> : null}
               </Pill>
