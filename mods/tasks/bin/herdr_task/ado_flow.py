@@ -296,7 +296,8 @@ def cmd_pr(args):
                 raise Fail(f"{s.ref(t)} already has pull request #{t['pr']['number']}.")
             say(args, view(s, t), f"{s.ref(t)}: pull request #{n} is already recorded; nothing changed.")
             return
-        if not t.get("pr_requested"):
+        # A request that failed (the read failed, say) still lets its agent record the one it opened at the accepted commit.
+        if not t.get("pr_requested") and not t.get("pr_accepted_head"):
             raise Fail(f"{s.ref(t)} wasn't accepted yet: its pull request is opened only once the person accepts it (you're "
                        f"asked then). Say ready and wait.")
         try:

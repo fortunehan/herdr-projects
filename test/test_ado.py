@@ -1442,6 +1442,17 @@ class OpenedOnAccept(Base):
         self.assertNotIn("accepted it already", said)
         self.assertNotIn("pr_requested", self.task)
         self.assertEqual(agents.task_status(self.task, [])[0], "ready")  # the person's Accept, again
+        # the pull request its agent had opened at the accepted commit can still be recorded
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}))
+        self.record(ado.pr_url(REPO, 41))
+        self.assertTrue(self.task["merge_wait"])
+
+    def test_after_a_failed_request_a_new_accept_asks_again(self):
+        self.ready()
+        self.accept()
+        self.cant("No valid work item")
+        self.task.pop("attention")
+        self.ready()
         self.sent.clear()
         self.accept()
         self.assertEqual(len(self.sent), 1)
