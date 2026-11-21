@@ -57,7 +57,8 @@ export function failed(action, os, r) {
   return r.code !== 0;
 }
 
-const TITLES = { copy: "Couldn't copy the image", open: "Couldn't open the image", reveal: "Couldn't show the image in its folder" };
+/** Each action's failure title. */
+export const TITLES = { copy: "Couldn't copy the image", open: "Couldn't open the image", reveal: "Couldn't show the image in its folder" };
 
 /** What the viewer says when an action can't run or fails: { title, body } (body "" for none). t: target(); r: the
  *  exec result, null when it couldn't start, undefined when it never ran. */
