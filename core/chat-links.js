@@ -17,7 +17,7 @@ const END = "\\s<>\"'`\\\\\\u2018-\\u201f\\u3000-\\u303f\\uff00-\\uffef";
 const CJK = "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af";
 const URL_RE = new RegExp(`https?://[^${END}{}|]+`, "g");
 // A path starts a word: not after a letter, digit or another path's characters (and/or, 1/2, a URL's own path).
-// An absolute one has at least two parts (/tmp/x, /Users/me/): a lone /model is a slash command, not a path.
+// An absolute one has at least two parts (/tmp/x, /opt/app/): a lone /model is a slash command, not a path.
 const NOT = `${END}${CJK}\\[\\]{}|(),;:`;
 const P = `[^${NOT}]`, PART = `[^${NOT}/]`;
 const PATH_RE = new RegExp(`(?<![\\w.~/:@%+=#?&-])(file://(?:localhost)?/${P}*|~/${P}*|/${PART}+/${P}*)(:\\d+(?::\\d+)?)?`, "g");

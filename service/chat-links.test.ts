@@ -35,7 +35,7 @@ const theme = new Proxy({}, { get: () => "#000000" });
 let ran: [string, string[]][] = [];
 let toasts: any[] = [];
 let platform = "macos";
-const HOME = "/Users/me";
+const HOME = "/h/me";
 mock.module("herdr", () => fakeHerdr({
   settings: () => ({ zoom: 1 }), theme: () => theme, shared: () => undefined, setShared: () => {}, agents: () => [], panes: () => [],
   terminals: () => [], spaces: () => [], machines: () => [], knownAgents: () => [], props: () => ({}), window: () => ({ platform }),
@@ -92,11 +92,11 @@ describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () 
   });
 
   test("a click on a source file or folder shows it in Finder; ~/ is this machine's home", async () => {
-    const v = drawn(chat(), "Changed ~/dev/shop/src/app.ts:12 and /Users/me/dev/shop/");
-    expect(v.text).toBe("Changed [\\~/dev/shop/src/app.ts:12](file:///Users/me/dev/shop/src/app.ts) and [/Users/me/dev/shop/](file:///Users/me/dev/shop/)");
-    await v.click!("file:///Users/me/dev/shop/src/app.ts", cx);
-    await v.click!("file:///Users/me/dev/shop/", cx);
-    expect(ran.map(([, a]) => a.slice(3))).toEqual([["reveal", "/Users/me/dev/shop/src/app.ts"], ["reveal", "/Users/me/dev/shop/"]]);
+    const v = drawn(chat(), "Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/");
+    expect(v.text).toBe("Changed [\\~/dev/shop/src/app.ts:12](file:///h/me/dev/shop/src/app.ts) and [/h/me/dev/shop/](file:///h/me/dev/shop/)");
+    await v.click!("file:///h/me/dev/shop/src/app.ts", cx);
+    await v.click!("file:///h/me/dev/shop/", cx);
+    expect(ran.map(([, a]) => a.slice(3))).toEqual([["reveal", "/h/me/dev/shop/src/app.ts"], ["reveal", "/h/me/dev/shop/"]]);
   });
 
   test("a URL goes to the default browser", async () => {

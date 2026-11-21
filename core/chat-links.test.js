@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as L from "./chat-links.js";
 
-const HOME = "/Users/me";
+const HOME = "/h/me";
 const md = (s, o = {}) => L.linkify(s, { home: HOME, ...o });
 
 describe("finding links in a reply", () => {
@@ -36,14 +36,14 @@ describe("finding links in a reply", () => {
   });
 
   test("a line and column suffix is kept in the words, not the target", () => {
-    const [f] = L.find("at /Users/me/src/a.ts:12:3, then");
-    expect(f).toMatchObject({ text: "/Users/me/src/a.ts:12:3", path: "/Users/me/src/a.ts", line: 12, col: 3 });
+    const [f] = L.find("at /h/me/src/a.ts:12:3, then");
+    expect(f).toMatchObject({ text: "/h/me/src/a.ts:12:3", path: "/h/me/src/a.ts", line: 12, col: 3 });
     expect(L.find("~/x/y.py:7。")[0]).toMatchObject({ text: "~/x/y.py:7", path: "~/x/y.py", line: 7, col: null });
-    expect(md("at `/Users/me/src/a.ts:12`")).toBe("at [`/Users/me/src/a.ts:12`](file:///Users/me/src/a.ts)");
+    expect(md("at `/h/me/src/a.ts:12`")).toBe("at [`/h/me/src/a.ts:12`](file:///h/me/src/a.ts)");
   });
 
   test("home paths and file URLs", () => {
-    expect(md("in ~/dev/shop/README.md")).toBe("in [\\~/dev/shop/README.md](file:///Users/me/dev/shop/README.md)");
+    expect(md("in ~/dev/shop/README.md")).toBe("in [\\~/dev/shop/README.md](file:///h/me/dev/shop/README.md)");
     expect(L.find("file:///tmp/a%20b/c.svg")[0].path).toBe("/tmp/a b/c.svg");
     expect(md("file:///tmp/a%20b/c.svg")).toBe("[file:///tmp/a%20b/c.svg](file:///tmp/a%20b/c.svg)");
   });
@@ -65,14 +65,14 @@ describe("finding links in a reply", () => {
   });
 
   test("a path link the agent wrote opens the same way; where paths aren't links, just its words", () => {
-    expect(md("[the page](/tmp/a/b.html) and [code](~/x/a.ts:3)")).toBe("[the page](file:///tmp/a/b.html) and [code](file:///Users/me/x/a.ts)");
+    expect(md("[the page](/tmp/a/b.html) and [code](~/x/a.ts:3)")).toBe("[the page](file:///tmp/a/b.html) and [code](file:///h/me/x/a.ts)");
     expect(md("[the page](/tmp/a/b.html)", { paths: false })).toBe("the page");
   });
 
   test("inline code holding only a path takes it whole: spaces, CJK, the top folders", () => {
     expect(md("`/tmp/My Report/index.html`")).toBe("[`/tmp/My Report/index.html`](file:///tmp/My%20Report/index.html)");
     expect(md("`/tmp/中文/index.html`")).toBe("[`/tmp/中文/index.html`](file:///tmp/%E4%B8%AD%E6%96%87/index.html)");
-    expect(md("`/tmp` and `~/`")).toBe("[`/tmp`](file:///tmp) and [`~/`](file:///Users/me)");
+    expect(md("`/tmp` and `~/`")).toBe("[`/tmp`](file:///tmp) and [`~/`](file:///h/me)");
     // a slash command or a command line isn't a path
     expect(md("`/model` and `/usr/bin/open -R x` and `/bin/ls -la`")).toBe("`/model` and `/usr/bin/open -R x` and `/bin/ls -la`");
   });
@@ -122,7 +122,7 @@ describe("a clicked link's target", () => {
     expect(L.fromHref("file:///tmp/a%20b/c.svg", HOME)).toEqual({ kind: "path", path: "/tmp/a b/c.svg" });
     expect(L.fromHref("file://localhost/tmp/x", HOME)).toEqual({ kind: "path", path: "/tmp/x" });
     expect(L.fromHref("/tmp/a/b.ts:12", HOME)).toEqual({ kind: "path", path: "/tmp/a/b.ts" });
-    expect(L.fromHref("~/a", HOME)).toEqual({ kind: "path", path: "/Users/me/a" });
+    expect(L.fromHref("~/a", HOME)).toEqual({ kind: "path", path: "/h/me/a" });
     expect(L.fromHref("~/a", null)).toBe(null);
     expect(L.fromHref("javascript:alert(1)", HOME)).toBe(null);
     expect(L.fromHref("mailto:a@b.c", HOME)).toBe(null);

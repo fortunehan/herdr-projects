@@ -6,7 +6,7 @@ import { act } from "./actions.ts";
 function stub(code = 0) {
   const calls: { argv: string[]; on?: string }[] = [];
   const hub = { call: async (_m: string, p: any) => { calls.push(p); return { code, stdout: "", stderr: "" }; } };
-  const compat = { addrOf: (k: string) => ({ "p:mini:shop": "mini/t1a", "p:shop": "t2b", "done-mini": "log:mini|claude|/home/me/a.jsonl", "done-here": "log:|claude|/Users/me/a.jsonl" } as Record<string, string>)[k] ?? null };
+  const compat = { addrOf: (k: string) => ({ "p:mini:shop": "mini/t1a", "p:shop": "t2b", "done-mini": "log:mini|claude|/h/me/a.jsonl", "done-here": "log:|claude|/h/me/a.jsonl" } as Record<string, string>)[k] ?? null };
   return { calls, hub: hub as never, compat: compat as never };
 }
 
@@ -21,9 +21,9 @@ test("a page opens in the browser on the agent's machine, with the guard on", as
 
 test("a source file is shown in Finder on this machine's agent", async () => {
   const { calls, hub, compat } = stub();
-  await act(hub, { type: "open-path", chat: "p:shop", path: "/Users/me/a.ts" }, compat);
+  await act(hub, { type: "open-path", chat: "p:shop", path: "/h/me/a.ts" }, compat);
   expect(calls[0].on).toBeUndefined();
-  expect(calls[0].argv.slice(3)).toEqual(["open-path", "reveal", "/Users/me/a.ts", "guard"]);
+  expect(calls[0].argv.slice(3)).toEqual(["open-path", "reveal", "/h/me/a.ts", "guard"]);
 });
 
 test("missing and refused paths come back as words for a toast", async () => {
