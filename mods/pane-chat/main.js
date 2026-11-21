@@ -24,6 +24,8 @@ import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
 import { endAgent, agentTitle } from "./core/menus.js";
 import { CODE_VIEW, codeOfPane, baseName } from "./code-tabs.js";
+// Open in VS Code, iTerm2, Finder and Xcode run the task view's commands (core/open-editor.js).
+import { APPS, openFolder, title as openTitle } from "./core/open-editor.js";
 
 const CHAT = "chat";
 const LABEL = "herdr.chat";
@@ -74,23 +76,8 @@ function parked(terminal) {
   return { program: k.program, status: st, cwd: k.foreground?.cwd ?? k.cwd ?? null, title: k.title ?? "" };
 }
 
-const OPEN_ACTIONS = [["terminal", "Terminal"], ["vscode", "VS Code"], ["finder", "Finder"], ["xcode", "Xcode"]];
-
-/** NSWorkspace's Unix executable handler is the system's default terminal selection (macOS 12+).
- * Resolve it for every action; never assume Terminal.app or the ssh URL handler. Named apps also use LaunchServices.
- * https://developer.apple.com/documentation/appkit/nsworkspace/urlforapplication(toopen:)-95cvp
- * Only the action key crosses into this fixed script; directory paths remain separate process arguments. */
-const MAC_APPLICATION = `ObjC.import("AppKit");
-ObjC.import("/System/Library/Frameworks/UniformTypeIdentifiers.framework");
-function run(argv) {
-  const workspace = $.NSWorkspace.sharedWorkspace;
-  const ids = {vscode: "com.microsoft.VSCode", finder: "com.apple.finder", xcode: "com.apple.dt.Xcode"};
-  const app = argv[0] === "terminal"
-    ? workspace.URLForApplicationToOpenContentType($.UTType.typeWithIdentifier("public.unix-executable"))
-    : workspace.URLForApplicationWithBundleIdentifier(ids[argv[0]]);
-  if (app.isNil()) throw Error(argv[0] === "terminal" ? "No default terminal application is configured." : "The requested application isn't installed.");
-  return JSON.stringify(ObjC.unwrap(app.path));
-}`;
+// The task view's apps, in its order (core/open-editor.js).
+const OPEN_APPS = Object.keys(APPS);
 
 function openUnavailable(target) {
   const unavailable = copyUnavailable(target, "path");
@@ -101,21 +88,27 @@ function openUnavailable(target) {
   return null;
 }
 
-async function checkedExec(command, args) {
-  const result = await exec(command, args);
-  if (result.code !== 0) throw new Error(result.stderr?.trim() || `${command} failed (exit ${result.code}).`);
-  return result;
+const absolute = (cwd) => typeof cwd === "string" && (/^\//.test(cwd) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd));
+
+/** The folder a chat pane's agent was started in (its herdr.resume label: a task's worktree, an Assistant's
+ *  folder), else its space's folder: for a live agent whose terminal has no cwd right now (SHEP-97). */
+function agentFolder(self, terminal) {
+  let resume = null;
+  try { resume = JSON.parse(terminal.labels?.["herdr.resume"] ?? "null"); } catch {}
+  if (absolute(resume?.cwd)) return resume.cwd;
+  const folder = spaces().find((s) => s.tabs?.some((t) => t.id === self.tab))?.folder;
+  return absolute(folder) ? folder : null;
 }
 
 /** Resolve the clicked header again for each action, including parked Chat agents and remote addresses.
  * A lazy Assistant's configured folder is not a running terminal's cwd. */
 function copyTarget(pane) {
   const self = panes().find((p) => p.pane === pane);
-  const address = self?.mod === CHAT ? agentOf(pane) : self?.mod ? null : self?.terminal;
+  const chat = self?.mod === CHAT;
+  const address = chat ? agentOf(pane) : self?.mod ? null : self?.terminal;
   const terminal = address ? terminals().find((k) => k.address === address && k.state === "live") : null;
-  const cwd = terminal?.foreground?.cwd ?? terminal?.cwd;
-  const absolute = typeof cwd === "string" && (/^\//.test(cwd) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd));
-  return { terminal: terminal?.address || null, path: absolute ? cwd : null };
+  const cwd = [terminal?.foreground?.cwd, terminal?.cwd].find(absolute) ?? (chat && terminal ? agentFolder(self, terminal) : null);
+  return { terminal: terminal?.address || null, path: cwd ?? null };
 }
 
 function copyUnavailable(target, action) {
@@ -201,26 +194,17 @@ export default class Pane extends View {
   openDirectory(pane, action, cx) {
     const target = copyTarget(pane);
     const unavailable = openUnavailable(target);
-    const title = `Couldn't open ${OPEN_ACTIONS.find(([key]) => key === action)[1]}`;
     if (unavailable) {
-      notify({ title, body: unavailable, level: "warning" });
+      notify({ title: openTitle(action), body: unavailable, level: "warning" });
       return;
     }
     if (this.launching) return;
     this.launching = true;
     const overlay = props()?.overlay;
     cx.spawn(async (cx) => {
-      try {
-        const directory = await exec("/usr/bin/test", ["-d", target.path]);
-        if (directory.code !== 0) throw new Error("The current directory is missing or isn't accessible on this machine.");
-        const result = await checkedExec("/usr/bin/osascript", ["-l", "JavaScript", "-e", MAC_APPLICATION, action]);
-        const application = JSON.parse(result.stdout);
-        if (typeof application !== "string" || !application.startsWith("/")) throw new Error("The application lookup didn't return a local application.");
-        await checkedExec("/usr/bin/open", ["-a", application, "--", target.path]);
-        closeOverlay(overlay);
-      } catch (e) {
-        notify({ title, body: plainError(e), level: "error" });
-      }
+      const problem = await openFolder(exec, action, target.path, { platform: window()?.platform });
+      if (problem) notify({ ...problem, level: "error" });
+      else closeOverlay(overlay);
       this.launching = false;
       cx.notify();
     });
@@ -233,17 +217,17 @@ export default class Pane extends View {
     return v_flex().id("pane-open-menu").track_focus(this.openFocus).w_full().p(4).bg(t.popover)
       .on_key_down((e, cx) => {
         if (e.key === "escape") closeOverlay(props()?.overlay);
-        else if (e.key === "enter") this.openDirectory(pane, OPEN_ACTIONS[this.openIndex][0], cx);
+        else if (e.key === "enter") this.openDirectory(pane, OPEN_APPS[this.openIndex], cx);
         else if (e.key === "down" || e.key === "up") {
           if (!openUnavailable(copyTarget(pane))) {
-            this.openIndex = (this.openIndex + (e.key === "down" ? 1 : OPEN_ACTIONS.length - 1)) % OPEN_ACTIONS.length;
+            this.openIndex = (this.openIndex + (e.key === "down" ? 1 : OPEN_APPS.length - 1)) % OPEN_APPS.length;
             this.openKeyed = true;
           }
         } else return;
         cx.stop_propagation();
         cx.notify();
       })
-      .children(OPEN_ACTIONS.map(([action, name], i) => menuRow(`ph-open-${action}`, `Open in ${name}`, {
+      .children(OPEN_APPS.map((action, i) => menuRow(`ph-open-${action}`, `Open in ${APPS[action].name}`, {
         disabled: Boolean(unavailable) || Boolean(this.launching), onClick: (_e, cx) => this.openDirectory(pane, action, cx),
       }).when(this.openKeyed && this.openIndex === i && !unavailable, (el) => el.bg(t.hover))))
       .when(Boolean(unavailable), (el) => el.child(div().id("pane-open-reason").px(8).py(6).text_size(TEXT.label).text_color(t.muted).child(unavailable)));

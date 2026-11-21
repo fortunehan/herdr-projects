@@ -196,6 +196,7 @@ export function chooseModel(menus, permDefault, sel, agent, id) {
 export const ABOUT = {
   "tasks.merge": "Who merges a task once it's Ready: you, by accepting it, or Herdr.",
   "tasks.review_rounds": "A task's agent has its work reviewed and fixes what's found.",
+  "tasks.fix_rounds": "Azure DevOps: how often its agent fixes failing checks after Accept before you're asked.",
   "tasks.must_fix": "What the agent fixes before it says ready. It lists the rest.",
   "tasks.proof": "Each task shows real proof of its work in one artifact, linked from Accept.",
   "tasks.max_running": "Per folder. More wait their turn and start by themselves.",
@@ -313,7 +314,7 @@ export const MACHINES = {
 };
 // What the old machine scope could hold, as the person knows it.
 export const OLD_NAMES = { coordinator: "Assistant", worker: "Workers", reviewer: "Reviewer", backup: "Backup agent",
-  automations: "Run automations", merge: "Merge", review_rounds: "Review", must_fix: "Must fix", proof: "Proof",
+  automations: "Run automations", merge: "Merge", fix_rounds: "Fix checks", review_rounds: "Review", must_fix: "Must fix", proof: "Proof",
   max_running: "Tasks at once", archive_after: "Archive Done after", worktrees: "Worktrees",
   start_notes: "When a task starts", finish_notes: "When a task finishes", base: "Base branch", branch: "Branch names", slug_max: "Branch name length", agents: "Reactions" };
 // Home Assistant's line: on or off, and what herdr-task's home round last found there (~/.local/share/shepherdr/tasks/.home.json).
@@ -375,15 +376,18 @@ export const webState = (off, loaded, w) => (off ? "Off. Turn it on under Window
 export const MERGE = [["ask", "On Accept"], ["checks", "After checks pass"], ["auto", "Right away"]];
 export const MUST_FIX = [["blocker", "Blockers"], ["major", "Major and up"], ["minor", "Everything"]];
 export const ROUNDS = [[0, "Off"], [1, "1 round"], [2, "2 rounds"], [3, "3 rounds"]];
+// SHEP-96: failing checks an Azure DevOps pull request's agent fixes after Accept (Off: straight to you).
+export const FIX_ROUNDS = [[0, "Off"], [1, "1 round"], [2, "2 rounds"], [3, "3 rounds"], [5, "5 rounds"]];
 export const ARCHIVE = [[0, "Off"], [1, "1 day"], [3, "3 days"], [7, "1 week"], [30, "1 month"]];
 export const ONOFF = [[true, "On"], [false, "Off"]];
 
-export const DEFAULTS = { tasks: { merge: "ask", review_rounds: 0, must_fix: "major", max_running: 10, worktrees: true, archive_after: 7, proof: true, slug_max: 40 }, automations: { enabled: true },
+export const DEFAULTS = { tasks: { merge: "ask", fix_rounds: 3, review_rounds: 0, must_fix: "major", max_running: 10, worktrees: true, archive_after: 7, proof: true, slug_max: 40 }, automations: { enabled: true },
   agents: { reactions: true, suggestions: true, feedback: true, feedback_repo: "" } };
 
 // [section, field, label, choices | { min, max }]
 export const TASK_ROWS = [
   ["tasks", "merge", "Merge", MERGE],
+  ["tasks", "fix_rounds", "Fix checks", FIX_ROUNDS],
   ["tasks", "review_rounds", "Review", ROUNDS],
   ["tasks", "must_fix", "Must fix", MUST_FIX],
   ["tasks", "proof", "Proof", ONOFF],

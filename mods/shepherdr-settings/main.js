@@ -42,7 +42,7 @@ import { dialogKeys } from "./keyholder.js";
 // herdr-task's merge policy (MERGE): "ask" waits for the person's Accept (which merges), the others merge without it.
 // NOTES: what a task's agent is told to do first and last (tasks.start_notes / finish_notes): herdr-task puts them
 // into its starting prompt; Herdr runs nothing itself.
-import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
+import { SECTIONS, ROLES, NOTES, MERGE, MUST_FIX, ROUNDS, FIX_ROUNDS, ARCHIVE, ABOUT, BACKUP, REACTIONS, upgradeReactions, NOTIFY_ABOUT, TITLE, SPACE_TITLE,
   EVERYWHERE, CHANGED_HERE, RESET, EDIT_INSTRUCTIONS, USE_OTHER_CLI, LOADING_AGENTS, SAVED, sameAs as sameAsWords,
   spacesOwn, otherCliWords, backupProblem, notifyMachineAbout, machineLabel, TASK_ROWS, LEVEL } from "./core/settings.js";
 import { workerChoices, roleSel } from "./core/settings.js";
@@ -561,6 +561,8 @@ export default class ShepherdrSettings extends View {
       .child(this.title(t, page("tasks")))
       .child(this.row(t, rowTitle("tasks.merge"), ABOUT["tasks.merge"],
         segmented("merge", MERGE, k.merge, (v, _e, cx) => this.set("tasks", "merge", v, cx)), this.scoped("tasks", "merge")))
+      .child(this.row(t, rowTitle("tasks.fix_rounds"), ABOUT["tasks.fix_rounds"],
+        segmented("fixrounds", FIX_ROUNDS, k.fix_rounds ?? 3, (v, _e, cx) => this.set("tasks", "fix_rounds", v, cx)), this.scoped("tasks", "fix_rounds")))
       .child(this.row(t, rowTitle("tasks.review_rounds"), ABOUT["tasks.review_rounds"],
         segmented("rounds", withValue(ROUNDS, rounds, roundsWord), rounds, (v, _e, cx) => this.set("tasks", "review_rounds", v, cx)),
         this.scoped("tasks", "review_rounds")))

@@ -677,7 +677,7 @@ function CopyButton({ text }: { text: string }) {
 const follows = (row: SettingRow, value: string) => (row.inherits && value === row.inherits.value ? null : value)
 
 /** the rows whose few short choices sit side by side, as the window's segmented controls */
-const SEGMENTS = new Set(['notify', 'tasks.merge', 'tasks.review_rounds', 'tasks.must_fix', 'tasks.archive_after', 'autopilot.events'])
+const SEGMENTS = new Set(['notify', 'tasks.merge', 'tasks.fix_rounds', 'tasks.review_rounds', 'tasks.must_fix', 'tasks.archive_after', 'autopilot.events'])
 
 /** a page's settings: its rows under their group's heading (Tasks, Coordinators, Reviewer), and what it notes under them */
 function PageBody({ page, phone, set, refused, clear, hint }: { page: Page; phone: boolean; set: (key: string, value: string | null) => void; refused: (key: string) => string | undefined; clear: (key: string) => void; hint?: string }) {

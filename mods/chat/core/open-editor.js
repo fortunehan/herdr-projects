@@ -1,47 +1,63 @@
-// Shared core: the source is core/open-editor.js; bin/sync-shared copies it into mods/chat/core/. Edit it here.
-// The task view's Open in VS Code, iTerm2, Finder and Xcode (mods/chat/panel.js, SHEP-27, SHEP-38, SHEP-91): a task's folder (its
-// worktree, or its list's folder for a --here task) in that app on this machine. Says why when it can't: another
-// machine's task, a worktree not made yet or removed since (a Done task), the app missing.
+// Shared core: the source is core/open-editor.js; bin/sync-shared copies it into mods/chat/core/ and mods/pane-chat/core/.
+// Edit it here.
+// Opening a folder of this machine in another app, for the task view's VS Code, iTerm2, Finder and Xcode icons
+// (mods/chat/panel.js, SHEP-27, SHEP-38, SHEP-91) and a pane header's Open in iTerm2, VS Code, Finder and Xcode menu
+// (mods/pane-chat, SHEP-97). Both run openFolder(): one macOS `open` per click, and a failure says what it printed.
 // Plain JS: no herdr, node or DOM.
 
-/** sh scripts opening folder $1 without waiting on the app. Each exits 3 when the folder is gone, 4 when the app
- *  isn't there. */
-const GONE = `[ -d "$1" ] || exit 3`;
-const MAC = `[ "$(uname)" = Darwin ] || exit 4`;
-
-/** VS Code: the `code` CLI when it's on PATH, else macOS's app by name. */
-const VSCODE = `${GONE}
-if command -v code >/dev/null 2>&1 && code "$1" >/dev/null 2>&1; then exit 0; fi
-[ "$(uname)" = Darwin ] && open -a "Visual Studio Code" "$1" >/dev/null 2>&1 && exit 0
-exit 4`;
-
-/** iTerm2: `open -a iTerm <dir>` opens a new window (or tab, per iTerm2's own setting) already in that folder.
- *  `open -Ra` only looks the app up, so a missing iTerm2 is told apart from one that fails to start. */
-const ITERM = `${GONE}
-${MAC}
-open -Ra iTerm >/dev/null 2>&1 || exit 4
-open -a iTerm "$1"`;
-
-/** Finder: `open <dir>` shows the folder in a Finder window. */
-const FINDER = `${GONE}
-${MAC}
-open "$1"`;
-
-/** Xcode: as iTerm2, looked up first so a missing Xcode is told apart from one that fails to start. */
-const XCODE = `${GONE}
-${MAC}
-open -Ra Xcode >/dev/null 2>&1 || exit 4
-open -a Xcode "$1"`;
-
-/** The header's buttons, in their order: name, icon (mods/chat), script, and what a missing app says. */
+/** The task view's icons, in their order: name, icon (mods/chat) and how `open` finds the app. VS Code, Finder and
+ *  Xcode by bundle id (`open -b`: LaunchServices finds the app wherever it's installed, e.g. ~/Tools); iTerm2 by its
+ *  name (`open -a iTerm`), the terminal the person picked (SHEP-97). No lookup script, no folder check first: `open`
+ *  says itself when the folder or the app isn't there. */
 export const APPS = {
-  vscode: { name: "VS Code", icon: "vscode.svg", script: VSCODE, missing: "VS Code isn't installed: no `code` command and no Visual Studio Code app." },
-  iterm: { name: "iTerm2", icon: "terminal-square.svg", script: ITERM, missing: "iTerm2 isn't installed." },
-  finder: { name: "Finder", icon: "finder.svg", script: FINDER, missing: "Finder is only on macOS." },
-  xcode: { name: "Xcode", icon: "xcode.svg", script: XCODE, missing: "Xcode isn't installed." },
+  vscode: { name: "VS Code", icon: "vscode.svg", find: ["-b", "com.microsoft.VSCode"] },
+  iterm: { name: "iTerm2", icon: "terminal-square.svg", find: ["-a", "iTerm"] },
+  finder: { name: "Finder", icon: "finder.svg", find: ["-b", "com.apple.finder"] },
+  xcode: { name: "Xcode", icon: "xcode.svg", find: ["-b", "com.apple.dt.Xcode"] },
 };
 
 export const title = (app) => `Couldn't open ${APPS[app].name}`;
+
+const OPEN = "/usr/bin/open";
+const TIMEOUT = 15000;
+
+/** A command as the person would type it, for the toast. */
+const shown = (cmd, args) => [cmd.split("/").pop(), ...args].map((a) => (/^[\w./@:=+-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(" ");
+
+/** What a command printed that says why: its stderr's last line, else its stdout's, else its exit code. */
+function said(r) {
+  const last = (s) => String(s ?? "").trim().split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  return last(r.stderr) || last(r.stdout) || (r.code == null ? "it didn't finish" : `it exited with ${r.code}`);
+}
+
+/** The one command openFolder runs: [program, args]. Off macOS, VS Code's `code` command. */
+export function openCommand(app, dir, platform = "macos") {
+  if (platform !== "macos") return app === "vscode" ? ["code", [dir]] : null;
+  return [OPEN, [...APPS[app].find, "--", dir]];
+}
+
+/** Opens folder dir of this machine in app (a key of APPS). exec: herdr's (or a stand-in), never through a shell:
+ *  every argument goes as is. Resolves with null when it opened, else { title, body }: the body says what went wrong
+ *  in plain words when it's known (the folder or the app missing), else what the command printed, always with the
+ *  command. platform: window().platform; off macOS only VS Code opens. done: the task is Done (its worktree removed). */
+export async function openFolder(exec, app, dir, { platform = "macos", done = false } = {}) {
+  const t = title(app), name = APPS[app].name;
+  const command = openCommand(app, dir, platform);
+  if (!command) return { title: t, body: `${name} opens only on macOS.` };
+  const [cmd, args] = command, how = `(${shown(cmd, args)})`;
+  let r;
+  try { r = await exec(cmd, args, { timeout: TIMEOUT }); } catch (e) {
+    return { title: t, body: `${cmd} couldn't run: ${String(e?.message ?? e).trim() || "no reason given"} ${how}` };
+  }
+  r = r ?? { code: null, stdout: "", stderr: "" };
+  if (r.code === 0) return null;
+  const err = String(r.stderr ?? "");
+  if (/does not exist/i.test(err)) {
+    return { title: t, body: done ? `Its folder is gone (a finished task's worktree is removed): ${dir}` : `The folder is missing: ${dir}` };
+  }
+  if (/LSCopyApplicationURLsForBundleIdentifier|Unable to find application/i.test(err)) return { title: t, body: `${name} isn't installed. ${how}` };
+  return { title: t, body: `Opening ${name} failed: ${said(r)} ${how}` };
+}
 
 /** The folder a task opens on: its worktree (a worktree task), else its list's folder. rec: its record (panel.js
  *  loadTask()). null while it has none (a worktree task not started yet). */
@@ -51,27 +67,13 @@ export function folderOf(rec) {
   return rec.folder || null;
 }
 
-/** Why a button can't run for this task, before trying: { title, body }, or null when it can. */
+/** Why a task view button can't run for this task, before trying: { title, body }, or null when it can. */
 export function cantOpen(rec, app) {
   const t = title(app);
   if (!rec) return { title: t, body: "The task isn't read yet." };
   if (rec.machine) return { title: t, body: `This task runs on ${rec.machine}: ${APPS[app].name} opens only this machine's folders.` };
   if (!folderOf(rec)) return { title: t, body: "The task has no worktree yet: it's made when the task starts." };
   return null;
-}
-
-/** The command: [program, args]. */
-export const openCommand = (app, dir) => ["sh", ["-c", APPS[app].script, `open-${app}`, dir]];
-
-/** What a button says after running: null when it worked, else { title, body }. r: the exec result, null when it
- *  couldn't start. done: the task is Done (its worktree removed). */
-export function openProblem(app, r, done) {
-  if (r && r.code === 0) return null;
-  const t = title(app);
-  if (!r) return { title: t, body: "sh couldn't start." };
-  if (r.code === 3) return { title: t, body: done ? "Its folder is gone (a finished task's worktree is removed)." : "Its folder is gone." };
-  if (r.code === 4) return { title: t, body: APPS[app].missing };
-  return { title: t, body: String(r.stderr ?? "").trim().split("\n").pop() || `It exited with ${r.code}.` };
 }
 
 /** The task header's Copy path and Copy panel ID (SHEP-91), as an Assistant pane header's (mods/pane-chat): the

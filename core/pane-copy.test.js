@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("../mods/pane-chat/main.js", import.meta.url), "utf8")
   .replace(/^import .*;\n/gm, "").replace("export default class Pane", "class Pane");
 const spacesSource = readFileSync(new URL("./spaces.js", import.meta.url), "utf8")
   .split("// A space's Assistant:")[0].replace(/^export /gm, "").replace(/\bCHAT\b/g, "CHAT_LABEL");
+const openSource = `${readFileSync(new URL("./open-editor.js", import.meta.url), "utf8").replace(/^export /gm, "")}\nconst openTitle = title;`;
 
 /** Exercise real header handlers with isolated live data, clipboard and application dispatch. */
 function harness() {
-  const state = { props: { pane: "p-clicked" }, panes: [], terminals: [], shared: {}, clipboard: [], notices: [], commands: [], overlays: [], closed: [], executions: [], jobs: [], platform: "macos", app: "/Applications/Chosen Terminal.app" };
+  const state = { props: { pane: "p-clicked" }, panes: [], terminals: [], shared: {}, clipboard: [], notices: [], commands: [], overlays: [], closed: [], executions: [], options: [], jobs: [], platform: "macos" };
   function element() {
     const data = { nodes: [], handlers: {} };
     const el = new Proxy(data, { get(target, key) {
@@ -27,12 +28,12 @@ function harness() {
   const env = {
     View: class {}, div: element, svg: (path) => { const el = element(); el.asset = path; return el; }, image: element, h_flex: element, v_flex: element,
     props: () => state.props, panes: () => state.panes, terminals: () => state.terminals,
-    spaces: () => [], shared: (key) => state.shared[key], setShared: () => {},
+    spaces: () => state.spaces ?? [], shared: (key) => state.shared[key], setShared: () => {},
     theme: () => ({}), home: () => "/opt/test-home", inRender: (fn) => fn(), window: () => ({ platform: state.platform }),
     run: (...args) => state.commands.push(args), notify: (n) => state.notices.push(n),
-    exec: async (...args) => {
-      state.executions.push(args);
-      return state.exec ? state.exec(...args) : { code: 0, stdout: args[0] === "/usr/bin/osascript" ? JSON.stringify(state.app) : "", stderr: "" };
+    exec: async (cmd, args, options) => {
+      state.executions.push([cmd, args]); state.options.push(options);
+      return state.exec ? state.exec(cmd, args) : { code: 0, stdout: "", stderr: "" };
     },
     openOverlay: (spec) => state.overlays.push(spec), closeOverlay: (id) => state.closed.push(id),
     addonOn: () => state.autopilot ?? false, apWatch: () => {}, apSpace: () => ({}), apHeartbeatLink: () => element().id("heartbeat"), apGroup: () => element().id("autopilot"), COMPACT_BELOW: 500, CODE_VIEW: "code-view",
@@ -43,7 +44,7 @@ function harness() {
     menuRow: (id, label, { disabled, onClick }) => element().id(id).child(label)
       .when(!disabled, (el) => el.on_click(onClick)),
   };
-  const Pane = new Function("env", `const {${Object.keys(env).join(",")}} = env;\n${spacesSource}\n${source}\nreturn Pane;`)(env);
+  const Pane = new Function("env", `const {${Object.keys(env).join(",")}} = env;\n${spacesSource}\n${openSource}\n${source}\nreturn Pane;`)(env);
   const view = new Pane(); view.hovered = true;
   const cx = { stop_propagation: () => {}, notify: () => {},
     spawn: (fn) => state.jobs.push(fn(cx)),
@@ -76,7 +77,7 @@ function chat(h, { address = "remote/t-agent", pane = "remote/p-chat", cwd = "/s
   return record;
 }
 
-const actions = ["terminal", "vscode", "finder", "xcode"];
+const actions = ["vscode", "iterm", "finder", "xcode"];
 
 describe("desktop pane direct copy", () => {
   test("copy and Open share the hover group with splits, before the stable mode switch", () => {
@@ -206,49 +207,19 @@ describe("desktop pane Open menu", () => {
     expect(h.state.overlays[0]).toMatchObject({ mod: "pane-chat", kind: "popup", props: { openPane: "p-clicked" } });
     const tree = h.menu(); const rows = tree.nodes.filter(n => n?.elementId?.[0]?.startsWith("ph-open-"));
     expect(rows.map(n => n.elementId[0])).toEqual(actions.map(a => `ph-open-${a}`));
-    expect(rows.map(n => n.nodes[0])).toEqual(["Open in Terminal", "Open in VS Code", "Open in Finder", "Open in Xcode"]);
+    expect(rows.map(n => n.nodes[0])).toEqual(["Open in VS Code", "Open in iTerm2", "Open in Finder", "Open in Xcode"]);
     expect(h.state.commands).toEqual([]);
   });
 
-  test("default terminal is selected anew per action and the clicked current directory is passed as data", async () => {
-    const h = harness(); const { record } = terminal(h); const tree = h.menu();
-    const path = "/work/quote' \" 中文/$(touch nope);\nfolder"; record.foreground = { cwd: path };
-    await h.open("terminal", tree);
-    expect(h.state.executions[0]).toEqual(["/usr/bin/test", ["-d", path]]);
-    const lookup = h.state.executions[1]; expect(lookup[0]).toBe("/usr/bin/osascript");
-    expect(lookup[1].at(-1)).toBe("terminal"); expect(lookup[1].join(" ")).toContain("public.unix-executable");
-    expect(lookup[1].join(" ")).not.toContain(path);
-    expect(h.state.executions[2]).toEqual(["/usr/bin/open", ["-a", h.state.app, "--", path]]);
-    h.state.app = "/Applications/Another Terminal.app"; await h.open("terminal", tree);
-    expect(h.state.executions.at(-1)[1][1]).toBe(h.state.app); expect(h.state.commands).toEqual([]);
-    expect(h.state.closed).toEqual(["open-popup", "open-popup"]);
-  });
-
-  test("native lookup queries the configured executable handler and the requested app's bundle ID", async () => {
-    const h = harness(); terminal(h); await h.open("terminal");
-    const script = h.state.executions[1][1][3];
-    const lookups = [];
-    let missing = false;
-    const selected = { isNil: () => missing, path: "/Applications/System Choice.app" };
-    const native = { NSWorkspace: { sharedWorkspace: {
-      URLForApplicationToOpenContentType: type => { lookups.push(["default", type]); return selected; },
-      URLForApplicationWithBundleIdentifier: id => { lookups.push(["bundle", id]); return selected; },
-    } }, UTType: { typeWithIdentifier: id => id } };
-    const run = new Function("ObjC", "$", `${script}\nreturn run;`)({ import() {}, unwrap: x => x }, native);
-    expect(JSON.parse(run(["terminal"]))).toBe(selected.path);
-    for (const key of actions.slice(1)) run([key]);
-    expect(lookups).toEqual([["default", "public.unix-executable"], ["bundle", "com.microsoft.VSCode"], ["bundle", "com.apple.finder"], ["bundle", "com.apple.dt.Xcode"]]);
-    missing = true;
-    expect(() => run(["terminal"])).toThrow("No default terminal application is configured.");
-    expect(() => run(["vscode"])).toThrow("isn't installed");
-    expect(script).not.toContain("com.apple.Terminal");
-  });
-
-  test("VS Code, Finder and Xcode use their registered apps and checked argument arrays", async () => {
-    for (const key of actions.slice(1)) {
-      const h = harness(); terminal(h); await h.open(key);
-      expect(h.state.executions[1][1].at(-1)).toBe(key);
-      expect(h.state.executions[2]).toEqual(["/usr/bin/open", ["-a", h.state.app, "--", "/opt/test-home/project"]]);
+  test("each option runs one open command on the clicked current directory, passed as data", async () => {
+    const finds = { iterm: ["-a", "iTerm"], vscode: ["-b", "com.microsoft.VSCode"], finder: ["-b", "com.apple.finder"], xcode: ["-b", "com.apple.dt.Xcode"] };
+    for (const key of actions) {
+      const h = harness(); const { record } = terminal(h); const tree = h.menu();
+      const path = "/work/quote' \" 中文/$(touch nope);\nfolder"; record.foreground = { cwd: path };
+      await h.open(key, tree);
+      expect(h.state.executions).toEqual([["/usr/bin/open", [...finds[key], "--", path]]]);
+      expect(h.state.options[0].timeout).toBeGreaterThan(0);
+      expect(h.state.notices).toEqual([]); expect(h.state.closed).toEqual(["open-popup"]); expect(h.state.commands).toEqual([]);
     }
   });
 
@@ -256,6 +227,52 @@ describe("desktop pane Open menu", () => {
     const h = harness(); const record = chat(h, { address: "t-chat", pane: "p-clicked" }); const tree = h.menu();
     record.foreground.cwd = "/chat/current"; await h.open("finder", tree);
     expect(h.state.executions.at(-1)[1].at(-1)).toBe("/chat/current");
+  });
+
+  // SHEP-97: the Assistant's chat pane in the window, its agent as `hc get` shows a coordinator (parked behind the
+  // chat, herdr.chat naming the chat pane, herdr.role=coordinator).
+  function assistant(h, { foreground = { cwd: "/h/Codes/Lab/shepherdr", argv: ["claude"] }, cwd = "/h/Codes/Lab/shepherdr", resume = "/h/Codes/Lab/shepherdr" } = {}) {
+    const pane = "pe2ed2f65e0bc49f3d4e0c4fd1b757e69";
+    h.state.panes.push({ pane, mod: "chat", tab: "tb7a3", focused: true });
+    h.state.spaces = [{ id: "sp20", folder: "/h/Codes/Lab/shepherdr-space", machine: null, tabs: [{ id: "tb7a3" }] }];
+    h.state.terminals.push({ address: "t14j", state: "live", status: "working", cwd, foreground,
+      labels: { "herdr.chat": pane, "herdr.role": "coordinator", "herdr.agent": "claude", "herdr.coordinator.space": "sp20", "herdr.coordinator.tab": "tb7a3",
+        ...(resume ? { "herdr.resume": JSON.stringify({ kind: "claude", session: "s", cwd: resume }) } : {}) } });
+    h.state.props = { pane };
+    return pane;
+  }
+
+  test("the Assistant's chat pane opens every app on its agent's folder", async () => {
+    for (const key of actions) {
+      const h = harness(); const pane = assistant(h); const tree = h.menu(pane);
+      expect(h.find(tree, "pane-open-reason")).toBeNull();
+      await h.open(key, tree);
+      expect(h.state.notices).toEqual([]); expect(h.state.closed).toEqual(["open-popup"]);
+      expect(h.state.executions).toHaveLength(1);
+      expect(h.state.executions[0][1].slice(-2)).toEqual(["--", "/h/Codes/Lab/shepherdr"]);
+    }
+  });
+
+  test("an Assistant whose terminal has no cwd now uses its agent's start folder, then its space's", async () => {
+    const h = harness(); const pane = assistant(h, { foreground: null, cwd: null }); await h.open("vscode", h.menu(pane));
+    expect(h.state.executions.at(-1)).toEqual(["/usr/bin/open", ["-b", "com.microsoft.VSCode", "--", "/h/Codes/Lab/shepherdr"]]);
+    const g = harness(); const p2 = assistant(g, { foreground: null, cwd: "", resume: null }); await g.open("vscode", g.menu(p2));
+    expect(g.state.executions.at(-1)[1].at(-1)).toBe("/h/Codes/Lab/shepherdr-space");
+    g.state.props = { pane: p2 }; g.copy("path", p2); expect(g.state.clipboard).toEqual(["/h/Codes/Lab/shepherdr-space"]);
+  });
+
+  // SHEP-97's cause: herdr's exec rejects a program that isn't on disk (macOS 26 has no /usr/bin/test), as it did
+  // for every Open from the Assistant's chat pane. Here exec refuses, as the window's does, any program this Mac lacks.
+  test.if(process.platform === "darwin")("every Open starts only programs this Mac has", async () => {
+    for (const key of actions) {
+      const h = harness(); const pane = assistant(h);
+      h.state.exec = (cmd) => {
+        if (!existsSync(cmd)) throw new Error(`No such file or directory (os error 2): ${cmd}`);
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      await h.open(key, h.menu(pane));
+      expect(h.state.notices).toEqual([]); expect(h.state.closed).toEqual(["open-popup"]);
+    }
   });
 
   test("remote paths, missing terminals and missing cwd disable all options with an explanation", () => {
@@ -286,34 +303,49 @@ describe("desktop pane Open menu", () => {
     }
   });
 
-  test("missing directories and missing default terminal fail without launching a substitute", async () => {
-    for (const step of ["/usr/bin/test", "/usr/bin/osascript"]) {
+  test("a missing directory names the folder", async () => {
+    for (const key of actions) {
       const h = harness(); terminal(h);
-      h.state.exec = (cmd) => ({ code: cmd === step ? 1 : 0, stdout: "", stderr: cmd === "/usr/bin/osascript" ? "No default terminal application is configured." : "" });
-      await h.open("terminal"); expect(h.state.executions.some(([cmd]) => cmd === "/usr/bin/open")).toBe(false);
-      expect(h.state.notices[0].body).toContain(step === "/usr/bin/test" ? "directory" : "default terminal");
+      h.state.exec = () => ({ code: 1, stdout: "", stderr: "The file /opt/test-home/project does not exist." });
+      await h.open(key);
+      expect(h.state.notices[0]).toMatchObject({ level: "error", body: "The folder is missing: /opt/test-home/project" });
       expect(h.state.closed).toEqual([]);
     }
   });
 
-  test("missing applications and failed launches surface their checked errors", async () => {
-    for (const failed of ["/usr/bin/osascript", "/usr/bin/open"]) {
-      const h = harness(); terminal(h);
-      h.state.exec = cmd => ({ code: cmd === failed ? 1 : 0, stdout: JSON.stringify(h.state.app), stderr: cmd === failed ? "Requested app unavailable" : "" });
-      await h.open("xcode"); expect(h.state.notices[0]).toMatchObject({ title: "Couldn't open Xcode", body: "Requested app unavailable", level: "error" });
-      expect(h.state.closed).toEqual([]);
-    }
+  test("a failed launch shows the command and its stderr", async () => {
+    const h = harness(); terminal(h);
+    h.state.exec = () => ({ code: 1, stdout: "", stderr: "LSOpenURLsWithRole() failed with error -10810 for the file /opt/test-home/project." });
+    await h.open("xcode");
+    expect(h.state.notices[0]).toEqual({ title: "Couldn't open Xcode", level: "error",
+      body: "Opening Xcode failed: LSOpenURLsWithRole() failed with error -10810 for the file /opt/test-home/project. (open -b com.apple.dt.Xcode -- /opt/test-home/project)" });
+    expect(h.state.closed).toEqual([]);
+  });
+
+  test("an app that isn't installed says so", async () => {
+    const h = harness(); terminal(h);
+    h.state.exec = () => ({ code: 1, stdout: "", stderr: "Unable to find application named 'iTerm'" });
+    await h.open("iterm");
+    expect(h.state.notices[0]).toMatchObject({ title: "Couldn't open iTerm2", body: "iTerm2 isn't installed. (open -a iTerm -- /opt/test-home/project)" });
+  });
+
+  test("a failure with no stderr still says why, never a bare failed", async () => {
+    const h = harness(); terminal(h);
+    h.state.exec = () => ({ code: 2, stdout: "", stderr: "" });
+    await h.open("finder");
+    expect(h.state.notices[0].body).toBe("Opening Finder failed: it exited with 2 (open -b com.apple.finder -- /opt/test-home/project)");
   });
 
   test("rejected process starts report failure", async () => {
     const h = harness(); terminal(h); h.state.exec = () => { throw new Error("Process could not start"); };
-    await h.open("finder"); expect(h.state.notices[0].body).toBe("Process could not start");
+    await h.open("finder");
+    expect(h.state.notices[0].body).toBe("/usr/bin/open couldn't run: Process could not start (open -b com.apple.finder -- /opt/test-home/project)");
   });
 
   test("keyboard navigation, activation and Escape follow the existing popup pattern", async () => {
     const h = harness(); terminal(h); const tree = h.menu();
     tree.handlers.on_key_down({ key: "up" }, h.cx); tree.handlers.on_key_down({ key: "enter" }, h.cx);
-    await Promise.all(h.state.jobs); expect(h.state.executions[1][1].at(-1)).toBe("xcode");
+    await Promise.all(h.state.jobs); expect(h.state.executions[0]).toEqual(["/usr/bin/open", ["-b", "com.apple.dt.Xcode", "--", "/opt/test-home/project"]]);
     tree.handlers.on_key_down({ key: "escape" }, h.cx); expect(h.state.closed).toEqual(["open-popup", "open-popup"]);
   });
 

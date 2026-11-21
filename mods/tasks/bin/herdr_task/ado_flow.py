@@ -1,6 +1,15 @@
-"""Azure DevOps from Accept to Done (docs/adr/0001-ado-own-accept-to-done-flow.md).
+"""Azure DevOps from Accept to Done (docs/adr/0001-ado-own-accept-to-done-flow.md,
+docs/adr/0003-ado-pull-request-opened-on-accept-by-agent.md).
 
-Accept completes a task's pull request when Azure DevOps allows that now (checks passed, approvals
+SHEP-96: ready opens no pull request and pushes nothing (finalize(): the task's "pr_on_accept"). The
+person's Accept hands opening it to the task's agent (request_pr(): resumed when it ended), with the
+ado-push-pr skill, auto-complete on; the task reads Opening pull request ("pr_requested") until the agent
+records it (`herdr-task pr`, cmd_pr()) and is then Waiting to merge, or says it can't (`herdr-task status
+--cant-fix`, cant_fix()) or ends its turn without either (opening_pass()): Needs you with why, and Accept asks
+it again. A failing check while it waits to merge goes to the agent to fix and push (ghnews.pr_news():
+fix_round()), at most Settings' fix_rounds times per pull request; then Needs you with the last failure.
+
+A task whose pull request was opened before SHEP-96 (at ready) still goes as below. Accept completes a task's pull request when Azure DevOps allows that now (checks passed, approvals
 in); else (an approval still needed, checks running, or the completion refused) it turns on
 auto-complete and the task is Waiting to merge ("merge_wait") until Azure DevOps merges it. Herdr
 never completes one in the background as a fallback. Done only once Azure DevOps says merged; then
@@ -22,8 +31,19 @@ AUTO_FAILED = "Couldn't turn on auto-complete in Azure DevOps"
 AUTO_OFF = "Auto-complete was turned off in Azure DevOps"
 # The problems the person's Accept itself fixes (it turns auto-complete on again): Needs you with
 # Accept on its row (core/tasks.js acceptAgain()).
-ACCEPT_AGAIN = (AUTO_FAILED, AUTO_OFF)
+OPEN_FAILED = "Couldn't open the pull request"
+BEHIND_HERE = "Its pull request doesn't hold the reviewed commit"
+ACCEPT_AGAIN = (AUTO_FAILED, AUTO_OFF, OPEN_FAILED, BEHIND_HERE)
 PULL_FAILED = "The main checkout couldn't pull"
+# SHEP-96: the task's agent opens its pull request after Accept (as core/tasks.js readyWait()).
+OPENING = "Opening pull request"
+OPENED_ON_ACCEPT = "Its pull request is opened on Accept (Azure DevOps)"
+CANT_FIX = "Its agent can't fix it"
+ROUNDS_OUT = "Checks still fail after"
+# Needs you until the pull request's head moves (a fix pushed), whatever its checks say meanwhile (tick.facts()).
+STUCK = (CANT_FIX, ROUNDS_OUT)
+QUIET_MS = 20_000  # an agent quiet this long after the request, with no pull request recorded: Needs you
+STARTING_MS = 120_000  # an agent started for the request that isn't up after this: Needs you
 
 
 def accept(s, t, publish=True):
@@ -43,6 +63,13 @@ def accept(s, t, publish=True):
         stop_waiting(t)
         t["attention"], t["attention_at"] = problem, now()
         return problem
+    from .commands import branch_tip
+    tip = branch_tip(s, t)
+    if tip and v.get("headRefOid") and v["headRefOid"] != tip and not t.get("merge_wait"):
+        # SHEP-96: ready no longer pushes: the Accept card showed the branch here, and its pull request lacks some of it.
+        t["attention"], t["attention_at"] = (f"{BEHIND_HERE}: #{n} is at {v['headRefOid'][:7]}, {t.get('branch')} here at "
+                                             f"{tip[:7]}. Its agent pushes it (git push), then Accept again."), now()
+        return t["attention"]
     if v.get("isDraft"):
         if not publish:
             return "It's still a draft pull request: Accept publishes and merges it."
@@ -167,3 +194,230 @@ def cmd_dismiss(args):
             s.dirty = True
         v = view(s, t)
     say(args, {**v, "dismissed": bool(was)}, f"{s.ref(t)}: dismissed." if was else f"{s.ref(t)} has nothing to dismiss.")
+
+
+# ---- SHEP-96: its agent opens the pull request after Accept ------------------------------------
+
+def pr_on_accept(s, t):
+    """A worktree task on Azure DevOps with work to merge and no pull request yet: ready opens none, Accept asks its
+    agent to (request_pr())."""
+    return bool(t.get("mode") == "worktree" and t.get("worktree") and not t.get("pr") and not t.get("nothing_to_merge")
+                and ado.repo_of(s))
+
+
+def open_msg(s, t, by_settings=False, head=None):
+    """What the task's agent is told on Accept (by_settings: Settings' merge policy accepted it for the person): open
+    its pull request with the ado-push-pr skill, then record it."""
+    from .launch import own_path
+    ref, ht, folder = s.ref(t), own_path(), shlex.quote(s.loc["folder"])
+    base = t.get("base") or "main"
+    wid = ado.wids(t)
+    item = f"work item #{wid[0]}, checked live" if wid else "the work item the skill finds, checked live"
+    who = (f"The person's Settings merge {ref} \"{t.get('title') or ''}\" without asking them (Merge: on its own or after "
+           f"checks), so it is accepted.") if by_settings else f"The person accepted {ref} \"{t.get('title') or ''}\"."
+    return (f"{who} Open its pull request now with the ado-push-pr skill (PR mode): push {t['branch']} from "
+            f"{t['worktree']} to the remote branch of the same name ({t['branch']}: Herdr's task branch, an explicit name "
+            f"for the skill) and create its pull request into {base} (the task's base branch, even when the repository's "
+            f"default branch is another one), with auto-complete on. Follow the skill's own steps: {item}, the title "
+            f"\"#<work item>: <Summary>\", and the repository's pull request template. Don't add, change or rebase commits."
+            + (f" Push exactly commit {head}, the one accepted: if `git -C {t['worktree']} rev-parse HEAD` says another, push "
+               f"nothing and say why with --cant-fix (below)." if head else "") + "\n"
+            f"Once it exists, record it: `{ht} pr {ref} --folder {folder} --url <its URL>`. Herdr then waits for Azure DevOps "
+            f"to merge it and sends you any check that fails.\n"
+            f"If you can't create it (no valid work item, the push refused, the skill missing, a sign-in failing), don't open "
+            f"it any other way: run `{ht} status {ref} --folder {folder} \"Couldn't open the pull request\" --cant-fix "
+            f"\"<why, in one line>\"` and end your turn. The person decides what happens next.")
+
+
+def request_pr(s, t, args, by_settings=False):
+    """The person's Accept on a task with no pull request yet: its agent (resumed, or started with a handoff, when it
+    ended) opens it. Opening pull request until it records one (cmd_pr()). Returns (terminal, started), or raises Fail
+    with the task Needs you (OPEN_FAILED: Accept asks again)."""
+    from .commands import tell
+    from .base import Fail
+    for k in ("attention", "attention_at", "merge_failed_head", "auto_merge"):
+        t.pop(k, None)
+    from .commands import branch_tip
+    tip, said = branch_tip(s, t), t.get("head")
+    if said and tip and tip != said:
+        t["attention"], t["attention_at"] = (f"{OPEN_FAILED}: {t.get('branch')} moved to {tip[:7]} since it said ready at "
+                                             f"{said[:7]}, the commit the Accept card showed; its agent says ready again"), now()
+        s.dirty = True
+        raise Fail(t["attention"])
+    t["pr_requested"] = t["handed_at"] = now()
+    t["pr_accepted_head"] = said or tip
+    t.pop("pr_request_failed", None)
+    s.dirty = True
+    try:
+        return tell(s, t, open_msg(s, t, by_settings, t["pr_accepted_head"]), args)
+    except Fail as e:
+        t["pr_request_failed"] = True
+        t["attention"], t["attention_at"] = f"{OPEN_FAILED}: couldn't reach its agent: {e}", now()
+        raise Fail(t["attention"])
+
+
+def opened(s, t, v):
+    """Its agent recorded its pull request (v: as read): Waiting to merge (auto-complete on, the skill's, else turned
+    on now), Done when it merged already, else why not (Needs you)."""
+    for k in ("pr_requested", "pr_on_accept", "pr_accepted_head", "pr_request_failed"):
+        t.pop(k, None)
+    t["pr"]["checked"] = 0
+    if v.get("state") == "MERGED":
+        merged(s, t, v, even_if_busy=True)
+        return None
+    return wait(s, t, v)
+
+
+PR_NUMBER = re.compile(r"/pullrequest/(\d+)(?:[/?#]|$)", re.I)
+
+
+def cmd_pr(args):
+    """herdr-task pr <id> --url <its URL> (or --number N): a task's agent records the pull request it opened on Azure
+    DevOps after the person's Accept (SHEP-96). Checked live: the task's repo, branch and base. Then Waiting to merge."""
+    from .base import Fail
+    from .commands import open_store, say, view, branch_tip
+    n = getattr(args, "number", None)
+    if n is None:
+        m = PR_NUMBER.search(str(args.url or ""))
+        if not m:
+            raise Fail("Give the pull request's URL (…/_git/<repo>/pullrequest/<number>) with --url, or --number.")
+        n = int(m.group(1))
+    with open_store(args) as s:
+        t = s.find(args.id)
+        repo = ado.repo_of(s)
+        if not repo:
+            raise Fail(f"{s.ref(t)}'s folder isn't on Azure DevOps: herdr-task pr records Azure DevOps pull requests only.")
+        if args.url and not str(args.url).lower().startswith(ado.web(repo).lower() + "/pullrequest/"):
+            raise Fail(f"That URL isn't a pull request of {repo[len(ado.PREFIX):]} ({ado.web(repo)}/pullrequest/<number>).")
+        if t["state"] not in ("ready", "running") or t.get("merged"):
+            raise Fail(f"{s.ref(t)} isn't waiting for its pull request ({t['state']}).")
+        if t.get("pr"):
+            if int(t["pr"].get("number") or 0) != int(n):
+                raise Fail(f"{s.ref(t)} already has pull request #{t['pr']['number']}.")
+            say(args, view(s, t), f"{s.ref(t)}: pull request #{n} is already recorded; nothing changed.")
+            return
+        # The commit the person accepted (kept by request_pr()); a request that failed (the read failed, say) still lets its
+        # agent record the one it opened at that commit. Never the branch's tip instead.
+        accepted = t.get("pr_accepted_head")
+        if not accepted:
+            raise Fail(f"{s.ref(t)} wasn't accepted yet: its pull request is opened only once the person accepts it (you're "
+                       f"asked then). Say ready and wait.")
+        try:
+            v = ado.view(repo, int(n))
+        except ado.AdoError as e:
+            raise Fail(f"Couldn't read pull request #{n} on Azure DevOps: {e}")
+        # The store's lock was let go during that read (base.unlocked()): the same Accept must still stand (no Send back,
+        # no new Accept, no pull request recorded meanwhile).
+        if t.get("pr_accepted_head") != accepted or t.get("pr"):
+            raise Fail(f"{s.ref(t)} changed while Azure DevOps was asked (sent back, accepted again or recorded): nothing "
+                       f"recorded. Run `herdr-task show {s.ref(t)}` and follow what it says now.")
+        base = t.get("base") or "main"
+        if v.get("headRefName") != t.get("branch"):
+            raise Fail(f"Pull request #{n} is from {v.get('headRefName')}, not {s.ref(t)}'s branch {t.get('branch')}.")
+        tip = accepted
+        if v.get("headRefOid") != tip:
+            raise Fail(f"Pull request #{n} is at {str(v.get('headRefOid'))[:7]}, but the person accepted {t.get('branch')} at "
+                       f"{tip[:7]}: " + ("push that commit (git push), then run this again." if v.get("state") == "OPEN" else
+                                         "it isn't this task's pull request. Open one for the accepted commit."))
+        if v.get("baseRefName") != base:
+            raise Fail(f"Pull request #{n} goes into {v.get('baseRefName')}, but {s.ref(t)} merges into {base}: change its "
+                       f"target branch to {base} in Azure DevOps, then run this again.")
+        if v.get("state") == "CLOSED":
+            raise Fail(f"Pull request #{n} is abandoned.")
+        t["pr"] = {**(t.get("pr") or {}), "number": int(n), "url": ado.pr_url(repo, n), "repo": repo, "by_agent": True}
+        if t["state"] == "running":
+            t["state"], t["ready_at"] = "ready", t.get("ready_at") or now()
+        t.pop("attention", None)
+        why = opened(s, t, v)
+        s.dirty = True
+        out = view(s, t)
+    if why and why != WAITS:
+        say(args, {**out, "error": why}, f"{s.ref(t)}: pull request #{n} recorded, but: {why}")
+        return
+    say(args, out, f"{s.ref(t)}: pull request #{n} recorded; " + ("merged, done." if why is None else
+        "waiting for Azure DevOps to merge it (auto-complete is on). A check that fails comes back to you."))
+
+
+def cant_fix(s, t, why):
+    """The task's agent says it can't (herdr-task status --cant-fix): open its pull request after Accept, or fix its
+    failing checks. Needs you with why and the last failure, until its pull request's head moves (a fix pushed)."""
+    why = " ".join(str(why or "").split())[:300] or "it didn't say why"
+    if t.get("pr_requested") and not t.get("pr"):
+        t["attention"], t["pr_request_failed"] = f"{OPEN_FAILED}: {why}", True
+    else:
+        last = ((t.get("pr") or {}).get("last_failure") or {})
+        t["attention"] = f"{CANT_FIX}: {why}" + (f" Last failure: {last['text']}" if last.get("text") else "")
+        t["stuck_head"] = ((t.get("pr") or {}).get("seen_head") or last.get("head")
+                           or git(t.get("worktree") or s.loc["folder"], "rev-parse", "HEAD")[1] or None)
+    t["attention_at"] = now()
+    t.pop("handed_at", None)
+    (t.get("pr") or {}).pop("news", None)
+    s.dirty = True
+    return t["attention"]
+
+
+def unstick(t, v):
+    """A stop (STUCK) goes once its pull request's head moved (a fix pushed): before that commit's news is read
+    (ghnews.pr_news()), so its failure is a fix round of its own. Returns whether the task is still stopped."""
+    if not str(t.get("attention") or "").startswith(STUCK):
+        return False
+    if v.get("headRefOid") and v.get("headRefOid") != t.get("stuck_head"):
+        t.pop("attention", None)
+        t.pop("stuck_head", None)
+        return False
+    return True
+
+
+def opening_pass(s, t, report):
+    """A task whose agent was asked to open its pull request (pr_requested) that has none yet: its agent gone, or quiet
+    after the request without recording one or saying why, needs the person (Accept asks again)."""
+    from .agents import quiet_since, status_word
+    from .commands import workers
+    at = t.get("pr_requested")
+    if not at or t.get("pr") or t.get("attention") or t["state"] != "ready":
+        return
+    live = workers(s, t)
+    if not live:
+        if now() - at < STARTING_MS:
+            return
+        why = "its agent stopped before it opened one"
+    else:
+        quiet = quiet_since(live)
+        if any(status_word(k) not in ("idle", "done") for k in live) or not quiet or quiet <= at or now() - quiet < QUIET_MS:
+            return
+        why = "its agent ended its turn without recording one (herdr-task pr) or saying why"
+    t["attention"], t["attention_at"] = f"{OPEN_FAILED}: {why}", now()
+    t["pr_request_failed"] = True
+    s.dirty = True
+    report["attention"].append(t["id"])
+
+
+def fix_round(s, t, failed, head):
+    """A new failing check on a task's accepted Azure DevOps pull request (ghnews.pr_news()). Returns the lines for its
+    agent (one more fix round) or None once its fix rounds are used up: then it Needs you with the last failure."""
+    from .launch import own_path
+    from .settings import fix_rounds
+    pr = t["pr"]
+    names = ", ".join(c.get("name") or c.get("context") or "a check" for c in failed[:5])
+    pr["last_failure"] = {"text": names + (f" ({failed[0].get('detailsUrl')})" if failed[0].get("detailsUrl") else ""),
+                          "head": head or None, "at": now()}
+    limit, used = fix_rounds(s, t), int(pr.get("fix_rounds") or 0)
+    if head and pr.get("fix_head") == head and used:
+        # more of the same push's checks failing: the round it is on, not another
+        return [f"Fix round {used} of {limit}, still: more checks of the same push failed. Fix them with the rest, commit and "
+                f"push (`git push`; never force-push, don't run ready)."]
+    if used >= limit:
+        t["attention"], t["attention_at"] = f"{ROUNDS_OUT} {used} fix round{'' if used == 1 else 's'}: {names}", now()
+        t["stuck_head"] = pr["last_failure"]["head"]
+        t.pop("handed_at", None)
+        pr.pop("news", None)
+        return None
+    pr["fix_rounds"], pr["fix_head"] = used + 1, head or None
+    ref, ht, folder = s.ref(t), own_path(), shlex.quote(s.loc["folder"])
+    return [f"Fix round {used + 1} of {limit}: the person accepted this pull request and Azure DevOps completes it by itself "
+            f"once its checks pass, so fix what fails. Find out why from the log, fix it in {t.get('worktree')}, run the "
+            f"checks, commit and push to the pull request's branch (`git push`; never force-push, don't run ready): its "
+            f"checks run again on the push.",
+            f"If the failure isn't one you can fix (outside your change, the base is red too, an agent or service down), run "
+            f"`{ht} status {ref} --folder {folder} \"Can't fix the checks\" --cant-fix \"<why, in one line>\"` and end your "
+            f"turn. After {limit} rounds the person takes over."]
