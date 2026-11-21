@@ -296,19 +296,26 @@ def cmd_pr(args):
                 raise Fail(f"{s.ref(t)} already has pull request #{t['pr']['number']}.")
             say(args, view(s, t), f"{s.ref(t)}: pull request #{n} is already recorded; nothing changed.")
             return
-        # A request that failed (the read failed, say) still lets its agent record the one it opened at the accepted commit.
-        if not t.get("pr_requested") and not t.get("pr_accepted_head"):
+        # The commit the person accepted (kept by request_pr()); a request that failed (the read failed, say) still lets its
+        # agent record the one it opened at that commit. Never the branch's tip instead.
+        accepted = t.get("pr_accepted_head")
+        if not accepted:
             raise Fail(f"{s.ref(t)} wasn't accepted yet: its pull request is opened only once the person accepts it (you're "
                        f"asked then). Say ready and wait.")
         try:
             v = ado.view(repo, int(n))
         except ado.AdoError as e:
             raise Fail(f"Couldn't read pull request #{n} on Azure DevOps: {e}")
+        # The store's lock was let go during that read (base.unlocked()): the same Accept must still stand (no Send back,
+        # no new Accept, no pull request recorded meanwhile).
+        if t.get("pr_accepted_head") != accepted or t.get("pr"):
+            raise Fail(f"{s.ref(t)} changed while Azure DevOps was asked (sent back, accepted again or recorded): nothing "
+                       f"recorded. Run `herdr-task show {s.ref(t)}` and follow what it says now.")
         base = t.get("base") or "main"
         if v.get("headRefName") != t.get("branch"):
             raise Fail(f"Pull request #{n} is from {v.get('headRefName')}, not {s.ref(t)}'s branch {t.get('branch')}.")
-        tip = t.get("pr_accepted_head") or branch_tip(s, t)
-        if tip and v.get("headRefOid") != tip:
+        tip = accepted
+        if v.get("headRefOid") != tip:
             raise Fail(f"Pull request #{n} is at {str(v.get('headRefOid'))[:7]}, but the person accepted {t.get('branch')} at "
                        f"{tip[:7]}: " + ("push that commit (git push), then run this again." if v.get("state") == "OPEN" else
                                          "it isn't this task's pull request. Open one for the accepted commit."))

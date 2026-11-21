@@ -1038,7 +1038,7 @@ class OpenedOnAccept(Base):
         self.assertEqual(agents.task_status(self.task, []), ("merging", None, "Azure DevOps is completing it"))
         # its auto-complete not on (an opt-out the skill wasn't asked for): Herdr turns it on
         self.task.pop("pr")
-        self.task["pr_requested"] = base.now()
+        self.task["pr_requested"], self.task["pr_accepted_head"] = base.now(), self.tip
         f = self.azure(self.opened())
         self.record(ado.pr_url(REPO, 41))
         self.assertEqual([list(c[3])[0] for c in f.sent("PATCH", r".*")], ["autoCompleteSetBy"])
@@ -1456,6 +1456,21 @@ class OpenedOnAccept(Base):
         with self.assertRaises(commands.Fail) as e:
             self.record(ado.pr_url(REPO, 41))
         self.assertIn("wasn't accepted yet", str(e.exception))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
+    def test_a_send_back_during_the_read_records_nothing(self):
+        self.ready()
+        self.accept()
+        d = self.opened(autoCompleteSetBy={"id": ME})
+
+        def read(url, body):
+            commands.back_to_work(self.store, self.task, "sent back: x")  # the person's Send back while the lock is let go
+            return d
+        f = self.azure(read)
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("changed while Azure DevOps was asked", str(e.exception))
+        self.assertNotIn("pr", self.task)
         self.assertEqual(f.sent("PATCH", r".*"), [])
 
     def test_after_a_failed_request_a_new_accept_asks_again(self):
