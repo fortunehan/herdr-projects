@@ -143,6 +143,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
   service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
   service/spaces-sidebar.test.ts.
+- macOS 26 (the dev Mac) has no `/usr/bin/test`, only `/bin/test`, and herdr's `exec` rejects a missing absolute
+  program path: use `/bin/test` (or a plain name) in window mods.
 - No herdr-app window runs on the dev VM: window-mod UI can only be syntax-checked here, not screenshot. No ImageMagick
   either: crop proof screenshots with python3 PIL. Stop a background stub with `kill $(lsof -t -i:<port>)`, never
   `pkill -f` on its path (it matches the calling shell).
