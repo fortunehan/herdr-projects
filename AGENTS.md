@@ -145,6 +145,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
   service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
   service/spaces-sidebar.test.ts.
+- The window's `fs/promises` has only exists, mkdir, readFile, readdir, rmdir, unlink and writeFile (no stat): bun's fs
+  has more, so a mod test can pass while the window throws; `service/picture-viewer-actions.test.ts` checks every mod's
+  `fs.<name>`.
 - macOS 26 (the dev Mac) has no `/usr/bin/test`, only `/bin/test`, and herdr's `exec` rejects a missing absolute
   program path: use `/bin/test` (or a plain name) in window mods.
 - No herdr-app window runs on the dev VM: window-mod UI can only be syntax-checked here, not screenshot. No ImageMagick
