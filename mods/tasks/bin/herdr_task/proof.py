@@ -160,6 +160,10 @@ def checks_of(t):
     """GitHub's checks on its pull request, in words: {state, text}; failed and running say so,
     so a green one is never assumed."""
     if not t.get("pr"):
+        if t.get("pr_on_accept"):
+            # SHEP-96: on Azure DevOps its agent opens the pull request once the person accepts it.
+            from .ado_flow import OPENED_ON_ACCEPT
+            return {"state": "none", "text": OPENED_ON_ACCEPT}
         return {"state": "none", "text": "No GitHub checks here"}
     v = pr_view(t)
     if not v:
@@ -229,5 +233,6 @@ def evidence(s, t):
         "list": [{"path": p, "added": v[0], "removed": v[1]} for p, v in sorted(files.items(), key=lambda x: -(x[1][0] + x[1][1]))[:FEW]]}
     out["checks"] = checks_of(t)
     # What Accept does (cmd_accept): a worktree task's branch with work of its own is merged first; else only done.
-    out["merges"] = bool(t.get("mode") == "worktree" and t.get("branch") and (t.get("pr") or commits))
+    # SHEP-96: an Azure DevOps task whose pull request is opened on Accept merges, whatever the commit list read here.
+    out["merges"] = bool(t.get("mode") == "worktree" and t.get("branch") and (t.get("pr") or commits or t.get("pr_on_accept")))
     return out

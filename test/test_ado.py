@@ -372,16 +372,25 @@ class Opening(Base):
             self.assertIn("no pull request was opened", str(e.exception))
             self.assertEqual(self.opened(f), [], want)
 
-    def test_ready_says_why_and_the_task_needs_you(self):
+    def test_ready_opens_no_pull_request_and_pushes_nothing(self):
+        """SHEP-96: on Azure DevOps ready only says ready: the person reviews the branch, and Accept has its agent open
+        the pull request (ado-push-pr). Nothing is pushed, Azure DevOps isn't asked."""
         self.task.update(state="running", mode="worktree", summary="Login works.")
-        self.fake({("GET", r"git/repositories/web/pullrequests"): {"value": []}})
-        with mock.patch.object(commands, "github", lambda s: REPO), mock.patch.object(commands, "merge_policy", lambda s, t: "ask"):
+        f = self.fake({})
+        with mock.patch.object(commands, "github", lambda s: REPO), mock.patch.object(commands, "merge_policy", lambda s, t: "ask"), \
+                mock.patch.object(commands, "pr_open", side_effect=AssertionError("ready opened a pull request")):
             said = commands.finalize(self.store, self.task)
-        self.assertIn(commands.READY_BUT, said)
-        self.assertIn("doesn't exist in Azure DevOps organization contoso", said)
-        self.assertIn("doesn't exist in Azure DevOps organization contoso", self.task["attention"])
+        self.assertNotIn(commands.READY_BUT, said)
+        self.assertIn("once they accept it you're asked to open its pull request with the ado-push-pr skill", said)
+        self.assertEqual(f.calls, [])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.pushed()
         self.assertNotIn("pr", self.task)
-        self.assertEqual(agents.task_status({**self.task, "attention_at": 0}, [])[1], "attention")
+        self.assertTrue(self.task["pr_on_accept"])
+        self.assertEqual(agents.task_status(self.task, []), ("ready", None, None))
+        # the Accept card says when its pull request comes
+        import herdr_task.proof as proof
+        self.assertEqual(proof.checks_of(self.task), {"state": "none", "text": "Its pull request is opened on Accept (Azure DevOps)"})
 
     def test_it_adopts_the_open_one_at_its_tip_and_comments_its_summary_closed(self):
         open_ = pr(n=39, head=self.tip, sourceRefName=f"refs/heads/{self.branch}")
@@ -704,10 +713,12 @@ class WaitingToMerge(Base):
             status, needs, why = self.look(d, ev)
             self.assertEqual((status, needs), ("needs", "attention"), said)
             self.assertIn(said, why)
-        # handed to its agent, which says ready again: Ready, for the person's Accept again
-        with mock.patch.object(commands, "github", lambda s: None):
+        # handed to its agent, which says ready again: still Waiting to merge (SHEP-96: its auto-complete stays on in
+        # Azure DevOps, and ready pushes nothing there), never Ready for a second Accept
+        with mock.patch.object(commands, "github", side_effect=AssertionError("asked the forge")), \
+                mock.patch.object(commands, "pr_open", side_effect=AssertionError("ready pushed")):
             commands.finalize(self.store, self.task)
-        self.assertEqual(agents.task_status(self.task, [])[0], "ready")
+        self.assertEqual(agents.task_status(self.task, [])[0], "merging")
 
     def test_auto_complete_turned_off_in_azure_devops_needs_you(self):
         report = {"attention": [], "done": []}
@@ -889,6 +900,720 @@ class News(Base):
 
     def calls_to(self, pattern):
         return [c[2] for c in ado._request.calls if c[0] == "GET" and re.fullmatch(pattern, c[1])]
+
+
+def PARTS(**k):
+    """Held news as pr_news keeps it (SHEP-96)."""
+    return {"head": "head", "conflict": [], "checks": [], "comments": [], "fix": [], "accepted": True, **k}
+
+
+class OpenedOnAccept(Base):
+    """SHEP-96: ready opens no pull request; the person's Accept has the task's agent open it with the ado-push-pr skill
+    (auto-complete on) and record it (herdr-task pr); a failing check goes back to the agent, at most fix_rounds times,
+    then the task needs the person; the agent can say it can't. Throwaway repos (origin on dev.azure.com, its push URL
+    and the merges a local bare repo), Azure DevOps faked at ado._request, the agent's terminal faked at hc."""
+
+    def setUp(self):
+        super().setUp()
+        import herdr_task.tick as tick
+        import herdr_task.news as news
+        self.tick, self.news = tick, news
+        git = self.git = lambda *a: subprocess.run(["git", *a], check=True, capture_output=True, text=True).stdout.strip()
+        self.main, self.wt, self.bare, self.other = (os.path.join(self.tmp, x) for x in ("repo", "wt", "bare.git", "other"))
+        git("init", "-q", "--bare", "-b", "main", self.bare)
+        git("init", "-q", "-b", "main", self.main)
+        for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+            git("-C", self.main, "config", k, v)
+        git("-C", self.main, "remote", "add", "origin", "https://dev.azure.com/contoso/My%20Proj/_git/web")
+        git("-C", self.main, "config", "remote.origin.pushurl", self.bare)
+        git("-C", self.main, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+        with open(os.path.join(self.main, "a.txt"), "w") as fh:
+            fh.write("one\n")
+        git("-C", self.main, "add", ".")
+        git("-C", self.main, "commit", "-q", "-m", "base")
+        git("-C", self.main, "push", "-q", self.bare, "main")
+        self.start = git("-C", self.main, "rev-parse", "HEAD")
+        self.branch = "task/1-login"
+        git("-C", self.main, "worktree", "add", "-q", "-b", self.branch, self.wt)
+        git("-C", self.wt, "commit", "-q", "--allow-empty", "-m", "login")
+        self.tip = git("-C", self.wt, "rev-parse", "HEAD")
+        self.task = {"id": 1, "title": "Login", "prompt": "Add login.", "state": "running", "mode": "worktree", "worktree": self.wt,
+                     "branch": self.branch, "base": "main", "start": self.start, "wid": "16951176", "summary": "Login works.",
+                     "agents": [{"address": "t5", "at": 0}], "ready_at": 0}
+        self.store = Store([self.task], self.main)
+        self.sent, self.started = [], []
+        done = lambda s, t, even_if_busy=False: t.update(state="done")
+        for mod, name, value in (
+                (ado_flow, "finish", done), (ado_flow, "watch_main", lambda *a: None),
+                (commands, "open_store", lambda args, write=True: self.store), (commands, "live_agents", lambda k: []),
+                (commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}),
+                (commands, "merge_policy", lambda s, t: "ask"), (commands, "own_path", lambda: "herdr-task"),
+                (news, "send_or_hold", lambda address, text, how="send": self.sent.append((address, text)) or True),
+                (commands, "start_again", lambda s, t, space, *a, message=None, **k: self.started.append(message) or ({"address": "t9"}, True)),
+                (commands, "default_space", lambda *a, **k: "sp1"), (self.tick, "live_agents", lambda k: [])):
+            p = mock.patch.object(mod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        import herdr_task.launch as launch
+        p = mock.patch.object(launch, "own_path", lambda: "herdr-task")
+        p.start()
+        self.addCleanup(p.stop)
+        self.live = [{"address": "t5", "status": "idle", "labels": {}}]
+        p = mock.patch.object(commands, "workers", lambda s, t: list(self.live))
+        p.start()
+        self.addCleanup(p.stop)
+        self.said = []
+        p = mock.patch.object(commands, "say", lambda args, data, text: self.said.append((data, text)))
+        p.start()
+        self.addCleanup(p.stop)
+        self.fake(self.LISTED)  # nothing ever reaches the real Azure DevOps
+
+    LISTED = {("GET", r"git/repositories/web/pullrequests"): {"value": []}}
+
+    def ready(self):
+        with mock.patch.object(commands, "pr_open", side_effect=AssertionError("ready opened a pull request")):
+            return commands.finalize(self.store, self.task)
+
+    def accept(self):
+        with mock.patch.object(commands, "busy_again", lambda *a: False):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        return self.said[-1]
+
+    def record(self, url, **routes):
+        ado_flow.cmd_pr(argparse.Namespace(id="SHEP-1", json=False, folder=None, url=url, number=None))
+        return self.said[-1]
+
+    def azure(self, d, evaluations=BUILT, extra=None):
+        return self.fake({("GET", r"connectionData"): {"authenticatedUser": {"id": ME}},
+                          ("GET", r"git/repositories/web/pullrequests/41"): d,
+                          ("PATCH", r"git/repositories/web/pullrequests/41"): lambda url, body: {**d, "autoCompleteSetBy": {"id": ME}},
+                          ("GET", r"policy/evaluations"): {"value": list(evaluations)},
+                          ("GET", r"git/repositories/web/pullRequests/41/statuses"): {"value": []},
+                          ("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": []}, **self.LISTED, **(extra or {})})
+
+    def opened(self, **extra):
+        return pr(**{"n": 41, "head": self.tip, "sourceRefName": f"refs/heads/{self.branch}", "title": "#16951176: Login", **extra})
+
+    def test_accept_asks_its_agent_to_open_it_with_the_skill(self):
+        f = self.fake(self.LISTED)
+        self.ready()
+        data, text = self.accept()
+        self.assertEqual((data["accepted"], self.task["state"]), ("opening", "ready"))
+        # Herdr opens nothing itself, nor asks Azure DevOps first (its agent's sign-in may work where Herdr's doesn't)
+        self.assertEqual(f.calls, [])
+        self.assertEqual(text, "SHEP-1 accepted: t5 opens its pull request on Azure DevOps.")
+        (to, msg), = self.sent
+        self.assertEqual(to, "t5")
+        for words in ("The person accepted SHEP-1", "ado-push-pr skill", f"push {self.branch} from {self.wt}",
+                      f"to the remote branch of the same name ({self.branch}: Herdr's task branch, an explicit name for the skill)",
+                      "into main", "auto-complete on",
+                      "work item #16951176, checked live", "#<work item>: <Summary>", "pull request template",
+                      f"herdr-task pr SHEP-1 --folder {self.main} --url <its URL>",
+                      "don't open it any other way", "--cant-fix"):
+            self.assertIn(words, msg)
+        self.assertEqual(agents.task_status(self.task, self.live), ("working", None, "Opening pull request"))
+        # its agent at work on it is no "working again": still Opening pull request
+        self.assertEqual(agents.task_status(self.task, [{**self.live[0], "status": "working"}])[2], "Opening pull request")
+        # never sent back meanwhile
+        self.assertIn("opening its pull request", commands.send_back_refusal(self.store, self.task))
+
+    def test_an_agent_that_ended_is_resumed_with_it(self):
+        self.ready()
+        self.live = []
+        data, text = self.accept()
+        self.assertEqual((self.sent, len(self.started), data["accepted"]), ([], 1, "opening"))
+        self.assertIn("ado-push-pr skill", self.started[0])
+        self.assertIn("(its agent started again)", text)
+
+    def test_the_pull_request_it_records_waits_to_merge(self):
+        self.ready()
+        self.accept()
+        f = self.azure(self.opened(autoCompleteSetBy={"id": "someone"}), BUILT + REVIEWERS)
+        data, text = self.record(ado.pr_url(REPO, 41))
+        self.assertEqual(self.task["pr"], {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0, "by_agent": True})
+        self.assertTrue(self.task["merge_wait"])
+        self.assertNotIn("pr_requested", self.task)
+        self.assertEqual(f.sent("PATCH", r".*"), [])  # the skill's auto-complete is kept
+        self.assertIn("waiting for Azure DevOps to merge it", text)
+        self.assertEqual(agents.task_status(self.task, []), ("merging", None, "Azure DevOps is completing it"))
+        # its auto-complete not on (an opt-out the skill wasn't asked for): Herdr turns it on
+        self.task.pop("pr")
+        self.task["pr_requested"], self.task["pr_accepted_head"] = base.now(), self.tip
+        f = self.azure(self.opened())
+        self.record(ado.pr_url(REPO, 41))
+        self.assertEqual([list(c[3])[0] for c in f.sent("PATCH", r".*")], ["autoCompleteSetBy"])
+
+    def test_a_pull_request_into_another_branch_or_of_another_repo_isnt_recorded(self):
+        self.ready()
+        self.accept()
+        self.azure(self.opened(targetRefName="refs/heads/develop"))
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("goes into develop, but SHEP-1 merges into main", str(e.exception))
+        with self.assertRaises(commands.Fail):
+            self.record("https://dev.azure.com/contoso/Other/_git/api/pullrequest/41")
+        self.assertNotIn("pr", self.task)
+        self.assertTrue(self.task["pr_requested"])
+        # one from the branch at an older commit than the person accepted: refused, and why
+        self.azure(self.opened(lastMergeSourceCommit={"commitId": "0ld"}))
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("but the person accepted task/1-login at", str(e.exception))
+        self.assertIn("push that commit (git push)", str(e.exception))
+        # one from another branch at the same commit: refused
+        self.azure(self.opened(sourceRefName="refs/heads/feature/other"))
+        with self.assertRaises(commands.Fail):
+            self.record(ado.pr_url(REPO, 41))
+
+    def test_no_pull_request_is_recorded_before_the_persons_accept(self):
+        self.ready()
+        f = self.azure(self.opened())
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("wasn't accepted yet", str(e.exception))
+        self.assertEqual((f.calls, "pr" in self.task, "merge_wait" in self.task), ([], False, False))
+
+    def test_a_merge_policy_accepts_for_the_person_and_says_so(self):
+        with mock.patch.object(commands, "merge_policy", lambda s, t: "auto"):
+            said = self.ready()
+        self.assertIn("the next message asks you to open its pull request", said)
+        (_, msg), = self.sent
+        self.assertIn("The person's Settings merge SHEP-1", msg)
+        self.assertNotIn("The person accepted", msg)
+
+    def test_ready_again_never_pushes_or_reopens_a_pull_request_its_agent_opened(self):
+        self.waiting()
+        with mock.patch.object(commands, "github", side_effect=AssertionError("asked the forge")):
+            said = self.ready()
+        self.assertIn("stays as it is: push new commits to it yourself", said)
+        self.assertTrue(said.endswith("It waits to merge in Azure DevOps."))
+        self.assertTrue(self.task["merge_wait"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("-C", self.bare, "rev-parse", f"refs/heads/{self.branch}")
+
+    def cant(self, why):
+        args = argparse.Namespace(id="SHEP-1", json=False, folder=None, text="Couldn't open the pull request", done=None, left=None,
+                                  cant_fix=why)
+        with mock.patch.object(commands, "live_agents", lambda k: []), mock.patch.object(commands, "detail", lambda k: k):
+            commands.cmd_status(args)
+
+    def test_its_agent_cant_open_it_needs_you_and_accept_asks_again(self):
+        self.ready()
+        self.accept()
+        self.cant("Work item 16951176 doesn't exist in Azure DevOps")
+        self.assertEqual(self.task["attention"], "Couldn't open the pull request: Work item 16951176 doesn't exist in Azure DevOps")
+        # its agent still finishing that turn: never Working again (the scheduler leaves it), Needs you once it rests
+        self.assertFalse(agents.busy_again(self.task, [{**self.live[0], "status": "working", "turn": 9}]))
+        self.task["attention_at"] = 0
+        self.assertEqual(agents.task_status(self.task, self.live)[:2], ("needs", "attention"))
+        self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))  # the row offers Accept again
+        self.sent.clear()
+        data, _ = self.accept()
+        self.assertEqual((data["accepted"], len(self.sent), self.task.get("attention")), ("opening", 1, None))
+
+    def test_its_agent_quiet_without_a_pull_request_needs_you(self):
+        self.ready()
+        self.accept()
+        report = {"attention": []}
+        quiet = [{"address": "t5", "status": "idle", "labels": {}, "status_ms": self.task["pr_requested"] - 1}]
+        self.live = quiet  # idle since before the request (the message held while the person types): still waiting
+        ado_flow.opening_pass(self.store, self.task, report)
+        self.assertEqual(report["attention"], [])
+        self.live = [{**quiet[0], "status_ms": base.now() - 60_000}]
+        self.task["pr_requested"] -= 120_000
+        ado_flow.opening_pass(self.store, self.task, report)
+        self.assertEqual(report["attention"], [1])
+        self.assertTrue(self.task["attention"].startswith("Couldn't open the pull request: its agent ended its turn"))
+
+    def waiting(self):
+        """Accepted, its pull request recorded: Waiting to merge."""
+        self.ready()
+        self.accept()
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}))
+        self.record(ado.pr_url(REPO, 41))
+        self.sent.clear()
+
+    def fail_at(self, head, build=88, log="npm ERR! 2 tests failed", names=("web-ci",)):
+        """One tick's look at its pull request with web-ci failing at head; the news its agent was sent, if any."""
+        self.azure(pr(n=41, head=head, sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                   [evaluation("rejected", buildDefinitionName=name, buildId=build) for name in names],
+                   {("GET", rf"build/builds/{build}/timeline"): {"records": [{"type": "Task", "result": "failed", "log": {"id": 9}}]},
+                      ("GET", rf"build/builds/{build}/logs/9"): log + "\n"})
+        report = {"attention": [], "done": []}
+        self.task["pr"]["checked"] = 0
+        before = len(self.sent)
+        with mock.patch.object(ghnews, "resting", lambda s, t: (self.live or [None])[0]), mock.patch.object(ghnews, "news_send",
+                                                                                                 lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, report)
+            if self.task["pr"].get("news"):
+                ghnews.pr_deliver(self.store, self.task, report)
+        return (self.sent[before:] or [(None, None)])[-1][1], report
+
+    def test_a_failing_check_goes_to_its_agent_to_fix_and_push(self):
+        self.waiting()
+        text, _ = self.fail_at("h1")
+        self.assertIsNotNone(text)
+        for words in ('Check "web-ci" failed: https://dev.azure.com/contoso/My%20Proj/_build/results?buildId=88',
+                      "npm ERR! 2 tests failed", "Fix round 1 of 3", "commit and push to the pull request's branch",
+                      "never force-push, don't run ready", "--cant-fix", "since the person accepted it"):
+            self.assertIn(words, text)
+        self.assertNotIn("run your ready command again", text)
+        self.assertEqual(self.task["pr"]["fix_rounds"], 1)
+        # its agent fixing it keeps it Waiting to merge, never Working again or Ready for another Accept
+        self.assertEqual(agents.task_status({**self.task, "attention": None}, [{**self.live[0], "status": "working"}])[0], "merging")
+        # the same failure of the same commit isn't another round
+        again, _ = self.fail_at("h1")
+        self.assertEqual((again, self.task["pr"]["fix_rounds"]), (None, 1))
+        # nor another check of that same push failing later
+        more, _ = self.fail_at("h1", names=("web-ci", "e2e"))
+        self.assertIn("Fix round 1 of 3, still", more)
+        self.assertEqual(self.task["pr"]["fix_rounds"], 1)
+
+    def test_a_pull_request_recorded_before_or_merged_at_another_commit_changes_nothing(self):
+        # a task whose pull request was opened at ready before SHEP-96, never accepted: confirmed, nothing turned on
+        self.ready()
+        self.task["pr"] = {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}
+        f = self.azure(self.opened())
+        self.record(ado.pr_url(REPO, 41))
+        self.assertEqual((f.calls, "merge_wait" in self.task), ([], False))
+        self.assertIn("already recorded; nothing changed", self.said[-1][1])
+        # a completed pull request of the branch at an older commit than the one accepted: never this task's merge
+        self.task.pop("pr")
+        self.accept()
+        self.azure(self.opened(status="completed", lastMergeSourceCommit={"commitId": "0ld"}, lastMergeCommit={"commitId": "f00"}))
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("it isn't this task's pull request", str(e.exception))
+        self.assertNotEqual(self.task["state"], "done")
+
+    def test_herdr_task_fix_on_an_accepted_pull_request_keeps_it_waiting_to_merge(self):
+        self.waiting()
+        for h in ("h1", "h2", "h3", "h4"):
+            self.fail_at(h)
+        self.assertTrue(self.task["attention"].startswith("Checks still fail"))
+        self.assertNotIn("handed_at", self.task)  # nobody counts as on it: Needs you at once
+        with mock.patch.object(commands, "back_to_work", side_effect=AssertionError("taken back to Working")):
+            commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
+        self.assertIn("commit and push to its pull request (`git push`; never force-push); don't run ready", self.sent[-1][1])
+        self.assertEqual(agents.task_status(self.task, [])[0], "merging")
+
+    def test_news_queued_before_a_stop_never_reaches_its_agent(self):
+        self.waiting()
+        self.fail_at("h1")
+        self.task["pr"]["news"] = {"text": "<herdr-github>old</herdr-github>", "at": base.now(), "since": self.task["ready_at"]}
+        self.cant("The base branch fails too")
+        self.assertNotIn("news", self.task["pr"])
+        self.task["pr"]["news"] = {"text": "<herdr-github>late</herdr-github>", "at": base.now(), "since": self.task["ready_at"]}
+        before = len(self.sent)
+        ghnews.pr_deliver(self.store, self.task, {})
+        self.assertEqual((len(self.sent), "news" in self.task["pr"]), (before, False))
+
+    def test_a_rejected_reviewer_policy_is_no_fix_round(self):
+        self.waiting()
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                   BUILT + [evaluation("rejected", type_id="fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", name="Minimum number of reviewers")])
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), \
+                mock.patch.object(ghnews, "news_send", lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.assertNotIn("fix_rounds", self.task["pr"])
+
+    def test_the_accepted_commit_is_named_for_the_skill(self):
+        self.ready()
+        self.accept()
+        self.assertIn(f"Push exactly commit {self.tip}, the one accepted", self.sent[-1][1])
+        self.assertEqual(self.task["pr_accepted_head"], self.tip)
+
+    def test_herdr_task_merge_hands_it_to_its_agent_too(self):
+        self.ready()
+        with mock.patch.object(commands, "ff_merge", side_effect=AssertionError("merged here")):
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertEqual(self.said[-1][1], "SHEP-1: t5 opens its pull request on Azure DevOps.")
+        self.assertIn("ado-push-pr skill", self.sent[-1][1])
+
+    def test_a_legacy_pull_request_behind_the_reviewed_commit_is_never_completed(self):
+        self.ready()
+        self.task["pr"] = {"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}
+        f = self.azure(self.opened(lastMergeSourceCommit={"commitId": "0ld"}))
+        with mock.patch.object(commands, "own_open_pr", lambda s, t: None):
+            commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=True, folder=None, worker=True))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+        self.assertTrue(self.task["attention"].startswith("Its pull request doesn't hold the reviewed commit: #41 is at 0ld"))
+        self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))
+
+    def test_a_build_named_after_reviewers_is_still_a_fix_round(self):
+        self.waiting()
+        self.assertIn("Fix round 1 of 3", self.fail_at("h1", names=("reviewer-service-ci",))[0])
+
+    def test_held_failure_news_is_kept_when_a_comment_comes_after_it(self):
+        self.waiting()
+        with mock.patch.object(ghnews, "news_send", lambda a, text: False):  # the person is typing: held
+            self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                       [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)],
+                       {("GET", r"build/builds/88/timeline"): {"records": []}})
+            self.task["pr"]["checked"] = 0
+            with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]):
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+                ghnews.pr_deliver(self.store, self.task, {})
+                self.assertIn("Fix round 1 of 3", self.task["pr"]["news"]["text"])
+                comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                                  "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+                self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                           [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)],
+                           {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": [comment]},
+                            ("GET", r"build/builds/88/timeline"): {"records": []}})
+                self.task["pr"]["checked"] = 0
+                self.task["pr"]["watch"]["checked"] = 0
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Fix round 1 of 3", text)
+        self.assertIn("Rename it.", text)
+
+    def test_cant_fix_waits_for_a_push_after_it(self):
+        self.waiting()
+        self.fail_at("h1")
+        # its agent pushed h2 and the scheduler saw it running, then it says it can't fix it
+        self.azure(pr(n=41, head="h2", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                   [evaluation("running", buildDefinitionName="web-ci")])
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.cant("The service is down")
+        self.assertEqual(self.task["stuck_head"], "h2")
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.assertTrue(self.task["attention"].startswith("Its agent can't fix it: The service is down"))
+
+    def test_a_branch_moved_since_ready_isnt_opened_on_accept(self):
+        self.ready()
+        self.task["head"] = self.start  # ready said it at another commit than the branch is at now
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.accept()
+        self.assertEqual(self.sent, [])
+        self.assertIn("moved to", self.task["attention"])
+        self.assertTrue(self.task["attention"].startswith(ado_flow.ACCEPT_AGAIN))
+        self.task["head"] = self.tip  # said ready again at the tip
+        self.accept()
+        self.assertIn(f"Push exactly commit {self.tip}", self.sent[-1][1])
+
+    def test_herdr_task_merge_refuses_a_task_not_ready(self):
+        with self.assertRaises(commands.Fail) as e:
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertIn("isn't Ready (running)", str(e.exception))
+        self.assertEqual(self.sent, [])
+
+    def test_ready_pushes_new_commits_to_a_pull_request_opened_before(self):
+        self.task.update(pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}, merge_wait=1)
+        said = self.ready()
+        self.assertEqual(self.git("-C", self.bare, "rev-parse", f"refs/heads/{self.branch}"), self.tip)
+        self.assertTrue(said.endswith("It waits to merge in Azure DevOps."))
+        self.assertEqual(self.store.data["tasks"][0]["pr"]["number"], 41)
+
+    def test_held_fix_news_goes_once_its_checks_pass(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed: old"], fix=["Fix round 1 of 3: old"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
+        comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                          "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}), BUILT,
+                   {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": [comment]}})
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Rename it.", text)
+        self.assertNotIn("Fix round 1 of 3: old", text)
+
+    def test_fix_before_accept_merges_the_base_on_azure_devops(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO}, attention="It conflicts with the base branch.")
+        with mock.patch.object(commands, "back_to_work", lambda *a, **k: True):
+            commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
+        self.assertIn("for conflicts, merge main into task/1-login", self.sent[-1][1])
+
+    def look_green(self, threads=()):
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}), BUILT,
+                   {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": list(threads)}})
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+
+    def test_a_pass_with_nothing_new_drops_a_held_fix_round(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed"], fix=["Fix round 1 of 3"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci"}
+        self.look_green()
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_pass_keeps_a_held_comment(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed: stale"], fix=["Fix round 1 of 3: stale"],
+                                                       comments=["- Comment by Ann: Use the helper."]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
+        comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                          "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+        self.look_green([comment])
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Use the helper.", text)
+        self.assertIn("Rename it.", text)
+        self.assertNotIn("stale", text)  # the passed check's failure and fix round went
+
+    def test_a_resolved_conflict_held_is_dropped(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(conflict=["- It conflicts with main: merge main"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "conflict": "h1:conflict"}
+        self.look_green()  # mergeable now
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_same_push_follow_up_keeps_the_full_fix_round(self):
+        self.waiting()
+        with mock.patch.object(ghnews, "news_send", lambda a, t: False):  # held while the person types
+            self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                       [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)], {("GET", r"build/builds/88/timeline"): {"records": []}})
+            self.task["pr"]["checked"] = 0
+            with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]):
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+                self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                           [evaluation("rejected", buildDefinitionName=n, buildId=88) for n in ("web-ci", "e2e")],
+                           {("GET", r"build/builds/88/timeline"): {"records": []}})
+                self.task["pr"]["checked"] = 0
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn('Check "e2e" failed', text)
+        self.assertIn("Fix round 1 of 3:", text)
+        self.assertIn("--cant-fix", text)
+
+    def test_a_pass_keeps_a_held_conflict(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(conflict=["- It conflicts with main: merge main"],
+                                                           checks=["- Check \"web-ci\" failed"], fix=["Fix round 1 of 3"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci",
+                                    "conflict": "h1:conflict"}
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}, mergeStatus="conflicts"), BUILT)
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("It conflicts with main", text)
+        self.assertNotIn("Fix round", text)
+
+    def test_a_conflict_on_any_azure_devops_pull_request_says_merge_not_rebase(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0})
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", mergeStatus="conflicts"), BUILT)
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), \
+                mock.patch.object(ghnews, "news_send", lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+            ghnews.pr_deliver(self.store, self.task, {})
+        self.assertIn("merge main into your branch (it is published: never rebase)", self.sent[-1][1])
+
+    def test_merge_refuses_a_task_whose_agent_is_at_work_again(self):
+        self.ready()
+        with mock.patch.object(commands, "busy_again", lambda *a: True), self.assertRaises(commands.Fail) as e:
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertIn("is working again", str(e.exception))
+        self.assertEqual(self.sent, [])
+
+    def test_fix_on_its_agents_pull_request_says_push_even_without_auto_complete(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "by_agent": True},
+                         attention="Couldn't turn on auto-complete in Azure DevOps: x")
+        commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
+        self.assertIn("commit and push to its pull request (`git push`; never force-push), then run `herdr-task ready 1 --folder", self.sent[-1][1])
+
+    def test_ready_again_after_accept_keeps_the_request(self):
+        self.ready()
+        self.accept()
+        said = self.ready()  # its agent answered a question and said ready again before recording the pull request
+        self.assertIn("accepted it already", said)
+        self.assertTrue(self.task["pr_requested"])
+        self.assertEqual(len(self.sent), 1)  # never asked twice
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}))
+        self.record(ado.pr_url(REPO, 41))
+        self.assertTrue(self.task["merge_wait"])
+
+    def test_ready_after_a_failed_request_never_revives_it(self):
+        self.ready()
+        self.accept()
+        self.cant("No valid work item")
+        self.task.pop("attention")  # cmd_ready clears it before finalize
+        said = self.ready()
+        self.assertNotIn("accepted it already", said)
+        self.assertNotIn("pr_requested", self.task)
+        self.assertEqual(agents.task_status(self.task, [])[0], "ready")  # the person's Accept, again
+        # the pull request its agent had opened at the accepted commit can still be recorded
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}))
+        self.record(ado.pr_url(REPO, 41))
+        self.assertTrue(self.task["merge_wait"])
+
+    def test_after_send_back_a_late_pull_request_needs_a_new_accept(self):
+        self.ready()
+        self.accept()
+        self.cant("Couldn't read the pull request")
+        commands.cmd_send_back(argparse.Namespace(id="SHEP-1", json=False, folder=None, note="Rename the button", on=None))
+        f = self.azure(self.opened())
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("wasn't accepted yet", str(e.exception))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
+    def test_a_send_back_during_the_read_records_nothing(self):
+        self.ready()
+        self.accept()
+        d = self.opened(autoCompleteSetBy={"id": ME})
+
+        def read(url, body):
+            commands.back_to_work(self.store, self.task, "sent back: x")  # the person's Send back while the lock is let go
+            return d
+        f = self.azure(read)
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("changed while Azure DevOps was asked", str(e.exception))
+        self.assertNotIn("pr", self.task)
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
+    def test_after_a_failed_request_a_new_accept_asks_again(self):
+        self.ready()
+        self.accept()
+        self.cant("No valid work item")
+        self.task.pop("attention")
+        self.ready()
+        self.sent.clear()
+        self.accept()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_the_card_says_it_merges_when_its_pull_request_comes_on_accept(self):
+        import herdr_task.proof as proof
+        self.ready()
+        with mock.patch.object(proof, "git", lambda *a, **k: (True, "", "")), mock.patch.object(proof, "task_artifacts", lambda *a: []), \
+                mock.patch.object(proof, "choices_of", lambda *a: []), mock.patch.object(proof, "find_proof", lambda *a: None):
+            self.assertTrue(proof.evidence(self.store, self.task)["merges"])
+
+    def test_its_worker_runs_herdr_task_pr_without_asking(self):
+        import herdr_task.launch as launch
+        self.assertIn("pr", launch.OWN)
+
+    def test_its_agent_that_ended_is_started_again_with_the_failure(self):
+        self.waiting()
+        self.live = []
+        resumed = []
+        with mock.patch.object(commands, "tell", lambda s, t, msg, args: resumed.append(msg) or ("t9", True)):
+            text, _ = self.fail_at("h1")
+        self.assertIsNone(text)  # not sent to a resting agent: there is none
+        self.assertEqual(len(resumed), 1)
+        self.assertIn("Fix round 1 of 3", resumed[0])
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_reviewers_vote_is_news_not_a_fix_round(self):
+        self.waiting()
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME},
+                      reviewers=[{"displayName": "Ann", "vote": -5}]), BUILT)
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), \
+                mock.patch.object(ghnews, "news_send", lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+            ghnews.pr_deliver(self.store, self.task, {})
+        self.assertIn("Review by Ann: waiting for the author", self.sent[-1][1])
+        self.assertNotIn("Fix round", self.sent[-1][1])
+        self.assertNotIn("fix_rounds", self.task["pr"])
+
+    def test_after_three_failed_rounds_it_needs_you_with_the_last_failure(self):
+        self.waiting()
+        for n, head in enumerate(("h1", "h2", "h3"), 1):
+            text, _ = self.fail_at(head)
+            self.assertIn(f"Fix round {n} of 3", text)
+        text, report = self.fail_at("h4")
+        self.assertIsNone(text)  # nothing more for its agent
+        self.assertIn(1, report["attention"])
+        self.assertEqual(self.task["attention"], "Checks still fail after 3 fix rounds: web-ci")
+        self.assertEqual(self.task["pr"]["last_failure"]["head"], "h4")
+        self.task["attention_at"] = 0
+        self.assertEqual(agents.task_status(self.task, self.live), ("needs", "attention", "Checks still fail after 3 fix rounds: web-ci"))
+        # the next look keeps why (not "Checks failing"), until a fix is pushed
+        self.fail_at("h4")
+        self.assertTrue(self.task["attention"].startswith("Checks still fail after 3"))
+        self.azure(pr(n=41, head="h5", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}), BUILT)
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: None):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.assertNotIn("attention", self.task)
+
+    def test_the_round_limit_is_a_setting(self):
+        self.task.setdefault("set", {})["fix_rounds"] = 1
+        self.waiting()
+        self.assertIn("Fix round 1 of 1", self.fail_at("h1")[0])
+        self.assertIsNone(self.fail_at("h2")[0])
+        self.assertTrue(self.task["attention"].startswith("Checks still fail after 1 fix round:"))
+
+    def test_its_agent_says_it_cant_fix_it_needs_you(self):
+        self.waiting()
+        self.fail_at("h1")
+        self.cant("The base branch fails the same test")
+        self.assertEqual(self.task["attention"], "Its agent can't fix it: The base branch fails the same test Last failure: web-ci "
+                                                 "(https://dev.azure.com/contoso/My%20Proj/_build/results?buildId=88)")
+        self.task["attention_at"] = 0
+        self.assertEqual(agents.task_status(self.task, self.live)[:2], ("needs", "attention"))
+        self.assertEqual(self.task["progress"]["by"], "cant-fix")  # never read as its agent on it
+        self.fail_at("h1")
+        self.assertTrue(self.task["attention"].startswith("Its agent can't fix it"))
+
+    def test_passing_waits_on_approvals_then_merges_and_main_pulls(self):
+        self.waiting()
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}), BUILT + REVIEWERS)
+        self.task["pr"]["checked"] = 0
+        self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        self.assertEqual(agents.task_status(self.task, []), ("merging", None, "Waiting on reviewers in Azure DevOps"))
+        # Azure DevOps merges it (auto-complete): Done, and the main checkout pulls the merge
+        self.git("clone", "-q", self.bare, self.other)
+        for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+            self.git("-C", self.other, "config", k, v)
+        with open(os.path.join(self.other, "a.txt"), "w") as fh:
+            fh.write("two\n")
+        self.git("-C", self.other, "commit", "-q", "-am", "Merged PR 41: #16951176: Login")
+        self.git("-C", self.other, "push", "-q", "origin", "main")
+        sha = self.git("-C", self.other, "rev-parse", "HEAD")
+        self.git("-C", self.main, "remote", "set-url", "origin", self.bare)  # the pull goes to the bare repo here
+        self.fake({("GET", r"git/repositories/web/pullrequests/41"): pr(n=41, status="completed", lastMergeCommit={"commitId": sha})})
+        self.task["pr"]["checked"] = 0
+        report = {"attention": [], "done": []}
+        self.tick.facts(self.store, self.task, report)
+        self.assertEqual((self.task["state"], self.task["merged"], report["done"]), ("done", True, [1]))
+        self.assertEqual(self.git("-C", self.main, "rev-parse", "HEAD"), sha)
+
+    def test_the_settings_block_says_its_fix_rounds(self):
+        import herdr_task.settings as settings
+        with mock.patch.object(settings, "settings_layers", lambda s, space: ({}, {}, {})):
+            rows = {x["label"]: x for x in settings.task_settings(self.store, self.task, argv=["claude"])}
+            self.assertEqual(rows["Fix rounds"]["value"], 3)
+            self.assertIn("a failing check comes back to you to fix this many times", rows["Fix rounds"]["text"])
+            settings.set_task(self.task, "fix_rounds", "2")
+            rows = {x["label"]: x for x in settings.task_settings(self.store, self.task, argv=["claude"])}
+            self.assertEqual((rows["Fix rounds"]["value"], rows["Fix rounds"]["by"]), (2, "task"))
+            # never on GitHub
+            self.git("-C", self.main, "remote", "set-url", "origin", "https://github.com/o/r.git")
+            self.assertNotIn("Fix rounds", [x["label"] for x in settings.task_settings(self.store, self.task, argv=["claude"])])
+
+    def test_github_tasks_are_unchanged(self):
+        self.git("-C", self.main, "remote", "set-url", "origin", "https://github.com/o/r.git")
+        opened = []
+        with mock.patch.object(commands, "github", lambda s: "o/r"), \
+                mock.patch.object(commands, "pr_open", lambda s, t, repo, summary=None: opened.append(repo) or t.setdefault("pr", {"number": 3, "url": "u", "repo": repo})):
+            said = commands.finalize(self.store, self.task)
+        self.assertEqual(opened, ["o/r"])  # ready still opens its pull request on GitHub
+        self.assertNotIn("pr_on_accept", self.task)
+        self.assertNotIn("ado-push-pr", said)
+        # no pull request on GitHub: Accept merges here as before, never asks its agent to open one
+        self.task.pop("pr")
+        self.task["pr"] = None
+        self.task.pop("pr")
+        with mock.patch.object(commands, "own_open_pr", lambda s, t: None), mock.patch.object(commands, "ff_merge", lambda s, t: True), \
+                mock.patch.object(commands, "finish", lambda s, t, even_if_busy=False: t.update(state="done")):
+            data, _ = self.accept()
+        self.assertEqual((data["accepted"], self.sent), ("merged", []))
+        # a GitHub task's agent at work after ready is still Working again
+        t = {"state": "ready", "ready_turns": {"t5": 0}, "pr": {"number": 3, "repo": "o/r"}, "merge_wait": None}
+        self.assertTrue(agents.busy_again(t, [{"address": "t5", "status": "working", "turn": 1}]))
 
 
 class Transport(Base):

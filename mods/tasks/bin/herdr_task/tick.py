@@ -158,13 +158,18 @@ def facts(s, t, report):
                     pr.pop("wait", None)
             if wait:
                 pr["checked"] = now() - PR_EVERY + PR_WAIT_EVERY
+        # SHEP-96: its agent can't fix it, or its fix rounds are used up: Needs you with why until a fix is pushed.
+        if v.get("headRefOid"):
+            pr["seen_head"] = v["headRefOid"]
+        stuck = ado_flow.unstick(t, v)
         try:
             pr_news(s, t, v, report)
         except Exception as e:  # never stops the tick
             report.setdefault("github_error", []).append(f"{s.ref(t)}: {e}")
+        stuck = str(t.get("attention") or "").startswith(ado_flow.STUCK)
         # Kept up to date while it is back at work too (a fix pushed: the problem goes away), so its
         # agent going quiet with the problem still there reads Needs you (on_it()).
-        if t["state"] in ("ready", "running") and problem != t.get("attention"):
+        if t["state"] in ("ready", "running") and problem != t.get("attention") and not stuck:
             if problem:
                 t["attention"], t["attention_at"] = problem, now()
                 t.pop("merge_queued", None)
@@ -231,7 +236,7 @@ def back_pass(s, t, report):
     # turn that asked or changed its branch takes it back to work: Needs you once it stays quiet
     # (settle_back() keeps it there). One that left nothing behind only moves its turns on.
     seen = t.get("ready_turns")
-    if not isinstance(seen, dict) or t.get("merge_requested"):
+    if not isinstance(seen, dict) or t.get("merge_requested") or t.get("pr_requested") or t.get("merge_wait"):
         return
     turned = [k for k in live if status_word(k) in ("idle", "done") and k.get("address") in seen
               and (k.get("labels") or {}).get("herdr.role") != "reviewer" and (k.get("turn") or 0) > seen[k["address"]]]
@@ -311,6 +316,8 @@ def tick_store(s, report):
             settle_back(s, t, report)
         if t.get("worktree") and t["state"] in ("running", "ready"):
             facts(s, t, report)
+            if t["state"] == "ready" and t.get("pr_requested"):
+                ado_flow.opening_pass(s, t, report)
             if t["state"] == "ready" and (t.get("pr") or {}).get("news"):
                 try:
                     pr_deliver(s, t, report)

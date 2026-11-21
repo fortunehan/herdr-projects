@@ -216,6 +216,8 @@ ACCEPTING, ACCEPTING_MS = "Accepting…", 5 * 60000
 ADO_REVIEWERS = "Waiting on reviewers in Azure DevOps"
 # SHEP-34: what a task Waiting to merge waits on (ado_flow.py), as core/tasks.js mergeWaitLine().
 ADO_CHECKS, ADO_COMPLETING = "Checks running", "Azure DevOps is completing it"
+# SHEP-96: accepted on Azure DevOps, its agent opening the pull request (ado_flow.request_pr()), as core/tasks.js.
+OPENING_PR = "Opening pull request"
 
 
 def ado_reviewers(task):
@@ -244,6 +246,8 @@ def ready_wait(task, live):
     """What a Ready task waits on that needs nobody, in a few words; None when it's the person's."""
     if accepting(task):
         return ACCEPTING
+    if task.get("pr_requested") and not task.get("pr") and not task.get("attention"):
+        return OPENING_PR
     if task.get("merge_requested") and live:
         return MERGING
     if task.get("merge_queued") and task.get("pr"):
@@ -291,9 +295,10 @@ def ready_turns(live):
 
 def busy_again(task, live):
     """A Ready task whose agent is at work again since it said ready. Not while it merges as
-    asked (the merge is its work), nor a reviewer's turn. A ready said before turns were kept:
-    any work once STARTING_MS have passed."""
-    if task["state"] != "ready" or task.get("merge_requested"):
+    asked (the merge is its work), opens its pull request after Accept or fixes its checks while
+    Azure DevOps merges it (SHEP-96: that is its work too), nor a reviewer's turn. A ready said
+    before turns were kept: any work once STARTING_MS have passed."""
+    if task["state"] != "ready" or task.get("merge_requested") or task.get("pr_requested") or task.get("merge_wait"):
         return False
     seen = task.get("ready_turns")
     if seen is None and now() - (task.get("ready_at") or 0) < STARTING_MS:

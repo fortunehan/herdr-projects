@@ -25,7 +25,7 @@ drops the space's own, and it inherits again. A few settings are one for every s
 | Agents | Backup agent | Everywhere, space | A space whose work shouldn't move to the other CLI |
 | Agents | Reactions (every agent reacts with an emoji; on) | Everywhere, space | A space may want a plainer chat |
 | Agents | Instructions (assistant.md, worker.md, reviewer.md) | Everywhere only | Repo rules belong in the repo's AGENTS.md or CLAUDE.md, which every agent there reads |
-| Tasks | Merge, Review, Must fix, Proof | Everywhere, space | How much care a repo needs differs |
+| Tasks | Merge, Fix checks (Azure DevOps), Review, Must fix, Proof | Everywhere, space | How much care a repo needs differs |
 | Tasks | Tasks at once | Everywhere, space | It counts per folder already |
 | Tasks | Archive Done after | Everywhere, space | Some repos keep done work in view longer |
 | Tasks | Worktrees | Everywhere, space | A folder that isn't a repo, or one that can't take worktrees |

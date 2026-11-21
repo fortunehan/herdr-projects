@@ -249,6 +249,58 @@
     "needs": "attention",
     "why": "Accept didn't finish: Couldn't reach pull request #7"
    }
+  },
+  {
+   "name": "SHEP-96: accepted on Azure DevOps before its pull request exists: its agent opens it",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999000000,
+    "pr_on_accept": true,
+    "pr_requested": 1799999940000
+   },
+   "expect": {
+    "status": "working",
+    "needs": null,
+    "why": "Opening pull request"
+   }
+  },
+  {
+   "name": "SHEP-96: its agent couldn't open the pull request: Needs you, and Accept asks again",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999000000,
+    "pr_on_accept": true,
+    "attention": "Couldn't open the pull request: no valid work item",
+    "attention_at": 1799999900000
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Couldn't open the pull request: no valid work item"
+   }
+  },
+  {
+   "name": "SHEP-96: its fix rounds used up while it waits to merge: Needs you with the last failure",
+   "task": {
+    "id": 1,
+    "state": "ready",
+    "ready_at": 1799999000000,
+    "merge_wait": 1799999800000,
+    "attention": "Checks still fail after 3 fix rounds: web-ci",
+    "attention_at": 1799999900000,
+    "pr": {
+     "number": 41,
+     "repo": "ado:contoso/My Proj/web",
+     "fix_rounds": 3
+    }
+   },
+   "expect": {
+    "status": "needs",
+    "needs": "attention",
+    "why": "Checks still fail after 3 fix rounds: web-ci"
+   }
   }
  ]
 }

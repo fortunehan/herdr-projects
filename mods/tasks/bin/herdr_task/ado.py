@@ -362,9 +362,10 @@ def branch(ref):
     return re.sub(r"^refs/heads/", "", ref or "")
 
 
-def check(name, status, conclusion, url=None):
+def check(name, status, conclusion, url=None, reviewer=False):
+    """reviewer: a reviewer policy or vote, not a build (SHEP-96: never a fix round)."""
     return {"__typename": "CheckRun", "name": str(name)[:200], "status": status, "conclusion": conclusion,
-            **({"detailsUrl": url} if url else {})}
+            **({"detailsUrl": url} if url else {}), **({"reviewer": True} if reviewer else {})}
 
 
 def build_url(repo, build_id):
@@ -396,7 +397,7 @@ def checks_of(repo, d, waits=None):
             if waits is not None and not build and reviewers and e["status"] in ("queued", "running"):
                 waits.append(name)
                 continue
-            out.append(check(name, *EVALUATION[e["status"]], url))
+            out.append(check(name, *EVALUATION[e["status"]], url, reviewer=reviewers and not build))
     latest = {}
     for st in call(repo, "GET", git_api(repo, f"pullRequests/{n}/statuses")).get("value") or []:
         ctx = st.get("context") or {}
@@ -410,7 +411,7 @@ def checks_of(repo, d, waits=None):
         vote = r.get("vote") or 0
         if vote <= -5:
             who = r.get("displayName") or "a reviewer"
-            out.append(check(f"Review by {who}: " + ("rejected" if vote <= -10 else "waiting for the author"), "COMPLETED", "FAILURE", pr_url(repo, n)))
+            out.append(check(f"Review by {who}: " + ("rejected" if vote <= -10 else "waiting for the author"), "COMPLETED", "FAILURE", pr_url(repo, n), reviewer=True))
     return out
 
 

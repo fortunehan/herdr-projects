@@ -51,7 +51,8 @@ SETTINGS = os.environ.get("HERDR_TASK_SETTINGS") or WHERE.path("settings")
 TEMPLATES = os.environ.get("HERDR_TASK_TEMPLATES") or os.path.join(HOME, ".config", "herdr-core", "templates")
 OLD_INSTRUCTIONS = os.path.join(HOME, ".herdr", "instructions")
 ASSISTANT_TEMPLATES = ("assistant", "coordinator")  # "coordinator": Assistants started before the rename
-DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "max_running": MAX_RUNNING, "worktrees": True,
+FIX_ROUNDS = 3  # SHEP-96: failing checks an Azure DevOps pull request's agent fixes before the task needs the person
+DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "fix_rounds": FIX_ROUNDS, "max_running": MAX_RUNNING, "worktrees": True,
                       "start_notes": "", "finish_notes": "", "archive_after": 7, "proof": True, "base": "", "branch": "",
                       "slug_max": 40, "worktree_root": ""},
             "automations": {"enabled": True}, "worker": {}, "reviewer": {}, "coordinator": {}, "backup": {},
@@ -348,6 +349,7 @@ MUST_WORDS = {"blocker": "blocker", "major": "major and up (blocker, major)", "m
 SET_KEYS = {"review": "review", "brief.review": "review", "merge": "merge", "brief.merge": "merge",
             "rounds": "review_rounds", "review.rounds": "review_rounds", "review-rounds": "review_rounds", "review_rounds": "review_rounds",
             "mustfix": "must_fix", "must-fix": "must_fix", "must_fix": "must_fix", "review.mustfix": "must_fix",
+            "fix_rounds": "fix_rounds", "fix-rounds": "fix_rounds", "fixrounds": "fix_rounds", "merge.fixrounds": "fix_rounds",
             "agent": "agent", "task.agent": "agent", "launcher": "launcher", "task.launcher": "launcher", "model": "model", "task.model": "model", "effort": "effort", "task.effort": "effort",
             "reviewer": "reviewer", "reviewer.agent": "reviewer", "reviewer.model": "reviewer_model", "reviewer.effort": "reviewer_effort",
             "reviewer_model": "reviewer_model", "reviewer-model": "reviewer_model",
@@ -370,7 +372,7 @@ def set_task(t, key, value):
     """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'."""
     field = SET_KEYS.get(key.strip().lower())
     if not field:
-        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, proof, agent, launcher, model, effort or reviewer settings, not {key!r}.")
+        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, agent, launcher, model, effort or reviewer settings, not {key!r}.")
     v = value.strip().strip("\"'").strip()
     sets = t.setdefault("set", {})
     if not v or v.lower() == "default":
@@ -388,6 +390,11 @@ def set_task(t, key, value):
         m = re.fullmatch(r"(\d+)\s*(rounds?)?", low)
         if not m or not 0 <= int(m.group(1)) <= 10:
             raise Fail("review.rounds is 1 to 10 (0: no review).")
+        sets[field] = int(m.group(1))
+    elif field == "fix_rounds":
+        m = re.fullmatch(r"(\d+)\s*(rounds?)?", low)
+        if not m or not 0 <= int(m.group(1)) <= 10:
+            raise Fail("fix_rounds is 0 to 10 (0: failing checks go straight to the person).")
         sets[field] = int(m.group(1))
     elif field == "must_fix":
         if low not in MUST_VALUES:
@@ -630,6 +637,11 @@ def task_settings(s, t, space=None, argv=None, live=False):
         add("Merge", "nothing to merge: you work in the folder itself, and the person accepts it", policy, m_by)
     else:
         add("Merge", MERGE_WORDS[policy], policy, m_by)
+        if ado_repo(s):
+            n = fix_rounds(s, t, space)
+            add("Fix rounds", f"at most {n}: once you open its pull request on Accept, a failing check comes back to you "
+                f"to fix this many times, then the task needs the person", n,
+                "task" if "fix_rounds" in sets else by_layer(s, space, "tasks", "fix_rounds", n, FIX_ROUNDS))
         if t.get("base_set"):
             add("Base", f"{t['base']}: your branch starts from it and merges into it", t["base"],
                 {"space": "folder", "ado": "ado"}.get(t.get("base_by"), "task"))
@@ -750,6 +762,25 @@ def branch_pattern_problem(pattern):
             or re.search(r"[\s~^:?*\[\\]|\.\.|@\{|//|/\.", sample)):
         return "That isn't a name git allows for a branch."
     return None
+
+
+def ado_repo(s):
+    """The folder's repo when it is on Azure DevOps, else None (git remote only: never asks a forge)."""
+    from . import ado
+    loc = getattr(s, "loc", None) or {}
+    return ado.repo_in(loc["folder"]) if loc.get("kind") == "repo" and loc.get("folder") else None
+
+
+def fix_rounds(s, t, space=None):
+    """SHEP-96: how many failing checks of its Azure DevOps pull request a task's agent is handed to fix before the
+    task needs the person: its own --set fix_rounds, else Settings' tasks.fix_rounds (default FIX_ROUNDS)."""
+    v = (t.get("set") or {}).get("fix_rounds")
+    if v is None:
+        v = settings_for(s, space or t.get("space"))["tasks"].get("fix_rounds")
+    try:
+        return max(0, min(10, int(v)))
+    except (TypeError, ValueError):
+        return FIX_ROUNDS
 
 
 def merge_policy(s, t):
