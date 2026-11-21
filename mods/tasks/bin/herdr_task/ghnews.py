@@ -122,6 +122,15 @@ def pr_news(s, t, v, report):
     on_ado = ado.owns(pr["repo"])
     passed = bool(checks) and all((c.get("conclusion") or c.get("state") or "").upper() in ("SUCCESS", "NEUTRAL", "SKIPPED") for c in checks)
     held = (pr.get("news") or {}).get("parts")
+    if on_ado and held and held.get("conflict") and v.get("mergeable") != "CONFLICTING" and v.get("mergeStateStatus") != "BEHIND":
+        # SHEP-96: the conflict its agent hasn't been told yet is resolved already
+        held = {**held, "conflict": []}
+        if any(held.get(k) for k in ("checks", "comments", "fix")):
+            pr["news"].update(parts=held, text=news_text(s, t, held))
+        else:
+            pr.pop("news")
+            held = None
+        s.dirty = True
     if on_ado and t.get("merge_wait") and passed and held and (held.get("checks") or held.get("fix")):
         # SHEP-96: its checks pass now: the failures and the fix round its agent hasn't had yet are stale; a conflict
         # and comments held with them stay
@@ -206,7 +215,9 @@ def pr_news(s, t, v, report):
         held = old["parts"]
         for k in ("conflict", "checks", "comments"):
             parts[k] = held.get(k, []) + parts[k]
-        parts["fix"] = parts["fix"] or held.get("fix", [])
+        # the full instructions of the round held stay; a same-push follow-up ("still") adds nothing to them
+        if held.get("fix") and (not parts["fix"] or ", still:" in parts["fix"][0]):
+            parts["fix"] = held["fix"]
     pr["news"] = {"text": news_text(s, t, parts), "parts": parts, "at": now(), "since": since}
     report.setdefault("github", []).append({"task": s.ref(t), "checks": len(news_checks), "comments": len(fresh),
                                             **({"conflict": True} if news_conflict else {})})

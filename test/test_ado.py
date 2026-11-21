@@ -1359,13 +1359,43 @@ class OpenedOnAccept(Base):
         self.assertIn("Rename it.", text)
         self.assertNotIn("stale", text)  # the passed check's failure and fix round went
 
+    def test_a_resolved_conflict_held_is_dropped(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(conflict=["- It conflicts with main: merge main"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "conflict": "h1:conflict"}
+        self.look_green()  # mergeable now
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_same_push_follow_up_keeps_the_full_fix_round(self):
+        self.waiting()
+        with mock.patch.object(ghnews, "news_send", lambda a, t: False):  # held while the person types
+            self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                       [evaluation("rejected", buildDefinitionName="web-ci", buildId=88)], {("GET", r"build/builds/88/timeline"): {"records": []}})
+            self.task["pr"]["checked"] = 0
+            with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]):
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+                self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}),
+                           [evaluation("rejected", buildDefinitionName=n, buildId=88) for n in ("web-ci", "e2e")],
+                           {("GET", r"build/builds/88/timeline"): {"records": []}})
+                self.task["pr"]["checked"] = 0
+                self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn('Check "e2e" failed', text)
+        self.assertIn("Fix round 1 of 3:", text)
+        self.assertIn("--cant-fix", text)
+
     def test_a_pass_keeps_a_held_conflict(self):
         self.waiting()
         self.task["pr"]["news"] = {"text": "x", "parts": PARTS(conflict=["- It conflicts with main: merge main"],
                                                            checks=["- Check \"web-ci\" failed"], fix=["Fix round 1 of 3"]),
                                    "at": base.now(), "since": self.task["ready_at"]}
-        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci"}
-        self.look_green()
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci",
+                                    "conflict": "h1:conflict"}
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}, mergeStatus="conflicts"), BUILT)
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
         text = self.task["pr"]["news"]["text"]
         self.assertIn("It conflicts with main", text)
         self.assertNotIn("Fix round", text)
