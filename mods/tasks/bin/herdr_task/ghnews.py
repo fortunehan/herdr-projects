@@ -119,6 +119,12 @@ def pr_news(s, t, v, report):
     checks = v.get("statusCheckRollup") or []
     failed = [c for c in checks if (c.get("conclusion") or c.get("state") or "").upper() in BAD - {"CANCELLED"}]
     head = v.get("headRefOid") or ""
+    on_ado = ado.owns(pr["repo"])
+    passed = bool(checks) and all((c.get("conclusion") or c.get("state") or "").upper() in ("SUCCESS", "NEUTRAL", "SKIPPED") for c in checks)
+    if on_ado and t.get("merge_wait") and passed and (pr.get("news") or {}).get("fix") and not pr["news"].get("comments"):
+        # SHEP-96: its checks pass now: a fix round its agent hasn't had yet is stale
+        pr.pop("news")
+        s.dirty = True
     mark = f"{head}:" + ",".join(sorted(c.get("name") or c.get("context") or "check" for c in failed)) if failed else None
     # A conflict with its base goes back to its agent too (SHEP-175), once per commit.
     conflict = (f"{head}:conflict" if v.get("mergeable") == "CONFLICTING"
@@ -168,6 +174,8 @@ def pr_news(s, t, v, report):
         what = "conflicts with" if news_conflict.endswith(":conflict") else "is behind, and must be up to date with,"
         lines.append(f"- It {what} {base}: " + (f"merge {base} into your branch, resolve any conflicts, run the checks, commit "
                                                "and push (never force-push)." if accepted else
+                                               f"merge {base} into your branch (it is published: never rebase), resolve any conflicts, "
+                                               "run the checks, commit, push (`git push`), then run your ready command again." if on_ado else
                                                f"rebase onto {base}, resolve any conflicts, run the checks, then run your "
                                                "ready command again."))
     for c in news_checks[:10]:
@@ -198,11 +206,12 @@ def pr_news(s, t, v, report):
                      "as Needs you; only without one, end your message with one full question). After a fix, commit and run your "
                      "ready command again.")
     old = pr.get("news") or {}
-    if old.get("lines") and old.get("since") == since and not (accepted and green):
+    if old.get("lines") and old.get("since") == since:
         # SHEP-96: news its agent hasn't had yet (held while the person types) stays: a failure with its fix round too
         lines = old["lines"] + lines[1:]
     pr["news"] = {"text": f'<herdr-github task="{attr(s.ref(t))}" pr="{pr["number"]}">' + esc("\n".join(lines)) + "</herdr-github>",
-                  "lines": lines, "at": now(), "since": since}
+                  "lines": lines, "at": now(), "since": since,
+                  **({"fix": True} if fix or old.get("fix") else {}), **({"comments": True} if fresh or old.get("comments") else {})}
     report.setdefault("github", []).append({"task": s.ref(t), "checks": len(news_checks), "comments": len(fresh),
                                             **({"conflict": True} if news_conflict else {})})
 

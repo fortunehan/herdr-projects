@@ -1305,7 +1305,7 @@ class OpenedOnAccept(Base):
 
     def test_held_fix_news_goes_once_its_checks_pass(self):
         self.waiting()
-        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3: old"], "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3: old"], "at": base.now(), "since": self.task["ready_at"], "fix": True}
         self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
         comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
                                           "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
@@ -1323,6 +1323,54 @@ class OpenedOnAccept(Base):
         with mock.patch.object(commands, "back_to_work", lambda *a, **k: True):
             commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
         self.assertIn("for conflicts, merge main into task/1-login", self.sent[-1][1])
+
+    def look_green(self, threads=()):
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", autoCompleteSetBy={"id": ME}), BUILT,
+                   {("GET", r"git/repositories/web/pullRequests/41/threads"): {"value": list(threads)}})
+        self.task["pr"]["checked"] = 0
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), mock.patch.object(ghnews, "news_send", lambda a, t: False):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+
+    def test_a_pass_with_nothing_new_drops_a_held_fix_round(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3"], "at": base.now(), "since": self.task["ready_at"], "fix": True}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci"}
+        self.look_green()
+        self.assertNotIn("news", self.task["pr"])
+
+    def test_a_pass_keeps_a_held_comment(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "- Comment by Ann: Use the helper."], "at": base.now(),
+                                   "since": self.task["ready_at"], "fix": True, "comments": True}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
+        comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
+                                          "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
+        self.look_green([comment])
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("Use the helper.", text)
+        self.assertIn("Rename it.", text)
+
+    def test_a_conflict_on_any_azure_devops_pull_request_says_merge_not_rebase(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0})
+        self.azure(pr(n=41, head="h1", sourceRefName=f"refs/heads/{self.branch}", mergeStatus="conflicts"), BUILT)
+        with mock.patch.object(ghnews, "resting", lambda s, t: self.live[0]), \
+                mock.patch.object(ghnews, "news_send", lambda a, text: self.sent.append((a, text)) or True):
+            self.tick.facts(self.store, self.task, {"attention": [], "done": []})
+            ghnews.pr_deliver(self.store, self.task, {})
+        self.assertIn("merge main into your branch (it is published: never rebase)", self.sent[-1][1])
+
+    def test_merge_refuses_a_task_whose_agent_is_at_work_again(self):
+        self.ready()
+        with mock.patch.object(commands, "busy_again", lambda *a: True), self.assertRaises(commands.Fail) as e:
+            commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
+        self.assertIn("is working again", str(e.exception))
+        self.assertEqual(self.sent, [])
+
+    def test_fix_on_its_agents_pull_request_says_push_even_without_auto_complete(self):
+        self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "by_agent": True},
+                         attention="Couldn't turn on auto-complete in Azure DevOps: x")
+        commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
+        self.assertIn("commit and push to its pull request (`git push`", self.sent[-1][1])
 
     def test_its_worker_runs_herdr_task_pr_without_asking(self):
         import herdr_task.launch as launch

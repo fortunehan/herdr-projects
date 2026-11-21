@@ -1259,6 +1259,9 @@ def cmd_merge(args):
             if t["state"] != "ready" or t.get("pr_requested") and not t.get("attention"):
                 raise Fail(f"{s.ref(t)} isn't Ready ({t['state']}): on Azure DevOps its pull request is opened once it says ready "
                            "and is accepted.")
+            if busy_again(t, [detail(k) for k in live_agents(s.key(t))]):
+                raise Fail(f"{s.ref(t)} is working again: its agent took up more work after it said ready. Merge it once it says "
+                           "ready again.")
             how = "opening"
             try:
                 sent, started = ado_flow.request_pr(s, t, args)
@@ -1546,7 +1549,7 @@ def cmd_fix(args):
             raise Fail(f"{s.ref(t)} works in the folder itself; tell its agent what to fix.")
         problem = args.reason or t.get("attention") or "The pull request can't merge yet."
         main, wt, br, base = s.loc["folder"], t["worktree"], t["branch"], t.get("base") or "main"
-        accepted = bool(t.get("merge_wait") and t.get("pr") and ado.owns(t["pr"].get("repo")))
+        accepted = bool(t.get("pr") and ado.owns(t["pr"].get("repo")) and (t.get("merge_wait") or t["pr"].get("by_agent")))
         if accepted:
             msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
                    f"Fix it in {wt}: for conflicts, merge {base} into {br}; for failing checks, find out why and fix them. Run "
