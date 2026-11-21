@@ -54,7 +54,7 @@ export default class TaskShell extends View {
         this.folderGone = false;
         if (doneFolder) {
           cx.spawn(async (cx) => {
-            const there = await exec("test", ["-d", tg.folder], tg.machine ? { on: tg.machine } : {}).catch(() => null);
+            const there = await exec("sh", ["-c", '[ -d "$1" ]', "test", tg.folder], tg.machine ? { on: tg.machine } : {}).catch(() => null);
             if (this.doneFolder !== doneFolder) return;
             this.folderGone = there?.code === 1;
             if (this.folderGone) this.why = "This task's folder is gone";
@@ -129,7 +129,7 @@ export default class TaskShell extends View {
         // Another task's shell isn't shown meanwhile.
         if (old) await pointShell(null, cx);
         const on = tg.machine ? { on: tg.machine } : {};
-        const there = await exec("test", ["-d", tg.folder], on).catch(() => null);
+        const there = await exec("sh", ["-c", '[ -d "$1" ]', "test", tg.folder], on).catch(() => null);
         if (there?.code !== 0) throw new Error(`Its folder isn't there: ${tg.folder}`);
         const r = await hc(["run", "--bg", "--json", ...(tg.machine ? ["--on", tg.machine] : []), "--cwd", tg.folder, "--no-parent",
           "--label", `herdr.task-shell=${tg.key}`, "--label", "herdr.shell=task"]);

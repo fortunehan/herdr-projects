@@ -4086,7 +4086,7 @@ export default class Chat extends View {
   openVideo(path) {
     if (this.machine || !path) { toast({ title: "It's on another machine", body: "Open this chat in the web app to see it.", level: "info" }); return; }
     const os = window()?.platform;
-    (os === "macos" ? exec("open", [path]) : os === "windows" ? exec("cmd", ["/c", "start", "", path]) : exec("xdg-open", [path])).catch(() => {});
+    (os === "macos" ? exec("/usr/bin/open", [path]) : os === "windows" ? exec("cmd", ["/c", "start", "", path]) : exec("xdg-open", [path])).catch(() => {});
   }
 
   // What an artifact's card shows of it: its key pictures (linked for image(): needViews) and its first lines, from its

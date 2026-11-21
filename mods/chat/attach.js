@@ -38,7 +38,7 @@ export async function fromClipboard(os = window()?.platform) {
   const dir = `${appHome()}/data/chat-attach`;
   if (os === "macos") {
     const name = pastedName("png");
-    const r = await exec("sh", ["-c", 'mkdir -p "$1" && exec osascript -l JavaScript -e "$2" "$1/$3"', "x", dir, MAC_CLIPBOARD, name]);
+    const r = await exec("sh", ["-c", 'mkdir -p "$1" && exec /usr/bin/osascript -l JavaScript -e "$2" "$1/$3"', "x", dir, MAC_CLIPBOARD, name]);
     if (r.code !== 0) throw new Error("Couldn't read the clipboard.");
     const out = r.stdout.trim();
     if (out === "image") return [{ path: `${dir}/${name}`, name, image: true, temp: true }];
@@ -80,7 +80,7 @@ export const MAC_PICK = [
 // Resolves { code, paths }.
 export async function pick(title = "Attach files", os = window()?.platform) {
   const r = os === "macos"
-    ? await exec("osascript", [...MAC_PICK.flatMap((l) => ["-e", l]), title]).catch(() => null)
+    ? await exec("/usr/bin/osascript", [...MAC_PICK.flatMap((l) => ["-e", l]), title]).catch(() => null)
     : await exec("sh", ["-c", 'P=/usr/bin/python3; [ -x "$P" ] || P=python3; exec "$P" -I "$1" "$2"', "x", `${appHome()}/mods/chat/pick-files.py`, title]).catch(() => null);
   return { code: r ? r.code : 1, paths: (r?.stdout ?? "").split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean) };
 }

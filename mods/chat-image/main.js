@@ -146,18 +146,19 @@ export default class ImageViewer extends View {
       try {
         const os = win()?.platform;
         const t = await target(img, appHome(), (f) => fs.exists(f).catch(() => false));
-        let r;
+        let r, cmd;
         if (t.path && !(action === "reveal" && t.gone)) {
-          const [cmd, args] = command(action, os, t.path);
+          let args;
+          [cmd, args] = command(action, os, t.path);
           r = await exec(cmd, args).catch(() => null);
           if (!failed(action, os, r)) {
             if (action === "copy") this.say("Copied", false, cx);
             return;
           }
         }
-        p = problem(action, t, r);
+        p = problem(action, t, r, cmd);
       } catch (e) {
-        p = { title: TITLES[action], body: plainError(e) };
+        p = { title: TITLES[action], body: plainError(e) || String(e?.message ?? e ?? "").trim().split("\n").pop() };
       }
       toast({ title: p.title, ...(p.body ? { body: p.body } : {}), level: "error" });
       this.say(p.body ? `${p.title}: ${p.body}` : p.title, true, cx);
