@@ -82,7 +82,7 @@ import { needsYou, type Waiting } from '@shared/needs-you.ts'
 import { doneNewestFirst, machineName, type Automation, type Machine, type Place, type Snapshot, type Task } from '@shared/types.ts'
 import { useFlip } from '@client/motion.ts'
 import { RowMenu, useRowMenu, type RowMenuState } from '@client/rowmenu.tsx'
-import { TaskDependencies } from '@client/TaskDependencies.tsx'
+import { RelationLine } from '@client/TaskDependencies.tsx'
 import * as MN from '@core/menus.js'
 import * as TK from '@core/tasks.js'
 import * as ND from '@core/needs.js'
@@ -113,7 +113,7 @@ function RepeatIcon({ className }: { className?: string }) {
  * A task, with one line under its title (taskLine). Working, its pie fills with the % done its agent reported and the time
  * left sits short under it ("2h"); Ready, Review sits at the row's end.
  */
-function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
+function TaskRow({ t, ix, where, shown, link }: { t: Task; ix: number; where?: string[]; shown?: ReadonlySet<string>; link?: boolean }) {
   // the open task, or the focused pane's in split view
   const sel = useUI((u) => u.task === t.id || (panesHere(u)[u.split.pane]?.kind === 'task' && panesHere(u)[u.split.pane].id === t.id))
   const kb = useUI((u) => u.kb && !u.task && u.cur === ix)
@@ -141,7 +141,9 @@ function TaskRow({ t, ix, where }: { t: Task; ix: number; where?: string[] }) {
       ref_={refOf(t.pullOf ?? t.id)}
       title={t.name}
       sub={t.status === 'queued' && t.dependencies?.waitsFor.length ? undefined : t.sub}
-      relations={t.dependencies && (t.dependencies.waitsFor.length || t.dependencies.unblocks.length) ? <TaskDependencies relations={t.dependencies} /> : undefined}
+      top={t.dependencies?.waitsFor.length ? <RelationLine kind="after" items={t.dependencies.waitsFor} shown={shown} /> : undefined}
+      bottom={t.dependencies?.unblocks.length ? <RelationLine kind="then" items={t.dependencies.unblocks} /> : undefined}
+      link={link}
       // Scheduled (SHEP-38): its time until it starts ("6h") in the same place, counted live, in grey
       left={t.archived ? undefined : t.status === 'work' ? t.left : t.status === 'scheduled' && t.startsAt ? (TK.untilShort as (ms: number) => string)(t.startsAt) : undefined}
       leftQuiet={t.status === 'scheduled'}
@@ -188,17 +190,23 @@ function PullActions({ t }: { t: Task }) {
  *   Review or an automation's next run (`meta`).
  * A row with nothing under its title is one line. `tip`: more for its button's label only (an automation's error).
  */
-function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, leftQuiet, dim, meta, where, action, tip, onOpen, menu, children, relations }: {
+function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, leftQuiet, dim, meta, where, action, tip, onOpen, menu, children, top, bottom, link }: {
   flip?: string; sel?: boolean; kb?: boolean; glyph: ReactNode; ref_?: string; title: string; sub?: string; left?: string; leftQuiet?: boolean; dim?: boolean; meta?: string
-  where?: string; action?: ReactNode; tip?: string; onOpen?: (e: MouseEvent) => void; menu?: RowMenuState; children?: ReactNode; relations?: ReactNode
+  where?: string; action?: ReactNode; tip?: string; onOpen?: (e: MouseEvent) => void; menu?: RowMenuState; children?: ReactNode
+  /** a line over the title, level with the glyph (a waiting task's "↑ after"), and one under the rest (its "↓ then"), SHEP-103 */
+  top?: ReactNode; bottom?: ReactNode
+  /** the next row waits for this one: a short line joins the two glyphs */
+  link?: boolean
 }) {
   const said = sub ? capital(sub) : undefined
   const shown = said ? fit(said) : undefined
   // the rows under the title: REF · where (always, the same on every status), then the status line on its own line
   const second = !!(ref_ || where)
   const rows = 1 + (second ? 1 : 0) + (shown ? 1 : 0)
-  const two = rows > 1
-  const statusRow = second ? 'row-start-3' : 'row-start-2'
+  const two = rows > 1 || !!top || !!bottom
+  // with "↑ after" the title and what follows it move one grid row down
+  const o = top ? 1 : 0
+  const statusRow = (second ? 3 : 2) + o
   const end = action ?? (meta ? <span className="shrink-0 text-[0.75rem] whitespace-nowrap text-fg3 tabular-nums phone:text-[0.8125rem]">{meta}</span> : null)
   return (
     <li data-flip={flip} className={clsx(rowClass(sel, kb), 'group @container relative p-0! select-none [-webkit-touch-callout:none]', menu?.open && !sel && 'bg-hover')} {...(menu?.press ?? {})}>
@@ -217,13 +225,14 @@ function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, le
           end sits at the second line's end, so the title has the whole first line */}
       <div className={clsx('pointer-events-none relative grid min-h-[inherit] w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 px-2 phone:px-3', two && 'gap-y-0.5 py-2')}>
         <span aria-hidden className="col-start-1 row-start-1 grid h-5 w-3.5 place-items-center phone:h-6 phone:w-4">{glyph}</span>
+        {top ? <span aria-hidden={!!onOpen} className="col-start-2 col-end-4 row-start-1 min-w-0">{top}</span> : null}
         {/* the time left under the glyph, as tall as the second line so it sits level with it */}
         {two && left ? (
           <span aria-hidden className={clsx('col-start-1 row-start-2 flex h-5 w-3.5 items-center justify-center font-mono text-[0.6875rem] font-semibold whitespace-nowrap tabular-nums phone:h-6 phone:w-4 phone:text-[0.75rem]', leftQuiet ? 'text-fg3' : 'text-work-fg')}>{left}</span>
         ) : null}
-        <span aria-hidden={!!onOpen} className={clsx('col-start-2 row-start-1 min-w-0 truncate text-[0.875rem]/5 phone:text-base/6', dim ? 'text-fg2' : 'text-fg', two && '@max-[24rem]:col-end-4')}>{title}</span>
+        <span aria-hidden={!!onOpen} style={{ gridRow: 1 + o }} className={clsx('col-start-2 min-w-0 truncate text-[0.875rem]/5 phone:text-base/6', dim ? 'text-fg2' : 'text-fg', two && '@max-[24rem]:col-end-4')}>{title}</span>
         {second ? (
-          <span aria-hidden={!!onOpen} className="col-start-2 row-start-2 flex h-5 min-w-0 items-center gap-1.5 phone:h-6 text-[0.75rem]/4 phone:h-6 phone:text-[0.8125rem]/5">
+          <span aria-hidden={!!onOpen} style={{ gridRow: 2 + o }} className="col-start-2 flex h-5 min-w-0 items-center gap-1.5 phone:h-6 text-[0.75rem]/4 phone:h-6 phone:text-[0.8125rem]/5">
             {ref_ ? <span className="shrink-0 font-mono text-[0.6875rem] text-fg3 phone:text-[0.75rem]">{ref_}</span> : null}
             {ref_ && where ? <span aria-hidden className="shrink-0 text-fg3">·</span> : null}
             {/* where it is: its machine and space, whole as long as the row has room */}
@@ -231,13 +240,20 @@ function Line({ flip, sel = false, kb = false, glyph, ref_, title, sub, left, le
           </span>
         ) : null}
         {shown ? (
-          <span aria-hidden={!!onOpen} className={clsx('col-start-2 flex h-5 min-w-0 items-center text-[0.75rem]/4 phone:h-6 phone:text-[0.8125rem]/5', statusRow)}>
+          <span aria-hidden={!!onOpen} style={{ gridRow: statusRow }} className="col-start-2 flex h-5 min-w-0 items-center text-[0.75rem]/4 phone:h-6 phone:text-[0.8125rem]/5">
             <span className="min-w-0 truncate text-fg2">{shown}</span>
           </span>
         ) : null}
-        {end ? <span className={clsx('col-start-3 row-start-1 flex items-center', two && (rows === 3 ? 'row-span-3' : 'row-span-2'), two && '@max-[24rem]:row-span-1 @max-[24rem]:row-start-2')}>{end}</span> : null}
-        {relations ? <div className="col-start-2 col-end-4 min-w-0" style={{ gridRow: rows + 1 }}>{relations}</div> : null}
+        {end ? <span className={clsx('col-start-3 flex items-center', o ? 'row-start-2' : 'row-start-1', rows > 1 && (rows === 3 ? 'row-span-3' : 'row-span-2'), rows > 1 && (o ? '@max-[24rem]:row-span-1 @max-[24rem]:row-start-3' : '@max-[24rem]:row-span-1 @max-[24rem]:row-start-2'))}>{end}</span> : null}
+        {bottom ? <span aria-hidden={!!onOpen} className="col-start-2 col-end-4 min-w-0" style={{ gridRow: rows + 1 + o }}>{bottom}</span> : null}
       </div>
+      {/* from under this glyph to the top of the next row's: a thin line, its arrowhead at the end */}
+      {link ? (
+        <span aria-hidden className="pointer-events-none absolute top-7 -bottom-[9px] left-[11px] z-1 flex w-2 flex-col items-center text-fg3/70 phone:top-8 phone:left-4">
+          <span className="w-px flex-1 bg-current" />
+          <svg viewBox="0 0 7 4" className="h-1 w-[7px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"><path d="M0.7 0.6 3.5 3.3 6.3 0.6" /></svg>
+        </span>
+      ) : null}
       {children}
     </li>
   )
@@ -484,6 +500,9 @@ function TaskList(_: { placeId: string }) {
   }
   // what the keyboard walks: the rows on screen
   const order = groups.flatMap((g) => g.tasks)
+  // the tasks whose rows show (SHEP-103): a row's "↑ after" names one of these by its id alone
+  const machineShut = (g: TaskGroup) => g.on !== undefined && view.level === 0 && !q && shut.includes(`${key}|m:${g.on}`)
+  const shown = new Set(groups.filter((g) => !g.shut && !machineShut(g)).flatMap((g) => g.tasks.map((t) => t.id)))
   const nothing = !groups.length && !autos.length
   // searching, the archived tasks that match come last, after the automations
   const archivedGroup = groups.find((g) => g.key === 'archived')
@@ -504,7 +523,8 @@ function TaskList(_: { placeId: string }) {
         {groups.filter((g) => g !== archivedGroup).map((g) => {
           const fold: Fold | undefined = q ? undefined : { shut: g.shut, toggle: (all) => toggleShut(key, g.key, all ? groups.filter((x) => x !== g).map((x) => x.key) : []) }
           const extra = g.key === 'need' ? asks : []
-          const row = (t: Task) => <TaskRow key={t.id} t={g.key === 'need' ? waitingRow(t, ws) : t} ix={order.indexOf(t)} where={whereOf(snap, t, g.names)} />
+          const links = (TK.linkedToNext as (rows: { key: string; waits: string[] }[]) => Set<string>)(g.tasks.map((t) => ({ key: t.id, waits: (t.dependencies?.waitsFor ?? []).flatMap((d) => (d.task ? [d.task] : [])) })))
+          const row = (t: Task) => <TaskRow key={t.id} t={g.key === 'need' ? waitingRow(t, ws) : t} ix={order.indexOf(t)} where={whereOf(snap, t, g.names)} shown={shown} link={links.has(t.id)} />
           // Needs you: tasks and the rest in one order, oldest first, as the phone lists them
           const rank = (k: string) => { const i = ws.findIndex((w) => w.task === k || w.key === k); return i < 0 ? ws.length : i }
           const rows = <List>{g.key === 'need'

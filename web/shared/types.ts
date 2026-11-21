@@ -316,6 +316,12 @@ export interface TaskRelation {
   /** A loaded task that can be opened; absent while its list is unavailable. */
   task?: string
   external?: boolean
+  /** a working task's % done (its dot's pie, where its row is out of sight) */
+  pct?: number
+  /** another folder's task on this machine: its folder ("WEB-2 · web") */
+  where?: string
+  /** its status in words, where its row is out of sight ("Working 40%", "unreachable") */
+  word?: string
 }
 
 export interface Task {

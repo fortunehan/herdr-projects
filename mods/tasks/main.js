@@ -30,7 +30,7 @@ import { machinesInOrder, machineOrderOf, chatPane } from "./core/spaces.js";
 // The rules for a task's status, order and words: shared with the web app (core/tasks.js).
 import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, machineName, refOf, taskKey, autoPrefix, place,
   queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems,
-  acceptAgain, dependencies, nothingToMerge } from "./core/tasks.js";
+  acceptAgain, dependencies, relationState, linkedToNext, nothingToMerge } from "./core/tasks.js";
 import { READ_LISTS, taskLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
 import { settle } from "./core/pending.js";
@@ -291,8 +291,15 @@ export default class Tasks extends View {
     let placed = this.lists.flatMap((l) => l.tasks.map((task) => this.place(l, task)));
     this.frame.dependencies = dependencies(placed);
     this.frame.dependencyTargets = new Map(placed.map((p) => [taskKey(p.list, p.task), p]));
+    // Which task rows this frame shows (SHEP-103): a row's "↑ after" names a prerequisite in sight by its id alone, one out
+    // of sight (filtered out, folded, another folder's) with its dot and status. Rows are made before the groups that
+    // hold them decide what shows, so the rows read the last frame's set (this.seen), and a change draws once more.
+    this.frame.built = new Set();
+    this.frame.hidden = new Set();
+    this.frame.rowKeys = new WeakMap();
     // Each task's status as its list says it now, archived ones too: a Needs-you item the list has moved past is stale.
     const truth = new Map(placed.map((p) => [`${p.list.machine ?? ""}:${p.list.folder}:${refOf(p.list, p.task)}`, p]));
+    this.frame.truth = truth;
     if (here) placed = placed.filter((p) => inSpace(here, { machine: p.list.machine ?? null, folder: p.list.folder, space: p.task.space }));
     // Archived tasks (herdr-task: Done ones archive themselves after a while) leave every list and
     // count: only the Archived view and a search show them, the latest archived first.
@@ -339,7 +346,7 @@ export default class Tasks extends View {
     placed = placed.filter((p) => p.section !== "needs" && !inNeeds(p));
     const sorted = (ps) => [...ps].sort((a, b) => RANK_OF[a.section] - RANK_OF[b.section] || order(a.section)(a, b));
 
-    const needList = [...inbox.map((x) => ({ row: this.needRow(x, t), pin: pinNeed(x) })),
+    const needList = [...inbox.map((x) => ({ row: this.shownNeed(x, this.needRow(x, t)), pin: pinNeed(x) })),
       ...extra.map((p) => ({ row: this.row(p, t), pin: isPin(p) }))].filter((n) => n.row);
     const needRows = needList.map((n) => n.row);
     // Each status's tasks, in its order (Done newest first), and the automations.
@@ -361,7 +368,7 @@ export default class Tasks extends View {
     if (shared("tasks.place") === false) this.names = { machine: false, space: false };
     // A status's rows, made only when shown (by status, or its chip).
     const rowsOf = { needs: needRows, automations: autos.map(([l, a]) => this.autoRow(l, a, placed, t)) };
-    const rowsFor = (s) => (rowsOf[s] ??= tasksOf[s].map((p) => this.row(p, t)));
+    const rowsFor = (s) => (rowsOf[s] ??= this.rows(tasksOf[s], t));
     // Searching, every group shows whole and open (folded or not).
     const open = Boolean(q);
     const note = (text) => div().px(18).py(28).text_center().text_size(TEXT.label).text_color(t.dim).child(text);
@@ -380,14 +387,14 @@ export default class Tasks extends View {
         if (mine.length) body.push(this.group("you", "For you", mine, t, { open, top: true }));
         // Pinned: the rest of them, in status order; every one shows (Done ones too).
         const pins = pinned.filter((p) => placed.includes(p) && p.section !== "ready");
-        if (pins.length) body.push(this.group("pinned", "Pinned", sorted(pins).map((p) => this.row(p, t)), t, { open }));
+        if (pins.length) body.push(this.group("pinned", "Pinned", this.rows(sorted(pins), t), t, { open }));
         // Each space's other work, in status order, under its name: the machine only when two machines have a space
         // of that name.
         const work = rest.filter((p) => p.section !== "ready" && p.section !== "done");
         const shownLists = lists.filter((l) => work.some((p) => p.list === l));
         for (const l of shownLists) {
           const twin = shownLists.some((o) => o !== l && placeName(o) === placeName(l) && (o.machine ?? null) !== (l.machine ?? null));
-          body.push(this.spaceGroup(l, sorted(work.filter((p) => p.list === l)).map((p) => this.row(p, t, true)), t, twin ? machineName(l.machine) : null));
+          body.push(this.spaceGroup(l, this.rows(sorted(work.filter((p) => p.list === l)), t, true), t, twin ? machineName(l.machine) : null));
         }
         // Done: only its count, a quiet line, until opened (then a group that folds it away again).
         const done = tasksOf.done.filter((p) => !isPin(p));
@@ -395,14 +402,14 @@ export default class Tasks extends View {
           : this.doneLine(done, t));
       } else {
         // Pinned first, in status order; every one shows (Done ones too).
-        if (pinned.length) body.push(this.group("pinned", "Pinned", sorted(pinned).map((p) => this.row(p, t)), t, { open }));
+        if (pinned.length) body.push(this.group("pinned", "Pinned", this.rows(sorted(pinned), t), t, { open }));
         const ownNeeds = needList.filter((n) => !n.pin).map((n) => n.row);
         if (ownNeeds.length) body.push(this.group("needs", STATUS.needs, ownNeeds, t, { open }));
         if (by === "status") {
           for (const s of ORDER.slice(1, -1)) {
             const ps = tasksOf[s].filter((p) => !isPin(p));
             // A group shows only when it holds something (To do too).
-            if (ps.length) body.push(this.group(s, STATUS[s], ps.map((p) => this.row(p, t)), t, { open, done: s === "done" ? ps.length : 0 }));
+            if (ps.length) body.push(this.group(s, STATUS[s], this.rows(ps, t), t, { open, done: s === "done" ? ps.length : 0 }));
           }
         } else {
           // A space's group: its tasks in status order, the machine quiet after its name when two machines have a
@@ -411,7 +418,7 @@ export default class Tasks extends View {
           for (const l of withTasks) {
             const ps = sorted(rest.filter((p) => p.list === l));
             const twin = withTasks.some((o) => o !== l && placeName(o) === placeName(l) && (o.machine ?? null) !== (l.machine ?? null));
-            body.push(this.group(`folder:${l.machine ?? ""}:${l.folder}`, placeName(l), ps.map((p) => this.row(p, t)), t, { open, note: twin ? machineName(l.machine) : null, done: ps.filter((p) => p.section === "done").length }));
+            body.push(this.group(`folder:${l.machine ?? ""}:${l.folder}`, placeName(l), this.rows(ps, t), t, { open, note: twin ? machineName(l.machine) : null, done: ps.filter((p) => p.section === "done").length }));
           }
         }
       }
@@ -425,6 +432,11 @@ export default class Tasks extends View {
       if (q && !body.length && this.ready) body.push(note(`No tasks match “${q}”.`));
     }
 
+    const seen = new Set([...this.frame.built].filter((k) => !this.frame.hidden.has(k)));
+    if (!this.seen || seen.size !== this.seen.size || [...seen].some((k) => !this.seen.has(k))) {
+      this.seen = seen;
+      cx.timer.after(0, (cx) => cx.notify());
+    }
     return v_flex().id("tasks").size_full().min_h(0).on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } }).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().pl(14).pr(8).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Tasks"))
@@ -650,6 +662,7 @@ export default class Tasks extends View {
     const all = open || this.allDone.has(key);
     const cut = !all && done > DONE_SHOWN ? done - DONE_SHOWN : 0;
     const shown = cut ? rows.slice(0, rows.length - cut) : rows;
+    for (const r of shut ? rows : rows.slice(shown.length)) this.unseen(r);
     return v_flex().flex_none().gap(1)
       // a step of room over each group, so groups read as sections (as the web's)
       .pt(6)
@@ -907,8 +920,35 @@ export default class Tasks extends View {
     return open(null, { note: p.section === "queued" ? capital(this.queueReason(list, task)) : "This task hasn't started." });
   }
 
-  // bare: under For you's space heading, which says where it is.
-  row(p, t, bare = false) {
+  // A run of task rows in one list: a row whose very next row waits for it gets the short line down to it (SHEP-103).
+  rows(ps, t, bare = false) {
+    const deps = this.frame?.dependencies;
+    const links = linkedToNext(ps.map((p) => {
+      const key = taskKey(p.list, p.task);
+      return { key, waits: (deps?.get(key)?.waitsFor ?? []).map((d) => d.key).filter(Boolean) };
+    }));
+    return ps.map((p) => this.row(p, t, bare, links.has(taskKey(p.list, p.task))));
+  }
+
+  // A row made this frame, by its task's key; one its group doesn't show (folded, behind Show more) is out of sight.
+  shownRow(key, el) {
+    if (!this.frame?.built || !el || typeof el !== "object") return el;
+    this.frame.built.add(key);
+    this.frame.rowKeys.set(el, key);
+    return el;
+  }
+  unseen(el) {
+    const key = el && typeof el === "object" ? this.frame?.rowKeys?.get(el) : null;
+    if (key) this.frame.hidden.add(key);
+  }
+  // A Needs-you item about a task shows that task.
+  shownNeed(x, el) {
+    const p = x.ref && x.folder ? this.frame?.truth?.get(`${x.machine ?? ""}:${x.folder}:${x.ref}`) : null;
+    return p ? this.shownRow(taskKey(p.list, p.task), el) : el;
+  }
+
+  // bare: under For you's space heading, which says where it is. link: the next row waits for this one.
+  row(p, t, bare = false, link = false) {
     const { list, task, live, section } = p;
     const shown = this.frame ? (this.frame.agents ??= new Map(agents().map((a) => [a.address, a]))) : new Map(agents().map((a) => [a.address, a]));
     const focused = live.some((a) => shown.get(a.address)?.focused);
@@ -922,35 +962,39 @@ export default class Tasks extends View {
     const left = leftOf(p, w);
     // Pin / Unpin in its right-click menu (not an archived task's: archived ones drop out of Pinned).
     const key = taskKey(list, task);
-    return this.line(`task-${key}`, {
+    return this.shownRow(key, this.line(`task-${key}`, {
       go: this.target(p), glyph: this.glyph(p, w), ref: refOf(list, task), title: task.title, sub, left, leftColor: section === "scheduled" ? t.dim : null,
       dim: section === "done", selected: focused, where: bare ? null : this.whereOf(list.machine, placeName(list)),
       action: section === "ready" || acceptAgain(p) ? this.acceptButton(p, t) : null,
-      relations: relation ? this.dependencyLines(relation, t, key) : null,
+      top: relation?.waitsFor.length ? this.relationLine("after", relation.waitsFor, t, key) : null,
+      bottom: relation?.unblocks.length ? this.relationLine("then", relation.unblocks, t, key) : null,
+      link,
       pin: this.shelved(p) ? null : { key, on: this.pins().has(key), status: section, machine: list.machine ?? null, folder: list.folder,
         ref: refOf(list, task), sub: section === "scheduled" ? sub : null },
-    }, t);
+    }, t));
   }
 
-  dependencyLines(relation, t, key) {
-    const lines = [];
-    for (const [kind, ds] of [["Waits for", relation.waitsFor], ["Unblocks", relation.unblocks]]) {
-      for (const [i, d] of ds.entries()) {
-        const target = this.frame.dependencyTargets.get(d.key);
+  // B of SHEP-100's mock-up (SHEP-103): a waiting task says "↑ after SHEP-12" over its title, the task it waits for
+  // "↓ then SHEP-13 SHEP-15" under its id line. A prerequisite whose row is in sight is just its id (that row says the
+  // rest); one out of sight (filtered out, folded) or another folder's or machine's carries its dot and status
+  // ("● SHEP-12 · Working 40%", "WEB-2 · web · Working"). Each id opens its task.
+  relationLine(kind, ds, t, key) {
+    const after = kind === "after";
+    return h_flex().h(16).min_w(0).gap(6).items_center().overflow_hidden().whitespace_nowrap().text_size(TEXT.label)
+      .text_color(after ? t.muted : t.dim)
+      .child(div().flex_none().text_color(t.dim).child(after ? "↑ after" : "↓ then"))
+      .children(ds.map((d, i) => {
+        const target = d.key ? this.frame.dependencyTargets.get(d.key) : null;
         const go = target ? this.target(target) : null;
-        lines.push(h_flex().id(`dependency-${key}-${kind}-${d.ref}-${i}`).h(22).min_w(0).gap(5).items_center().text_size(TEXT.label)
-          .text_color(kind === "Waits for" ? t.muted : t.dim)
+        const away = after && (Boolean(d.external) || !d.key || !this.seen?.has(d.key));
+        return h_flex().id(`${kind}-${key}-${i}`).flex_none().gap(4).items_center().text_color(t.muted)
           .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); go(cx); cx.notify(); }))
-          .child(div().flex_none().child(`↳ ${kind}`))
-          .when(kind === "Waits for" && Boolean(d.section), (el) => el.child(d.section === "merging"
-            ? svg("mods/tasks/merging.svg").size(14).flex_none().text_color(green()) : taskDot(d.section)))
-          .child(div().flex_none().font_family(ID_FONT).text_size(ID_SIZE).child(d.ref))
-          .when(kind === "Waits for" && Boolean(d.title), (el) => el.child(div().min_w(0).truncate().child(d.title)))
-          .when(Boolean(d.external), (el) => el.child(div().flex_none().text_color(t.dim).child(`· ${d.state}`))));
-      }
-    }
-    return lines.length ? v_flex().min_w(0).children(lines) : null;
+          .when(away, (el) => el.child(d.section === "merging"
+            ? svg("mods/tasks/merging.svg").size(12).flex_none().text_color(green()) : taskDot(d.section, { pct: d.pct, size: 12 })))
+          .child(div().flex_none().font_family(ID_FONT).text_size(ID_SIZE).child(d.where ? `${d.ref} · ${d.where}` : d.ref))
+          .when(away, (el) => el.child(div().flex_none().text_color(t.dim).child(`· ${relationState(d)}`)));
+      }));
   }
 
   // The person's pinned tasks (shared "tasks.pinned": task keys), once a render.
@@ -1019,7 +1063,9 @@ export default class Tasks extends View {
   //   run (`meta`).
   // A row with nothing under its title is one line. Nothing shows on hover: no tooltips (SHEP-25).
   // `pin`: { key, on }: Pin / Unpin in the row's right-click menu.
-  line(id, { go, glyph, ref, title, sub, left, leftColor, dim, selected, meta, metaColor, where, action, pin, relations }, t) {
+  // `top`: a line over the title (a waiting task's "↑ after"), level with the glyph; `bottom`: one under the id line (its
+  // "↓ then"); 16 tall each, as the second line. `link`: the next row waits for this one, a short line joins the glyphs.
+  line(id, { go, glyph, ref, title, sub, left, leftColor, dim, selected, meta, metaColor, where, action, pin, top, bottom, link }, t) {
     // Every second line is at most 40 characters (herdr-task cuts an agent's own; this catches the
     // derived ones: a long queue, a check's message).
     const said = sub ? capital(sub) : null;
@@ -1044,12 +1090,20 @@ export default class Tasks extends View {
       .child(v_flex().w(14).flex_none().self_start().gap(2).child(mark)
         .when(Boolean(left), (el) => el.child(h_flex().w(14).h(16).items_center().justify_center().whitespace_nowrap()
           .font_family(ID_FONT).text_size(ID_SIZE).font_semibold().text_color(leftColor ?? amber()).child(left))))
-      .child(v_flex().flex_1().min_w(0).gap(2).child(h_flex().h(20).min_w(0).items_center().child(head.flex_1())).child(second)
-        .when(Boolean(relations), (el) => el.child(relations)))
-      .when(Boolean(end), (el) => el.child(end));
+      .child(v_flex().flex_1().min_w(0).gap(2).when(Boolean(top), (el) => el.child(top))
+        .child(h_flex().h(20).min_w(0).items_center().child(head.flex_1())).child(second)
+        .when(Boolean(bottom), (el) => el.child(bottom)))
+      .when(Boolean(end), (el) => el.child(end))
+      // From under this glyph (8 + 20) to the top of the next row's (1 apart, 8 in): a thin line, its arrowhead at the end.
+      .when(Boolean(link), (el) => el.child(v_flex().absolute().top(27).bottom(-10).left(11).w(8).items_center()
+        .child(div().w(1).flex_1().bg(linkColor(t)))
+        .child(svg("mods/tasks/then-arrow.svg").w(7).h(4).flex_none().text_color(linkColor(t)))));
   }
 
 }
+
+// The line between two rows: the dim grey, fainter.
+const linkColor = (t) => (/^#[0-9a-f]{6}$/i.test(t.dim) ? `${t.dim}a6` : t.dim);
 
 const searchKey = (t) => h_flex().h(18).px(5).mr(3).flex_none().items_center().rounded(4).border_1().border_color(t.border)
   .font_family(ID_FONT).text_size(TEXT.id).text_color(t.dim).child("F");
