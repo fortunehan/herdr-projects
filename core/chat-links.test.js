@@ -106,11 +106,12 @@ describe("what a click does", () => {
     expect(L.label("reveal", "linux")).toBe("Show in folder");
   });
 
-  test("Windows: start for the browser, explorer to show it", () => {
-    expect(L.command("browser", "windows", "C:/a/b.html")).toEqual(["cmd", ["/c", "start", "", "C:/a/b.html"]]);
+  test("Windows: explorer opens it or shows it, never cmd (it would read & in the path)", () => {
+    expect(L.command("browser", "windows", "C:/a&calc/b.html")).toEqual(["explorer", ["C:/a&calc/b.html"]]);
     expect(L.command("reveal", "windows", "C:/a/b.ts")).toEqual(["explorer", ["/select,C:/a/b.ts"]]);
     // explorer exits 1 even when it worked
     expect(L.problem("reveal", "windows", "C:/a", { code: 1 })).toBe(null);
+    expect(L.problem("browser", "windows", "C:/a.html", { code: 1 })).toBe(null);
   });
 
   test("failures in plain words", () => {
@@ -126,6 +127,7 @@ describe("the opener script", () => {
   const root = mkdtempSync(join(tmpdir(), "chat-links-"));
   const bin = join(root, "bin"), home = join(root, "home"), log = join(root, "log");
   mkdirSync(bin); mkdirSync(join(home, "site"), { recursive: true });
+  mkdirSync(join(home, "Evil.app", "Contents"), { recursive: true }); mkdirSync(join(home, "page.html"));
   writeFileSync(join(home, "site", "index.html"), "<p>hi</p>");
   writeFileSync(join(home, "site", "main.ts"), "");
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); };
@@ -145,6 +147,10 @@ describe("the opener script", () => {
   test("a source file is revealed in Finder, a folder opened there", () => {
     expect(run("reveal", `${home}/site/main.ts`)).toEqual({ code: 0, ran: `open -R ${home}/site/main.ts` });
     expect(run("reveal", `${home}/site`)).toEqual({ code: 0, ran: `open ${home}/site` });
+  });
+  test("an app (a folder with an extension) is only shown in Finder, never run", () => {
+    expect(run("reveal", `${home}/Evil.app`)).toEqual({ code: 0, ran: `open -R ${home}/Evil.app` });
+    expect(run("browser", `${home}/page.html/`)).toEqual({ code: 0, ran: `open -R ${home}/page.html/` });
   });
   test("a missing path runs nothing and exits 3", () => {
     expect(run("browser", `${home}/site/gone.html`)).toEqual({ code: 3, ran: "" });

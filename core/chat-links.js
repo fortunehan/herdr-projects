@@ -162,8 +162,9 @@ export function label(kind, os) {
 /** sh: $1 "browser" or "reveal", $2 the path (~/ expanded here), $3 "guard": only paths in the home folder or /tmp.
  *  Exits 3 when the path isn't there, 4 when nothing can open it, 5 when the guard refuses it.
  *  macOS: the default browser's app for http URLs (LaunchServices) opens the file, since plain `open` would pick the
- *  file type's app; a folder opens in Finder, anything else is revealed there. Linux: the browser, xdg-open, or the
- *  file manager's ShowItems. */
+ *  file type's app; a folder opens in Finder, anything else is revealed there. A folder with an extension (an app or
+ *  another bundle, which `open` would run) is only revealed. Linux: the browser, xdg-open, or the file manager's
+ *  ShowItems. */
 export const OPEN = `p=$2
 case $p in "~") p=$HOME ;; "~/"*) p="$HOME/\${p#"~/"}" ;; esac
 [ -e "$p" ] || exit 3
@@ -174,7 +175,10 @@ if [ "$3" = guard ]; then
   case "$r/" in "$h"/*|/tmp/*|/private/tmp/*) ;; *) exit 5 ;; esac
 fi
 if [ "$(uname)" = Darwin ]; then
-  [ -d "$p" ] && exec open "$p"
+  if [ -d "$p" ]; then
+    case $(basename "$p") in ?*.*) exec open -R "$p" ;; esac
+    exec open "$p"
+  fi
   if [ "$1" = browser ]; then
     app=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); const u = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("https://example.com")); u.isNil() ? "" : u.path.js' 2>/dev/null)
     [ -n "$app" ] && exec open -a "$app" "$p"
@@ -193,15 +197,17 @@ xdg-open "$(dirname "$p")" >/dev/null 2>&1 & exit 0`;
 
 /** The command opening a path: [program, args]. action: actionOf(); os: window().platform; guard: the service's. */
 export function command(action, os, path, guard = false) {
-  // Windows: start opens the file with its own app (a .html one in the browser); explorer selects it in its folder.
-  if (os === "windows") return action === "browser" ? ["cmd", ["/c", "start", "", path]] : ["explorer", [`/select,${path}`]];
+  // Windows: explorer opens the file with its own app (a .html one in the browser), or selects it in its folder. Never
+  // cmd's start: cmd would read & and ^ in the path as its own.
+  if (os === "windows") return ["explorer", [action === "browser" ? path : `/select,${path}`]];
   return ["sh", ["-c", OPEN, "open-path", action, path, ...(guard ? ["guard"] : [])]];
 }
 
 /** What a click says when it didn't work: { title, body }, or null when it worked. r: the exec result (null: it
  *  couldn't start). */
 export function problem(action, os, path, r) {
-  if (r && (r.code === 0 || (os === "windows" && action !== "browser"))) return null;
+  // explorer's exit code is 1 even when it worked
+  if (r && (r.code === 0 || (os === "windows" && r.code === 1))) return null;
   const title = action === "browser" ? "Couldn't open it in the browser" : `Couldn't show it in ${os === "macos" ? "Finder" : "its folder"}`;
   if (!r) return { title, body: "The command it needs couldn't start." };
   if (r.code === 3) return { title, body: `${path} isn't there.` };

@@ -129,7 +129,7 @@ describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () 
     expect(toasts[0]).toMatchObject({ title: "That path is on another machine", body: "It's on mini: open it there." });
   });
 
-  test("Windows: a file that isn't there is told before anything runs; one that is opens with start", async () => {
+  test("Windows: a file that isn't there is told before anything runs; one that is opens with explorer", async () => {
     platform = "windows";
     const dir = mkdtempSync(join(tmpdir(), "chat-links-win-"));
     const page = join(dir, "index.html");
@@ -138,7 +138,7 @@ describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () 
     expect(ran).toEqual([]);
     expect(toasts[0].body).toContain("isn't there");
     await chat().openPath(page);
-    expect(ran).toEqual([["cmd", ["/c", "start", "", page]]]);
+    expect(ran).toEqual([["explorer", [page]]]);
   });
 
   test("find's bold marks words, never a link's target", () => {

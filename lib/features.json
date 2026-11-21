@@ -733,6 +733,33 @@
       ]
     },
     {
+      "id": "chat-links",
+      "addon": "chat",
+      "title": "Clickable paths and links",
+      "core": [
+        "chat-links"
+      ],
+      "herdr": {
+        "mods": [
+          "chat"
+        ]
+      },
+      "web": {
+        "files": [
+          "plugins/chat/markdown.tsx"
+        ]
+      },
+      "forms": {
+        "herdr": "URLs and this machine's paths in an agent's reply are links: pages and pictures open in the default browser, the rest in Finder",
+        "desktop": "Same, opened on the agent's machine; hover says what a click does",
+        "tablet": "Same as desktop",
+        "phone": "URLs only"
+      },
+      "service": [
+        "actions.ts"
+      ]
+    },
+    {
       "id": "models",
       "addon": "chat",
       "title": "Model menu",
