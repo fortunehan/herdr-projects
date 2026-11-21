@@ -44,9 +44,10 @@ const pathHref = (p: string) => PATH_HREF + encodeURIComponent(p)
     go onto the sanitized elements themselves, never into the HTML as text, so nothing in the reply can turn into them.
     A link's or picture's title goes: nothing pops up on hover, but what a click does on a URL or a path it linked
     (SHEP-99, core/chat-links.js). paths: its paths are links too (a desktop's chat; a phone's has URLs only) */
-export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, paths = false) {
-  // ~/ stays as written ("~" as the home): the agent's machine expands it (service/actions.ts open-path)
-  const md = CL.linkify(text, { home: '~', paths, pathHref })
+export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, paths: boolean | null = null) {
+  // only in a chat (paths not null): a recipe's markdown stays as written. ~/ stays as written ("~" as the home): the
+  // agent's machine expands it (service/actions.ts open-path)
+  const md = paths === null ? text : CL.linkify(text, { home: '~', paths, pathHref })
   const root = DOMPurify.sanitize(marked.parse(md, { async: false }) as string, { RETURN_DOM: true, FORBID_ATTR: ['title'] }) as HTMLElement
   if (mention) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href^="#space="], a[href^="#task="]')) {
     const task = a.getAttribute('href')!.startsWith('#task=')
@@ -163,12 +164,13 @@ export function onPath(e: MouseEvent, chat: string | undefined) {
 /** chat: the chat it is in, so a #-mention of a space (core/mentions.js) draws as a chip, open or locked, and a path
     the agent wrote is a link (not on a phone: there only URLs are) */
 export function Markdown({ text, chat }: { text: string; chat?: string }) {
-  const paths = useUI((u) => u.device !== 'phone') && Boolean(chat)
+  const desk = useUI((u) => u.device !== 'phone')
+  const paths = chat ? desk : null
   if (chat && hasMention(text)) return <WithMentions text={text} chat={chat} paths={paths} />
   return <Plain text={text} chat={chat} paths={paths} />
 }
 
-function Plain({ text, chat, paths }: { text: string; chat?: string; paths: boolean }) {
+function Plain({ text, chat, paths }: { text: string; chat?: string; paths: boolean | null }) {
   const html = useMemo(() => toHtml(text, null, paths), [text, paths])
   const click = (e: MouseEvent) => { if (!onPath(e, chat)) onCopy(e) }
   return <div className="prose-reply" onClick={click} dangerouslySetInnerHTML={{ __html: html }} />
@@ -177,7 +179,7 @@ function Plain({ text, chat, paths }: { text: string; chat?: string; paths: bool
 const CHIP = 'inline-flex max-w-full items-baseline rounded-md px-1.5 align-baseline whitespace-nowrap no-underline'
 const LOCK = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" class="size-3 shrink-0 self-center mr-1"><path fill-rule="evenodd" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z" clip-rule="evenodd"/></svg>'
 
-function WithMentions({ text, chat, paths }: { text: string; chat: string; paths: boolean }) {
+function WithMentions({ text, chat, paths }: { text: string; chat: string; paths: boolean | null }) {
   const snap = useSnap()
   const got = useReach(chat)
   const states = new Map<string, ReturnType<typeof stateOf>>()

@@ -63,6 +63,7 @@ export function find(text) {
     const p = pathOf(body, suffix);
     if (!p) continue;
     const len = body.length + suffix.length;
+    if (!suffix && body.endsWith("/") && new RegExp(`^[${CJK}]`).test(s.slice(m.index + len))) continue;
     out.push({ start: m.index, end: m.index + len, text: s.slice(m.index, m.index + len), kind: "path", ...p });
   }
   return out.sort((a, b) => a.start - b.start);
@@ -75,7 +76,11 @@ export function absolute(path, home) {
 }
 
 const HEX = { "(": "%28", ")": "%29", "<": "%3C", ">": "%3E", " ": "%20", "#": "%23", "?": "%3F", "[": "%5B", "]": "%5D" };
-const escHref = (u) => u.replace(/[()<> [\]]/g, (c) => HEX[c]);
+/** A URL as a markdown link target: brackets and spaces encoded, except an IPv6 host's own ([::1]). */
+const escHref = (u) => {
+  const [, head, rest] = /^(https?:\/\/[^/?#]*)([\s\S]*)$/i.exec(u) ?? [, "", u];
+  return head.replace(/[()<> ]/g, (c) => HEX[c]) + rest.replace(/[()<> [\]]/g, (c) => HEX[c]);
+};
 /** The window's link target for a path: a file:// URL. */
 export const fileHref = (abs) => `file://${encodeURI(abs).replace(/[()#?[\]]/g, (c) => HEX[c])}`;
 const escText = (t) => t.replace(/[\\*_[\]~<>]/g, "\\$&");
@@ -110,9 +115,9 @@ function linkCode(span, inner, opts) {
     const href = hrefOf(ls[0], opts);
     return href ? `[${span}](${href})` : null;
   }
-  if (/[\n`]/.test(t)) return null;
-  const m = /^(.*?)((?::\d+){1,2})?$/.exec(t);
-  const body = m[1];
+  if (/[\n\r\u2028\u2029`]/.test(t)) return null;
+  const m = /^([\s\S]*?)((?::\d+){1,2})?$/.exec(t);
+  const body = m?.[1] ?? "";
   if (!/^(\/|~$|~\/|file:\/\/)/.test(body)) return null;
   if (/\s/.test(body) && (/\s-/.test(body) || !(body.endsWith("/") || /\.\w+$/.test(body.split("/").pop())))) return null;
   // one part alone only for the usual top folders: `/model` is a slash command
@@ -158,13 +163,16 @@ export function linkify(md, opts = {}) {
   let run = [], fence = null, blank = true, indented = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
   for (const line of lines) {
-    const f = /^[\s>]*?(`{3,}|~{3,})/.exec(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ""));
+    const f = /^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))*\s*(`{3,}|~{3,})/.exec(line);
     if (fence) {
       out.push(line);
       if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.replace(/^[\s>]*/, "").slice(f[1].length).trim()) fence = null;
     } else if (f) {
       flush();
       fence = f[1];
+      out.push(line);
+    } else if (/^ {0,3}\[[^\]]+\]:\s*\S/.test(line)) {
+      flush();
       out.push(line);
     } else if (/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) {
       flush();
@@ -222,9 +230,10 @@ if [ "$3" = guard ]; then
   if [ -d "$p" ]; then r=$(cd "$p" 2>/dev/null && pwd -P) || exit 3
   elif command -v realpath >/dev/null 2>&1; then r=$(realpath "$p" 2>/dev/null) || exit 3
   else [ -L "$p" ] && exit 5; r="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || exit 3; fi
-  h=$(cd "$HOME" 2>/dev/null && pwd -P)
-  case "$r/" in "$h"/*|/tmp/*|/private/tmp/*) ;; *) exit 5 ;; esac
+  h=$(cd "$HOME" 2>/dev/null && pwd -P) || h=
+  case "$r/" in /tmp/*|/private/tmp/*) ;; *) [ -n "$h" ] && [ "$h" != / ] || exit 5; case "$r/" in "$h"/*) ;; *) exit 5 ;; esac ;; esac
   p=$r
+  case $(printf %s "$p" | tr '[:upper:]' '[:lower:]') in *.html|*.htm|*.svg|*.pdf|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.txt|*.json) ;; *) set -- reveal "$2" "$3" ;; esac
 fi
 if [ "$(uname)" = Darwin ]; then
   if [ -d "$p" ]; then
@@ -238,14 +247,15 @@ if [ "$(uname)" = Darwin ]; then
   fi
   exec open -R "$p"
 fi
-if [ -d "$p" ]; then command -v xdg-open >/dev/null 2>&1 || exit 4; xdg-open "$p" >/dev/null 2>&1 & exit 0; fi
+# xdg-open hands the file on and returns, so its exit says whether it worked; a browser itself keeps running
+if [ -d "$p" ]; then command -v xdg-open >/dev/null 2>&1 || exit 4; exec xdg-open "$p"; fi
 if [ "$1" = browser ]; then
   for b in x-www-browser sensible-browser; do command -v "$b" >/dev/null 2>&1 && { "$b" "$p" >/dev/null 2>&1 & exit 0; }; done
-  command -v xdg-open >/dev/null 2>&1 || exit 4; xdg-open "$p" >/dev/null 2>&1 & exit 0
+  command -v xdg-open >/dev/null 2>&1 || exit 4; exec xdg-open "$p"
 fi
 dbus-send --session --print-reply --dest=org.freedesktop.FileManager1 /org/freedesktop/FileManager1 org.freedesktop.FileManager1.ShowItems array:string:"file://$p" string:"" >/dev/null 2>&1 && exit 0
 command -v xdg-open >/dev/null 2>&1 || exit 4
-xdg-open "$(dirname "$p")" >/dev/null 2>&1 & exit 0`;
+exec xdg-open "$(dirname "$p")"`;
 
 /** The command opening a path: [program, args]. action: actionOf(); os: window().platform; guard: the service's. */
 export function command(action, os, path, guard = false) {

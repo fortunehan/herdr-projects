@@ -47,3 +47,9 @@ test("a finished task's chat (its log) opens on the machine the log is on", asyn
   await act(hub, { type: "open-path", chat: "done-here", path: "/tmp/a.html" }, compat);
   expect(calls.map((c) => c.on)).toEqual(["mini", undefined]);
 });
+
+test("the home folder itself (~, from inline code) is a path", async () => {
+  const { calls, hub, compat } = stub();
+  await act(hub, { type: "open-path", chat: "p:shop", path: "~" }, compat);
+  expect(calls[0].argv.slice(3)).toEqual(["open-path", "reveal", "~", "guard"]);
+});

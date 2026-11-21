@@ -82,6 +82,18 @@ describe("finding links in a reply", () => {
     expect(md("Open file:///tmp/build.html#preview.")).toBe("Open [file:///tmp/build.html#preview](file:///tmp/build.html).");
   });
 
+  test("round 2: odd input never throws, IPv6 hosts keep their brackets, references stay whole", () => {
+    expect(md("`/tmp/a\u2028b.html` and `/tmp/a\rb`")).toBe("`/tmp/a\u2028b.html` and `/tmp/a\rb`");
+    expect(md("https://[::1]:5173/site")).toBe("[https://\\[::1\\]:5173/site](https://[::1]:5173/site)");
+    expect(md("[site]: https://example.org/\n\nSee [site].")).toBe("[site]: https://example.org/\n\nSee [site].");
+    // a plain path cut where Chinese text goes on would point at its folder: left plain
+    expect(md("在/tmp/中文/index.html里")).toBe("在/tmp/中文/index.html里");
+  });
+
+  test("a fence in a quoted list is code too", () => {
+    expect(md("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```")).toBe("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```");
+  });
+
   test("code in a quote or a list, and indented code, is left as it is", () => {
     expect(md("> ~~~sh\n> cat /tmp/a/b.txt\n> ~~~")).toBe("> ~~~sh\n> cat /tmp/a/b.txt\n> ~~~");
     expect(md("- Example\n\n    ~~~sh\n    cat /tmp/a/b.txt\n    ~~~")).toBe("- Example\n\n    ~~~sh\n    cat /tmp/a/b.txt\n    ~~~");
@@ -170,7 +182,7 @@ describe("the opener script", () => {
 
   test("a page opens in the default browser's app, not the file type's", () => {
     expect(run("browser", "~/site/index.html")).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${home}/site/index.html` });
-  });
+  }, 30000); // the first real sh spawn can be slow on a busy Mac
   test("a source file is revealed in Finder, a folder opened there", () => {
     expect(run("reveal", `${home}/site/main.ts`)).toEqual({ code: 0, ran: `open -R ${home}/site/main.ts` });
     expect(run("reveal", `${home}/site`)).toEqual({ code: 0, ran: `open ${home}/site` });
@@ -188,6 +200,17 @@ describe("the opener script", () => {
     expect(run("reveal", `${home}/..`, true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp/..", true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp", true).code).toBe(0);
+  });
+  test("the guard refuses everything outside /tmp when the home folder can't be found", () => {
+    writeFileSync(log, "");
+    const [prog, args] = L.command("reveal", "macos", "/etc/hosts", true);
+    expect(spawnSync(prog, args, { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: join(root, "no-such-home") } }).status).toBe(5);
+  });
+  test("a link that looks like a page but leads to a source file is shown in Finder", () => {
+    writeFileSync(join(home, "site", "notes.md"), "");
+    symlinkSync(join(home, "site", "notes.md"), join(home, "preview.html"));
+    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
+    expect(run("browser", `${home}/preview.html`, true)).toEqual({ code: 0, ran: `open -R ${real}/notes.md` });
   });
   test("the guard follows a link to where it leads, and opens that", () => {
     symlinkSync("/etc/hosts", join(home, "site", "hosts.txt"));

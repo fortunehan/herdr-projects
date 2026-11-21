@@ -213,7 +213,7 @@ async function knownAgents(hub: Hub, compat: Compat, machine: string | null): Pr
  *  chat opens it (core/chat-links.js), only in that machine's home folder or /tmp. { ok } or { ok: false, title, error }. */
 export async function openPath(hub: Hub, addr: string, path: unknown) {
   const p = typeof path === "string" ? path : "";
-  if (!/^(\/|~\/)/.test(p) || p.length > 4096 || /[\0\n\r]/.test(p)) throw new Error("That isn't a path.");
+  if (!/^(\/|~\/|~$)/.test(p) || p.length > 4096 || /[\0\n\r]/.test(p)) throw new Error("That isn't a path.");
   const action = CL.actionOf(p);
   const [prog, args] = CL.command(action, "linux", p, true);
   // a finished task's chat is its log ("log:<machine>|<kind>|<path>", service/chats.ts), else a terminal ("<machine>/t…")
