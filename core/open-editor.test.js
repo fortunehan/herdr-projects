@@ -1,9 +1,9 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APPS, COPIES, cantOpen, copyOf, folderOf, openCommand as command, openProblem as problem, title } from "./open-editor.js";
+import { APPS, COPIES, DEFAULT_TERMINAL, cantOpen, copyOf, folderOf, openCommands, openFolder, title } from "./open-editor.js";
 
 const WT = "/h/.local/share/shepherdr/worktrees/shop/task-3-x";
 const WORKTREE = { mode: "worktree", worktree: WT, folder: "/h/dev/shop", machine: null, state: "running" };
@@ -83,91 +83,95 @@ describe("cantOpen", () => {
   });
 });
 
-describe("problem", () => {
-  test("none when it opened", () => expect(problem("vscode", { code: 0, stdout: "", stderr: "" }, false)).toBe(null));
-  test("a removed worktree", () => {
-    expect(problem("iterm", { code: 3, stdout: "", stderr: "" }, true)).toEqual({ title: "Couldn't open iTerm2", body: "Its folder is gone (a finished task's worktree is removed)." });
-    expect(problem("finder", { code: 3, stdout: "", stderr: "" }, false).body).toBe("Its folder is gone.");
-  });
-  test("the app missing", () => {
-    expect(problem("vscode", { code: 4, stdout: "", stderr: "" }, false).body).toContain("VS Code isn't installed");
-    expect(problem("iterm", { code: 4, stdout: "", stderr: "" }, false).body).toBe("iTerm2 isn't installed.");
-    expect(problem("finder", { code: 4, stdout: "", stderr: "" }, false).body).toBe("Finder is only on macOS.");
-  });
-  test("sh couldn't start", () => expect(problem("vscode", null, false)).toEqual({ title: title("vscode"), body: "sh couldn't start." }));
-  test("anything else: its last line", () => expect(problem("finder", { code: 1, stdout: "", stderr: "a\nboom\n" }, false).body).toBe("boom"));
-});
-
-// The real scripts, with stand-ins for code, open and uname first on PATH (never the real apps).
-describe("the scripts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "shep-open-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-  const folder = join(dir, "w t");
-  mkdirSync(folder);
-  let n = 0;
-  const run = (app, fakes, target = folder) => {
-    const bin = join(dir, `bin${n++}`), log = join(bin, "log");
-    mkdirSync(bin);
-    for (const [name, code] of Object.entries({ uname: 'echo Darwin', open: "exit 1", ...fakes })) {
-      if (code === null) continue;
-      writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $*" >> '${log}'\n${code}\n`);
-      chmodSync(join(bin, name), 0o755);
-    }
-    const [cmd, args] = command(app, target);
-    const r = spawnSync(cmd, args, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin` } });
-    return { code: r.status, log: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter((l) => !l.startsWith("uname")) : [] };
+describe("openFolder", () => {
+  const stub = (results = {}) => {
+    const calls = [];
+    const exec = async (cmd, args, opts) => { calls.push([cmd, ...args]); expect(opts.timeout).toBeGreaterThan(0); return results[cmd] ?? { code: 0, stdout: "", stderr: "" }; };
+    return { calls, exec };
   };
 
-  test("VS Code: the code CLI when it's on PATH", () => {
-    expect(run("vscode", { code: "exit 0" })).toEqual({ code: 0, log: [`code ${folder}`] });
+  test("each app opens by its bundle id after the folder check, no lookup script", async () => {
+    for (const [app, bundle] of [["vscode", "com.microsoft.VSCode"], ["iterm", "com.googlecode.iterm2"], ["finder", "com.apple.finder"], ["xcode", "com.apple.dt.Xcode"]]) {
+      const s = stub();
+      expect(await openFolder(s.exec, app, WT)).toBe(null);
+      expect(s.calls).toEqual([["/bin/test", "-d", WT], ["/usr/bin/open", "-b", bundle, "--", WT]]);
+      expect(openCommands(app, WT)).toEqual(s.calls);
+    }
   });
 
-  test("VS Code: no code CLI, macOS's Visual Studio Code app", () => {
-    expect(run("vscode", { open: "exit 0" })).toEqual({ code: 0, log: [`open -a Visual Studio Code ${folder}`] });
+  test("Terminal: the default terminal's app, looked up with the fixed script", async () => {
+    const s = stub({ "/usr/bin/osascript": { code: 0, stdout: "/Applications/Ghostty.app\n", stderr: "" } });
+    expect(await openFolder(s.exec, "terminal", WT)).toBe(null);
+    expect(s.calls).toEqual([["/bin/test", "-d", WT], ["/usr/bin/osascript", "-l", "JavaScript", "-e", DEFAULT_TERMINAL], ["/usr/bin/open", "-a", "/Applications/Ghostty.app", "--", WT]]);
   });
 
-  test("VS Code: the code CLI failing falls back to the app", () => {
-    expect(run("vscode", { code: "exit 1", open: "exit 0" }).log).toEqual([`code ${folder}`, `open -a Visual Studio Code ${folder}`]);
+  test("Terminal: a failed lookup opens Terminal.app instead", async () => {
+    const s = stub({ "/usr/bin/osascript": { code: 1, stdout: "", stderr: "execution error: (-2700)" } });
+    expect(await openFolder(s.exec, "terminal", WT)).toBe(null);
+    expect(s.calls.at(-1)).toEqual(["/usr/bin/open", "-a", "Terminal", "--", WT]);
   });
 
-  test("VS Code: neither, exit 4", () => {
-    expect(run("vscode", {}).code).toBe(4);
-    expect(run("vscode", { uname: "echo Linux" }).code).toBe(4);
+  test("a gone folder runs nothing else", async () => {
+    const s = stub({ "/bin/test": { code: 1, stdout: "", stderr: "" } });
+    expect(await openFolder(s.exec, "finder", WT, { done: true })).toEqual({ title: "Couldn't open Finder", body: `Its folder is gone (a finished task's worktree is removed): ${WT}` });
+    expect((await openFolder(stub({ "/bin/test": { code: 1, stdout: "", stderr: "" } }).exec, "finder", WT)).body).toBe(`The folder is missing or can't be read: ${WT}`);
+    expect(s.calls).toEqual([["/bin/test", "-d", WT]]);
   });
 
-  test("iTerm2: looks the app up, then opens it on the folder", () => {
-    expect(run("iterm", { open: "exit 0" })).toEqual({ code: 0, log: ["open -Ra iTerm", `open -a iTerm ${folder}`] });
+  test("a failure names the step, the command (quoted for a shell) and the last stderr line", async () => {
+    const s = stub({ "/usr/bin/open": { code: 1, stdout: "", stderr: "noise\nboom\n" } });
+    expect(await openFolder(s.exec, "vscode", "/a b/it's")).toEqual({ title: "Couldn't open VS Code", body: "Opening VS Code failed: boom (open -b com.microsoft.VSCode -- '/a b/it'\\''s')" });
   });
 
-  test("iTerm2: not installed, exit 4 and nothing opened", () => {
-    expect(run("iterm", { open: "exit 1" })).toEqual({ code: 4, log: ["open -Ra iTerm"] });
-    expect(run("iterm", { open: "exit 0", uname: "echo Linux" })).toEqual({ code: 4, log: [] });
+  test("exec rejecting is a step failure too, never a bare failed", async () => {
+    const exec = async () => { throw new Error(""); };
+    expect((await openFolder(exec, "xcode", WT)).body).toBe(`Checking the folder failed: /bin/test couldn't run: no reason given (test -d ${WT})`);
   });
 
-  test("iTerm2: failing to start passes its exit on", () => {
-    expect(run("iterm", { open: '[ "$1" = -Ra ] || { echo boom >&2; exit 1; }' }).code).toBe(1);
+  test("off macOS only VS Code opens, with its code command", async () => {
+    const s = stub();
+    expect(await openFolder(s.exec, "vscode", WT, { platform: "linux" })).toBe(null);
+    expect(s.calls).toEqual([["code", WT]]);
+    expect(await openFolder(s.exec, "xcode", WT, { platform: "linux" })).toEqual({ title: "Couldn't open Xcode", body: "Xcode opens only on macOS." });
   });
 
-  test("Finder: open on the folder", () => {
-    expect(run("finder", { open: "exit 0" })).toEqual({ code: 0, log: [`open ${folder}`] });
-    expect(run("finder", { open: "exit 0", uname: "echo Linux" })).toEqual({ code: 4, log: [] });
+  test("title", () => {
+    expect(title("terminal")).toBe("Couldn't open Terminal");
+    expect(title("xcode")).toBe("Couldn't open Xcode");
+  });
+});
+
+// The real programs on this Mac, without starting any app: the lookup script, and open -b's answer for an app
+// that isn't there.
+describe.if(process.platform === "darwin")("on macOS for real", () => {
+  const real = (cmd, args) => {
+    const r = spawnSync(cmd, args, { encoding: "utf8" });
+    if (r.error) throw r.error;
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+
+  // SHEP-97's cause: /usr/bin/test isn't on macOS 26, so herdr's exec refused to start the folder check.
+  test("every program an Open runs is on this Mac", () => {
+    for (const app of ["terminal", ...Object.keys(APPS)]) {
+      for (const [cmd] of openCommands(app, "/tmp")) expect(existsSync(cmd)).toBe(true);
+    }
   });
 
-  test("Xcode: looks the app up, then opens it on the folder", () => {
-    expect(run("xcode", { open: "exit 0" })).toEqual({ code: 0, log: ["open -Ra Xcode", `open -a Xcode ${folder}`] });
+  test("the folder check runs for real: a folder passes, a missing one is said", async () => {
+    const exec = async (cmd, args) => (cmd === "/usr/bin/open" ? { code: 0, stdout: "", stderr: "" } : real(cmd, args));
+    expect(await openFolder(exec, "vscode", tmpdir())).toBe(null);
+    expect((await openFolder(exec, "vscode", join(tmpdir(), "shep97-gone"))).body).toBe(`The folder is missing or can't be read: ${join(tmpdir(), "shep97-gone")}`);
   });
 
-  test("Xcode: not installed or not macOS, exit 4 and nothing opened", () => {
-    expect(run("xcode", { open: "exit 1" })).toEqual({ code: 4, log: ["open -Ra Xcode"] });
-    expect(run("xcode", { open: "exit 0", uname: "echo Linux" })).toEqual({ code: 4, log: [] });
-    expect(problem("xcode", { code: 4, stdout: "", stderr: "" }, false)).toEqual({ title: "Couldn't open Xcode", body: "Xcode isn't installed." });
+  test("the default-terminal lookup prints an app's path", () => {
+    const r = real("/usr/bin/osascript", ["-l", "JavaScript", "-e", DEFAULT_TERMINAL]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^\/.+\.app$/);
   });
 
-  test("a removed folder: exit 3, nothing started", () => {
-    for (const app of Object.keys(APPS)) expect(run(app, { code: "exit 0", open: "exit 0" }, join(dir, "gone"))).toEqual({ code: 3, log: [] });
-  });
-
-  test("it's sh, run with the folder as $1", () => {
-    expect(command("iterm", "/a b")).toEqual(["sh", ["-c", APPS.iterm.script, "open-iterm", "/a b"]]);
+  test("open -b with an unknown bundle id says the app isn't installed", async () => {
+    const exec = async (cmd, args) => real(cmd, cmd === "/usr/bin/open" ? ["-b", "com.example.shep97-none", ...args.slice(2)] : args);
+    const p = await openFolder(exec, "xcode", tmpdir());
+    expect(p.body).toStartWith("Xcode isn't installed: macOS has no app with the bundle id com.apple.dt.Xcode.");
   });
 });

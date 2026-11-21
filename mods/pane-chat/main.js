@@ -24,6 +24,8 @@ import { on as addonOn } from "./addons.js";
 // "End Claude Code?" and its buttons: core/menus.js (the web app's header asks in the same words).
 import { endAgent, agentTitle } from "./core/menus.js";
 import { CODE_VIEW, codeOfPane, baseName } from "./code-tabs.js";
+// Open in Terminal, VS Code, Finder and Xcode run the task view's commands (core/open-editor.js).
+import { openFolder, title as openTitle } from "./core/open-editor.js";
 
 const CHAT = "chat";
 const LABEL = "herdr.chat";
@@ -76,22 +78,6 @@ function parked(terminal) {
 
 const OPEN_ACTIONS = [["terminal", "Terminal"], ["vscode", "VS Code"], ["finder", "Finder"], ["xcode", "Xcode"]];
 
-/** NSWorkspace's Unix executable handler is the system's default terminal selection (macOS 12+).
- * Resolve it for every action; never assume Terminal.app or the ssh URL handler. Named apps also use LaunchServices.
- * https://developer.apple.com/documentation/appkit/nsworkspace/urlforapplication(toopen:)-95cvp
- * Only the action key crosses into this fixed script; directory paths remain separate process arguments. */
-const MAC_APPLICATION = `ObjC.import("AppKit");
-ObjC.import("/System/Library/Frameworks/UniformTypeIdentifiers.framework");
-function run(argv) {
-  const workspace = $.NSWorkspace.sharedWorkspace;
-  const ids = {vscode: "com.microsoft.VSCode", finder: "com.apple.finder", xcode: "com.apple.dt.Xcode"};
-  const app = argv[0] === "terminal"
-    ? workspace.URLForApplicationToOpenContentType($.UTType.typeWithIdentifier("public.unix-executable"))
-    : workspace.URLForApplicationWithBundleIdentifier(ids[argv[0]]);
-  if (app.isNil()) throw Error(argv[0] === "terminal" ? "No default terminal application is configured." : "The requested application isn't installed.");
-  return JSON.stringify(ObjC.unwrap(app.path));
-}`;
-
 function openUnavailable(target) {
   const unavailable = copyUnavailable(target, "path");
   if (unavailable) return unavailable;
@@ -101,21 +87,27 @@ function openUnavailable(target) {
   return null;
 }
 
-async function checkedExec(command, args) {
-  const result = await exec(command, args);
-  if (result.code !== 0) throw new Error(result.stderr?.trim() || `${command} failed (exit ${result.code}).`);
-  return result;
+const absolute = (cwd) => typeof cwd === "string" && (/^\//.test(cwd) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd));
+
+/** The folder a chat pane's agent was started in (its herdr.resume label: a task's worktree, an Assistant's
+ *  folder), else its space's folder: for a live agent whose terminal has no cwd right now (SHEP-97). */
+function agentFolder(self, terminal) {
+  let resume = null;
+  try { resume = JSON.parse(terminal.labels?.["herdr.resume"] ?? "null"); } catch {}
+  if (absolute(resume?.cwd)) return resume.cwd;
+  const folder = spaces().find((s) => s.tabs?.some((t) => t.id === self.tab))?.folder;
+  return absolute(folder) ? folder : null;
 }
 
 /** Resolve the clicked header again for each action, including parked Chat agents and remote addresses.
  * A lazy Assistant's configured folder is not a running terminal's cwd. */
 function copyTarget(pane) {
   const self = panes().find((p) => p.pane === pane);
-  const address = self?.mod === CHAT ? agentOf(pane) : self?.mod ? null : self?.terminal;
+  const chat = self?.mod === CHAT;
+  const address = chat ? agentOf(pane) : self?.mod ? null : self?.terminal;
   const terminal = address ? terminals().find((k) => k.address === address && k.state === "live") : null;
-  const cwd = terminal?.foreground?.cwd ?? terminal?.cwd;
-  const absolute = typeof cwd === "string" && (/^\//.test(cwd) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd));
-  return { terminal: terminal?.address || null, path: absolute ? cwd : null };
+  const cwd = [terminal?.foreground?.cwd, terminal?.cwd].find(absolute) ?? (chat && terminal ? agentFolder(self, terminal) : null);
+  return { terminal: terminal?.address || null, path: cwd ?? null };
 }
 
 function copyUnavailable(target, action) {
@@ -201,7 +193,7 @@ export default class Pane extends View {
   openDirectory(pane, action, cx) {
     const target = copyTarget(pane);
     const unavailable = openUnavailable(target);
-    const title = `Couldn't open ${OPEN_ACTIONS.find(([key]) => key === action)[1]}`;
+    const title = openTitle(action);
     if (unavailable) {
       notify({ title, body: unavailable, level: "warning" });
       return;
@@ -210,17 +202,11 @@ export default class Pane extends View {
     this.launching = true;
     const overlay = props()?.overlay;
     cx.spawn(async (cx) => {
-      try {
-        const directory = await exec("/usr/bin/test", ["-d", target.path]);
-        if (directory.code !== 0) throw new Error("The current directory is missing or isn't accessible on this machine.");
-        const result = await checkedExec("/usr/bin/osascript", ["-l", "JavaScript", "-e", MAC_APPLICATION, action]);
-        const application = JSON.parse(result.stdout);
-        if (typeof application !== "string" || !application.startsWith("/")) throw new Error("The application lookup didn't return a local application.");
-        await checkedExec("/usr/bin/open", ["-a", application, "--", target.path]);
-        closeOverlay(overlay);
-      } catch (e) {
-        notify({ title, body: plainError(e), level: "error" });
-      }
+      // A failed step comes back with its command and what it printed, never a bare "failed".
+      const problem = await openFolder(exec, action, target.path, { platform: window()?.platform })
+        .catch((e) => ({ title, body: String(e?.message ?? e) }));
+      if (problem) notify({ ...problem, level: "error" });
+      else closeOverlay(overlay);
       this.launching = false;
       cx.notify();
     });

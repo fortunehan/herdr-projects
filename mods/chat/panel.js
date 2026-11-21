@@ -26,7 +26,7 @@
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces, machines } from "herdr";
+import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces, machines, window } from "herdr";
 import { terminals, agents } from "./live.js";
 import { taskDot, ownProgress, estimated } from "./dot.js";
 import { place, acceptAgain, machineOf, nothingToMerge, RANK } from "./core/tasks.js";
@@ -35,7 +35,7 @@ import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
 import { RETRY_MS, ThreadBinding, threadId as wantId } from "./core/thread-bind.js";
-import { APPS, COPIES, cantOpen, copyOf, folderOf, openCommand, openProblem } from "./core/open-editor.js";
+import { APPS, COPIES, cantOpen, copyOf, folderOf, openFolder, title } from "./core/open-editor.js";
 import { SH } from "./core/paths.js";
 import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
@@ -245,17 +245,16 @@ export class PanelHost {
       props: { ref: r.ref, folder: r.folder, machine: r.machine ?? null, title: r.title, markDone: nothingToMerge(r) } });
   }
 
-  // Open in VS Code, iTerm2 or Finder (core/open-editor.js APPS): the task's folder, on this machine only. Every
-  // failure says why in a toast.
+  // Open in VS Code, iTerm2, Finder or Xcode (core/open-editor.js openFolder(), as a pane header's Open menu): the
+  // task's folder, on this machine only. Every failure says which step failed and why in a toast.
   openIn(app, cx) {
     const r = this.rec, no = cantOpen(r, app);
     if (no) { toast({ ...no, level: "error" }); return; }
     if (this.opening) return;
     this.opening = app;
     cx.spawn(async (cx) => {
-      const [cmd, args] = openCommand(app, folderOf(r));
-      const res = await exec(cmd, args).catch(() => null);
-      const p = openProblem(app, res, r.state === "done");
+      const p = await openFolder(exec, app, folderOf(r), { platform: window()?.platform, done: r.state === "done" })
+        .catch((e) => ({ title: title(app), body: String(e?.message ?? e) }));
       if (p) toast({ ...p, level: "error" });
       this.opening = false;
       cx.notify();
