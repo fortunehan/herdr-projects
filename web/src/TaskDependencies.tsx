@@ -47,7 +47,7 @@ function Pill({ r, children }: { r: TaskRelation; children: ReactNode }) {
 }
 
 /** Its id: a long one (a machine's long name) breaks onto a second line in its pill rather than being cut. */
-const Ref = ({ r }: { r: TaskRelation }) => <span className="min-w-0 font-mono text-[0.6875rem] break-all whitespace-normal text-fg phone:text-[0.75rem]">{r.ref}</span>
+const Ref = ({ r, solo }: { r: TaskRelation; solo?: boolean }) => <span className={clsx(solo ? "min-w-0" : "max-w-[calc(100%-1.25rem)] shrink-0", "font-mono text-[0.6875rem] break-all whitespace-normal text-fg phone:text-[0.75rem]")}>{r.ref}</span>
 
 /** A task's own "↑ after" and "↓ then" under its header (SHEP-103): what it waits for, each with its dot, id, title and %
  *  done; what waits for it, by id. Each opens its task. */
@@ -78,7 +78,7 @@ export function TaskDepsHead({ task }: { task: Task }) {
         <div className="flex min-h-[26px] min-w-0 items-start gap-1.5 whitespace-nowrap text-fg3">
           <span className="flex h-[26px] shrink-0 items-center">↓ then</span>
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 py-0.5">
-            {d.unblocks.map((r, i) => <Pill key={`${r.ref}:${i}`} r={r}><Ref r={r} /></Pill>)}
+            {d.unblocks.map((r, i) => <Pill key={`${r.ref}:${i}`} r={r}><Ref r={r} solo /></Pill>)}
           </span>
         </div>
       ) : null}
