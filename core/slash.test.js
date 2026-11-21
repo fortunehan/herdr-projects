@@ -197,13 +197,14 @@ test("prefix and substring search find the qualified name; sending preserves it"
 test("desktop actual pick and send methods preserve a plugin command", () => {
   const source = readFileSync(new URL("../mods/chat/main.js", import.meta.url), "utf8");
   const method = (name, args) => source.match(new RegExp(`\\n  ${name}\\(${args}\\) \\{\\n[\\s\\S]*?\\n  \\}`))[0].trim();
-  const object = new Function("mentions", "note", `return { ${method("pick", "c, cx")}, ${method("send", "cx, hold = false")} };`)(mentions, () => {});
-  let value = "", sent;
-  const self = { ...object, box: { value: () => value, set_value: (v) => { value = v; }, focus: () => {} },
+  const object = new Function("mentions", "note", `return { ${method("pick", "c, cx")}, ${method("put", "text")}, ${method("send", "cx, hold = false")} };`)(mentions, () => {});
+  let value = "", caret = null, sent;
+  const self = { ...object, box: { value: () => value, set_value: (v) => { value = v; caret = 0; }, set_selected_range: (r) => { caret = r.start; }, focus: () => {} },
     files: [], picked: [], pickedTasks: [], deliver: (msg) => { sent = msg; }, saveSoon: () => {} };
   const cx = { notify: () => {}, timer: { after: () => {} } };
   self.pick({ name: "mattpocock-skills:grill-with-docs" }, cx);
   expect(value).toBe("/mattpocock-skills:grill-with-docs ");
+  expect(caret).toBe(value.length);
   self.send(cx);
   expect(sent.text).toBe("/mattpocock-skills:grill-with-docs");
 });
