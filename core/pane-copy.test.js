@@ -263,10 +263,10 @@ describe("desktop pane Open menu", () => {
 
   // SHEP-97: the Assistant's chat pane in the window, its agent as `hc get` shows a coordinator (parked behind the
   // chat, herdr.chat naming the chat pane, herdr.role=coordinator).
-  function assistant(h, { foreground = { cwd: "/Users/me/Codes/Lab/shepherdr", argv: ["claude"] }, cwd = "/Users/me/Codes/Lab/shepherdr", resume = "/Users/me/Codes/Lab/shepherdr" } = {}) {
+  function assistant(h, { foreground = { cwd: "/h/Codes/Lab/shepherdr", argv: ["claude"] }, cwd = "/h/Codes/Lab/shepherdr", resume = "/h/Codes/Lab/shepherdr" } = {}) {
     const pane = "pe2ed2f65e0bc49f3d4e0c4fd1b757e69";
     h.state.panes.push({ pane, mod: "chat", tab: "tb7a3", focused: true });
-    h.state.spaces = [{ id: "sp20", folder: "/Users/me/Codes/Lab/shepherdr-space", machine: null, tabs: [{ id: "tb7a3" }] }];
+    h.state.spaces = [{ id: "sp20", folder: "/h/Codes/Lab/shepherdr-space", machine: null, tabs: [{ id: "tb7a3" }] }];
     h.state.terminals.push({ address: "t14j", state: "live", status: "working", cwd, foreground,
       labels: { "herdr.chat": pane, "herdr.role": "coordinator", "herdr.agent": "claude", "herdr.coordinator.space": "sp20", "herdr.coordinator.tab": "tb7a3",
         ...(resume ? { "herdr.resume": JSON.stringify({ kind: "claude", session: "s", cwd: resume }) } : {}) } });
@@ -280,17 +280,17 @@ describe("desktop pane Open menu", () => {
       expect(h.find(tree, "pane-open-reason")).toBeNull();
       await h.open(key, tree);
       expect(h.state.notices).toEqual([]); expect(h.state.closed).toEqual(["open-popup"]);
-      expect(h.state.executions[0]).toEqual(["/bin/test", ["-d", "/Users/me/Codes/Lab/shepherdr"]]);
-      expect(h.state.executions.at(-1)[1].slice(-2)).toEqual(["--", "/Users/me/Codes/Lab/shepherdr"]);
+      expect(h.state.executions[0]).toEqual(["/bin/test", ["-d", "/h/Codes/Lab/shepherdr"]]);
+      expect(h.state.executions.at(-1)[1].slice(-2)).toEqual(["--", "/h/Codes/Lab/shepherdr"]);
     }
   });
 
   test("an Assistant whose terminal has no cwd now uses its agent's start folder, then its space's", async () => {
     const h = harness(); const pane = assistant(h, { foreground: null, cwd: null }); await h.open("vscode", h.menu(pane));
-    expect(h.state.executions.at(-1)).toEqual(["/usr/bin/open", ["-b", "com.microsoft.VSCode", "--", "/Users/me/Codes/Lab/shepherdr"]]);
+    expect(h.state.executions.at(-1)).toEqual(["/usr/bin/open", ["-b", "com.microsoft.VSCode", "--", "/h/Codes/Lab/shepherdr"]]);
     const g = harness(); const p2 = assistant(g, { foreground: null, cwd: "", resume: null }); await g.open("vscode", g.menu(p2));
-    expect(g.state.executions.at(-1)[1].at(-1)).toBe("/Users/me/Codes/Lab/shepherdr-space");
-    g.state.props = { pane: p2 }; g.copy("path", p2); expect(g.state.clipboard).toEqual(["/Users/me/Codes/Lab/shepherdr-space"]);
+    expect(g.state.executions.at(-1)[1].at(-1)).toBe("/h/Codes/Lab/shepherdr-space");
+    g.state.props = { pane: p2 }; g.copy("path", p2); expect(g.state.clipboard).toEqual(["/h/Codes/Lab/shepherdr-space"]);
   });
 
   // SHEP-97's cause: herdr's exec rejects a program that isn't on disk (macOS 26 has no /usr/bin/test), as it did
