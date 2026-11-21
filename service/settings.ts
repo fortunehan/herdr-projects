@@ -509,8 +509,10 @@ export class Settings {
       put("agents", "suggestions", word === null || (word === "on") === parent ? null : word === "on");
     } else if (key === "agents.language") {
       // a language from the list (its word), "Follow the person" (""); the same as what this level would inherit unsets it
-      const parent = String(space ? file.everywhere?.agents?.language ?? DEFAULTS.agents.language : DEFAULTS.agents.language);
-      const now = String(this.pick(space, "agents", "language").value ?? "");
+      // what this level inherits, as the row reads it (a machine's value from before included)
+      const p = this.pick(space, "agents", "language");
+      const parent = String((space ? p.parent : DEFAULTS.agents.language) ?? "");
+      const now = String(p.value ?? "");
       const v = word === null ? null : [...languageChoices(parent), ...languageChoices(now)].find(([, w]: any) => w === word)?.[0];
       if (v === undefined) throw new Error("Not one of its choices.");
       put("agents", "language", v === null || v === parent ? null : v);

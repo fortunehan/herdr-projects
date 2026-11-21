@@ -124,12 +124,12 @@ EXPLAIN_RULE = ("never one dense paragraph. Explain it simply too, as to someone
                 "That puts the task in Ready")
 WORKER_MD_BEFORE_LANGUAGE = WORKER_MD_BEFORE_EXPLAIN.replace(EXPLAIN_OLD, EXPLAIN_RULE)
 # Since agents write to the person in the Settings block's Language, code and commits in English (SHEP-101).
-LANGUAGE_RULE = ("- Language, as the Settings block's Language line says (SHEP-101): write everything the person reads in it: yo"
-                 'ur chat, status lines, questions and their cards, the ready summary, `--explain`, `--check` and `--details`, y'
-                 'our proof and every artifact. When it follows the person, the last message the person typed to you decides (ne'
-                 "ws, hooks, tool output and notifications never do); until they write, the language it names, else the brief's."
-                 ' Code, comments, identifiers, commit messages, branch names, pull request titles and `--agents-md` lines stay '
-                 'in English.\n')
+LANGUAGE_RULE = ("- Language, as the Settings block's Language line says (SHEP-101): write everything the person reads in it: "
+                 'your chat, status lines, questions and their cards, the ready summary, `--explain`, `--check` and '
+                 '`--details`, your proof and every artifact (a proof\'s title still ends in " · Proof"). When it follows the '
+                 'person, the last message the person typed to you decides (news, hooks, tool output and notifications never '
+                 "do); until they write, the language it names, else the brief's. Code, comments, identifiers, commit "
+                 'messages, branch names, pull request titles and `--agents-md` lines stay in English.\n')
 LANGUAGE_AT = "- Commit as you go,"
 LANGUAGE_EXPLAIN = ("in the language the person writes in: `--explain", "in the Settings block's language: `--explain")
 WORKER_MD = WORKER_MD_BEFORE_LANGUAGE.replace(LANGUAGE_AT, LANGUAGE_RULE + LANGUAGE_AT, 1).replace(*LANGUAGE_EXPLAIN)
@@ -156,9 +156,10 @@ REVIEWER_SANDBOX = ("- A check that can't run in a read-only sandbox (Codex's): 
                     "in my sandbox:\", and your worker runs them and checks the output.\n")
 REVIEWER_MD_BEFORE_LANGUAGE = REVIEWER_MD_BEFORE_SANDBOX + REVIEWER_SANDBOX
 # Since findings are in the Settings block's Language (SHEP-101).
-REVIEWER_LANGUAGE = ("- Language: write your findings in the brief's Settings block Language (the language it names; when it follows"
-                     " the person, the language of the person's last typed message, else the brief's). Code, file names, identifiers"
-                     ' and quoted output stay as they are; any fix you suggest for code, comments or commits is in English.\n')
+REVIEWER_LANGUAGE = ("- Language: write your findings in the brief's Settings block Language (the language it names; when it "
+                     "follows the person, the language of the person's last typed message, else the brief's). Code, file "
+                     'names, identifiers and quoted output stay as they are; any fix you suggest for code, comments or commits'
+                     ' is in English.\n')
 REVIEWER_MD = REVIEWER_MD_BEFORE_LANGUAGE + REVIEWER_LANGUAGE
 
 

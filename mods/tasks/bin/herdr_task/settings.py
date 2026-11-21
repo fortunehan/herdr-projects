@@ -61,7 +61,9 @@ DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "
 LEVELS = ["blocker", "major", "minor"]
 
 # SHEP-101: Settings › Agents › Output language (agents.language): "" follows the person, else the language every agent
-# writes to the person in. A task's own (--set language=…) is the person's language the Assistant recorded for it.
+# writes to the person in. Per task: --set person_language=… is the language the person asked in (the Assistant records
+# it on each add while the setting follows the person); --set language=… is that task's own language, the person's
+# explicit wish ("follow": it follows the person even under a fixed setting).
 LANGUAGE_CODES = {"en": "English", "english": "English", "zh": "Chinese", "zh-cn": "Chinese", "zh-hans": "Chinese",
                   "cn": "Chinese", "chinese": "Chinese", "中文": "Chinese", "简体中文": "Chinese", "汉语": "Chinese",
                   "zh-tw": "Traditional Chinese", "zh-hk": "Traditional Chinese", "zh-hant": "Traditional Chinese",
@@ -388,7 +390,9 @@ SET_KEYS = {"review": "review", "brief.review": "review", "merge": "merge", "bri
             "reviewer_effort": "reviewer_effort", "reviewer-effort": "reviewer_effort",
             "proof": "proof", "brief.proof": "proof",
             "language": "language", "lang": "language", "agents.language": "language", "output.language": "language",
-            "output_language": "language", "output-language": "language"}
+            "output_language": "language", "output-language": "language",
+            "person_language": "person_language", "person-language": "person_language", "person.language": "person_language",
+            "person": "person_language", "asked_in": "person_language", "asked-in": "person_language"}
 # The Proof line (as Shepherdr's skill asks of its task agents), on and off.
 PROOF_WORDS = {"on": "show verifiable proof in one recipe artifact: each proof with a one-line caption, real and from this work now, "
                      "plus a \"Not proven\" list; then say ready with --proof <its id>",
@@ -406,7 +410,7 @@ def set_task(t, key, value):
     """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'."""
     field = SET_KEYS.get(key.strip().lower())
     if not field:
-        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, language, agent, launcher, model, effort or reviewer settings, not {key!r}.")
+        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, language, person_language, agent, launcher, model, effort or reviewer settings, not {key!r}.")
     v = value.strip().strip("\"'").strip()
     sets = t.setdefault("set", {})
     if not v or v.lower() == "default":
@@ -438,14 +442,12 @@ def set_task(t, key, value):
         if low not in MERGE_VALUES:
             raise Fail('merge is "on its own", "after checks" or "ask me first".')
         sets[field] = MERGE_VALUES[low]
-    elif field == "language":
+    elif field in ("language", "person_language"):
         name = language_name(v)
-        if name is None:
-            raise Fail("language is a language's name or code (Chinese, zh, English, en, 日本語...), or default.")
-        if not name:
-            sets.pop(field, None)
-        else:
-            sets[field] = name
+        if name is None or (field == "person_language" and not name):
+            raise Fail(f"{field} is a language's name or code (Chinese, zh, English, en, 日本語...)"
+                       + (", follow" if field == "language" else "") + ", or default.")
+        sets[field] = name or "follow"
     else:
         # Agents, models and efforts are the task's own fields (worker_pick reads them).
         if field in ("effort", "reviewer_effort") and low not in EFFORTS:
@@ -690,7 +692,7 @@ def task_settings(s, t, space=None, argv=None, live=False):
     proof = sets["proof"] == "on" if "proof" in sets else k.get("proof") is not False
     add("Proof", PROOF_WORDS["on" if proof else "off"], proof,
         "task" if "proof" in sets else by_layer(s, space, "tasks", "proof", proof, True))
-    text, value, by = language_line(s, sets.get("language"), space)
+    text, value, by = language_line(s, sets.get("language"), sets.get("person_language"), space)
     add("Language", text, value, by)
     model, effort = argv_model(argv)
     text = agent + (f", model {model}" if model else "") + (f", effort {effort}" if effort else "")
@@ -708,16 +710,17 @@ FOLLOW_NONE = ("the person's: write to them in the language of the last message 
                "they write (follows the person)")
 
 
-def language_line(s, own, space=None):
-    """The Settings block's Language line (SHEP-101) as (text, value, by): Settings' fixed language, else the person's
-    the Assistant recorded on the task (--set language), else the person's next message decides. A recorded one
-    that differs from a fixed setting is the task's own."""
+def language_line(s, own, person=None, space=None):
+    """The Settings block's Language line (SHEP-101) as (text, value, by): the task's own language (--set language),
+    else Settings' fixed one, else it follows the person: the language they asked in, as the Assistant recorded it
+    (--set person_language), else the one of their next message. own "follow" follows even under a fixed setting."""
     fixed = output_language(s, space)
-    if fixed and (not own or own == fixed):
+    if own and own != "follow":
+        return own, own, "task" if own != fixed else by_layer(s, space, "agents", "language", fixed, "")
+    if fixed and own != "follow":
         return fixed, fixed, by_layer(s, space, "agents", "language", fixed, "")
-    if own:
-        return (f"{own} (follows the person)", own, None) if not fixed else (own, own, "task")
-    return FOLLOW_NONE, "", None
+    by = "task" if own == "follow" and fixed else None
+    return (f"{person} (follows the person)", person, by) if person else (FOLLOW_NONE, "", by)
 
 
 def settings_block(s, t, space=None, argv=None, live=False):

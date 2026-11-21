@@ -8006,35 +8006,53 @@ class OutputLanguage(unittest.TestCase):
         self.assertEqual(t, {"set": {"language": "Chinese"}})
         set_task(t, "output.language", "English")
         self.assertEqual(t["set"]["language"], "English")
+        set_task(t, "language", "follow")
+        self.assertEqual(t["set"]["language"], "follow")
         set_task(t, "language", "")
         self.assertEqual(t, {})
         with self.assertRaises(self.commands.Fail):
             set_task(t, "language", "<script>")
-        set_opts(t, SimpleNamespace(set=["lang=日本語"]))
-        self.assertEqual(t["set"]["language"], "Japanese")
+        set_opts(t, SimpleNamespace(set=["lang=日本語", "person_language=中文"]))
+        self.assertEqual(t["set"], {"language": "Japanese", "person_language": "Chinese"})
         set_task(t, "language", "default")
+        set_task(t, "person", "")
         self.assertEqual(t, {})
+        with self.assertRaises(self.commands.Fail):
+            set_task(t, "person_language", "follow")  # the language they asked in, never "follow"
 
     def test_the_settings_block_line_follows_the_person_by_default(self):
         settings = self.settings({})
         self.assertEqual(self.line(settings), "- Language: " + settings.FOLLOW_NONE)
-        # the Assistant recorded the person's language on add (--set language=zh)
-        settings.set_task(self.task, "language", "zh")
+        # the Assistant recorded the person's language on add (--set person_language=zh)
+        settings.set_task(self.task, "person_language", "zh")
         self.assertEqual(self.line(settings), "- Language: Chinese (follows the person)")
         block = settings.settings_block(self.store, self.task).split("\n")
         self.assertLess(block.index("- Language: Chinese (follows the person)"),
                         next(i for i, x in enumerate(block) if x.startswith("- Agent: ")))
         self.assertEqual([x["value"] for x in settings.task_settings(self.store, self.task) if x["label"] == "Language"], ["Chinese"])
 
+    def test_a_tasks_own_language_under_follow_the_person(self):
+        """Review round 1: an explicit language for one task stays that task's own, not "follows the person"."""
+        settings = self.settings({})
+        settings.set_task(self.task, "person_language", "zh")
+        settings.set_task(self.task, "language", "ja")
+        self.assertEqual(self.line(settings), "- Language: Japanese (set by the assistant for this task)")
+
     def test_a_fixed_language_in_each_layer(self):
         settings = self.settings({"everywhere": {"agents": {"language": "English"}}})
         self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
-        # a recorded language that differs from a fixed one is the task's own; the same one is the setting's
-        settings.set_task(self.task, "language", "zh")
-        self.assertEqual(self.line(settings), "- Language: Chinese (set by the assistant for this task)")
+        # the person's recorded language doesn't beat a fixed one
+        settings.set_task(self.task, "person_language", "zh")
+        self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
+        # the task's own wins; the same as the setting is the setting's; "follow" follows the person anyway
+        settings.set_task(self.task, "language", "ja")
+        self.assertEqual(self.line(settings), "- Language: Japanese (set by the assistant for this task)")
         settings.set_task(self.task, "language", "en")
         self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
+        settings.set_task(self.task, "language", "follow")
+        self.assertEqual(self.line(settings), "- Language: Chinese (follows the person) (set by the assistant for this task)")
         settings.set_task(self.task, "language", "")
+        settings.set_task(self.task, "person_language", "")
         # this space's (folder's) own wins over Everywhere's; its "" follows the person again
         self.task["space"] = "sp1"
         settings = self.settings({"everywhere": {"agents": {"language": "English"}},
@@ -8086,10 +8104,13 @@ class OutputLanguage(unittest.TestCase):
         self.assertEqual(templates.instructions.__module__, "herdr_task.templates")
         self.assertIn(templates.REVIEWER_MD.strip(), reviewer)
         self.assertIn("Language: write your findings in the brief's Settings block Language", templates.REVIEWER_MD)
-        self.assertIn("--set language=<that language>", assistant)
+        self.assertIn("--set person_language=<that language>", assistant)
+        self.assertIn("`herdr-task auto add`, so each run's task keeps it", assistant)
+        self.assertIn("Task titles stay English", assistant)
+        self.assertIn('every artifact (a proof\'s title still ends in " · Proof")', worker)
         self.assertIn("automated turns (news,", assistant)
         self.assertIn("reply in the language of the last message the person typed", assistant)
-        self.assertIn("`language=<name or code>`", assistant)
+        self.assertIn("`person_language=<name or code>`", assistant)
         self.assertIn(templates.WORKER_MD_BEFORE_LANGUAGE, templates.OLD_WORKERS)
 
     def test_an_unedited_old_template_gets_todays(self):
@@ -8117,9 +8138,9 @@ class AssistantOutputLanguage(unittest.TestCase):
         self.write({"everywhere": {"agents": {"language": "zh"}}})
         self.assertEqual(self.line(self.aset.session_note("t5"), "Output language"),
                          "- Output language: Chinese (write to the person in Chinese, whatever they write in; every brief says it, "
-                         "so add no --set language); your setting everywhere")
+                         "so add no --set person_language); your setting everywhere")
         self.write({"everywhere": {"agents": {"language": "Chinese"}}, "spaces": {"sp1": {"agents": {"language": ""}}}})
-        self.assertTrue(self.line(self.aset.session_note("t5"), "Output language").endswith("--set language=<it>)"))
+        self.assertTrue(self.line(self.aset.session_note("t5"), "Output language").endswith("--set person_language=<it>)"))
         rows = {r["key"]: r for r in self.aset.rows("sp1")}
         self.assertEqual((rows["language"]["value"], rows["language"]["scope"]), ("follow", "space"))
         notice = self.aset.notice([{**rows["language"], "text": "Japanese", "value": "Japanese", "by": "everywhere"}])

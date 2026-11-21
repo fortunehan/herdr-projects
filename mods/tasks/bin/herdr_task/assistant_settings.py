@@ -31,7 +31,7 @@ MERGE_SHORT = {"ask": "ask the person first (they accept it in the Tasks panel, 
 BY = {"space": "set for this space", "machine": "this machine's setting", "everywhere": "your setting everywhere"}
 NOTICE_END = "Nothing to answer: reply only <hc no-reply/>."
 LANGUAGE_FOLLOWS = ("follow the person (reply in the language of the last message the person typed, never of news, hooks or "
-                    "notifications; give each task you add that language with --set language=<it>)")
+                    "notifications; give each task and automation you add that language with --set person_language=<it>)")
 
 
 def space_of(k):
@@ -138,7 +138,7 @@ def rows(space, d=None, auto=None):
              if offering else "off (never offer feedback for Shepherdr; file nothing)", "on" if offering else "off",
              [("agents", "feedback"), ("agents", "feedback_repo")]),
             ("language", "Output language",
-             f"{language} (write to the person in {language}, whatever they write in; every brief says it, so add no --set language)"
+             f"{language} (write to the person in {language}, whatever they write in; every brief says it, so add no --set person_language)"
              if language else LANGUAGE_FOLLOWS, language or "follow", [("agents", "language")]),
         ]
     have = lines(resolve(ls), (on, every, direction))

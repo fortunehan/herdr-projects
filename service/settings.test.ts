@@ -357,4 +357,13 @@ test("Output language: follows the person by default, Everywhere's or a space's 
   expect(r.options).toContain("Thai");
   t.set("agents.language", "Thai", "all");
   expect(JSON.parse(readFileSync(file, "utf8")).everywhere.agents).toEqual({ language: "Thai" });
+  // review round 1: a space under a machine's value from before can still pick Follow the person
+  writeFileSync(file, JSON.stringify({ machines: { local: { agents: { language: "Japanese" } } }, spaces: { sp7: { folder: "/shop" } } }));
+  const m = new Settings();
+  m.start();
+  const mrow = () => m.sections(null, [sp]).find((x) => x.name === "Agents" && x.level === "sp7")!.rows.find((x) => x.key === "agents.language")!;
+  expect(mrow().value).toBe("Japanese");
+  m.set("agents.language", "Follow the person", "sp7", sp);
+  expect(JSON.parse(readFileSync(file, "utf8")).spaces.sp7.agents).toEqual({ language: "" });
+  expect(mrow().value).toBe("Follow the person");
 });
