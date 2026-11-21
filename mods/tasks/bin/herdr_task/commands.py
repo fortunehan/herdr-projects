@@ -728,7 +728,8 @@ def back_to_work(s, t, why, said=WORKING_AGAIN, auto=False):
     if t["state"] != "ready":
         return False
     t["state"] = "running"
-    for k in ("ready_turns", "merge_requested", "accepting", "pr_requested"):
+    # SHEP-96: the commit the person accepted goes too: a pull request reported late needs their next Accept.
+    for k in ("ready_turns", "merge_requested", "accepting", "pr_requested", "pr_accepted_head", "pr_request_failed"):
         t.pop(k, None)
     t["back"] = {"at": now(), "why": why, **({"auto": True, "progress": t.get("progress")} if auto else {})}
     # by: Herdr's words, not its agent's (on_it() counts only an agent's own line).

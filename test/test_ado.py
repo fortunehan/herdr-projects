@@ -1447,6 +1447,17 @@ class OpenedOnAccept(Base):
         self.record(ado.pr_url(REPO, 41))
         self.assertTrue(self.task["merge_wait"])
 
+    def test_after_send_back_a_late_pull_request_needs_a_new_accept(self):
+        self.ready()
+        self.accept()
+        self.cant("Couldn't read the pull request")
+        commands.cmd_send_back(argparse.Namespace(id="SHEP-1", json=False, folder=None, note="Rename the button", on=None))
+        f = self.azure(self.opened())
+        with self.assertRaises(commands.Fail) as e:
+            self.record(ado.pr_url(REPO, 41))
+        self.assertIn("wasn't accepted yet", str(e.exception))
+        self.assertEqual(f.sent("PATCH", r".*"), [])
+
     def test_after_a_failed_request_a_new_accept_asks_again(self):
         self.ready()
         self.accept()
