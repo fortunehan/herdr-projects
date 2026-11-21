@@ -136,7 +136,9 @@ function linkCode(span, inner, opts) {
 function linkAuthored(m, opts) {
   const [whole, img, words, target] = m;
   if (img) return whole;
-  const p = /^(\/(?!\/)|~\/|file:\/\/)/i.test(target) ? pathOf(target.replace(LINE, ""), (LINE.exec(target) ?? [""])[0]) : null;
+  let t = target;
+  if (!/^file:/i.test(t)) try { t = decodeURIComponent(t); } catch {}
+  const p = /^(\/(?!\/)|~\/|file:\/\/)/i.test(t) ? pathOf(t.replace(LINE, ""), (LINE.exec(t) ?? [""])[0]) : null;
   if (!p) return whole;
   const href = hrefOf({ kind: "path", path: p.path }, opts);
   return href ? `[${words}](${href})` : words;
@@ -171,12 +173,13 @@ export function linkify(md, opts = {}) {
     if (fence && depth(line) < fence.depth) fence = null;
     if (fence) {
       out.push(line);
-      if (f && depth(line) === fence.depth && f[1][0] === fence.mark[0] && f[1].length >= fence.mark.length && !line.slice(f.index + f[0].length).trim()) fence = null;
+      const c = /^[\s>]*(`{3,}|~{3,})\s*$/.exec(line);
+      if (c && depth(line) === fence.depth && c[1][0] === fence.mark[0] && c[1].length >= fence.mark.length) fence = null;
     } else if (f) {
       flush();
       fence = { mark: f[1], depth: depth(line) };
       out.push(line);
-    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^\s+\S/.test(line))) {
+    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^[\s>]*\s\S/.test(line))) {
       flush();
       ref = /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       out.push(line);
@@ -203,6 +206,7 @@ export function linkify(md, opts = {}) {
 export function fromHref(href, home) {
   const h = String(href ?? "");
   if (/^https?:\/\/[^/?#\s]+/i.test(h)) return { kind: "url", url: h };
+  if (/^\/\/[^/?#\s]+/.test(h)) return { kind: "url", url: `https:${h}` };
   let p = null;
   if (/^file:\/\//i.test(h)) {
     p = h.replace(/^file:\/\/(localhost)?/i, "").replace(/[?#].*$/, "");

@@ -109,6 +109,13 @@ describe("finding links in a reply", () => {
     expect(md("`/tmp/preview-\ud83d`")).toBe("`/tmp/preview-\ud83d`");
   });
 
+  test("round 4: a list marker never closes a fence; quoted references; %20 in a path link; //host clicks", () => {
+    expect(md("```\n- ```\n/tmp/a/b.txt\n```")).toBe("```\n- ```\n/tmp/a/b.txt\n```");
+    expect(md("> [docs]:\n>   https://example.org/guide")).toBe("> [docs]:\n>   https://example.org/guide");
+    expect(md("[Report](/tmp/My%20Report.html)")).toBe("[Report](file:///tmp/My%20Report.html)");
+    expect(L.fromHref("//example.org/guide", HOME)).toEqual({ kind: "url", url: "https://example.org/guide" });
+  });
+
   test("a fence in a quoted list is code too", () => {
     expect(md("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```")).toBe("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```");
   });
