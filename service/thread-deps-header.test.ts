@@ -32,7 +32,7 @@ beforeEach(() => { shared.clear(); ran.length = 0; });
 const doc = { prefix: "PRJ", folder: "/repo", tasks: [{ id: 12, state: "running", title: "Build" }, { id: 13, state: "queued", title: "Ship", after: [12] }] };
 const host = (machine: string | null) => {
   const h: any = new PanelHost(class {}, true);
-  h.rec = { id: 13, slug: "project", folder: "/repo", machine, deps: { after: [], then: [] } };
+  h.rec = { id: 13, ref: "PRJ-13", state: "queued", slug: "project", folder: "/repo", machine, deps: { after: [], then: [] } };
   h.listDoc = doc;
   return h;
 };
@@ -47,11 +47,32 @@ test("a link to a task of this list opens its worker on the list's own machine",
   expect(shared.get("tasks.thread")).toMatchObject({ terminal: "vm-c/t8" });
 });
 
-test("the Tasks panel's relations win when they are about this task; else its own list's", () => {
+test("its own list says which hold; the Tasks panel's relations add links and other lists' dependents", () => {
   const h = host(null);
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
-  shared.set("tasks.deps", { ":/repo#13": { after: [{ ref: "WEB-1", external: true, open: { terminal: "t5" } }], then: [] } });
-  expect(h.depsOf(h.rec).after[0].ref).toBe("WEB-1");
+  // the list still has it waiting for WEB-1: the panel's entry adds how to open it
+  h.rec.deps = { after: [{ ref: "WEB-1", state: "running", section: "working", external: true }], then: [{ id: 14, ref: "PRJ-14", title: "Docs" }] };
+  shared.set("tasks.deps", { ":/repo#13": {
+    after: [{ ref: "WEB-1", external: true, where: "web", open: { terminal: "t5" } }],
+    then: [{ ref: "PRJ-14", open: { terminal: null } }, { ref: "APP-3", open: { terminal: "t9" } }],
+  } });
+  const d = h.depsOf(h.rec);
+  expect(d.after).toEqual([{ ref: "WEB-1", state: "running", section: "working", external: true, where: "web", open: { terminal: "t5" } }]);
+  expect(d.then.map((x: any) => x.ref)).toEqual(["PRJ-14", "APP-3"]);
+  // another task's entry is no help
   shared.set("tasks.deps", { ":/repo#99": { after: [{ ref: "X-1" }], then: [] } });
+  expect(h.depsOf(h.rec).after.map((x: any) => x.open)).toEqual([undefined]);
+});
+
+test("an older entry never brings back a prerequisite the list says is done, nor a dependent that started", () => {
+  const h = host(null);
+  // the list read now: PRJ-12 done, PRJ-14 started; the panel's entry is from before
+  h.rec.deps = { after: [], then: [] };
+  shared.set("tasks.deps", { ":/repo#13": {
+    after: [{ ref: "PRJ-12", section: "working", pct: 40, open: { terminal: "t1" } }],
+    then: [{ ref: "PRJ-14", open: null }, { ref: "vm-b:APP-3", open: null }],
+  } });
+  expect(h.depsOf(h.rec)).toEqual({ after: [], then: [{ ref: "vm-b:APP-3", open: null }] });
+  h.rec.state = "done";
   expect(h.depsOf(h.rec)).toEqual({ after: [], then: [] });
 });

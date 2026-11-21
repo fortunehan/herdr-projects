@@ -509,20 +509,31 @@ export class PanelHost {
     cx.timer.after(0, () => { try { run("layout.resize", { id: HEAD, px }); } catch {} });
   }
 
-  // Its "↑ after" and "↓ then": what the Tasks panel worked out from every list it reads (shared "tasks.deps",
-  // mods/tasks publishDeps: another folder's and machine's too, each one that is read here can be opened), else
-  // what its own list says (core ownRelations: this list's tasks only).
+  // Its "↑ after" and "↓ then". Its own list, read again every few seconds (core ownRelations), says which hold now;
+  // what the Tasks panel worked out from every list it reads (shared "tasks.deps", mods/tasks publishDeps) adds how
+  // each one is opened and another folder's or machine's task waiting for it. That may be older than the list: it never
+  // brings back one the list says is done or gone, nor this list's tasks the list no longer has waiting.
   depsOf(rec) {
     if (!rec) return null;
+    const own = rec.deps ?? { after: [], then: [] };
     const all = shared("tasks.deps")?.[`${rec.machine ?? ""}:${rec.folder}#${rec.id}`];
-    if (all) return { after: all.after ?? [], then: all.then ?? [] };
-    return rec.deps ?? null;
+    if (!all) return own;
+    const mine = (ref) => !String(ref).includes(":") && String(ref).startsWith(`${String(rec.ref).replace(/-\d+$/, "")}-`);
+    const richer = new Map((all.after ?? []).map((d) => [d.ref, d]));
+    const after = own.after.map((d) => ({ ...d, ...(richer.get(d.ref) ?? {}) }));
+    const ownThen = new Set(own.then.map((d) => d.ref));
+    const then = rec.state === "done" ? [] : [
+      ...own.then.map((d) => ({ ...d, ...((all.then ?? []).find((x) => x.ref === d.ref) ?? {}) })),
+      ...(all.then ?? []).filter((d) => !mine(d.ref) && !ownThen.has(d.ref)),
+    ];
+    return { after, then };
   }
 
   // B of SHEP-100's mock-up (SHEP-103): what the task waits for, "↑ after" with each one's dot, id, title and % done,
   // and what waits for it, "↓ then" with their ids; another folder's or machine's says its status. This list's open.
   depsBlock(t, deps) {
-    const pill = (id, kids, go) => h_flex().id(id).h(22).px(7).gap(5).min_w(0).flex_shrink_1().items_center().overflow_hidden()
+    // whole pills in a line that scrolls sideways: every id and status stays readable, a title is cut at 220
+    const pill = (id, kids, go) => h_flex().id(id).h(22).px(7).gap(5).flex_none().items_center()
       .rounded(RADIUS.control).bg(t.selected)
       .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); go(); cx.notify(); }))
       .children(kids);
@@ -535,11 +546,11 @@ export class PanelHost {
       .when(deps.after.length > 0, (el) => el.child(line("after", "↑ after", deps.after.map((d, i) => pill(`thread-after-${i}`, [
         taskDot(d.section, { pct: d.pct, size: 12 }), ref(d),
         ...(d.where ? [div().flex_none().text_color(t.dim).child(`· ${d.where}`)] : []),
-        ...(d.title ? [div().min_w(0).truncate().text_color(t.muted).child(d.title)] : []),
+        ...(d.title ? [div().max_w(220).truncate().text_color(t.muted).child(d.title)] : []),
         ...(d.section === "working" && Number.isFinite(d.pct) ? [div().flex_none().text_color(amber()).child(`${Math.round(d.pct)}%`)]
           : d.external ? [div().flex_none().text_color(t.dim).child(`· ${relationState(d)}`)] : []),
       ], go(d))))))
-      .when(deps.then.length > 0, (el) => el.child(line("then", "↓ then", deps.then.map((d, i) => pill(`thread-then-${i}`, [ref(d)], go(d)).flex_none()))));
+      .when(deps.then.length > 0, (el) => el.child(line("then", "↓ then", deps.then.map((d, i) => pill(`thread-then-${i}`, [ref(d)], go(d))))));
   }
 
   // Opens a task in the header's place, as a click on its Tasks row does (mods/tasks openThread).

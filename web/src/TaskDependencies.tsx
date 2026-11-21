@@ -36,39 +36,50 @@ export function RelationLine({ kind, items, shown }: { kind: 'after' | 'then'; i
   )
 }
 
+const PILL = 'flex min-h-[22px] max-w-full min-w-0 items-center gap-x-1.5 overflow-hidden rounded-md bg-bubble px-[7px] text-fg'
+
+/** One prerequisite or dependent in a task's header: a button when its task can be opened. At module scope, so a
+ *  snapshot that changes nothing keeps its button (and the keyboard's focus on it). */
+function Pill({ r, children }: { r: TaskRelation; children: ReactNode }) {
+  return r.task
+    ? <button type="button" onClick={open(r)} className={clsx(PILL, 'text-left hover:bg-sel keys:focus-visible:outline-2 keys:focus-visible:outline-focus')}><span className="sr-only">Open </span>{children}</button>
+    : <span className={PILL}>{children}</span>
+}
+
+/** Its id: a long one (a machine's long name) breaks onto a second line in its pill rather than being cut. */
+const Ref = ({ r }: { r: TaskRelation }) => <span className="min-w-0 font-mono text-[0.6875rem] break-all whitespace-normal text-fg phone:text-[0.75rem]">{r.ref}</span>
+
 /** A task's own "↑ after" and "↓ then" under its header (SHEP-103): what it waits for, each with its dot, id, title and %
  *  done; what waits for it, by id. Each opens its task. */
 export function TaskDepsHead({ task }: { task: Task }) {
   const d = task.dependencies
   if (!d || (!d.waitsFor.length && !d.unblocks.length)) return null
-  const pill = 'flex h-[22px] min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md bg-bubble px-[7px] text-fg'
-  const Pill = ({ r, children, grow }: { r: TaskRelation; children: ReactNode; grow?: boolean }) => r.task
-    ? <button type="button" onClick={open(r)} className={clsx(pill, grow ? 'shrink' : 'shrink-0', 'hover:bg-sel keys:focus-visible:outline-2 keys:focus-visible:outline-focus')}><span className="sr-only">Open </span>{children}</button>
-    : <span className={clsx(pill, grow ? 'shrink' : 'shrink-0')}>{children}</span>
-  const id = (r: TaskRelation) => <span className="shrink-0 font-mono text-[0.6875rem] text-fg phone:text-[0.75rem]">{r.ref}</span>
   return (
     <div data-task-deps className="flex shrink-0 flex-col border-b border-line px-4 py-2 text-[0.75rem] phone:px-5 phone:text-[0.8125rem]">
       {d.waitsFor.length ? (
-        // its pills wrap, each at most the line's width (its title gives way), so every id and status stays readable
+        // its pills wrap, each at most the line's width: its title gives way, its id and status stay whole
         <div className="flex min-h-[26px] min-w-0 items-start gap-1.5 whitespace-nowrap text-fg2">
           <span className="flex h-[26px] shrink-0 items-center text-fg3">↑ after</span>
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 py-0.5">
-          {d.waitsFor.map((r, i) => (
-            <Pill key={`${r.ref}:${i}`} r={r} grow>
-              <Dot s={r.status ?? 'todo'} p={r.status === 'work' ? r.pct : undefined} className="size-3" />
-              {id(r)}{r.where ? <span className="shrink-0 text-fg3">· {r.where}</span> : null}
-              {r.title ? <span className="min-w-0 truncate text-fg2">{r.title}</span> : null}
-              {r.status === 'work' && r.pct !== undefined ? <span className="shrink-0 text-work-fg">{Math.round(r.pct)}%</span>
-                : r.external ? <span className="shrink-0 text-fg3">· {r.word ?? r.state}</span> : null}
-            </Pill>
-          ))}
+            {d.waitsFor.map((r, i) => (
+              <Pill key={`${r.ref}:${i}`} r={r}>
+                <Dot s={r.status ?? 'todo'} p={r.status === 'work' ? r.pct : undefined} className="size-3 shrink-0" />
+                <Ref r={r} />
+                {r.where ? <span className="shrink-0 text-fg3">· {r.where}</span> : null}
+                {r.title ? <span className="min-w-0 truncate text-fg2">{r.title}</span> : null}
+                {r.status === 'work' && r.pct !== undefined ? <span className="shrink-0 text-work-fg">{Math.round(r.pct)}%</span>
+                  : r.external ? <span className="shrink-0 text-fg3">· {r.word ?? r.state}</span> : null}
+              </Pill>
+            ))}
           </span>
         </div>
       ) : null}
       {d.unblocks.length ? (
-        <div className="flex min-h-[26px] min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 whitespace-nowrap text-fg3">
-          <span className="shrink-0">↓ then</span>
-          {d.unblocks.map((r, i) => <Pill key={`${r.ref}:${i}`} r={r}>{id(r)}</Pill>)}
+        <div className="flex min-h-[26px] min-w-0 items-start gap-1.5 whitespace-nowrap text-fg3">
+          <span className="flex h-[26px] shrink-0 items-center">↓ then</span>
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 py-0.5">
+            {d.unblocks.map((r, i) => <Pill key={`${r.ref}:${i}`} r={r}><Ref r={r} /></Pill>)}
+          </span>
         </div>
       ) : null}
     </div>
