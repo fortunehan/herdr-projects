@@ -51,6 +51,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   the command guard: pass a trimmed record or a file.
 - herdr-task as a real subprocess in tests (fake hc and `HERDR_TASK_GH` on PATH): boot it with `-c` and set
   `base.not_real = lambda: None`, as `SlowCallsOutsideTheLock` does.
+- In test_ado.py install the fake ADO transport in setUp, before any accept/own_open_pr call: a test that runs
+  cmd_accept before `self.fake(...)` sends a real request to dev.azure.com.
 - herdr-task against a slow fake Azure DevOps in real processes: a `PYTHONPATH` dir with `sitecustomize.py` that imports
   `herdr_task.ado` (BIN on `sys.path`) and replaces `ado._request`, a scratch `HERDR_TASK_STORE` and `HERDR_TASK_ADO`, a fake
   hc on PATH and the real HOME; the `--worker` child inherits it.
