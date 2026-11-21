@@ -770,10 +770,13 @@ def finalize(s, t):
     waits = bool(t.get("merge_wait") and (agent_pr or (repo and ado.owns(repo))))
     # SHEP-96: accepted already, its pull request asked of its agent and not recorded yet (it said ready again, after a
     # question, say): the request stands, never a second Accept.
-    asked = bool(later and t.get("pr_requested") and not t.get("attention"))
+    asked = bool(later and t.get("pr_requested") and not t.get("pr_request_failed"))
     for k in ("attention", "merge_requested", "review", "merge_wait", "accepting", "pr_requested", "stuck_head"):
         if not (k == "merge_wait" and waits) and not (k == "pr_requested" and asked):
             t.pop(k, None)
+    if not asked:
+        # a failed request ends with this ready: the person's next Accept asks again
+        t.pop("pr_request_failed", None)
     (t.get("pr") or {}).pop("wait", None)
     s.dirty = True
     msg = f"{s.ref(t)} is ready."

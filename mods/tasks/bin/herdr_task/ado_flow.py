@@ -246,10 +246,12 @@ def request_pr(s, t, args, by_settings=False):
         raise Fail(t["attention"])
     t["pr_requested"] = t["handed_at"] = now()
     t["pr_accepted_head"] = said or tip
+    t.pop("pr_request_failed", None)
     s.dirty = True
     try:
         return tell(s, t, open_msg(s, t, by_settings, t["pr_accepted_head"]), args)
     except Fail as e:
+        t["pr_request_failed"] = True
         t["attention"], t["attention_at"] = f"{OPEN_FAILED}: couldn't reach its agent: {e}", now()
         raise Fail(t["attention"])
 
@@ -257,7 +259,7 @@ def request_pr(s, t, args, by_settings=False):
 def opened(s, t, v):
     """Its agent recorded its pull request (v: as read): Waiting to merge (auto-complete on, the skill's, else turned
     on now), Done when it merged already, else why not (Needs you)."""
-    for k in ("pr_requested", "pr_on_accept", "pr_accepted_head"):
+    for k in ("pr_requested", "pr_on_accept", "pr_accepted_head", "pr_request_failed"):
         t.pop(k, None)
     t["pr"]["checked"] = 0
     if v.get("state") == "MERGED":
@@ -333,7 +335,7 @@ def cant_fix(s, t, why):
     failing checks. Needs you with why and the last failure, until its pull request's head moves (a fix pushed)."""
     why = " ".join(str(why or "").split())[:300] or "it didn't say why"
     if t.get("pr_requested") and not t.get("pr"):
-        t["attention"] = f"{OPEN_FAILED}: {why}"
+        t["attention"], t["pr_request_failed"] = f"{OPEN_FAILED}: {why}", True
     else:
         last = ((t.get("pr") or {}).get("last_failure") or {})
         t["attention"] = f"{CANT_FIX}: {why}" + (f" Last failure: {last['text']}" if last.get("text") else "")
@@ -377,6 +379,7 @@ def opening_pass(s, t, report):
             return
         why = "its agent ended its turn without recording one (herdr-task pr) or saying why"
     t["attention"], t["attention_at"] = f"{OPEN_FAILED}: {why}", now()
+    t["pr_request_failed"] = True
     s.dirty = True
     report["attention"].append(t["id"])
 

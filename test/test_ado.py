@@ -1433,6 +1433,19 @@ class OpenedOnAccept(Base):
         self.record(ado.pr_url(REPO, 41))
         self.assertTrue(self.task["merge_wait"])
 
+    def test_ready_after_a_failed_request_never_revives_it(self):
+        self.ready()
+        self.accept()
+        self.cant("No valid work item")
+        self.task.pop("attention")  # cmd_ready clears it before finalize
+        said = self.ready()
+        self.assertNotIn("accepted it already", said)
+        self.assertNotIn("pr_requested", self.task)
+        self.assertEqual(agents.task_status(self.task, [])[0], "ready")  # the person's Accept, again
+        self.sent.clear()
+        self.accept()
+        self.assertEqual(len(self.sent), 1)
+
     def test_the_card_says_it_merges_when_its_pull_request_comes_on_accept(self):
         import herdr_task.proof as proof
         self.ready()
