@@ -1505,8 +1505,8 @@ export default class Chat extends View {
     const list = this.suggestions();
     if (list.length) {
       const c = list[Math.min(this.slashSel, list.length - 1)];
-      if (c.task || c.space) { this.pick(c, cx); const v = this.box.value(); cx.timer.after(30, () => this.box.set_value(v)); return; }
-      if (this.box.value().trim() !== `/${c.name}`) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(`/${c.name} `)); return; }
+      if (c.task || c.space) { this.pick(c, cx); const v = this.box.value(); cx.timer.after(30, () => this.put(v)); return; }
+      if (this.box.value().trim() !== `/${c.name}`) { this.pick(c, cx); cx.timer.after(30, () => this.put(`/${c.name} `)); return; }
     }
     this.send(cx, hold);
   }
@@ -1702,24 +1702,28 @@ export default class Chat extends View {
   }
 
   pick(c, cx) {
+    let next;
     if (c.space) {
-      const next = mentions.pickInto(this.box.value(), c.space);
+      next = mentions.pickInto(this.box.value(), c.space);
       this.picked = [...this.picked.filter((x) => x.name !== c.space.name), c.space];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else if (c.task) {
       const own = (this.t?.foreground?.cwd ?? this.t?.cwd) === c.task.folder;
       const t = { ref: taskRef(c.task), route: "", folder: own ? "" : c.task.folder ?? "" };
-      const next = mentions.pickTaskInto(this.box.value(), t);
+      next = mentions.pickTaskInto(this.box.value(), t);
       this.pickedTasks = [...this.pickedTasks.filter((x) => x.ref !== t.ref), t];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else {
-      this.box.set_value(`/${c.name} `);
-      this.slashOff = `/${c.name} `;
+      next = `/${c.name} `;
     }
+    this.put(next);
+    this.slashOff = next;
     this.box.focus();
     cx.notify();
+  }
+
+  /** A pick's text in the box, the caret after it (SHEP-105: set_value alone leaves the caret at the start). */
+  put(text) {
+    this.box.set_value(text);
+    this.box.set_selected_range({ start: text.length, end: text.length });
   }
 
   // ---- a chat with no agent yet (Coordinator tab) --------------------------------------------
