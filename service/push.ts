@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA, where } from "./paths.ts";
 import * as T from "../core/toasts.js";
-import { alertUrl, ACCEPT, choiceButtons, DEFAULT_TOPICS, notifies, notifyOf, pushTopics, REPLY, taskWho, WATCH_BODY, WATCH_TITLE, watchTitle, type PushAction, type PushTopic } from "../web/shared/alerts.ts";
+import { alertUrl, ACCEPT, MARK_DONE, choiceButtons, DEFAULT_TOPICS, notifies, notifyOf, pushTopics, REPLY, taskWho, WATCH_BODY, WATCH_TITLE, watchTitle, type PushAction, type PushTopic } from "../web/shared/alerts.ts";
 import { excerpt } from "../web/shared/excerpt.ts";
 import { unread } from "../web/shared/needs-you.ts";
 
@@ -47,7 +47,7 @@ export function alertsOf(snap: any, woke: Set<string> = new Set(), said: (chat: 
   // core/tasks.js readyWait), the same Accept as the Tasks panel's
   for (const t of snap.tasks ?? []) if (t.status === "ready" && !t.archived)
     now.set(`ready:${t.id}`, { title: T.toastTitle(taskWho(snap, t.id), T.FINISHED), body: t.name, tag: t.id, topic: "ready", place: t.place, waits: true, url: `./#accept=${encodeURIComponent(t.id)}`,
-      actions: [ACCEPT], accept: { task: t.id } });
+      actions: [t.markDone ? MARK_DONE : ACCEPT], accept: { task: t.id } });
   for (const t of snap.tasks ?? []) if (t.status === "done" && !t.archived)
     now.set(`done:${t.id}`, { title: T.toastTitle(taskWho(snap, t.id), "Done"), body: t.name, tag: t.id, topic: "done", place: t.place, url: alertUrl({ place: t.place, task: t.id }) });
   // an Assistant's new message (its chat's last moved on, not yet read), unless its space's Notify is Off

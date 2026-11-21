@@ -34,7 +34,7 @@ from .queues import after_refs, parse_after, queue_reason, set_after
 from .archive import unarchive
 from .output import line, minutes, say, view
 from .scheduler import ensure_scheduler
-from .proof import evidence, find_proof
+from .proof import evidence, find_proof, here_mark
 from .when import when_from
 
 
@@ -434,6 +434,12 @@ def cmd_ready(args):
                 t.pop(k, None)
             # Its agents' turns now: a later turn of theirs takes it back to work (busy_again()).
             t["ready_turns"] = ready_turns(live_agents(s.key(t)))
+            # SHEP-95: in the folder itself, what it left behind now: a later turn that changes none of it (it only
+            # answered a question) puts it back in Ready (tick's settle_back()).
+            if t.get("mode") == "worktree":
+                t.pop("here_mark", None)
+            else:
+                t["here_mark"] = here_mark(s, t)
             s.dirty = True
     if refused:
         raise Fail(refused)

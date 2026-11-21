@@ -33,6 +33,7 @@ from .takeover import cant_go_on, takeover
 from .ghnews import main_pass, pr_deliver, pr_news
 from .scheduler import SCHEDULER
 from .revive import revive_pass
+from .proof import here_mark
 
 
 PR_WAIT_EVERY = 20000  # how often a pull request whose checks still run is read again (ms)
@@ -241,15 +242,27 @@ def back_pass(s, t, report):
               and (k.get("labels") or {}).get("herdr.role") != "reviewer" and (k.get("turn") or 0) > seen[k["address"]]]
     if not turned:
         return
-    wt = t.get("worktree") if t.get("mode") == "worktree" else None
-    moved = bool(wt and t.get("head") and os.path.isdir(wt)
-                 and (git(wt, "rev-parse", "HEAD")[1] != t["head"] or git(wt, "status", "--porcelain", "--untracked-files=no")[1]))
+    moved = changed_since_ready(s, t) is True
     if moved or any(last_question(t, k["address"]) for k in turned):
         back_to_work(s, t, "its agent asked something" if not moved else "its agent changed its work", auto=True)
         report.setdefault("working_again", []).append(s.ref(t))
         return
     t["ready_turns"] = {**seen, **{k["address"]: k.get("turn") or 0 for k in turned}}
     s.dirty = True
+
+
+def changed_since_ready(s, t):
+    """Whether a task's work moved since it said ready: True, False, or None when that can't be told. A worktree task:
+    its branch past where it said ready, or uncommitted changes. One in the folder itself (SHEP-95, a research or design
+    task): what ready marked there (proof.here_mark(): the folder's commit and changes, its artifacts' versions)."""
+    if t.get("mode") != "worktree":
+        mark = t.get("here_mark")
+        return None if not isinstance(mark, dict) else here_mark(s, t) != mark
+    wt = t.get("worktree")
+    if not wt or not t.get("head") or not os.path.isdir(wt):
+        return None
+    ok, head, _ = git(wt, "rev-parse", "HEAD")
+    return not ok or head != t["head"] or bool(git(wt, "status", "--porcelain", "--untracked-files=no")[1])
 
 
 def settle_back(s, t, report):
@@ -260,14 +273,12 @@ def settle_back(s, t, report):
     b = t.get("back") or {}
     if t["state"] != "running" or not b.get("auto") or t.get("attention") or t.get("retry"):
         return False
-    wt = t.get("worktree") if t.get("mode") == "worktree" else None
-    if not wt or not t.get("head") or not os.path.isdir(wt):
+    if not (isinstance(t.get("here_mark"), dict) if t.get("mode") != "worktree" else t.get("worktree") and t.get("head")):
         return False
     live = [k for k in map(detail, live_agents(s.key(t))) if agent_running(k)]
     if not live or any(status_word(k) not in ("idle", "done") for k in live):
         return False
-    ok, head, _ = git(wt, "rev-parse", "HEAD")
-    if not ok or head != t["head"] or git(wt, "status", "--porcelain", "--untracked-files=no")[1]:
+    if changed_since_ready(s, t) is not False:
         return False
     if any(last_question(t, k.get("address")) for k in live) or own_work(t, live):
         return False

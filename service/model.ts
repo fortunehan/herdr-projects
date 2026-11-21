@@ -12,7 +12,7 @@ import * as T from "../core/tasks.js";
 import { pullCard } from "../core/needs.js";
 import { isHelper, subagentsOf } from "../core/chat-view.js";
 // The core is plain JavaScript; its defaults read as narrow types to TypeScript.
-const { place, refOf, taskKey, autoPrefix, reportOf, secondLine, leftOf, queueReason, machineOf, acceptAgain, dependencies } = T as any;
+const { place, refOf, taskKey, autoPrefix, reportOf, secondLine, leftOf, queueReason, machineOf, acceptAgain, dependencies, nothingToMerge } = T as any;
 import * as S from "../core/spaces.js";
 const { spacesFromDoc, sidebarOf, assistantOf, isUnread, isThinking, workingIn, inOrder, byMachineOrder, machineOrderOf } = S as any;
 import * as N from "../core/notify.js";
@@ -282,7 +282,7 @@ export class Model {
         started: task.started ?? null, ready_at: task.ready_at ?? null, done_at: task.done_at ?? null,
         summary: task.summary ?? null, details: task.details ?? null, pr: task.pr ?? null, prompt: String(task.prompt ?? "").slice(0, 500), why: p.why ?? null,
         // SHEP-34: Needs you on what Accept fixes (Review on its row); a Done one's failed pull, a card of its own
-        acceptAgain: acceptAgain(p), pull: pullCard(task) ? { text: pullCard(task), command: task.pull.command ?? null } : null,
+        acceptAgain: acceptAgain(p), markDone: nothingToMerge(task), pull: pullCard(task) ? { text: pullCard(task), command: task.pull.command ?? null } : null,
         worktree: task.worktree ?? list.folder, base: task.base ?? null, start: task.start ?? null, branch: task.branch ?? null,
         lastLog: !worker && last?.log ? { path: last.log, kind: last.agent ?? "claude" } : null,
         // its worker's own helper agents (SHEP-54), for the task's detail

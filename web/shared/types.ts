@@ -385,6 +385,9 @@ export interface Task {
   listName?: string
   /** Needs you on what its Accept itself fixes (Azure DevOps' auto-complete, SHEP-34): Review on its row, as a Ready one */
   acceptAgain?: boolean
+  /** SHEP-95: nothing to merge (research or a design done in the folder itself, no pull request): its Accept only
+   *  marks it done, and says "Mark done" */
+  markDone?: boolean
   /** a Needs you card beside a Done task (SHEP-34: the main checkout couldn't pull its merge): the Done task's id, and
    *  the command to run; Dismiss drops the card */
   pullOf?: string

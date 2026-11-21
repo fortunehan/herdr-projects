@@ -324,3 +324,9 @@ describe("Needs-you items the task's own status has moved past (SHEP-195)", () =
     expect(holdingItems(items, truthOf(done))).toHaveLength(3);
   });
 });
+
+// SHEP-95: a Ready task with nothing to merge (worked in its folder, or a branch with nothing of its own) says so
+test("a nothing-to-merge task's row offers marking it done", () => {
+  expect(secondLine(at({ id: 1, state: "ready", mode: "here" }), null, null, NOW)).toBe("Ready to mark done");
+  expect(secondLine(at({ id: 2, state: "ready", mode: "worktree", branch: "b" }), null, null, NOW)).toBe("Ready to accept");
+});

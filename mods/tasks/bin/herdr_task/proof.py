@@ -61,6 +61,20 @@ def task_artifacts(s, t, proof=None):
             if a.get("id") and a["id"] != skip and (a.get("task") or "").upper() == ref and (a.get("at") or 0) >= since]
 
 
+def here_mark(s, t):
+    """SHEP-95: what a task working in the folder itself (no worktree) has left behind, at ready and later: the folder's
+    commit and uncommitted changes (a git folder), and its artifacts' versions. The same mark later means its agent's
+    turn changed nothing (tick's settle_back(): Ready again after it answered a question)."""
+    folder, ref = s.loc["folder"], s.ref(t).upper()
+    mark = {"arts": {a["id"]: a.get("version") or 0 for a in artifacts_of(folder)
+                     if a.get("id") and (a.get("task") or "").upper() == ref}}
+    if s.loc.get("kind") == "repo":
+        ok, head, _ = git(folder, "rev-parse", "HEAD")
+        _, status, _ = git(folder, "status", "--porcelain", "--untracked-files=no")
+        mark.update(head=head if ok else None, changes=hashlib.sha1(status.encode()).hexdigest())
+    return mark
+
+
 def with_ids(blocks):
     """The blocks in order, each with its id (b1, b2... where it had none, as core/recipe.js withIds()), nested ones too."""
     out, n = [], [0]

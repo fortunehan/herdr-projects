@@ -1096,6 +1096,87 @@ class BackToWork(unittest.TestCase):
             self.tick.tick_store(self.store, {"started": []})
             self.assertEqual(t["state"], "running", change)
 
+    def here_task(self):
+        """SHEP-95: a Ready task that worked in the folder itself (a real throwaway git repo), its artifacts faked, and
+        what ready marked there (here_mark)."""
+        import herdr_task.proof as proof
+        repo = tempfile.mkdtemp()
+        g = lambda *a: subprocess.run(["git", "-C", repo, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                                       "-c", "user.name=t", "-c", "user.email=t@t", *a], capture_output=True, check=True)
+        g("init", "-q")
+        with open(os.path.join(repo, "notes.md"), "w") as f:
+            f.write("research\n")
+        g("add", "notes.md")
+        g("commit", "-qm", "notes")
+        self.store.loc.update(folder=repo, kind="repo")
+        arts = [{"id": "p1", "task": "SHEP-7", "title": "SHEP-7: Research · Proof", "version": 1}]
+        p = self.mock.patch.object(proof, "artifacts_of", lambda folder: [dict(a) for a in arts])
+        p.start()
+        self.addCleanup(p.stop)
+        said = {"text": "Proof published", "at": 1, "set": 1}
+        t = self.ready(mode="here", progress=dict(said))
+        t["here_mark"] = proof.here_mark(self.store, t)
+        return t, repo, g, arts, said
+
+    def test_a_here_task_that_only_answered_is_ready_again(self):
+        """SHEP-95: the person asks a Ready research task (no worktree) something in its chat; its agent answers and
+        changes nothing: Ready again by itself, never Needs you ("went quiet without saying ready")."""
+        t, _repo, _g, _arts, said = self.here_task()
+        worker = lambda st, turn: [dict(self.agent({"address": "t1", "status": st, "turn": turn, "role": "worker"}), agent="claude")]
+        self.live = worker("working", 5)
+        report = {"started": []}
+        self.tick.tick_store(self.store, report)
+        self.assertEqual((t["state"], t["back"]["auto"], report["working_again"]), ("running", True, ["SHEP-7"]))
+        self.live = worker("idle", 6)
+        report = {"started": []}
+        self.tick.tick_store(self.store, report)
+        self.assertEqual((t["state"], t["progress"], report["ready_again"]), ("ready", said, ["SHEP-7"]))
+        self.assertEqual(self.agents.task_status(t, self.live)[0], "ready")
+
+    def test_a_here_task_that_changed_its_work_stays_working_until_ready(self):
+        """SHEP-95: the same question, but its agent commits, leaves a change or publishes a new proof version: not Ready
+        again by itself (its Accept card would show old evidence) until it says ready again."""
+        t, repo, g, arts, _said = self.here_task()
+        worker = lambda st, turn: [dict(self.agent({"address": "t1", "status": st, "turn": turn, "role": "worker"}), agent="claude")]
+
+        def commit():
+            with open(os.path.join(repo, "notes.md"), "a") as f:
+                f.write("more\n")
+            g("commit", "-qam", "more")
+
+        def dirty():
+            with open(os.path.join(repo, "notes.md"), "a") as f:
+                f.write("draft\n")
+
+        def new_version():
+            arts[0]["version"] = 2
+
+        for change in (commit, dirty, new_version):
+            g("checkout", "-q", "--", ".")
+            t.update(state="ready", ready_turns={"t1": 5})
+            t.pop("back", None)
+            t["here_mark"] = self.tick.here_mark(self.store, t)
+            self.live = worker("working", 5)
+            self.tick.tick_store(self.store, {"started": []})
+            change()
+            self.live = worker("idle", 6)
+            for _ in range(2):
+                self.tick.tick_store(self.store, {"started": []})
+            self.assertEqual(t["state"], "running", change.__name__)
+            # not Ready: Working, and Needs you once its agent stays quiet without saying ready (SHEP-133's grace)
+            self.assertIn(self.agents.task_status(t, self.live)[0], ("working", "needs"), change.__name__)
+
+    def test_a_here_task_ready_before_its_mark_stays_as_before(self):
+        """A here-task said ready by an older herdr-task (no here_mark): nothing to compare, so Working as before."""
+        t, *_ = self.here_task()
+        t.pop("here_mark")
+        worker = lambda st, turn: [dict(self.agent({"address": "t1", "status": st, "turn": turn, "role": "worker"}), agent="claude")]
+        self.live = worker("working", 5)
+        self.tick.tick_store(self.store, {"started": []})
+        self.live = worker("idle", 6)
+        self.tick.tick_store(self.store, {"started": []})
+        self.assertEqual(t["state"], "running")
+
     def test_a_fix_asked_for_is_never_undone(self):
         """herdr-task fix or resume took it back: Working until its agent says ready, idle or not."""
         t = self.ready(mode="worktree", worktree=tempfile.mkdtemp(), branch="b", head="abc")
@@ -3317,6 +3398,22 @@ class MergedOnlyWithOwnWork(unittest.TestCase):
         self.assertTrue(self.task["nothing_to_merge"])
         self.assertFalse(os.path.isdir(self.task["worktree"]))
         self.assertEqual(self.git(self.main, "branch", "--list", "task/1"), "")
+
+    def test_ready_in_the_folder_marks_what_it_left_there(self):
+        """SHEP-95: a task that worked in the folder itself: ready marks the folder's commit, its changes and the task's
+        artifacts' versions (tick's settle_back() compares them later)."""
+        from unittest import mock
+        import herdr_task.proof as proof
+        self.github([])
+        self.task.update(mode="here", worktree=None, branch=None, start=None)
+        arts = [{"id": "p1", "task": "SHEP-1", "version": 3}, {"id": "x", "task": "SHEP-2", "version": 1}]
+        with mock.patch.object(proof, "artifacts_of", lambda folder: arts):
+            self.assertEqual(self.ready_said(), "ready")
+            mark = self.task["here_mark"]
+            self.assertEqual((mark["head"], mark["arts"]), (self.git(self.main, "rev-parse", "HEAD"), {"p1": 3}))
+            self.assertEqual(proof.here_mark(self.store, self.task), mark)
+            self.commit(self.main, "a note")
+            self.assertNotEqual(proof.here_mark(self.store, self.task), mark)
 
     def test_ready_only_caught_up_with_main_waits_for_accept(self):
         self.github([])
