@@ -108,11 +108,12 @@ function viewer({ files, os = "macos", run = () => ({ code: 0, stdout: "", stder
   const text = readFileSync(join(import.meta.dir, "../mods/chat-image/main.js"), "utf8");
   const body = text.slice(text.indexOf("  act(action, cx) {"), text.indexOf("  // ---- input")).replace(/\n  }\n/g, "\n  },\n");
   const seen = { execs: [], toasts: [] };
-  const fs = { stat: async (p) => { if (!files.includes(p)) throw new Error("ENOENT"); return {}; } };
+  // The window's fs/promises: exists(), no stat() (SHEP-98).
+  const fs = { exists: async (p) => files.includes(p) };
   const exec = async (cmd, args) => { seen.execs.push([cmd, ...args]); return run(cmd, args); };
   const toast = (n) => seen.toasts.push(n);
-  const v = new Function("target", "command", "failed", "problem", "fs", "exec", "appHome", "win", "toast", `return { ${body} };`)(
-    actions.target, actions.command, actions.failed, actions.problem, fs, exec, () => HOME, () => ({ platform: os }), toast);
+  const v = new Function("target", "command", "failed", "problem", "TITLES", "plainError", "fs", "exec", "appHome", "win", "toast", `return { ${body} };`)(
+    actions.target, actions.command, actions.failed, actions.problem, actions.TITLES, (e) => String(e?.message ?? e), fs, exec, () => HOME, () => ({ platform: os }), toast);
   v.img = () => IMG;
   let task;
   const cx = { spawn: (fn) => { task = fn(cx); }, notify: () => {}, timer: { after: () => {} } };

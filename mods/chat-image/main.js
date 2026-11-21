@@ -16,8 +16,8 @@ import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, props, closeOverlay, readTextFile, settings, exec, appHome, window as win } from "herdr";
 import { initArtifactBar, artifactBar, closeArtifactBar } from "./artifact-bar.js";
-import { toast, red, TEXT, RADIUS } from "./ui.js";
-import { target, command, failed, problem } from "./core/image-actions.js";
+import { toast, plainError, red, TEXT, RADIUS } from "./ui.js";
+import { target, command, failed, problem, TITLES } from "./core/image-actions.js";
 import * as fs from "fs/promises";
 
 const BAR = 48;                      // the toolbar's height
@@ -136,22 +136,29 @@ export default class ImageViewer extends View {
   // Copy, open or show in its folder (core/image-actions.js): the original file, or the viewer's own copy once the
   // original is gone (a finished task's worktree). A failure says so in a toast and on the toolbar: the viewer covers
   // the chat, and the toast can sit under it.
+  // The window's "fs/promises" has exists() but no stat() (SHEP-98: calling stat() threw, and the window drops a spawned
+  // task's error silently), so any other error is caught here and said the same way.
   act(action, cx) {
     const img = this.img();
     if (!img) return;
-    const os = win()?.platform;
     cx.spawn(async (cx) => {
-      const t = await target(img, appHome(), (p) => fs.stat(p).then(() => true, () => false));
-      let r;
-      if (t.path && !(action === "reveal" && t.gone)) {
-        const [cmd, args] = command(action, os, t.path);
-        r = await exec(cmd, args).catch(() => null);
-        if (!failed(action, os, r)) {
-          if (action === "copy") this.say("Copied", false, cx);
-          return;
+      let p;
+      try {
+        const os = win()?.platform;
+        const t = await target(img, appHome(), (f) => fs.exists(f).catch(() => false));
+        let r;
+        if (t.path && !(action === "reveal" && t.gone)) {
+          const [cmd, args] = command(action, os, t.path);
+          r = await exec(cmd, args).catch(() => null);
+          if (!failed(action, os, r)) {
+            if (action === "copy") this.say("Copied", false, cx);
+            return;
+          }
         }
+        p = problem(action, t, r);
+      } catch (e) {
+        p = { title: TITLES[action], body: plainError(e) };
       }
-      const p = problem(action, t, r);
       toast({ title: p.title, ...(p.body ? { body: p.body } : {}), level: "error" });
       this.say(p.body ? `${p.title}: ${p.body}` : p.title, true, cx);
     });
