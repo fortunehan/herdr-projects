@@ -11,7 +11,7 @@ import { toast } from '@plugins/alerts/toasts.tsx'
 import { forMarkdown, hasMention, parseMention, parseTask, stateOf, taskStateOf, TITLE, useReach } from './mentions.tsx'
 const shortTitle = (MNs as any).short as (t: string) => string
 const CL = CLs as any as {
-  linkify: (md: string, o: { home: string; paths: boolean; pathHref: (p: string) => string }) => string
+  linkify: (md: string, o: { home: string; paths: boolean; pathHref: (p: string) => string | null }) => string
   actionOf: (p: string) => 'browser' | 'reveal'
   label: (kind: string, os?: string) => string
 }
@@ -38,7 +38,7 @@ const COPY = svg(
 const DONE = svg(['M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z'], 'done')
 
 const PATH_HREF = '#shepherdr-path='
-const pathHref = (p: string) => PATH_HREF + encodeURIComponent(p)
+const pathHref = (p: string) => { try { return PATH_HREF + encodeURIComponent(p) } catch { return null } }
 
 /** the reply as safe HTML: a copy button on each code block, and a bit of inline code copies when tapped. The marks
     go onto the sanitized elements themselves, never into the HTML as text, so nothing in the reply can turn into them.
@@ -53,7 +53,7 @@ export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: str
     const task = a.getAttribute('href')!.startsWith('#task=')
     mention(a, (a.textContent ?? '').replace(/^[#@]/, ''), decodeURIComponent(a.getAttribute('href')!.slice(task ? 6 : 7)), task ? 'task' : 'space')
   }
-  for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+  if (paths !== null) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const href = a.getAttribute('href')!
     if (href.startsWith(PATH_HREF)) {
       let p = ''

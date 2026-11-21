@@ -16,7 +16,7 @@ describe("finding links in a reply", () => {
   });
 
   test("full-width punctuation and CJK text end a plain path", () => {
-    for (const end of ["，", "。", "）", "：", "；", "！", "」", "”", "、", "里"]) {
+    for (const end of ["，", "。", "）", "：", "；", "！", "」", "”", "、"]) {
       const f = L.find(`在/tmp/a/b.html${end}好`);
       expect(f.map((x) => x.text)).toEqual(["/tmp/a/b.html"]);
     }
@@ -88,6 +88,25 @@ describe("finding links in a reply", () => {
     expect(md("[site]: https://example.org/\n\nSee [site].")).toBe("[site]: https://example.org/\n\nSee [site].");
     // a plain path cut where Chinese text goes on would point at its folder: left plain
     expect(md("在/tmp/中文/index.html里")).toBe("在/tmp/中文/index.html里");
+  });
+
+  test("round 3: a path running into Chinese text is ambiguous, left plain", () => {
+    expect(L.find("在/tmp/a/b.html里好")).toEqual([]);
+    expect(L.find("在/tmp/demo中文/index.html。")).toEqual([]);
+  });
+
+  test("round 3: a fence belongs to its quote; references and //host links stay as written", () => {
+    // a quoted ``` inside a top-level block doesn't close it
+    expect(md("```\n> ```\n/tmp/a/b.txt\n```")).toBe("```\n> ```\n/tmp/a/b.txt\n```");
+    // a fence left open in a quote ends with the quote
+    expect(md("> ```\n> x\n\nsee /tmp/a/b.pdf")).toBe("> ```\n> x\n\nsee [/tmp/a/b.pdf](file:///tmp/a/b.pdf)");
+    expect(md("[site]:\n    https://example.org/\n\n> [q]: https://x.y/z")).toBe("[site]:\n    https://example.org/\n\n> [q]: https://x.y/z");
+    expect(md("[Docs](//example.org/guide)")).toBe("[Docs](//example.org/guide)");
+  });
+
+  test("round 3: half an emoji (a fold's cut) leaves the path plain instead of throwing", () => {
+    expect(() => md("`/tmp/preview-\ud83d`")).not.toThrow();
+    expect(md("`/tmp/preview-\ud83d`")).toBe("`/tmp/preview-\ud83d`");
   });
 
   test("a fence in a quoted list is code too", () => {
@@ -211,6 +230,11 @@ describe("the opener script", () => {
     symlinkSync(join(home, "site", "notes.md"), join(home, "preview.html"));
     const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
     expect(run("browser", `${home}/preview.html`, true)).toEqual({ code: 0, ran: `open -R ${real}/notes.md` });
+  });
+  test("a link without an extension that leads to a page opens in the browser", () => {
+    symlinkSync(join(home, "site", "index.html"), join(home, "preview"));
+    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
+    expect(run("reveal", `${home}/preview`, true)).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${real}/index.html` });
   });
   test("the guard follows a link to where it leads, and opens that", () => {
     symlinkSync("/etc/hosts", join(home, "site", "hosts.txt"));

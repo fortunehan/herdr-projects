@@ -63,7 +63,7 @@ export function find(text) {
     const p = pathOf(body, suffix);
     if (!p) continue;
     const len = body.length + suffix.length;
-    if (!suffix && body.endsWith("/") && new RegExp(`^[${CJK}]`).test(s.slice(m.index + len))) continue;
+    if (new RegExp(`^[${CJK}]`).test(s.slice(m.index + len))) continue;
     out.push({ start: m.index, end: m.index + len, text: s.slice(m.index, m.index + len), kind: "path", ...p });
   }
   return out.sort((a, b) => a.start - b.start);
@@ -82,7 +82,9 @@ const escHref = (u) => {
   return head.replace(/[()<> ]/g, (c) => HEX[c]) + rest.replace(/[()<> [\]]/g, (c) => HEX[c]);
 };
 /** The window's link target for a path: a file:// URL. */
-export const fileHref = (abs) => `file://${encodeURI(abs).replace(/[()#?[\]]/g, (c) => HEX[c])}`;
+export const fileHref = (abs) => {
+  try { return `file://${encodeURI(abs).replace(/[()#?[\]]/g, (c) => HEX[c])}`; } catch { return null; }
+};
 const escText = (t) => t.replace(/[\\*_[\]~<>]/g, "\\$&");
 
 /** Links in one stretch of plain markdown text (no code, no links in it). */
@@ -134,7 +136,7 @@ function linkCode(span, inner, opts) {
 function linkAuthored(m, opts) {
   const [whole, img, words, target] = m;
   if (img) return whole;
-  const p = /^(\/|~\/|file:\/\/)/i.test(target) ? pathOf(target.replace(LINE, ""), (LINE.exec(target) ?? [""])[0]) : null;
+  const p = /^(\/(?!\/)|~\/|file:\/\/)/i.test(target) ? pathOf(target.replace(LINE, ""), (LINE.exec(target) ?? [""])[0]) : null;
   if (!p) return whole;
   const href = hrefOf({ kind: "path", path: p.path }, opts);
   return href ? `[${words}](${href})` : words;
@@ -160,20 +162,26 @@ function linkInline(text, opts) {
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   const out = [];
-  let run = [], fence = null, blank = true, indented = false;
+  let run = [], fence = null, blank = true, indented = false, ref = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
+  const depth = (l) => (/^[\s>]*/.exec(l)[0].match(/>/g) ?? []).length;
   for (const line of lines) {
     const f = /^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))*\s*(`{3,}|~{3,})/.exec(line);
+    // a fence opened in a quote ends with the quote
+    if (fence && depth(line) < fence.depth) fence = null;
     if (fence) {
       out.push(line);
-      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.replace(/^[\s>]*/, "").slice(f[1].length).trim()) fence = null;
+      if (f && depth(line) === fence.depth && f[1][0] === fence.mark[0] && f[1].length >= fence.mark.length && !line.slice(f.index + f[0].length).trim()) fence = null;
     } else if (f) {
       flush();
-      fence = f[1];
+      fence = { mark: f[1], depth: depth(line) };
       out.push(line);
-    } else if (/^ {0,3}\[[^\]]+\]:\s*\S/.test(line)) {
+    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^\s+\S/.test(line))) {
       flush();
+      ref = /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       out.push(line);
+      blank = false;
+      continue;
     } else if (/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) {
       flush();
       indented = true;
@@ -183,6 +191,7 @@ export function linkify(md, opts = {}) {
       run.push(line);
     }
     blank = !line.trim();
+    ref = false;
   }
   flush();
   return out.join("\n");
@@ -231,9 +240,10 @@ if [ "$3" = guard ]; then
   elif command -v realpath >/dev/null 2>&1; then r=$(realpath "$p" 2>/dev/null) || exit 3
   else [ -L "$p" ] && exit 5; r="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || exit 3; fi
   h=$(cd "$HOME" 2>/dev/null && pwd -P) || h=
-  case "$r/" in /tmp/*|/private/tmp/*) ;; *) [ -n "$h" ] && [ "$h" != / ] || exit 5; case "$r/" in "$h"/*) ;; *) exit 5 ;; esac ;; esac
+  t=$(cd /tmp 2>/dev/null && pwd -P) || t=/tmp
+  case "$r/" in "$t"/*) ;; *) [ -n "$h" ] && [ "$h" != / ] || exit 5; case "$r/" in "$h"/*) ;; *) exit 5 ;; esac ;; esac
   p=$r
-  case $(printf %s "$p" | tr '[:upper:]' '[:lower:]') in *.html|*.htm|*.svg|*.pdf|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.txt|*.json) ;; *) set -- reveal "$2" "$3" ;; esac
+  case $(printf %s "$p" | tr '[:upper:]' '[:lower:]') in *.html|*.htm|*.svg|*.pdf|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.txt|*.json) set -- browser "$2" "$3" ;; *) set -- reveal "$2" "$3" ;; esac
 fi
 if [ "$(uname)" = Darwin ]; then
   if [ -d "$p" ]; then
