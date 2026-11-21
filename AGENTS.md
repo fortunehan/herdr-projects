@@ -46,11 +46,14 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On the dev Mac, `service/spaces-sidebar.test.ts`'s grace-period test fails when `service/emoji-pick.test.ts` runs first in
   the same bun process (`bun test service`); it passes alone, on Linux CI and on pure upstream.
 - Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
-  mise node shim slow. Not a hang.
+  mise node shim slow. Not a hang. If it does hang (the shim tries to download node under the throwaway HOME), run
+  them with `PATH="$(dirname $(mise which node)):$PATH"`.
 - On the dev Mac a node/python call with a whole task record (its long prompt) in argv can be SIGKILLed (exit 137) by
   the command guard: pass a trimmed record or a file.
 - herdr-task as a real subprocess in tests (fake hc and `HERDR_TASK_GH` on PATH): boot it with `-c` and set
   `base.not_real = lambda: None`, as `SlowCallsOutsideTheLock` does.
+- In test_ado.py install the fake ADO transport in setUp, before any accept/own_open_pr call: a test that runs
+  cmd_accept before `self.fake(...)` sends a real request to dev.azure.com.
 - herdr-task against a slow fake Azure DevOps in real processes: a `PYTHONPATH` dir with `sitecustomize.py` that imports
   `herdr_task.ado` (BIN on `sys.path`) and replaces `ado._request`, a scratch `HERDR_TASK_STORE` and `HERDR_TASK_ADO`, a fake
   hc on PATH and the real HOME; the `--worker` child inherits it.
@@ -143,6 +146,11 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window-mod render tests: `bun test` in service/ with `mock.module` for gpui-kit/gpui-base and herdr via
   service/fake-herdr.ts (bun's mocks are per process, so every herdr stand-in needs every name); see
   service/spaces-sidebar.test.ts.
+- The window's `fs/promises` has only exists, mkdir, readFile, readdir, rmdir, unlink and writeFile (no stat): bun's fs
+  has more, so a mod test can pass while the window throws; `service/picture-viewer-actions.test.ts` checks every mod's
+  `fs.<name>`.
+- macOS 26 (the dev Mac) has no `/usr/bin/test`, only `/bin/test`, and herdr's `exec` rejects a missing absolute
+  program path: use `/bin/test` (or a plain name) in window mods.
 - No herdr-app window runs on the dev VM: window-mod UI can only be syntax-checked here, not screenshot. No ImageMagick
   either: crop proof screenshots with python3 PIL. Stop a background stub with `kill $(lsof -t -i:<port>)`, never
   `pkill -f` on its path (it matches the calling shell).
