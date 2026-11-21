@@ -233,5 +233,6 @@ def evidence(s, t):
         "list": [{"path": p, "added": v[0], "removed": v[1]} for p, v in sorted(files.items(), key=lambda x: -(x[1][0] + x[1][1]))[:FEW]]}
     out["checks"] = checks_of(t)
     # What Accept does (cmd_accept): a worktree task's branch with work of its own is merged first; else only done.
-    out["merges"] = bool(t.get("mode") == "worktree" and t.get("branch") and (t.get("pr") or commits))
+    # SHEP-96: an Azure DevOps task whose pull request is opened on Accept merges, whatever the commit list read here.
+    out["merges"] = bool(t.get("mode") == "worktree" and t.get("branch") and (t.get("pr") or commits or t.get("pr_on_accept")))
     return out

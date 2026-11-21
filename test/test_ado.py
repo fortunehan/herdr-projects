@@ -1422,6 +1422,24 @@ class OpenedOnAccept(Base):
         commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
         self.assertIn("commit and push to its pull request (`git push`; never force-push), then run `herdr-task ready 1 --folder", self.sent[-1][1])
 
+    def test_ready_again_after_accept_keeps_the_request(self):
+        self.ready()
+        self.accept()
+        said = self.ready()  # its agent answered a question and said ready again before recording the pull request
+        self.assertIn("accepted it already", said)
+        self.assertTrue(self.task["pr_requested"])
+        self.assertEqual(len(self.sent), 1)  # never asked twice
+        self.azure(self.opened(autoCompleteSetBy={"id": ME}))
+        self.record(ado.pr_url(REPO, 41))
+        self.assertTrue(self.task["merge_wait"])
+
+    def test_the_card_says_it_merges_when_its_pull_request_comes_on_accept(self):
+        import herdr_task.proof as proof
+        self.ready()
+        with mock.patch.object(proof, "git", lambda *a, **k: (True, "", "")), mock.patch.object(proof, "task_artifacts", lambda *a: []), \
+                mock.patch.object(proof, "choices_of", lambda *a: []), mock.patch.object(proof, "find_proof", lambda *a: None):
+            self.assertTrue(proof.evidence(self.store, self.task)["merges"])
+
     def test_its_worker_runs_herdr_task_pr_without_asking(self):
         import herdr_task.launch as launch
         self.assertIn("pr", launch.OWN)

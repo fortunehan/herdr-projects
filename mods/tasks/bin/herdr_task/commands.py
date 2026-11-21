@@ -768,8 +768,11 @@ def finalize(s, t):
     t["state"], t["ready_at"] = "ready", now()
     # An accepted Azure DevOps pull request keeps waiting to merge (auto-complete stays on there).
     waits = bool(t.get("merge_wait") and (agent_pr or (repo and ado.owns(repo))))
+    # SHEP-96: accepted already, its pull request asked of its agent and not recorded yet (it said ready again, after a
+    # question, say): the request stands, never a second Accept.
+    asked = bool(later and t.get("pr_requested") and not t.get("attention"))
     for k in ("attention", "merge_requested", "review", "merge_wait", "accepting", "pr_requested", "stuck_head"):
-        if not (k == "merge_wait" and waits):
+        if not (k == "merge_wait" and waits) and not (k == "pr_requested" and asked):
             t.pop(k, None)
     (t.get("pr") or {}).pop("wait", None)
     s.dirty = True
@@ -795,6 +798,9 @@ def finalize(s, t):
             return f"{s.ref(t)} {READY_BUT} {t['attention']} Tell the person."
     if agent_pr and waits:
         return msg + " " + ado_flow.WAITS
+    if asked:
+        return msg + (" The person accepted it already: open its pull request as you were asked (ado-push-pr), then record it "
+                      "with herdr-task pr.")
     if later:
         msg += (" On Azure DevOps nothing is pushed yet: the person reviews your branch, and once they accept it you're asked "
                 "to open its pull request with the ado-push-pr skill.")
