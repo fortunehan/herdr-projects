@@ -46,7 +46,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - On the dev Mac, `service/spaces-sidebar.test.ts`'s grace-period test fails when `service/emoji-pick.test.ts` runs first in
   the same bun process (`bun test service`); it passes alone, on Linux CI and on pure upstream.
 - Node tests from `test/` are slow on the dev Mac (~12 s per first node call): home_guard's throwaway HOME makes the
-  mise node shim slow. Not a hang.
+  mise node shim slow. Not a hang. If it does hang (the shim tries to download node under the throwaway HOME), run
+  them with `PATH="$(dirname $(mise which node)):$PATH"`.
 - On the dev Mac a node/python call with a whole task record (its long prompt) in argv can be SIGKILLed (exit 137) by
   the command guard: pass a trimmed record or a file.
 - herdr-task as a real subprocess in tests (fake hc and `HERDR_TASK_GH` on PATH): boot it with `-c` and set
