@@ -125,7 +125,7 @@ export default class NewSpace extends View {
       if (exists !== this.exists) return;
       if (!this.exists.has(p) || this.exists.get(p) === undefined) {
         this.exists.set(p, undefined);
-        this.exists.set(p, (await exec("test", ["-d", p], this.on()).catch(() => ({ code: 1 }))).code === 0);
+        this.exists.set(p, (await exec("sh", ["-c", '[ -d "$1" ]', "test", p], this.on()).catch(() => ({ code: 1 }))).code === 0);
         cx.notify();
       }
       if (exists !== this.exists) return;

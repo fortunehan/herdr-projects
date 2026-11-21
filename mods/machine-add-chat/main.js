@@ -117,7 +117,7 @@ export default class MachineAdd extends View {
       .child(div().px(8).py(4).rounded(RADIUS.control).bg(t.background).border_1().border_color(t.border).text_size(TEXT.label).text_color(t.foreground).child(mac.core))
       .child(h_flex().gap(8).items_center()
         .child(button(`ma-mac-${target}`, W.macOpen(mac.name), { onClick: () => {
-          exec("open", [MAC_SETTING], { on: mac.name }).catch(() => null);
+          exec("/usr/bin/open", [MAC_SETTING], { on: mac.name }).catch(() => null);
           this.opened[target] = true;
         } }))
         .when(Boolean(this.opened[target]), (el) => el.child(div().text_size(TEXT.label).text_color(t.dim).child(W.macOpened))));
