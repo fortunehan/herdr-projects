@@ -17,7 +17,7 @@ from .settings import (
     task_settings, worker_argv, worker_pick, worktrees_on, ensure_launcher, launcher_of,
 )
 from .agents import (
-    accepting, agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, ready_turns, STATUSES, SUMMARY_MAX,
+    accepting, agent_log, agent_running, background_jobs, busy_again, detail, fit, LINE_MAX, live_agents, mid_turn_agents, ready_turns, STATUSES, SUMMARY_MAX,
     WORKING_AGAIN,
 )
 from .sessions import refresh_sessions
@@ -1259,7 +1259,7 @@ def cmd_merge(args):
             if t["state"] != "ready" or t.get("pr_requested") and not t.get("attention"):
                 raise Fail(f"{s.ref(t)} isn't Ready ({t['state']}): on Azure DevOps its pull request is opened once it says ready "
                            "and is accepted.")
-            if busy_again(t, [detail(k) for k in live_agents(s.key(t))]):
+            if busy_again(t, mid_turn_agents(live_agents(s.key(t)), detail)):
                 raise Fail(f"{s.ref(t)} is working again: its agent took up more work after it said ready. Merge it once it says "
                            "ready again.")
             how = "opening"
@@ -1549,11 +1549,14 @@ def cmd_fix(args):
             raise Fail(f"{s.ref(t)} works in the folder itself; tell its agent what to fix.")
         problem = args.reason or t.get("attention") or "The pull request can't merge yet."
         main, wt, br, base = s.loc["folder"], t["worktree"], t["branch"], t.get("base") or "main"
-        accepted = bool(t.get("pr") and ado.owns(t["pr"].get("repo")) and (t.get("merge_wait") or t["pr"].get("by_agent")))
-        if accepted:
+        agent_pr = bool(t.get("pr") and ado.owns(t["pr"].get("repo")) and t["pr"].get("by_agent"))
+        accepted = bool(t.get("pr") and ado.owns(t["pr"].get("repo")) and t.get("merge_wait"))
+        if accepted or agent_pr:
             msg = (f"Task {s.ref(t)} \"{t['title']}\" can't merge yet: {problem}\n"
                    f"Fix it in {wt}: for conflicts, merge {base} into {br}; for failing checks, find out why and fix them. Run "
-                   f"the checks, commit and push to its pull request (`git push`; never force-push, don't run ready).")
+                   f"the checks, commit and push to its pull request (`git push`; never force-push)"
+                   + ("; don't run ready: it completes by itself once its checks pass." if accepted else
+                      f", then run `herdr-task ready {t['id']} --folder {shlex.quote(main)}` for the person's Accept."))
         else:
             on_ado = bool(t.get("pr") and ado.owns(t["pr"].get("repo")))
             how = f"merge {base} into {br}" if on_ado else f"rebase {br} onto {base}"

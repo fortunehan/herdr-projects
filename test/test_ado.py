@@ -902,6 +902,11 @@ class News(Base):
         return [c[2] for c in ado._request.calls if c[0] == "GET" and re.fullmatch(pattern, c[1])]
 
 
+def PARTS(**k):
+    """Held news as pr_news keeps it (SHEP-96)."""
+    return {"head": "head", "conflict": [], "checks": [], "comments": [], "fix": [], "accepted": True, **k}
+
+
 class OpenedOnAccept(Base):
     """SHEP-96: ready opens no pull request; the person's Accept has the task's agent open it with the ado-push-pr skill
     (auto-complete on) and record it (herdr-task pr); a failing check goes back to the agent, at most fix_rounds times,
@@ -1189,7 +1194,7 @@ class OpenedOnAccept(Base):
         self.assertNotIn("handed_at", self.task)  # nobody counts as on it: Needs you at once
         with mock.patch.object(commands, "back_to_work", side_effect=AssertionError("taken back to Working")):
             commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
-        self.assertIn("commit and push to its pull request (`git push`; never force-push, don't run ready)", self.sent[-1][1])
+        self.assertIn("commit and push to its pull request (`git push`; never force-push); don't run ready", self.sent[-1][1])
         self.assertEqual(agents.task_status(self.task, [])[0], "merging")
 
     def test_news_queued_before_a_stop_never_reaches_its_agent(self):
@@ -1305,7 +1310,8 @@ class OpenedOnAccept(Base):
 
     def test_held_fix_news_goes_once_its_checks_pass(self):
         self.waiting()
-        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3: old"], "at": base.now(), "since": self.task["ready_at"], "fix": True}
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed: old"], fix=["Fix round 1 of 3: old"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
         self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
         comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
                                           "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
@@ -1333,15 +1339,17 @@ class OpenedOnAccept(Base):
 
     def test_a_pass_with_nothing_new_drops_a_held_fix_round(self):
         self.waiting()
-        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "Fix round 1 of 3"], "at": base.now(), "since": self.task["ready_at"], "fix": True}
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed"], fix=["Fix round 1 of 3"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
         self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci"}
         self.look_green()
         self.assertNotIn("news", self.task["pr"])
 
     def test_a_pass_keeps_a_held_comment(self):
         self.waiting()
-        self.task["pr"]["news"] = {"text": "x", "lines": ["head", "- Comment by Ann: Use the helper."], "at": base.now(),
-                                   "since": self.task["ready_at"], "fix": True, "comments": True}
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(checks=["- Check \"web-ci\" failed: stale"], fix=["Fix round 1 of 3: stale"],
+                                                       comments=["- Comment by Ann: Use the helper."]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
         self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": 0, "failed": "h1:web-ci"}
         comment = {"id": 9, "comments": [{"id": 1, "commentType": "text", "author": {"displayName": "Bo"},
                                           "content": "Rename it.", "publishedDate": "2099-01-01T00:00:00Z"}]}
@@ -1349,6 +1357,18 @@ class OpenedOnAccept(Base):
         text = self.task["pr"]["news"]["text"]
         self.assertIn("Use the helper.", text)
         self.assertIn("Rename it.", text)
+        self.assertNotIn("stale", text)  # the passed check's failure and fix round went
+
+    def test_a_pass_keeps_a_held_conflict(self):
+        self.waiting()
+        self.task["pr"]["news"] = {"text": "x", "parts": PARTS(conflict=["- It conflicts with main: merge main"],
+                                                           checks=["- Check \"web-ci\" failed"], fix=["Fix round 1 of 3"]),
+                                   "at": base.now(), "since": self.task["ready_at"]}
+        self.task["pr"]["watch"] = {"since": self.task["ready_at"], "seen": [], "checked": base.now(), "failed": "h1:web-ci"}
+        self.look_green()
+        text = self.task["pr"]["news"]["text"]
+        self.assertIn("It conflicts with main", text)
+        self.assertNotIn("Fix round", text)
 
     def test_a_conflict_on_any_azure_devops_pull_request_says_merge_not_rebase(self):
         self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "checked": 0})
@@ -1370,7 +1390,7 @@ class OpenedOnAccept(Base):
         self.task.update(state="ready", pr={"number": 41, "url": ado.pr_url(REPO, 41), "repo": REPO, "by_agent": True},
                          attention="Couldn't turn on auto-complete in Azure DevOps: x")
         commands.cmd_fix(argparse.Namespace(id="SHEP-1", json=False, folder=None, reason=None))
-        self.assertIn("commit and push to its pull request (`git push`", self.sent[-1][1])
+        self.assertIn("commit and push to its pull request (`git push`; never force-push), then run `herdr-task ready 1 --folder", self.sent[-1][1])
 
     def test_its_worker_runs_herdr_task_pr_without_asking(self):
         import herdr_task.launch as launch
