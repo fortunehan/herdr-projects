@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SCAN, scanned, commandList, typing, match, opensMenu } from "./slash.js";
+import { SCAN, scanned, commandList, typing, match, opensMenu, atCaret, joinAtCaret } from "./slash.js";
 import { messageBody, sendTyped } from "./send.js";
 import * as mentions from "./mentions.js";
 
@@ -197,9 +197,9 @@ test("prefix and substring search find the qualified name; sending preserves it"
 test("desktop actual pick and send methods preserve a plugin command", () => {
   const source = readFileSync(new URL("../mods/chat/main.js", import.meta.url), "utf8");
   const method = (name, args) => source.match(new RegExp(`\\n  ${name}\\(${args}\\) \\{\\n[\\s\\S]*?\\n  \\}`))[0].trim();
-  const object = new Function("mentions", "note", `return { ${method("pick", "c, cx")}, ${method("put", "text")}, ${method("send", "cx, hold = false")} };`)(mentions, () => {});
+  const object = new Function("mentions", "note", "slash", `return { ${method("pick", "c, cx")}, ${method("caretText", "")}, ${method("put", "text, caret = text.length")}, ${method("send", "cx, hold = false")} };`)(mentions, () => {}, { atCaret, joinAtCaret });
   let value = "", caret = null, sent;
-  const self = { ...object, box: { value: () => value, set_value: (v) => { value = v; caret = 0; }, set_selected_range: (r) => { caret = r.start; }, focus: () => {} },
+  const self = { ...object, box: { value: () => value, set_value: (v) => { value = v; caret = 0; }, set_selected_range: (r) => { caret = r.start; }, selected_range: () => ({ start: caret ?? value.length, end: caret ?? value.length }), focus: () => {} },
     files: [], picked: [], pickedTasks: [], deliver: (msg) => { sent = msg; }, saveSoon: () => {} };
   const cx = { notify: () => {}, timer: { after: () => {} } };
   self.pick({ name: "mattpocock-skills:grill-with-docs" }, cx);
@@ -266,4 +266,14 @@ test("web menu reopens with fresh discovery and ignores a closed menu's response
   expect(requests.map((r) => r.url)).toEqual(["api/commands?chat=remote%2Fchat", "api/commands?chat=remote%2Fchat"]);
   expect(lists.at(-1)).toEqual([{ name: "plugin:grill", about: "Found" }]);
   closeNew();
+});
+
+test("SHEP-105: a pick replaces what is typed before the caret and keeps the rest", () => {
+  expect(atCaret("/rev")).toEqual({ before: "/rev", after: "" });
+  expect(atCaret("/rev\n", 5)).toEqual({ before: "/rev", after: "" });
+  expect(atCaret("/rev fix it", 4)).toEqual({ before: "/rev", after: " fix it" });
+  expect(atCaret("/review", 4).after).toBeNull();
+  expect(joinAtCaret("/review-pr ", "")).toEqual({ text: "/review-pr ", caret: 11 });
+  expect(joinAtCaret("/review-pr ", " fix it")).toEqual({ text: "/review-pr fix it", caret: 11 });
+  expect(joinAtCaret("see @SHEP-7 ", "\nnext")).toEqual({ text: "see @SHEP-7 \nnext", caret: 12 });
 });
