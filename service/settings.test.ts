@@ -366,4 +366,11 @@ test("Output language: follows the person by default, Everywhere's or a space's 
   m.set("agents.language", "Follow the person", "sp7", sp);
   expect(JSON.parse(readFileSync(file, "utf8")).spaces.sp7.agents).toEqual({ language: "" });
   expect(mrow().value).toBe("Follow the person");
+  // review round 2: the window changed the file since this page read it; the space's pick still saves
+  writeFileSync(file, JSON.stringify({ spaces: { sp7: { folder: "/shop", agents: { language: "English" } } } }));
+  const w = new Settings();
+  w.start();
+  writeFileSync(file, JSON.stringify({ everywhere: { agents: { language: "Chinese" } }, spaces: { sp7: { folder: "/shop", agents: { language: "English" } } } }));
+  w.set("agents.language", "Follow the person", "sp7", sp);
+  expect(JSON.parse(readFileSync(file, "utf8")).spaces.sp7.agents).toEqual({ language: "" });
 });

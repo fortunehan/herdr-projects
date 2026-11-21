@@ -391,7 +391,7 @@ def trust_asked(live):
     return None
 
 
-WIDE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]")
+WIDE = re.compile(r"[\u3041-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")  # kana and CJK ideographs, not punctuation
 
 
 def fit(text, n=LINE_MAX):

@@ -7992,7 +7992,8 @@ class OutputLanguage(unittest.TestCase):
         for given, name in [("zh", "Chinese"), ("ZH-cn", "Chinese"), ("中文", "Chinese"), ("en", "English"),
                             ("english", "English"), ("日本語", "Japanese"), ("ko", "Korean"), ("zh-TW", "Traditional Chinese"),
                             ("french", "French"), ("Brazilian Portuguese", "Brazilian Portuguese"),
-                            ("Chinese (Traditional)", "Chinese (Traditional)"), ("", ""), ("follow", ""),
+                            ("Chinese (Traditional)", "Chinese (Traditional)"), ("हिन्दी", "हिन्दी"), ("ไทย", "ไทย"),
+                            ("", ""), ("follow", ""),
                             ("Follow the person", ""), ("  auto ", "")]:
             self.assertEqual(language_name(given), name, given)
         for bad in ("<b>", "zh1", "rm -rf /", "x" * 31, "a_b"):
@@ -8088,6 +8089,8 @@ class OutputLanguage(unittest.TestCase):
         self.assertTrue(out.startswith("SHEP-101 正在给网页设置拍截图"), out)
         self.assertTrue(out.endswith("…"))
         self.assertEqual(fit("Writing the web settings screenshot and more words here"), "Writing the web settings screenshot and…")
+        # full-width punctuation isn't a word: the cut goes back to a space, as before
+        self.assertEqual(fit("Review API（details） next", 12), "Review…")
 
     def test_the_templates_say_it(self):
         from herdr_task import templates
@@ -8107,6 +8110,7 @@ class OutputLanguage(unittest.TestCase):
         self.assertIn("--set person_language=<that language>", assistant)
         self.assertIn("`herdr-task auto add`, so each run's task keeps it", assistant)
         self.assertIn("Task titles stay English", assistant)
+        self.assertIn("`--set language=follow --set person_language=<theirs>`", assistant)
         self.assertIn('every artifact (a proof\'s title still ends in " · Proof")', worker)
         self.assertIn("automated turns (news,", assistant)
         self.assertIn("reply in the language of the last message the person typed", assistant)

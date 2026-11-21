@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import unicodedata
 
 from .base import Fail, git, HOME, MAX_RUNNING, WHERE, run
 
@@ -75,6 +76,11 @@ LANGUAGE_CODES = {"en": "English", "english": "English", "zh": "Chinese", "zh-cn
 FOLLOW_WORDS = {"", "follow", "follow the person", "follows the person", "person", "auto", "the person's"}
 
 
+def _marks_as_letters(v):
+    """v with each combining mark (Unicode category M*) read as a letter, as the language check wants."""
+    return "".join("a" if unicodedata.category(c).startswith("M") else c for c in v)
+
+
 def language_name(value):
     """A language as the Settings block names it ("zh", "中文" -> "Chinese"); "" for following the person; None when
     it isn't one (digits, markup, or longer than a language's name)."""
@@ -84,7 +90,8 @@ def language_name(value):
         return ""
     if low in LANGUAGE_CODES:
         return LANGUAGE_CODES[low]
-    if len(v) > 30 or not re.fullmatch(r"[^\W\d_]+(?:[ \-]\(?[^\W\d_]+\)?)*", v):
+    # letters and their combining marks (हिन्दी, ไทย), words split by a space or "-", a part in brackets
+    if len(v) > 30 or not re.fullmatch(r"[^\W\d_]+(?:[ \-]\(?[^\W\d_]+\)?)*", _marks_as_letters(v)):
         return None
     return v[0].upper() + v[1:]
 
