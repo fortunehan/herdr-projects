@@ -154,15 +154,40 @@ describe("a message", () => {
     expect(seen.length).toBe(0);
   });
 
-  test("a reply still being written is refused, and nothing is sent", async () => {
+  // a chat's conversation as the service reads it: a1 complete, a2 the newest reply its agent still writes
+  const convo: Record<string, { text: string; raw: string; writing: boolean }> = {
+    a1: { text: "A whole reply here.", raw: "A whole reply here.", writing: false },
+    a2: { text: "Unfinished reply.", raw: "Unfinished reply.", writing: true },
+    a3: { text: "- Intro. echo KeepThisPrivate\n\nReady now.", raw: "- Intro.\n  # Before: ![proof](/tmp/proof.png)\n      echo KeepThisPrivate\n\nReady now.", writing: false },
+  };
+  const chatT = () => new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
+    recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), messageOf: async (w, id) => (w.chat === "sp1" ? convo[id] ?? null : null) });
+
+  test("a message's words are read from its chat by its id, never taken from the caller; one still being written is refused", async () => {
     reset();
-    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
-      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), writing: (w, id) => w.chat === "sp1" && id === "a2" });
-    expect(await t.handle({ text: "Half a reply", chat: "sp1", id: "a2" })).toMatchObject({ ok: false, error: expect.stringContaining("still being written") });
-    // a message with no chat or id isn't translated at all
+    const t = chatT();
+    expect(await t.handle({ text: "Unfinished reply.", chat: "sp1", id: "a2" })).toMatchObject({ ok: false, error: expect.stringContaining("still being written") });
+    // a finished message's id with other words: its own words go, not the caller's
+    const r: any = await t.handle({ text: "Unfinished reply.", chat: "sp1", id: "a1" });
+    expect(r).toMatchObject({ ok: true, blocks: ["[zh]A whole reply here."] });
+    expect(seen.map((x) => JSON.parse(x.body.messages[1].content))).toEqual([["A whole reply here."]]);
+    // no chat, no id, or no such message: nothing at all
     expect(await t.handle({ text: "Half a reply" })).toMatchObject({ ok: false });
-    expect(seen.length).toBe(0);
-    expect(await t.handle({ text: "A whole reply here.", chat: "sp1", id: "a1" })).toMatchObject({ ok: true });
+    expect(await t.handle({ text: "x", chat: "other", id: "a1" })).toMatchObject({ ok: false });
+    expect(seen.length).toBe(1);
+  });
+
+  test("a line that was code in the agent's own words is never sent, even joined to words by a picture taken out", async () => {
+    reset();
+    const r: any = await chatT().handle({ chat: "sp1", id: "a3" });
+    expect(r.ok).toBe(true);
+    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Ready now."]);
+  });
+
+  test("a key in an answer as HTML entities or markdown escapes is taken out too", () => {
+    const t: any = make().t;
+    const used = new Set(["sk-stub-secret"]);
+    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "plain"], used)).toEqual(["see … now", "and …", "plain"]);
   });
 
   test("a kept translation comes back only where its block has words (a code slot never does)", async () => {

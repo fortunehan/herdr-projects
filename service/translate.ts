@@ -11,6 +11,20 @@ import { marked } from "marked";
 import * as TR from "../core/translate.js";
 
 const T = TR as any;
+const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+/** Words as a page shows them: HTML entities and markdown's backslash escapes decoded. */
+export const decoded = (s: string) => s
+  .replace(/&#(\d+);?/g, (_, n) => String.fromCodePoint(Number(n)))
+  .replace(/&#x([0-9a-f]+);?/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
+  .replace(/\\([!-\/:-@[-`{-~])/g, "$1");
+/** Every line (trimmed, four characters or more) that is code in marked's parse of the agent's own words. */
+export function codeLines(raw: string) {
+  const out: string[] = [];
+  const walk = (ts: any[]) => { for (const t of ts ?? []) { if (t.type === "code") out.push(...String(t.text ?? "").split("\n").map((l) => l.trim()).filter((l) => l.length >= 4)); walk(t.tokens); for (const it of t.items ?? []) walk(it.tokens); } };
+  walk(marked.lexer(String(raw ?? "")) as any);
+  return out;
+}
 /** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
 const split = (md: string) => T.blocksFromTokens(marked.lexer(md));
 const defsOf = (md: string) => T.linkDefs(marked.lexer(md));
@@ -34,9 +48,10 @@ export type TranslatorIO = {
   key: (name: string) => Promise<Key>;
   /** a recipe artifact's recipe (service/artifacts.ts) */
   recipe: (id: string, v: number, on: string | null) => Promise<{ blocks: unknown[] } | null>;
-  /** whether a chat's message (its id) may still be being written: its agent works and it is the newest reply, or it
-   *  can't be told (no translation until it is surely complete) */
-  writing?: (where: { chat?: string; addr?: string }, id: string) => boolean;
+  /** a chat's message by its id, read from its conversation here (never the words a caller sends): text, the words its
+   *  chat shows (core/chat-view.js mediaIn); raw, the agent's words as written; writing, its agent may still be writing
+   *  it (or that can't be told). null: no such agent reply. */
+  messageOf?: (where: { chat?: string; addr?: string }, id: string) => Promise<{ text: string; raw: string; writing: boolean } | null>;
   /** where translations are kept */
   dir: string;
   fetchFn?: typeof fetch;
@@ -114,7 +129,14 @@ export class Translator {
   /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
    *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
   private scrub(got: (string | null)[], used: Set<string>) {
-    return got.map((t) => { let x = t; for (const k of used) if (x && k) x = x.split(k).join("…"); return x; });
+    return got.map((t) => {
+      if (!t) return t;
+      let x = t;
+      for (const k of used) if (k) x = x.split(k).join("…");
+      // as the page shows it (HTML entities and markdown escapes decoded): one there means the decoded words go, keyless
+      const shown = decoded(x);
+      return [...used].some((k) => k && shown.includes(k)) ? [...used].reduce((s, k) => (k ? s.split(k).join("…") : s), shown) : x;
+    });
   }
 
   /** One at a time per thing translated: a second press (another screen) waits for the first. */
@@ -128,13 +150,15 @@ export class Translator {
 
   /** A message's translation, block by block (core/translate.js blocksFromTokens: null where a block has none). Kept by
    *  its text and the target; asked again, only the blocks that failed are sent. */
-  async message(text: string): Promise<MessageResult> {
+  async message(text: string, raw = text): Promise<MessageResult> {
     const cfg = this.io.config();
     const why = T.notReady(cfg);
     if (why) return { ok: false, error: why };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: "There's nothing to translate." };
     if (text.length > MOST) return { ok: false, error: "This message is too long to translate." };
-    const blocks = split(text);
+    // a block holding a line that was code in the agent's own words (a picture taken out can join them) is never sent
+    const code = codeLines(raw);
+    const blocks = split(text).map((b: any) => (!b.skip && code.some((l) => String(b.text).includes(l)) ? { ...b, skip: true } : b));
     const target = T.blocksDirection(blocks);
     // the cache's name says its block layout (marked's parse, SHEP-102 round 4): an older layout's is never read
     const f = this.file("message:marked1", text, target);
@@ -206,14 +230,16 @@ export class Translator {
   /** The web app's and the window's translate action: { text } or { artifact, v, on }. */
   handle(body: any): Promise<MessageResult | ArtifactResult> {
     if (typeof body?.artifact === "string") return this.artifact(body.artifact, Number(body.v) || 1, typeof body.on === "string" && body.on ? body.on : null);
-    const text = String(body?.text ?? "");
-    // a message comes with its chat and its id, and one its agent may still be writing is never sent (the buttons wait
-    // too; this is the last word on it)
+    // a message by its chat and its id: its words are read here from its conversation, never taken from the caller,
+    // and one its agent may still be writing is never sent (the buttons wait too; this is the last word on it)
     const where = { chat: typeof body?.chat === "string" ? body.chat : undefined, addr: typeof body?.addr === "string" ? body.addr : undefined };
     const id = typeof body?.id === "string" ? body.id : "";
-    if (!(where.chat || where.addr) || !id) return Promise.resolve({ ok: false, error: "Translate a message from its chat." });
-    if (this.io.writing?.(where, id)) return Promise.resolve({ ok: false, error: T.WORDS.writing });
-    return this.message(text);
+    if (!(where.chat || where.addr) || !id || !this.io.messageOf) return Promise.resolve({ ok: false, error: "Translate a message from its chat." });
+    return this.io.messageOf(where, id).then((m) => {
+      if (!m) return { ok: false, error: "That message isn't in its chat any more." } as MessageResult;
+      if (m.writing) return { ok: false, error: T.WORDS.writing } as MessageResult;
+      return this.message(m.text, m.raw);
+    });
   }
 }
 

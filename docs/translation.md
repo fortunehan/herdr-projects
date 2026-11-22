@@ -55,8 +55,11 @@ Only the endpoint set here is ever called. There is no built-in public service.
   artifact version and its words) and target language, shared by the window, the web app and the phone. Pressed
   again, only the blocks that failed are sent.
 - A failure is one short line under the message (or the block) with Retry; no pop-up.
-- A reply the agent may still be writing gets no Translate (the band, the phone's hold menu and the window all wait),
-  and the service refuses it too: the chat's agent works and these are its newest words.
+- A message is asked for by its chat and its id: the service reads its words from that chat's conversation itself
+  (never the words a caller sends), and refuses one its agent may still be writing (its agent works and it is the
+  newest reply). The band, the phone's hold menu and the window wait for it too. A block holding a line that was code
+  in the agent's own words is never sent, even when taking a picture out joined it to words.
+- A key is taken out of every answer as the page would show it (HTML entities and markdown escapes decoded too).
 - Manual only: there is no switch to translate a whole chat by itself.
 
 ## Tests
