@@ -64,6 +64,12 @@ import { Dictation, BUN_PATH, warmAudio } from "./dictate.js";
 const DICT_SLOW = 5000;
 /** Most time one frame spends linking replies' URLs and paths (SHEP-108, linked()). */
 const LINK_MS = 12;
+/** Longer words than this are never reworked (mentions, links, breaks): shown as words, no link in them (SHEP-109: one
+ *  280 KB message took ~60 ms there, past the window's whole render limit). A 35 KB brief still gets its links. */
+const PREP_MAX = 40000;
+/** Words with no link in them: a markdown link's or reference's bracket and any tag escaped. What a row shows while its
+ *  words wait (prepared()), or when they're too long: nothing in it reaches the system's opener unchecked. */
+const unlinked = (text) => String(text).replace(/[[\]<]/g, "\\$&");
 import { PanelHost, inner, openTaskThread, backToTasks, requestWorkerTerminal, THREAD, STACK as TASKS_STACK, BODY as THREAD_BODY, CHAT as THREAD_CHAT, TERM as THREAD_TERM, PR as THREAD_PR, BROWSER as THREAD_BROWSER } from "./panel.js";
 import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
@@ -2054,7 +2060,8 @@ export default class Chat extends View {
   // launched by a click, and a path the agent linked itself follows the same rule (strict).
   linked(text) {
     const local = !this.machine;
-    return this.prepared(`${local ? "l" : "r"}\0${text}`, text, () => links.linkify(text, {
+    if (String(text).length > PREP_MAX) return this.prepared(`big\0${text}`, () => unlinked(text), () => unlinked(text));
+    return this.prepared(`${local ? "l" : "r"}\0${text}`, () => unlinked(text), () => links.linkify(text, {
       home: local ? home() : null, paths: local, strict: true,
       pathHref: (abs) => (links.actionOf(abs) === "browser" ? links.fileHref(abs) : null),
     }));
@@ -2064,16 +2071,17 @@ export default class Chat extends View {
    * A row's words made ready to draw (fn(): linked, mentions spelled out, typed's breaks), kept per key. SHEP-108/109:
    * it runs for every row drawn and measured on every frame, and a render past the window's ~50 ms limit draws nothing:
    * so each is made once, a frame spends at most LINK_MS making them (the rest show `raw` for now and set linkWaiting,
-   * which the init() timer turns into a redraw), and one fn throws on shows `raw`. Never a cx here: rows are drawn from
-   * inside layout, where none may be kept or used.
+   * which the init() timer turns into a redraw), and one fn throws on shows `raw` (a function: made only then; it must
+   * carry no link, unlinked()). Never a cx here: rows are drawn from inside layout, where none may be kept or used.
    */
   prepared(key, raw, fn) {
     const kept = this.preps?.get(key);
     if (kept !== undefined) return kept;
-    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return raw; }
+    const plain = () => (typeof raw === "function" ? raw() : raw);
+    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return plain(); }
     const at = Date.now();
-    let v = raw;
-    try { v = fn(); } catch {}
+    let v;
+    try { v = fn(); } catch { v = plain(); }
     this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
     this.preps ??= new Map();
     if (this.preps.size >= 800) this.preps.delete(this.preps.keys().next().value);
@@ -2084,7 +2092,11 @@ export default class Chat extends View {
   /** The person's words as typed() shows them, kept per text (prepared()); "<" kept as typed while it waits. */
   typedOnce(text) {
     const s = String(text);
-    return this.prepared(`t\0${s}`, s.replace(/</g, "\\<"), () => typed(s));
+    if (s.length > PREP_MAX) return this.prepared(`big\0${s}`, () => unlinked(s), () => unlinked(s));
+    // two steps, each in a frame's budget of its own (a 35 KB brief: ~15 ms each)
+    const t = this.prepared(`t\0${s}`, null, () => typed(s));
+    if (t === null) return unlinked(s);
+    return this.prepared(`g\0${s}`, () => unlinked(s), () => links.guard(t));
   }
 
   /** Mentions spelled out (mentionsIn()) and kept until what they name (the reach, the tasks) changes. */
@@ -2094,6 +2106,7 @@ export default class Chat extends View {
       this.mentionStamp = stamp;
       this.mentionGen = (this.mentionGen ?? 0) + 1;
     }
+    if (String(text).length > PREP_MAX) return text;
     return this.prepared(`m${this.mentionGen}\0${text}`, text, () => this.mentionsIn(text));
   }
 

@@ -189,6 +189,53 @@ test("reference definitions resolve the same to marked after linkify", () => {
   expect(md("Build complete.\n[Preview]:\n/tmp/a/b.html")).toBe("Build complete.\n[Preview]:\n[/tmp/a/b.html](file:///tmp/a/b.html)");
 });
 
+// SHEP-109: the window's strict linking. Its links open with the system's opener, so marked (as a stand-in for
+// TextView's markdown) must find no link to a file here that isn't one of ours, and code must read the same.
+describe("strict (the window): no file link but ours reaches the opener", () => {
+  const viewer = (a) => (L.actionOf(a) === "browser" ? L.fileHref(a) : null);
+  const local = (s) => L.linkify(s, { home: HOME, paths: true, strict: true, pathHref: viewer });
+  const remote = (s) => L.linkify(s, { home: null, paths: false, strict: true });
+  const hrefs = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "link") out.push(t.href); }); return out; };
+  const codes = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "code" || t.type === "codespan") out.push(t.text); }); return out; };
+  const fileish = (h) => /^(file:|\/(?!\/)|~\/)/i.test(decodeURIComponent(h));
+  const SAMPLES = [
+    "[report](file:///tmp/report.txt 'title') and [p](/tmp/a.png (t))",
+    "[report][r]\n\n[r]: file:///tmp/report.txt",
+    "[r]:\n/Applications/Preview.app\n\n[r]",
+    "<file:///tmp/go.sh> <a href='/Applications/X.app'>x</a>",
+    "[b](</tmp/a b.app>) [c](~/bin/run.command)",
+    "see /tmp/a/b.html and ~/dev/x.ts and /Applications/Preview.app",
+  ];
+
+  test("another machine's reply: no link to a file at all", () => {
+    for (const s of SAMPLES) expect(hrefs(remote(s)).filter(fileish)).toEqual([]);
+  });
+
+  test("this machine's reply: only file:// links to what a viewer opens", () => {
+    for (const s of SAMPLES) for (const h of hrefs(local(s)).filter(fileish)) {
+      expect(h.startsWith("file:///")).toBe(true);
+      expect(L.actionOf(decodeURIComponent(h.slice(7)))).toBe("browser");
+    }
+    expect(hrefs(local(SAMPLES[0]))).toEqual(["file:///tmp/report.txt", "file:///tmp/a.png"]);
+  });
+
+  test("code reads the same, an indented reference included", () => {
+    for (const s of ["Run:\n\n    [report]: /tmp/report.txt\n    [a](/tmp/x.app)", "```\n[a](/tmp/x.app)\n```", "see `[a](/tmp/x.app)`", "> ```\n> <file:///tmp/a>\n> ```"]) {
+      expect(codes(local(s))).toEqual(codes(s));
+      expect(codes(remote(s))).toEqual(codes(s));
+    }
+  });
+
+  test("a reference's %20 is decoded once, as an inline link's", () => {
+    expect(hrefs(local("[r]\n\n[r]: /tmp/My%20Report.pdf"))).toEqual(["file:///tmp/My%20Report.pdf"]);
+    expect(hrefs(local("[r](/tmp/My%20Report.pdf)"))).toEqual(["file:///tmp/My%20Report.pdf"]);
+  });
+
+  test("guard alone: the person's own words keep URLs, lose file links", () => {
+    expect(hrefs(L.guard("[x](file:///Applications/X.app) [y](https://a.b) [z](/etc/passwd)"))).toEqual(["https://a.b"]);
+  });
+});
+
 test("round 9: a reference link the agent wrote keeps its words and where they lead", () => {
   const s = "Open [`/tmp/build/report.html`][report].\n\n[report]: https://example.org/build";
   expect(md(s)).toBe(s);

@@ -17,9 +17,11 @@ SRC = open(os.path.join(ROOT, "mods", "chat", "main.js"), encoding="utf-8").read
 MATCH = re.search(r"\n  linked\(text\) \{\n.*?\n  \}\n", SRC, re.S)
 PREPARED = re.search(r"\n  prepared\(key, raw, fn\) \{\n.*?\n  \}\n", SRC, re.S)
 LIMIT = re.search(r"\nconst LINK_MS = (\d+);", SRC)
+CONSTS = [re.search(r"\nconst PREP_MAX = .*?;\n", SRC), re.search(r"\nconst unlinked = .*?;\n", SRC)]
 
 HARNESS = r"""
 const LINK_MS = %(limit)s;
+%(consts)s
 const home = () => "/Users/me";
 let calls = 0, clock = 0;
 const realNow = Date.now;
@@ -45,7 +47,8 @@ console.log(JSON.stringify(out));
 
 
 def run():
-    script = HARNESS % {"method": MATCH.group(0).strip(), "prepared": PREPARED.group(0).strip(), "limit": LIMIT.group(1)}
+    script = HARNESS % {"method": MATCH.group(0).strip(), "prepared": PREPARED.group(0).strip(), "limit": LIMIT.group(1),
+                        "consts": "\n".join(m.group(0).strip() for m in CONSTS)}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "linked.mjs")
         with open(path, "w") as f:
@@ -56,7 +59,7 @@ def run():
 class LinkedNeverBlanksTheChat(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if MATCH is None or PREPARED is None or LIMIT is None or shutil.which("node") is None:
+        if MATCH is None or PREPARED is None or LIMIT is None or None in CONSTS or shutil.which("node") is None:
             raise unittest.SkipTest("main.js linked() or LINK_MS not found, or no node")
         cls.out = run()
 

@@ -244,8 +244,31 @@ export function firstKeys({ slot = null, labels = {}, origin = null, addr = null
 // What the person typed, as markdown that shows it as typed (#591): a "<" or an "&" they wrote is a character, not
 // HTML or an entity ("B1 = <yours>" kept its "<yours>"). Code, fenced or inline, is left as it is.
 export function literal(text) {
-  return String(text ?? "").split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
-    .map((part, i) => (i % 2 ? part : part.replace(/</g, "\\<").replace(/&(?=#?\w+;)/g, "\\&"))).join("");
+  return codeParts(String(text ?? "")).map((part, i) => (i % 2 ? part : part.replace(/</g, "\\<").replace(/&(?=#?\w+;)/g, "\\&"))).join("");
+}
+
+/** Text split as split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/) splits it: [words, code, words, ...], found with indexOf
+ *  (SHEP-109: the window's QuickJS runs a split pattern at every character, ~13 ms for a 35 KB message). */
+export function codeParts(s) {
+  const out = [];
+  let from = 0, i = 0;
+  for (;;) {
+    i = s.indexOf("`", i);
+    if (i < 0) break;
+    let end = -1;
+    if (s.startsWith("```", i)) {
+      const close = s.indexOf("```", i + 3);
+      end = close < 0 ? s.length : close + 3;
+    } else {
+      const close = s.indexOf("`", i + 1);
+      if (close >= 0 && s.lastIndexOf("\n", close) < i) end = close + 1;
+    }
+    if (end < 0) { i++; continue; }
+    out.push(s.slice(from, i), s.slice(i, end));
+    from = i = end;
+  }
+  out.push(s.slice(from));
+  return out;
 }
 
 // A user message the person didn't type, in words for its quiet row, else null: the session's first message when the

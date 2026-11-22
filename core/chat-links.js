@@ -112,7 +112,13 @@ function linkText(text, opts) {
   return out + text.slice(at);
 }
 
-function hrefOf(l, { home, paths = true, pathHref = fileHref }) {
+function hrefOf(l, opts) {
+  const href = hrefOf_(l, opts);
+  if (href && opts.emitted) opts.emitted.add(href);
+  return href;
+}
+
+function hrefOf_(l, { home, paths = true, pathHref = fileHref }) {
   if (l.kind === "url") return escHref(l.url);
   if (!paths) return null;
   const abs = absolute(l.path, home);
@@ -171,7 +177,7 @@ function strictTag(tag, opts) {
 }
 
 // Within a line run outside fences: code spans, links and pictures, autolinks and HTML tags are left whole.
-const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+\"[^\"\\n]*\")?\\)|<[^>\\n]*>";
+const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+(?:\"[^\"\\n]*\"|'[^'\\n]*'|\\([^)\\n]*\\)))?\\)|<[^>\\n]*>";
 const refName = (t) => t.trim().replace(/\s+/g, " ").toLowerCase();
 const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -202,7 +208,10 @@ function strictRef(line, kind, opts) {
   const m = (kind === "def" ? /^([\s>]*\[[^\]]+\]:[ \t]*)(<[^>\n]*>|\S+)([\s\S]*)$/ : /^([\s>]*)(<[^>\n]*>|\S+)([\s\S]*)$/).exec(line);
   if (!m) return line;
   const dest = m[2].replace(/^<([\s\S]*)>$/, "$1");
-  const p = /^(\/(?!\/)|~\/|file:)/i.test(dest) ? pathOf(dest, "") : null;
+  const suffix = (LINE.exec(dest) ?? [""])[0];
+  let t = dest.slice(0, dest.length - suffix.length);
+  if (!/^file:/i.test(t)) try { t = decodeURIComponent(t); } catch {}
+  const p = /^(\/(?!\/)|~\/|file:)/i.test(t) ? pathOf(t, suffix) : null;
   if (!p && !/^file:/i.test(dest)) return line;
   const href = p ? hrefOf({ kind: "path", path: p.path }, opts) : null;
   if (href) return m[1] + href + m[3];
@@ -218,7 +227,7 @@ function strictRef(line, kind, opts) {
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   // the names the reply defines ([name]: …), so [name] alone stays its link
-  opts = { ...opts, inline: inlineRe(new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName))) };
+  opts = { ...opts, inline: inlineRe(new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName))), emitted: opts.strict ? new Set() : null };
   const out = [];
   let run = [], fence = null, blank = true, indented = false, ref = false, title = false, para = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
@@ -243,7 +252,7 @@ export function linkify(md, opts = {}) {
       // only a list item's fence ends by indentation; a top-level one indented 1-3 spaces runs to its closing fence
       fence = { mark: f[1], depth: depth(line), indent: /[-*+]|\d+[.)]/.test(PREFIX.exec(line)[0]) ? flat(line).indexOf(f[1]) : 0 };
       out.push(line);
-    } else if (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
+    } else if (!(/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) && (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line))) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
       // a reference definition (never right under a paragraph's line: there it is words; after a heading, a rule, a
       // code block or another definition it is one), the line its destination is on
       // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
@@ -272,7 +281,52 @@ export function linkify(md, opts = {}) {
     para = run.length > 0 && run[run.length - 1] === line && !blank && !/^[\s>]*(#{1,6}(\s|$)|([-*_])(\s*\3){2,}\s*$|=+\s*$|-+\s*$)/.test(line);
   }
   flush();
-  return out.join("\n");
+  return opts.strict ? guard(out.join("\n"), opts.emitted) : out.join("\n");
+}
+
+/** A link target that leads to a file here: file:, an absolute path or ~/ (decoded once). */
+function local(dest) {
+  let d = String(dest ?? "");
+  try { d = decodeURIComponent(d); } catch {}
+  d = d.trim().toLowerCase();
+  return d.startsWith("file:") || /^(\/(?!\/)|~\/)/.test(d);
+}
+
+const GUARD = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|\]\(\s*<?([^)\s>]*)|^( {0,3}(?:>[ \t]?)*)\[[^\]\n]+\]:[ \t]*<?([^\s>]*)|<([a-z][\w+.-]*:[^>\s]*)>|<a\s[^>]*>/gi;
+
+/**
+ * Markdown whose every clickable target that leads to a file here is one in `emitted` (ours, already checked); any
+ * other is made plain words: a link's ( escaped, a reference definition's [, an autolink's or an <a> tag's <. Code
+ * (fences, indented blocks, code spans) is left as written. SHEP-109: the window's links open with the system's
+ * opener, whatever the target, so this is the last check before it; also for the person's own words (emitted empty).
+ */
+export function guard(md, emitted = new Set()) {
+  const lines = String(md ?? "").split("\n");
+  let fence = null, blank = true, indented = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const f = /^[ \t>]*(`{3,}|~{3,})/.exec(l);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && /^[ \t>]*(`{3,}|~{3,})\s*$/.test(l)) fence = null;
+      continue;
+    }
+    if (f) { fence = f[1]; continue; }
+    if (/^( {4}|\t)/.test(l) && (blank || indented) && l.trim()) { indented = true; continue; }
+    if (l.trim()) indented = false;
+    blank = !l.replace(/^[\s>]*/, "").trim();
+    if (!/[\](<]/.test(l)) continue;
+    GUARD.lastIndex = 0;
+    lines[i] = l.replace(GUARD, (m, tick, inl, pre, def, auto, at) => {
+      if (tick || l[at - 1] === "\\") return m;
+      const bad = (d) => local(d) && !emitted.has(d);
+      if (inl !== undefined) return bad(inl) ? m.replace("](", "]\\(") : m;
+      if (def !== undefined) return bad(def) ? m.replace("[", "\\[") : m;
+      if (auto !== undefined) return bad(auto) ? escText(m) : m;
+      const href = /href\s*=\s*["']?([^"'\s>]*)/i.exec(m)?.[1];
+      return href !== undefined && bad(href) ? escText(m) : m;
+    });
+  }
+  return lines.join("\n");
 }
 
 

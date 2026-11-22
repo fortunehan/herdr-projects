@@ -1,25 +1,35 @@
 // SHEP-109: the window's chat draws its rows with a virtual list, whose rows take no handlers (gpui-kit.d.ts: "no
 // handlers and no retained state inside it"). SHEP-99 put a link handler on every agent reply there, and every chat's
 // message list drew blank. Each kind of row is built here as the list builds it, from texts shaped like a real
-// Assistant log (a 35 KB brief, replies full of paths and URLs, code), with gpui stand-ins that note any on_* call.
+// Assistant log (a 35 KB brief, replies full of paths and URLs, code), with gpui stand-ins that note any on_* call and
+// keep the element tree, so a test reads the words on the elements a row really returns. The list's own renderer is
+// main.js's code, run as written.
 import { describe, expect, mock, test } from "bun:test";
 import { fakeHerdr } from "./fake-herdr";
 import { fakeGpuiBase, fakeGpuiKit } from "./fake-gpui";
 
 const handlers: string[] = [];
-/** The words a row shows: each TextView's markdown and each plain child string, in order. */
-const shown: string[] = [];
-function el(): any {
+const KIDS = Symbol("kids");
+function el(md?: string): any {
+  const kids: unknown[] = md === undefined ? [] : [md];
   const self: any = new Proxy({}, {
     get(_t, k) {
+      if (k === KIDS) return kids;
       if (k === "then") return undefined;
       if (k === "when") return (c: unknown, f: (e: any) => any) => (c ? f(self) : self);
       if (typeof k === "string" && k.startsWith("on_")) return () => { handlers.push(k); return self; };
-      if (k === "child") return (c: unknown) => { if (typeof c === "string") shown.push(c); return self; };
+      if (k === "child") return (c: unknown) => { kids.push(c); return self; };
+      if (k === "children") return (cs: unknown[]) => { kids.push(...cs); return self; };
       return () => self;
     },
   });
   return self;
+}
+/** The words on an element and everything under it: plain strings and TextViews' markdown, in order. */
+function words(e: any): string {
+  if (typeof e === "string") return e;
+  if (!e || typeof e !== "object") return "";
+  return (e[KIDS] ?? []).map(words).filter(Boolean).join("\n");
 }
 const theme = new Proxy({}, { get: () => "#000000" });
 mock.module("herdr", () => fakeHerdr({
@@ -30,7 +40,7 @@ mock.module("herdr", () => fakeHerdr({
   readTextFile: async () => null, writeTextFile: async () => {}, watchFolder: () => {},
 }));
 mock.module("gpui-kit", () => fakeGpuiKit({ View: class {}, div: el, svg: el, image: el }));
-mock.module("gpui-base", () => fakeGpuiBase({ v_flex: el, h_flex: el, v_virtual_list: el, Scrollbar: el, TextView: { markdown: (_id: string, md: string) => { shown.push(md); return el(); } } }));
+mock.module("gpui-base", () => fakeGpuiBase({ v_flex: el, h_flex: el, v_virtual_list: el, Scrollbar: el, TextView: { markdown: (_id: string, md: string) => el(md) } }));
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
 const { default: Chat } = await import("../mods/chat/main.js");
@@ -77,40 +87,65 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     });
   }
 
-  test("each message's words are on its row: a reply, the person's words, the 35 KB brief", () => {
+  test("each message's words are on the row it returns: a reply, the person's words, the 35 KB brief", () => {
     const c = chat();
-    const words = (x: any) => { shown.length = 0; c.safeRow(x, theme, "v0-"); return shown.join("\n"); };
-    expect(words(ROWS[5])).toContain("SHEP-99 is ready.");
-    expect(words(ROWS[5])).toContain("[`/tmp/shep99/index.html`](file:///tmp/shep99/index.html)");
-    expect(words(ROWS[3])).toContain("看看 /tmp/a.png");
+    const shown = (x: any) => words(c.safeRow(x, theme, "v0-"));
+    expect(shown(ROWS[5])).toContain("SHEP-99 is ready.");
+    expect(shown(ROWS[5])).toContain("[`/tmp/shep99/index.html`](file:///tmp/shep99/index.html)");
+    expect(shown(ROWS[3])).toContain("看看 /tmp/a.png");
     // the brief is longer than one frame's budget: the first frame may show it as written, never empty
-    const brief = words(ROWS[2]);
+    const brief = shown(ROWS[2]);
     expect(brief.length).toBeGreaterThan(30000);
     expect(brief).toContain("You are the coordinator of one space in Herdr.");
   });
 
-  test("past a frame's budget the rest show as written, ask for a redraw, and get their links on it", () => {
+  test("past a frame's budget the rest show as written with no link in them, ask for a redraw, and get links on it", () => {
     const c = chat();
-    const words = (x: any) => { shown.length = 0; c.safeRow(x, theme, "v0-"); return shown.join("\n"); };
+    const shown = (x: any) => words(c.safeRow(x, theme, "v0-"));
     c.linkSpent = 1e9;
-    const x = { kind: "agent", id: "a9", text: "See https://example.com/late" };
-    expect(words(x)).toContain("See https://example.com/late");
-    expect(words(x)).not.toContain("](https://example.com/late)");
+    const x = { kind: "agent", id: "a9", text: "See https://example.com/late and [the app](file:///Applications/Preview.app)" };
+    expect(shown(x)).toContain("See https://example.com/late");
+    expect(shown(x)).not.toMatch(/[^\\]\]\(/);
+    expect(shown(x)).toContain("\\[the app\\](file:///Applications/Preview.app)");
     expect(c.linkWaiting).toBe(true);
     c.linkSpent = 0;
-    expect(words(x)).toContain("[https://example.com/late](https://example.com/late)");
+    expect(shown(x)).toContain("[https://example.com/late](https://example.com/late) and the app");
   });
 
-  test("a row that throws shows its words plain, and the next row still draws", () => {
+  test("a message too long to rework shows as words with no link, at once", () => {
+    const c = chat();
+    const huge = "[app](file:///Applications/Preview.app) " + "x".repeat(300000);
+    const out = words(c.safeRow({ kind: "agent", id: "h", text: huge }, theme, "v0-"));
+    expect(out.length).toBeGreaterThan(300000);
+    expect(out.startsWith("\\[app\\](file:///Applications/Preview.app)")).toBe(true);
+    expect(c.linkWaiting).toBeFalsy();
+  });
+
+  test("the person's own words: a file link in them never reaches the system's opener", () => {
+    const out = words(chat().safeRow({ kind: "user", id: "u9", text: "open [this](file:///Applications/Preview.app) and [docs](https://x.y)" }, theme, "v0-"));
+    expect(out).toContain("[this]\\(file:///Applications/Preview.app)");
+    expect(out).toContain("[docs](https://x.y)");
+  });
+
+  test("the list's renderer, as main.js has it: every row's words, a throwing row plain, the row after it whole", () => {
+    const src = require("node:fs").readFileSync(require.resolve("../mods/chat/main.js"), "utf8") as string;
+    const at = src.indexOf('v_virtual_list("chat-rows", rows.length, sizes, (i) => rows[i].id, ');
+    const from = src.indexOf("(range) => {", at);
+    const to = src.indexOf("\n        })\n          .track_scroll(this.scroll)", from);
+    expect(at > 0 && from > at && to > from).toBe(true);
+    const renderer = new Function("rows", "sizes", "lit", "current", "t", "div", "scrollEstimate",
+      `return ${src.slice(from, to + "\n        }".length)};`);
     const c = chat();
     const real = c.row.bind(c);
     c.row = (x: any, ...a: any[]) => { if (x.id === "bad") throw new Error("boom"); return real(x, ...a); };
-    shown.length = 0;
-    expect(() => c.safeRow({ kind: "agent", id: "bad", text: "the broken one" }, theme, "v0-")).not.toThrow();
-    expect(shown).toContain("the broken one");
-    shown.length = 0;
-    c.safeRow({ kind: "agent", id: "next", text: "the next one" }, theme, "v0-");
-    expect(shown.join("\n")).toContain("the next one");
+    Object.assign(c, { measureGen: 0, flash: null, scrollTop: 0 });
+    const rows = [ROWS[5], { kind: "agent", id: "bad", text: "the broken one" }, { kind: "agent", id: "next", text: "the next one" }];
+    const fn = renderer.call(c, rows, rows.map(() => 80), new Set(), null, theme, el, (_s: unknown, _r: unknown, top: number) => top);
+    const out = fn({ start: 0, end: rows.length }).map(words);
+    expect(out).toHaveLength(3);
+    expect(out[0]).toContain("SHEP-99 is ready.");
+    expect(out[1]).toContain("the broken one");
+    expect(out[2]).toContain("the next one");
   });
 
   test("init() runs a timer that redraws once rows are waiting, also ones drawn from inside layout", () => {
