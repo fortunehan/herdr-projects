@@ -177,11 +177,14 @@ export class Translator {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      // any raw HTML in a translation (a tag, a comment): it goes whole. A translation has no reason to write any, and
-      // how a page would sanitize it (a script dropped with its words, ...) then never matters to this check
-      if (hasHtml(x)) return null;
-      const r = rendered(x);
-      return keys.some((k) => r.includes(k)) ? null : x;
+      // each translation on its own: one that can't be read (a parse that gives up on it) goes alone, as not translated
+      try {
+        // any raw HTML in a translation (a tag, a comment): it goes whole. A translation has no reason to write any,
+        // and how a page would sanitize it (a script dropped with its words, ...) then never matters to this check
+        if (hasHtml(x)) return null;
+        const r = rendered(x);
+        return keys.some((k) => r.includes(k)) ? null : x;
+      } catch { return null; }
     });
   }
 
@@ -210,7 +213,7 @@ export class Translator {
     // the cache's name says its layout and the very words sent (an older layout's, or other inputs', is never read;
     // two at once share one only when both match)
     const sent = JSON.stringify(blocks.map((b: any) => (b.skip ? null : b.text)));
-    const f = this.file("message:marked6", `${text}\0${sent}`, target);
+    const f = this.file("message:marked7", `${text}\0${sent}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -243,7 +246,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked6", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked7", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};

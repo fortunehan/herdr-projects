@@ -228,6 +228,15 @@ describe("a message", () => {
     expect(seen.length).toBe(0);
   });
 
+  test("round 15: through the whole request, a translation with HTML is dropped, and a deeply nested one fails alone", async () => {
+    reset();
+    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret-0123456789" }),
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
+      fetchFn: (async () => Response.json({ choices: [{ message: { content: JSON.stringify(["Words <b>bold</b>", "<div>translated paragraph</div>", "> ".repeat(19500) + "Notes", "Translated fine."]) } }] })) as any });
+    const r: any = await t.message("One here.\n\nTwo here.\n\nThree here.\n\nFour here.");
+    expect(r).toMatchObject({ ok: true, blocks: [null, null, null, "Translated fine."], failed: [0, 1, 2] });
+  });
+
   test("a translation holding the key as any page could render it is dropped whole", () => {
     const t: any = make().t;
     const used = new Set(["sk-stub-secret-0123456789"]);

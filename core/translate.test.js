@@ -164,9 +164,9 @@ describe("the request and its answer", () => {
     expect(T.endpointOf("ftp://x")).toBeNull();
     expect(T.endpointOf("")).toBeNull();
   });
-  test("an answer is made inert: no pictures, no HTML, links only to the original's addresses", () => {
+  test("an answer is made inert: no pictures, links only to the original's addresses (raw HTML stays for the service to drop)", () => {
     expect(T.inert('看 ![x](https://evil.example/p.png) <img src="https://evil.example/q.png"> [文档](https://docs.example/a) [坏](https://evil.example/b)', "See [docs](https://docs.example/a)"))
-      .toBe("看 x  [文档](https://docs.example/a) 坏");
+      .toBe("看 x <img src=\"https://evil.example/q.png\"> [文档](https://docs.example/a) 坏");
   });
 });
 

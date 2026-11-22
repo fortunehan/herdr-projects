@@ -178,12 +178,12 @@ export function apiError(status) {
   return `the endpoint answered ${status}`;
 }
 
-/** A model's translation made inert against its original: no pictures or raw HTML (nothing that loads on its own),
- *  and a link only to an address the original names (else its words alone). */
+/** A model's translation made inert against its original: no pictures (nothing that loads on its own), and a link only
+ *  to an address the original names (else its words alone). Raw HTML stays as written: the service drops a translation
+ *  that has any (service/translate.ts scrub). */
 export function inert(t, original = "") {
   return String(t ?? "")
     .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
-    .replace(/<\/?[A-Za-z][^>\n]*>/g, "")
     .replace(/\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, words, url) => (String(original).includes(url) ? m : words));
 }
 

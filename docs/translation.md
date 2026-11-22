@@ -42,7 +42,7 @@ Only the endpoint set here is ever called. There is no built-in public service.
   markdown). Every block with words goes in ONE request asking for a JSON array
   of the same length and order (`requestBody`, `parseTranslations`). An answer of another length or shape is asked
   again block by block (a one-block message once more); a refused key or a missing model fails at once. Each answer is
-  made inert (`inert`): no pictures or HTML, and a link only to an address the original names.
+  made inert (`inert`): no pictures, and a link only to an address the original names; one with raw HTML is dropped.
 - A refusal of the key shows as a fixed line; any other error of the endpoint has the key taken out before it is cut
   short, so no piece of it can reach a chat.
 - The web app finds the same blocks in the rendered page (h1-h6, p, li, th/td, in reading order) and puts each
