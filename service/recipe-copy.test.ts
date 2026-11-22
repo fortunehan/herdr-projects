@@ -30,8 +30,10 @@ const RECIPE = {
 const dir = mkdtempSync(join(tmpdir(), "recipe-copy-"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir, "recipe-view.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir, "recipe.js"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(dir, "translate.js"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(dir, "paths.js"));
 writeFileSync(join(dir, "recipe-data.js"), `export default ${JSON.stringify(RECIPE)};\n`);
-writeFileSync(join(dir, "artifact.js"), "export const asset = (s) => s; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n");
+writeFileSync(join(dir, "artifact.js"), "export const id = \"x\"; export const version = 1; export const machine = null; export const asset = (s) => s; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n");
 const { default: RecipeView } = await import(join(dir, "recipe-view.js"));
 
 let clipboard: string[] = [];
@@ -103,8 +105,10 @@ const RECIPE2 = {
 const dir2 = mkdtempSync(join(tmpdir(), "recipe-answers-"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir2, "recipe-view.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir2, "recipe.js"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(dir2, "translate.js"));
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(dir2, "paths.js"));
 writeFileSync(join(dir2, "recipe-data.js"), `export default ${JSON.stringify(RECIPE2)};\n`);
-writeFileSync(join(dir2, "artifact.js"), `export const asset = (s) => s;
+writeFileSync(join(dir2, "artifact.js"), `export const id = "y"; export const version = 1; export const machine = null; export const asset = (s) => s;
 export const sent = [];
 export let kept = { ship: { value: "Ship", at: ${new Date(2026, 0, 1, 9, 5).getTime()}, by: "web" } };
 export const answer = async (key, value, text) => { sent.push([key, value, text]); return true; };
