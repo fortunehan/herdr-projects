@@ -166,7 +166,7 @@ function linkInline(text, opts) {
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   const out = [];
-  let run = [], fence = null, blank = true, indented = false, ref = false, def = false, title = false;
+  let run = [], fence = null, blank = true, indented = false, ref = false, title = false, para = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
   // a line's containers: quote markers and list markers in front of its words ("- > ```" is a quote in a list item)
   const PREFIX = /^(?:\s*(?:>|[-*+](?=\s)|\d+[.)](?=\s)))*/;
@@ -189,17 +189,18 @@ export function linkify(md, opts = {}) {
       // only a list item's fence ends by indentation; a top-level one indented 1-3 spaces runs to its closing fence
       fence = { mark: f[1], depth: depth(line), indent: /[-*+]|\d+[.)]/.test(PREFIX.exec(line)[0]) ? flat(line).indexOf(f[1]) : 0 };
       out.push(line);
-    } else if (title || ((blank || def) && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
-      // a reference definition (never in the middle of a paragraph: there it is words), the line its destination is on
+    } else if (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
+      // a reference definition (never right under a paragraph's line: there it is words; after a heading, a rule, a
+      // code block or another definition it is one), the line its destination is on
       // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
       // of a title still open in quotes
       flush();
       const quotes = (inner(line).match(/"/g) ?? []).length % 2 === 1;
       ref = !title && /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       title = title ? !quotes : quotes;
-      def = true;
       out.push(line);
       blank = false;
+      para = false;
       continue;
     } else if (/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) {
       flush();
@@ -211,7 +212,8 @@ export function linkify(md, opts = {}) {
     }
     blank = !inner(line).trim();
     ref = false;
-    def = false;
+    // a line of a paragraph: not blank, not a heading or a rule, not code
+    para = run.length > 0 && run[run.length - 1] === line && !blank && !/^[\s>]*(#{1,6}(\s|$)|([-*_])(\s*\3){2,}\s*$)/.test(line);
   }
   flush();
   return out.join("\n");

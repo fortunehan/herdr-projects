@@ -180,6 +180,9 @@ test("reference definitions resolve the same to marked after linkify", () => {
     "[docs]:\n  https://example.org/guide \"Open the guide\n  in a browser\"\n\n[docs]",
     "> [docs]:\n>https://example.org/guide\n>\n> [docs]",
     "[site]:\n    https://example.org/\n\nSee [site].",
+    "# Build results\n[report]: https://example.org/build\n\nRead [report]",
+    "---\n[report]: https://example.org/build\n\nRead [report]",
+    "```\nx\n```\n[report]: https://example.org/build\n\nRead [report]",
   ];
   for (const s of samples) expect(hrefs(md(s))).toEqual(hrefs(s));
   // "[x]:" right after a sentence is words: the path under it is still a link
