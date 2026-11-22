@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as L from "./chat-links.js";
+import { marked } from "marked";
 
 const HOME = "/h/me";
 const md = (s, o = {}) => L.linkify(s, { home: HOME, ...o });
@@ -116,6 +117,16 @@ describe("finding links in a reply", () => {
     expect(L.fromHref("//example.org/guide", HOME)).toEqual({ kind: "url", url: "https://example.org/guide" });
   });
 
+  test("round 5: a list item's fence ends with the item; quoted references without a space; %3A in a name", () => {
+    const nested = "- ```\n  first\n- ````\n  ```\n  /tmp/a/in.txt\n  ````";
+    expect(md(nested)).toBe(nested);
+    expect(md("- ```\n  x\n\nthen /tmp/c/d.pdf")).toBe("- ```\n  x\n\nthen [/tmp/c/d.pdf](file:///tmp/c/d.pdf)");
+    expect(md("> [docs]:\n>https://example.org/guide\n>\n> [docs]")).toBe("> [docs]:\n>https://example.org/guide\n>\n> [docs]");
+    // words under a bare "[docs]:" are words, not its destination
+    expect(md("> [docs]:\n> See /tmp/a/b.txt")).toBe("> [docs]:\n> See [/tmp/a/b.txt](file:///tmp/a/b.txt)");
+    expect(md("[Report](/tmp/Report%3A12:34)")).toBe("[Report](file:///tmp/Report:12)");
+  });
+
   test("a fence in a quoted list is code too", () => {
     expect(md("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```")).toBe("> - ```sh\n>   cat /tmp/a/b.txt\n> - ```");
   });
@@ -140,6 +151,24 @@ describe("finding links in a reply", () => {
     const pathHref = (p) => `#path=${encodeURIComponent(p)}`;
     expect(L.linkify("see ~/a/b.html", { home: "~", pathHref })).toBe("see [\\~/a/b.html](#path=~%2Fa%2Fb.html)");
   });
+});
+
+// The renderer is the judge of where code is: every code block marked finds reads the same after linkify (Copy copies it).
+test("code blocks read the same to marked after linkify", () => {
+  const codes = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "code") out.push(t.text); }); return out; };
+  const samples = [
+    "- ```\n  first\n- ````\n  ```\n  /tmp/a/in.txt\n  ````",
+    "```\n- ```\n/tmp/a/b.txt\n```",
+    "```\n> ```\n/tmp/a/b.txt\n```",
+    "> ```\n> /tmp/a/b\n\nsee /tmp/a/b.pdf",
+    "> - ```sh\n>   cat /tmp/a/b.txt\n> - ```",
+    "- Example\n\n    ~~~sh\n    cat /tmp/a/b.txt\n    ~~~",
+    "Run:\n\n    open /tmp/a/b.html\n\nthen /tmp/c/d.pdf",
+    "1. step\n   ```\n   /tmp/x/y.html\n   ```\n2. /tmp/z/w.pdf",
+    "> > ```\n> > /tmp/q/r.txt\n> > ```\n> /tmp/s/t.txt",
+    "````\n```\n/tmp/a/b\n```\n````",
+  ];
+  for (const s of samples) expect(codes(md(s))).toEqual(codes(s));
 });
 
 describe("a clicked link's target", () => {

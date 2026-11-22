@@ -136,9 +136,11 @@ function linkCode(span, inner, opts) {
 function linkAuthored(m, opts) {
   const [whole, img, words, target] = m;
   if (img) return whole;
-  let t = target;
+  // its :line:col as written, then the rest decoded once (%20 a space, %3A a colon that is part of the name)
+  const suffix = (LINE.exec(target) ?? [""])[0];
+  let t = target.slice(0, target.length - suffix.length);
   if (!/^file:/i.test(t)) try { t = decodeURIComponent(t); } catch {}
-  const p = /^(\/(?!\/)|~\/|file:\/\/)/i.test(t) ? pathOf(t.replace(LINE, ""), (LINE.exec(t) ?? [""])[0]) : null;
+  const p = /^(\/(?!\/)|~\/|file:\/\/)/i.test(t) ? pathOf(t, suffix) : null;
   if (!p) return whole;
   const href = hrefOf({ kind: "path", path: p.path }, opts);
   return href ? `[${words}](${href})` : words;
@@ -167,19 +169,25 @@ export function linkify(md, opts = {}) {
   let run = [], fence = null, blank = true, indented = false, ref = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
   const depth = (l) => (/^[\s>]*/.exec(l)[0].match(/>/g) ?? []).length;
+  // a line without its quote markers, and how far in its words start (a list item's code is indented to its words)
+  const inner = (l) => l.replace(/^(?:\s*>)*/, "");
+  const lead = (l) => /^ */.exec(inner(l))[0].length;
   for (const line of lines) {
     const f = /^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))*\s*(`{3,}|~{3,})/.exec(line);
-    // a fence opened in a quote ends with the quote
+    // a fence opened in a quote ends with the quote, one in a list item when a line starts left of the item's words
     if (fence && depth(line) < fence.depth) fence = null;
+    if (fence && fence.indent > 0 && inner(line).trim() && lead(line) < fence.indent) fence = null;
     if (fence) {
       out.push(line);
       const c = /^[\s>]*(`{3,}|~{3,})\s*$/.exec(line);
       if (c && depth(line) === fence.depth && c[1][0] === fence.mark[0] && c[1].length >= fence.mark.length) fence = null;
     } else if (f) {
       flush();
-      fence = { mark: f[1], depth: depth(line) };
+      fence = { mark: f[1], depth: depth(line), indent: inner(line).indexOf(f[1]) };
       out.push(line);
-    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^[\s>]*\s\S/.test(line))) {
+    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^\S+(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*$/.test(inner(line).trim()))) {
+      // a reference definition, and the line its destination is on when the definition ends at its colon (one word,
+      // maybe a title: "See /tmp/a" under it is words, not a destination)
       flush();
       ref = /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       out.push(line);
