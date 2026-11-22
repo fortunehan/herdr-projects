@@ -17,6 +17,8 @@ type Meta = { id: string; title: string; version: number; versions: { v: number;
 const q = new URLSearchParams((window as any).viewerLink ?? location.search)
 const id = q.get('artifact') ?? ''
 const api = `api/artifacts/${encodeURIComponent(id)}`
+/** ?full=1: laid out as the web app's full screen (SHEP-111), for an agent's screenshot of it */
+const full = q.get('full') === '1'
 
 /** how long ago, as the web app's viewer says it (plugins/artifacts ago): "just now", "5m ago", "2h ago", "3d ago" */
 function ago(ms: number) {
@@ -104,7 +106,7 @@ function Viewer() {
           {error ? <p role="alert" className="p-4 text-fg3">{error}</p> : !recipe ? <p className="p-4 text-fg3">Loading…</p> : (
             <div className={clsx('h-full overflow-y-auto p-4 phone:p-5')}>
               <Shown key={recipe.v}>
-                <Recipe recipe={recipe} asset={(src) => `${api}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${recipe.v}`} reply={async () => undefined} />
+                <Recipe recipe={recipe} asset={(src) => `${api}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${recipe.v}`} reply={async () => undefined} fullScreen={full} />
               </Shown>
             </div>
           )}

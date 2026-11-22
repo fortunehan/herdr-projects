@@ -43,6 +43,14 @@ export const mediaKind = (src) => {
   const e = typeof src === "string" ? (src.match(/\.([a-z0-9]+)$/i)?.[1] ?? "").toLowerCase() : "";
   return PICTURES.includes(e) ? "image" : VIDEOS.includes(e) ? "video" : AUDIOS.includes(e) ? "audio" : DOCUMENTS.includes(e) ? "pdf" : null;
 };
+// SHEP-111: a full-screen artifact's layout, both renderers: the whole recipe centred, words (text, lists, tables,
+// callouts, everything else) at most FULL_TEXT px wide; pictures, pairs, columns and clips may take the whole width,
+// each picture at most its own size (its pixels as CSS px: a recipe records no scale), so none is drawn blurry.
+export const FULL_TEXT = 1000;
+const FULL_WIDE = ["image", "pair", "columns", "video"];
+export const fullWide = (b) => FULL_WIDE.includes(b?.type);
+// how wide a picture may be drawn full screen: its own width (the recipe's w, else the file's), null when not known
+export const pictureMax = (b, size) => (b?.w > 0 ? b.w : size?.w > 0 ? size.w : null);
 export const TONES = ["info", "good", "warn", "bad"];
 export const CHARTS = ["bar", "line", "pie"];
 export const FIELDS = ["text", "textarea", "select", "checkbox"];
