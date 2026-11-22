@@ -771,7 +771,7 @@
     {
       "id": "chat-links",
       "addon": "chat",
-      "title": "Clickable paths and links",
+      "title": "Links and paths in a reply",
       "core": [
         "chat-links"
       ],
@@ -786,14 +786,11 @@
         ]
       },
       "forms": {
-        "herdr": "URLs in an agent's reply are links, opened in the default browser; paths are words (the Terminal view's Cmd-click opens them)",
-        "desktop": "URLs and this machine's paths are links, opened on the agent's machine; hover says what a click does",
+        "herdr": "URLs in an agent's reply are links, opened in the default browser; its Paths action lists the reply's paths and opens the picked one (browser, Finder), this machine's agent only",
+        "desktop": "URLs are links; paths are words (the file is on the agent's machine)",
         "tablet": "Same as desktop",
-        "phone": "URLs only"
-      },
-      "service": [
-        "actions.ts"
-      ]
+        "phone": "Same as desktop"
+      }
     },
     {
       "id": "models",

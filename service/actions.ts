@@ -14,8 +14,6 @@ import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
 const { sessionOf, forkArgv, launchArgv, liveTaskAgent, FORK_LIVE } = AGa as any;
-import * as CLa from "../core/chat-links.js";
-const CL = CLa as any;
 import * as SP from "../core/spaces.js";
 const { READ, withMove, withSection, withoutSection, withSectionName, withIcon, withMachineLook, withOrder, withMachineOrder, DELETED, deletedSection, withRestoredSection } = SP as any;
 import type { Compat } from "./compat.ts";
@@ -207,21 +205,6 @@ async function knownAgents(hub: Hub, compat: Compat, machine: string | null): Pr
   const r = await exec(hub, ["sh", "-c", 'for c in "$@"; do command -v "$c" >/dev/null 2>&1 && echo "$c"; done', "agents", ...Object.keys(AGENTS)], machine).catch(() => null);
   const have = new Set((r?.stdout ?? "").split("\n").filter(Boolean));
   return Object.entries(AGENTS).map(([kind, a]) => ({ kind, name: a.name, installed: have.has(kind), run: a.run }));
-}
-
-/** A path an agent wrote, clicked in its reply on the web app (SHEP-99): opened on that agent's machine as the window's
- *  chat opens it (core/chat-links.js), only in that machine's home folder or /tmp. { ok } or { ok: false, title, error }. */
-export async function openPath(hub: Hub, addr: string, path: unknown) {
-  const p = typeof path === "string" ? path : "";
-  if (!/^(\/|~\/|~$)/.test(p) || p.length > 4096 || /[\0\n\r]/.test(p)) throw new Error("That isn't a path.");
-  const action = CL.actionOf(p);
-  const [prog, args] = CL.command(action, "linux", p, true);
-  // a finished task's chat is its log ("log:<machine>|<kind>|<path>", service/chats.ts), else a terminal ("<machine>/t…")
-  const machine = addr.startsWith("log:") ? addr.slice(4).split("|")[0] || null : addr.includes("/") ? addr.split("/")[0] : null;
-  const r = await exec(hub, [prog, ...args], machine).catch(() => null);
-  // macOS or Linux: the script asks uname; only its words for a failure depend on which
-  const why = CL.problem(action, "macos", p, r);
-  return why ? { ok: false, title: why.title, error: why.body } : { ok: true };
 }
 
 export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
@@ -692,7 +675,6 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       ? { key: b.answer.slice(0, 120), value: b.value ?? null } : undefined;
     return compat.artifacts.say(str(b.artifact, 100), Number(b.v) || 1, text, typeof b.target === "string" ? b.target.slice(0, 300) : undefined, keep);
   }
-  if (b?.type === "open-path") return openPath(hub, chat(b.chat), b.path);
   switch (b?.type) {
     case "send": {
       // one page's send asked again (its answer lost on the way, a reload, Retry): the same one, never twice

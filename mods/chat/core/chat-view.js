@@ -126,11 +126,12 @@ export function clock(at, now = new Date()) {
 }
 
 // The actions under a message, in order: reply and copy; then the CLI's rewind on your own (not a /command, not one
-// another agent sent), or its fork on the agent's (when the CLI is known).
+// another agent sent), or on the agent's its paths (the window chat's Paths, when the reply names one: SHEP-110) and
+// its fork (when the CLI is known).
 // translate (SHEP-102): the agent's words get Translate while Settings › Translation is on; yours never do.
-export function bandActs(side, text, { from = null, fork = true, translate = false } = {}) {
+export function bandActs(side, text, { from = null, fork = true, paths = false, translate = false } = {}) {
   if (side === "user") return ["reply", "copy", ...(/^\//.test(String(text ?? "")) || from ? [] : ["rewind"])];
-  return ["reply", "copy", ...(fork ? ["fork"] : []), ...(translate ? ["translate"] : [])];
+  return ["reply", "copy", ...(paths ? ["paths"] : []), ...(fork ? ["fork"] : []), ...(translate ? ["translate"] : [])];
 }
 
 // The whole band, in order from left to right (DECISIONS, Chat > Message actions): the reaction pills flush under the
