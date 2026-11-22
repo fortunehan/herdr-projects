@@ -159,6 +159,7 @@ describe("a message", () => {
     a1: { text: "A whole reply here.", raw: "A whole reply here.", writing: false },
     a2: { text: "Unfinished reply.", raw: "Unfinished reply.", writing: true },
     a3: { text: "- Intro. echo KeepThisPrivate\n\nReady now.", raw: "- Intro.\n  # Before: ![proof](/tmp/proof.png)\n      echo KeepThisPrivate\n\nReady now.", writing: false },
+    a4: { text: "- Intro. pwd\n\nReady now.", raw: "- Intro.\n  # ![proof](/tmp/proof.png)\n      pwd\n\nReady now.", writing: false },
   };
   const chatT = () => new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
     recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), messageOf: async (w, id) => (w.chat === "sp1" ? convo[id] ?? null : null) });
@@ -180,14 +181,21 @@ describe("a message", () => {
   test("a line that was code in the agent's own words is never sent, even joined to words by a picture taken out", async () => {
     reset();
     const r: any = await chatT().handle({ chat: "sp1", id: "a3" });
-    expect(r.ok).toBe(true);
-    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Ready now."]);
+    // split as the agent wrote it: its code is marked's code there; the pictures' markdown isn't sent
+    expect(r).toMatchObject({ ok: true, atEnd: true });
+    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Intro.", "Before:", "Ready now."]);
+    reset();
+    await chatT().handle({ chat: "sp1", id: "a4" });
+    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Intro.", "Ready now."]);
   });
 
-  test("a key in an answer as HTML entities or markdown escapes is taken out too", () => {
+  test("a translation holding the key as any page could render it is dropped whole", () => {
     const t: any = make().t;
     const used = new Set(["sk-stub-secret"]);
-    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "plain"], used)).toEqual(["see … now", "and …", "plain"]);
+    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "split sk-**stub**-secret", "plain words", "bad &#1114112; entity"], used))
+      .toEqual([null, null, null, "plain words", "bad &#1114112; entity"]);
+    // the key itself, written plainly: taken out, the rest kept
+    expect(t.scrub(["key sk-stub-secret here"], used)).toEqual(["key … here"]);
   });
 
   test("a kept translation comes back only where its block has words (a code slot never does)", async () => {

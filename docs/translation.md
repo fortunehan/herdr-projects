@@ -57,9 +57,13 @@ Only the endpoint set here is ever called. There is no built-in public service.
 - A failure is one short line under the message (or the block) with Retry; no pop-up.
 - A message is asked for by its chat and its id: the service reads its words from that chat's conversation itself
   (never the words a caller sends), and refuses one its agent may still be writing (its agent works and it is the
-  newest reply). The band, the phone's hold menu and the window wait for it too. A block holding a line that was code
-  in the agent's own words is never sent, even when taking a picture out joined it to words.
-- A key is taken out of every answer as the page would show it (HTML entities and markdown escapes decoded too).
+  newest reply). The band, the phone's hold menu and the window wait for it too.
+- A reply whose pictures its chat shows under the words is split as the agent wrote it (so code is exactly marked's
+  code there; the pictures' markdown isn't sent), and its translations go under the whole message, in order.
+- The key written plainly in an answer is taken out; a translation that holds it as any page could render it
+  (entities, escapes, emphasis between its parts) is dropped whole and shows as not translated.
+- Known limits: an ended task's chat read from its saved log can't be translated; a message more than 20 pages back
+  in its chat isn't found.
 - Manual only: there is no switch to translate a whole chat by itself.
 
 ## Tests

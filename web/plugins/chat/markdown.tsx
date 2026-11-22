@@ -74,7 +74,7 @@ export function toHtml(text: string, mention?: (a: HTMLAnchorElement, name: stri
 /** A message's translation as the Markdown under it shows it (web/plugins/chat/translate.ts): source, the words the
  *  service split (core/translate.js blocksFromTokens, on marked's own parse: the same as this page draws); blocks, each block's translation (null: none); failed, the blocks that
  *  couldn't be; loading, asked and not back yet; error, why it failed as a whole; retry, asks again. */
-export type Tr = { source: string; blocks?: (string | null)[]; failed?: number[]; loading?: boolean; error?: string; retry?: () => void }
+export type Tr = { source: string; blocks?: (string | null)[]; failed?: number[]; loading?: boolean; error?: string; retry?: () => void; atEnd?: boolean }
 
 const BLOCKS = 'h1,h2,h3,h4,h5,h6,p,li,th,td'
 const kindOf = (el: Element) => (/^H\d$/.test(el.tagName) ? 'h' : el.tagName === 'P' ? 'p' : el.tagName === 'LI' ? 'li' : 'td')
@@ -115,7 +115,7 @@ function addTranslations(root: HTMLElement, tr: Tr) {
     if (!el || kindOf(el) !== k) ok = false
     else pairs.push([i, el])
   })
-  if (j !== els.length) ok = false
+  if (j !== els.length || tr.atEnd) ok = false
   const failed = new Set(tr.failed ?? [])
   const under = (i: number) => {
     const t = tr.blocks?.[i]
@@ -206,7 +206,7 @@ export function Markdown({ text, chat, tr }: { text: string; chat?: string; tr?:
 }
 
 /** what a translation shows, as a key for useMemo (its Retry aside) */
-const trKey = (tr?: Tr) => (tr ? JSON.stringify([tr.source, tr.blocks, tr.failed, tr.loading, tr.error, !!tr.retry]) : '')
+const trKey = (tr?: Tr) => (tr ? JSON.stringify([tr.source, tr.blocks, tr.failed, tr.loading, tr.error, !!tr.retry, !!tr.atEnd]) : '')
 
 /** a press on a translation's Retry */
 function onRetry(e: MouseEvent, tr?: Tr) {

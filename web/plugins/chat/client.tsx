@@ -70,7 +70,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
   // a reply still being written gets no Translate (its band waits; a phone's hold menu asks isWriting)
   useEffect(() => { setWriting(tkey, !!writing); return () => setWriting(tkey, false) }, [tkey, writing])
   const tr: Tr | undefined = !you && msg.text && shownTr?.shown
-    ? { source: msg.text, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text!, chat: chat.key, id: msg.id }) }
+    ? { source: msg.text, atEnd: shownTr.atEnd, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text!, chat: chat.key, id: msg.id }) }
     : undefined
   // one on its way isn't a message yet: a hold (or ⋯ with a mouse) offers only to take it out
   const [menu, setMenu] = useState(false)

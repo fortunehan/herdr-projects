@@ -11,27 +11,24 @@ import { marked } from "marked";
 import * as TR from "../core/translate.js";
 
 const T = TR as any;
+/** A code point as a page shows it: out of range is the replacement character. */
+const point = (n: number) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "\ufffd");
 const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 /** Words as a page shows them: HTML entities and markdown's backslash escapes decoded. */
 export const decoded = (s: string) => s
-  .replace(/&#(\d+);?/g, (_, n) => String.fromCodePoint(Number(n)))
-  .replace(/&#x([0-9a-f]+);?/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replace(/&#(\d+);?/g, (_, n) => point(Number(n)))
+  .replace(/&#x([0-9a-f]+);?/gi, (_, n) => point(parseInt(n, 16)))
   .replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
   .replace(/\\([!-\/:-@[-`{-~])/g, "$1");
-/** Every line (trimmed, four characters or more) that is code in marked's parse of the agent's own words. */
-export function codeLines(raw: string) {
-  const out: string[] = [];
-  const walk = (ts: any[]) => { for (const t of ts ?? []) { if (t.type === "code") out.push(...String(t.text ?? "").split("\n").map((l) => l.trim()).filter((l) => l.length >= 4)); walk(t.tokens); for (const it of t.items ?? []) walk(it.tokens); } };
-  walk(marked.lexer(String(raw ?? "")) as any);
-  return out;
-}
 /** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
 const split = (md: string) => T.blocksFromTokens(marked.lexer(md));
 const defsOf = (md: string) => T.linkDefs(marked.lexer(md));
 type Config = { on: boolean; base_url: string; model: string; key: string; agreed: number };
 type Key = { key: string } | { error: string };
 /** parts: the window's parts (core/translate.js windowParts): the window has no marked to split the message itself */
-export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[]; parts: unknown[] } | { ok: false; error: string };
+/** atEnd: the blocks are the agent's own words' (pictures were taken out of what its chat shows): every translation
+ *  goes under the whole message, in order */
+export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[]; parts: unknown[]; atEnd?: boolean } | { ok: false; error: string };
 /** mdParts: each markdown field's window parts, by its place ("4.md") */
 export type ArtifactResult = { ok: true; target: string; units: Record<string, string>; failed: string[]; mdParts: Record<string, unknown[]> } | { ok: false; error: string };
 
@@ -129,13 +126,16 @@ export class Translator {
   /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
    *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
   private scrub(got: (string | null)[], used: Set<string>) {
+    // only letters and digits, as any page could render the words (entities, escapes, emphasis or spaces between the
+    // key's parts): a translation that holds a key that way is dropped whole (that block shows as not translated)
+    const bare = (s: string) => decoded(s).replace(/[^\p{L}\p{N}]+/gu, "");
+    const keys = [...used].map(bare).filter((k) => k.length >= 8);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      // as the page shows it (HTML entities and markdown escapes decoded): one there means the decoded words go, keyless
-      const shown = decoded(x);
-      return [...used].some((k) => k && shown.includes(k)) ? [...used].reduce((s, k) => (k ? s.split(k).join("…") : s), shown) : x;
+      const b = bare(x);
+      return keys.some((k) => b.includes(k)) ? null : x;
     });
   }
 
@@ -156,12 +156,21 @@ export class Translator {
     if (why) return { ok: false, error: why };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: "There's nothing to translate." };
     if (text.length > MOST) return { ok: false, error: "This message is too long to translate." };
-    // a block holding a line that was code in the agent's own words (a picture taken out can join them) is never sent
-    const code = codeLines(raw);
-    const blocks = split(text).map((b: any) => (!b.skip && code.some((l) => String(b.text).includes(l)) ? { ...b, skip: true } : b));
+    // pictures taken out of the agent's words (its chat shows them under the words) can change what is code: such a
+    // message is split as the agent wrote it, so code is exactly marked's code there, and its translations go under the
+    // whole message (atEnd) rather than under blocks the page draws differently
+    const atEnd = raw !== text;
+    // (its pictures' markdown isn't sent: only the words around them)
+    const blocks = atEnd ? split(raw).map((b: any) => {
+      if (b.skip) return b;
+      const words = String(b.text).replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, "").replace(/\s+/g, " ").trim();
+      return { ...b, text: words, skip: !T.hasWords(words) };
+    }) : split(text);
     const target = T.blocksDirection(blocks);
-    // the cache's name says its block layout (marked's parse, SHEP-102 round 4): an older layout's is never read
-    const f = this.file("message:marked1", text, target);
+    // the cache's name says its layout and which blocks are sent (an older layout's, or another eligibility's, is
+    // never read; two at once share one only when both match)
+    const mask = blocks.map((b: any) => (b.skip ? "0" : "1")).join("");
+    const f = this.file("message:marked2", `${atEnd ? raw : text}\0${mask}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -178,7 +187,7 @@ export class Translator {
         this.write(f, { target, at: this.now(), blocks: out });
       }
       const failed = at.filter((i: number) => !out[i]);
-      return { ok: true, target, blocks: out, failed, parts: T.windowParts(blocks, out, failed, defsOf(text)) } as MessageResult;
+      return { ok: true, target, blocks: out, failed, atEnd, parts: atEnd ? [] : T.windowParts(blocks, out, failed, defsOf(text)) } as MessageResult;
     });
   }
 
@@ -194,7 +203,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked1", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked2", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};
