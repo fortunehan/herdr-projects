@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Translator } from "./translate.ts";
 
 // a stub translation endpoint on 127.0.0.1, never a real API: [zh]/[en] in front of each string; `mode` breaks it
-let mode: "ok" | "short" | "401" | "500key" | "garbage" | "keyecho" = "ok";
+let mode: "ok" | "short" | "401" | "500key" | "garbage" | "keyecho" | "keyprose" = "ok";
 const seen: { auth: string | null; body: any }[] = [];
 const stub = Bun.serve({
   hostname: "127.0.0.1", port: 0,
@@ -20,6 +20,8 @@ const stub = Bun.serve({
     if (mode === "short" && texts.length > 1) out = (out as string[]).slice(1);
     // the key in a translation, its first letter escaped twice over (in the answer's JSON and in the array's)
     if (mode === "keyecho") return new Response(`{"choices":[{"message":{"content":"[\\"key \\\\u0073k-stub-secret here\\"]"}}]}`, { headers: { "content-type": "application/json" } });
+    // an answer in words around its array, the key's first letter escaped in it
+    if (mode === "keyprose") return new Response(`{"choices":[{"message":{"content":"Translation: [\\"key \\\\u0073k-stub-secret here\\"] done"}}]}`, { headers: { "content-type": "application/json" } });
     if (mode === "garbage") return Response.json({ choices: [{ message: { content: "I can't do that." } }] });
     return Response.json({ choices: [{ message: { content: JSON.stringify(out) } }] });
   },
@@ -134,6 +136,15 @@ describe("a message", () => {
     expect(readFileSync(join(dir, readdirSync(dir)[0]), "utf8")).not.toContain("stub-secret");
   });
 
+  test("an answer wrapped in words, the key escaped in it: still taken out", async () => {
+    reset();
+    mode = "keyprose";
+    const { t, dir } = make();
+    const r: any = await t.message("Some words to translate.");
+    expect(r.blocks[0]).toBe("key … here");
+    expect(readFileSync(join(dir, readdirSync(dir)[0]), "utf8")).not.toContain("stub-secret");
+  });
+
   test("turned off while the key is looked up: nothing goes to the old endpoint", async () => {
     reset();
     let cfg = { on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 };
@@ -146,10 +157,28 @@ describe("a message", () => {
   test("a reply still being written is refused, and nothing is sent", async () => {
     reset();
     const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
-      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), writing: (w, text) => w.chat === "sp1" && text === "Half a reply" });
-    expect(await t.handle({ text: "Half a reply", chat: "sp1" })).toMatchObject({ ok: false, error: expect.stringContaining("still being written") });
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), writing: (w, id) => w.chat === "sp1" && id === "a2" });
+    expect(await t.handle({ text: "Half a reply", chat: "sp1", id: "a2" })).toMatchObject({ ok: false, error: expect.stringContaining("still being written") });
+    // a message with no chat or id isn't translated at all
+    expect(await t.handle({ text: "Half a reply" })).toMatchObject({ ok: false });
     expect(seen.length).toBe(0);
-    expect(await t.handle({ text: "A whole reply here.", chat: "sp1" })).toMatchObject({ ok: true });
+    expect(await t.handle({ text: "A whole reply here.", chat: "sp1", id: "a1" })).toMatchObject({ ok: true });
+  });
+
+  test("a kept translation comes back only where its block has words (a code slot never does)", async () => {
+    reset();
+    const { t, dir } = make();
+    await t.message("First paragraph.\n\nSecond paragraph.");
+    const f = join(dir, readdirSync(dir)[0]);
+    // the same file written by an older layout: code in a slot that has words now, and a word slot holding code
+    writeFileSync(f, JSON.stringify({ target: "zh", blocks: ["[old]Second", "[old]code"] }));
+    const r: any = await t.message("First paragraph.\n\nSecond paragraph.");
+    expect(r.blocks).toEqual(["[old]Second", "[old]code"]);
+    const r2: any = await t.message("```\nls\n```\n\nWords here.");
+    writeFileSync(join(dir, readdirSync(dir).find((x) => !f.endsWith(x))!), JSON.stringify({ target: "zh", blocks: ["[old]ls", "[zh]Words here."] }));
+    const r3: any = await t.message("```\nls\n```\n\nWords here.");
+    expect(r2.blocks[0]).toBeNull();
+    expect(r3.blocks).toEqual([null, "[zh]Words here."]);
   });
 
   test("an answer that is never the translation fails, and nothing is kept", async () => {

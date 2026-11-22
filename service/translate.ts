@@ -34,8 +34,9 @@ export type TranslatorIO = {
   key: (name: string) => Promise<Key>;
   /** a recipe artifact's recipe (service/artifacts.ts) */
   recipe: (id: string, v: number, on: string | null) => Promise<{ blocks: unknown[] } | null>;
-  /** whether a chat's reply with these words is still being written (no translation until it is complete) */
-  writing?: (where: { chat?: string; addr?: string }, text: string) => boolean;
+  /** whether a chat's message (its id) may still be being written: its agent works and it is the newest reply, or it
+   *  can't be told (no translation until it is surely complete) */
+  writing?: (where: { chat?: string; addr?: string }, id: string) => boolean;
   /** where translations are kept */
   dir: string;
   fetchFn?: typeof fetch;
@@ -63,11 +64,12 @@ export class Translator {
 
   /** One request to the endpoint: the model's answer text. Settings › Translation as it is now first: turned off or
    *  pointed elsewhere since this translation started, nothing more is sent (not to the old endpoint, nor the new). */
-  private async ask(cfg: Config, texts: string[], target: string, testing = false): Promise<string> {
+  private async ask(cfg: Config, texts: string[], target: string, testing = false, used?: Set<string>): Promise<string> {
     const url = T.endpointOf(cfg.base_url);
     if (!url) throw new Error(T.WORDS.notSet);
     const k = await this.keyOf(cfg.key);
     if ("error" in k) throw new Error(k.error);
+    used?.add(k.key);
     // right before it goes (after the key's lookup, which can take a while)
     const now = this.io.config();
     if ((!testing && !now.on) || now.base_url !== cfg.base_url || now.model !== cfg.model || now.key !== cfg.key) throw new Error(CHANGED);
@@ -109,6 +111,12 @@ export class Translator {
     renameSync(`${f}.tmp`, f);
   }
 
+  /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
+   *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
+  private scrub(got: (string | null)[], used: Set<string>) {
+    return got.map((t) => { let x = t; for (const k of used) if (x && k) x = x.split(k).join("…"); return x; });
+  }
+
   /** One at a time per thing translated: a second press (another screen) waits for the first. */
   private once<R>(id: string, fn: () => Promise<R>): Promise<R> {
     const was = this.running.get(id);
@@ -128,15 +136,19 @@ export class Translator {
     if (text.length > MOST) return { ok: false, error: "This message is too long to translate." };
     const blocks = split(text);
     const target = T.blocksDirection(blocks);
-    const f = this.file("message", text, target);
+    // the cache's name says its block layout (marked's parse, SHEP-102 round 4): an older layout's is never read
+    const f = this.file("message:marked1", text, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
-      const out: (string | null)[] = Array.isArray(kept?.blocks) && kept.blocks.length === blocks.length ? kept.blocks : blocks.map(() => null);
+      // a kept translation only where its block has words (a slot of code, a rule or HTML never comes back)
+      const out: (string | null)[] = Array.isArray(kept?.blocks) && kept.blocks.length === blocks.length
+        ? kept.blocks.map((x: unknown, i: number) => (blocks[i].skip || typeof x !== "string" ? null : x)) : blocks.map(() => null);
       const need = at.map((i: number, k: number) => ({ i, text: texts[k] })).filter((x: { i: number }) => !out[x.i]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
+        const used = new Set<string>();
+        try { got = this.scrub(await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to, false, used)), used); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as MessageResult; }
         need.forEach((x: { i: number }, k: number) => { if (got[k]) out[x.i] = got[k]; });
         this.write(f, { target, at: this.now(), blocks: out });
@@ -158,14 +170,15 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked1", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};
       const need = units.filter((u) => !out[u.key]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
+        const used = new Set<string>();
+        try { got = this.scrub(await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to, false, used)), used); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as ArtifactResult; }
         need.forEach((u, k) => { if (got[k]) out[u.key] = got[k]!; });
         this.write(f, { target, at: this.now(), units: out });
@@ -194,9 +207,12 @@ export class Translator {
   handle(body: any): Promise<MessageResult | ArtifactResult> {
     if (typeof body?.artifact === "string") return this.artifact(body.artifact, Number(body.v) || 1, typeof body.on === "string" && body.on ? body.on : null);
     const text = String(body?.text ?? "");
-    // a reply still being written is never sent (the buttons wait too; this is the last word on it)
+    // a message comes with its chat and its id, and one its agent may still be writing is never sent (the buttons wait
+    // too; this is the last word on it)
     const where = { chat: typeof body?.chat === "string" ? body.chat : undefined, addr: typeof body?.addr === "string" ? body.addr : undefined };
-    if ((where.chat || where.addr) && this.io.writing?.(where, text)) return Promise.resolve({ ok: false, error: T.WORDS.writing });
+    const id = typeof body?.id === "string" ? body.id : "";
+    if (!(where.chat || where.addr) || !id) return Promise.resolve({ ok: false, error: "Translate a message from its chat." });
+    if (this.io.writing?.(where, id)) return Promise.resolve({ ok: false, error: T.WORDS.writing });
     return this.message(text);
   }
 }

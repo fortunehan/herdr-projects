@@ -2367,7 +2367,7 @@ export default class Chat extends View {
         const svc = await localService(cx), token = await localToken();
         if (!svc || !token) throw new Error(TR.WORDS.noService);
         const res = await fetch(`${svc.base}/api/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ type: "translate", text, addr: this.addr }) });
+          body: JSON.stringify({ type: "translate", text, addr: this.addr, id }) });
         r = await res.json().catch(() => null);
         if (!res.ok || !r) throw new Error(`the service answered ${res.status}`);
       } catch (e) { r = { ok: false, error: TR.WORDS.failed(plainError(e)) }; }

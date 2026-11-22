@@ -488,6 +488,7 @@ export function mediaIn(text, { cwd = null, home = null } = {}) {
     if (marks.length === 1 && label && rest.length <= 40 && (/:[*_]*$/.test(rest) || /^[*_]/.test(rest))) { media[Number(marks[0][1])].alt = label; return []; }
     return rest ? [l.replace(/\u0000\d+\u0000[ \t]*/g, "").replace(/[ \t]+$/, "")] : [];
   });
-  const words = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // only blank lines and trailing space go at the ends: an indented code block left first keeps its indent (SHEP-102)
+  const words = lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
   return { text: words, media };
 }

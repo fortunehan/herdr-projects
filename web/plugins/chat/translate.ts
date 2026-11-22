@@ -29,7 +29,7 @@ export const messageKey = (chat: string, id: string) => `m:${chat}|${id}`
 export const artifactKey = (art: { id: string; machine?: string | null }, v: number) => `a:${art.machine ?? ''}|${art.id}|${v}`
 
 /** a message's words and its chat (the service checks the reply is complete), or an artifact's version */
-type Ask = { text: string; chat: string } | { artifact: string; v: number; on: string | null }
+type Ask = { text: string; chat: string; id: string } | { artifact: string; v: number; on: string | null }
 
 async function ask(key: string, body: Ask) {
   const was = all.get(key)
