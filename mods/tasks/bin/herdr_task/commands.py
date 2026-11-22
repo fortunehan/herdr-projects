@@ -23,10 +23,11 @@ from .agents import (
 from .sessions import refresh_sessions
 from . import ado, ado_flow, local
 from .github import (already_merged, checks_missing, github_unreachable, pr_for_branch, checks_since, drop_branch, expected_checks, finish, gh, github, merged_here, needs_approval, note_checks, own_work, pr_adopt, pr_open,
-                     pr_pending, pr_problem, pr_view, publish as publish_pr, remote_of, update_main, watch_main)
+                     pr_pending, pr_problem, pr_view, publish as publish_pr, rebase_hint, remote_of, restack, RESTACK_NEEDS, update_main, watch_main)
+from .github import branch_tip_of
 from .github import CHECKS_RUNNING as PR_CHECKS_RUNNING
 from .launch import (
-    base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, handoff, launch, name_tabs, on_remote,
+    base_ref, brief, caller_labels, caller_space, current_base, default_space, folder_for, git_quick, handoff, launch, name_tabs, on_remote,
     own_path, parent_for, resume_argv, retag_tabs, set_branch, tab_title, task_tabs,
 )
 from .store import bare_by_mistake, is_task_list, locate, open_store, prefixes_in_use, read_list, Store, store_files
@@ -197,7 +198,7 @@ def set_base(s, t, base, space=None, new=False):
     t.pop("base_by", None)
     base = base.strip()
     if t.get("worktree"):
-        raise Fail(f"{s.ref(t)} already has its worktree from {t.get('base')}; its base can't change now.")
+        return move_base(s, t, base)
     if not base:
         t.pop("base", None)
         t.pop("base_set", None)
@@ -211,6 +212,76 @@ def set_base(s, t, base, space=None, new=False):
         t.pop("base_set", None)
     else:
         t["base"], t["base_set"] = base, True
+
+
+def base_gone(s, t, base):
+    """SHEP-106: a started task's base branch went (the remote has it no more; with no remote, the repo
+    here), or it merged into base: a task here on that branch merged, or the branch is in base."""
+    main, old = s.loc["folder"], t.get("base") or "main"
+    has = lambda ref: git(main, "show-ref", "--verify", "--quiet", ref)[0]
+    remote = remote_of(main)
+    if remote in git(main, "remote")[1].split():
+        ok, out, _ = git_quick(main, "ls-remote", "--heads", remote, f"refs/heads/{old}")
+        if ok and not out:
+            return True
+    elif not has(f"refs/heads/{old}"):
+        return True
+    if any(u is not t and u.get("branch") == old and u.get("merged") and (u.get("base") or "main") == base
+           for u in s.data.get("tasks") or []):
+        return True
+    return has(f"refs/heads/{old}") and git(main, "merge-base", "--is-ancestor", f"refs/heads/{old}", base)[0]
+
+
+def move_base(s, t, base):
+    """SHEP-106: `edit --base` on a started task, only when its base branch is gone or merged into the new
+    one (a stacked task whose task below merged). Its base moves; a pull request no longer open is dropped,
+    and an open one from its branch into the new base (its agent opened it) is recorded instead, so ready
+    never opens a second. Returns what to run to move its branch, for the person."""
+    old = t.get("base") or "main"
+    if not base or base == old:
+        raise Fail(f"{s.ref(t)} already has its worktree from {old}; its base can't change now.")
+    main = s.loc["folder"]
+    base_ref(main, base)
+    if not base_gone(s, t, base):
+        raise Fail(f"{s.ref(t)} already has its worktree from {old}; its base can't change now ({old} still exists "
+                   f"and isn't merged into {base}).")
+    up = next((u for u in s.data.get("tasks") or [] if u is not t and u.get("branch") == old), None)
+    tip = branch_tip_of(s, up) if up else None
+    t["base"], t["base_set"] = base, True
+    t.pop("base_by", None)
+    if str(t.get("attention") or "").startswith(("The pull request was closed", RESTACK_NEEDS)):
+        t.pop("attention", None)
+        t.pop("attention_at", None)
+    notes = [f"{s.ref(t)} now merges into {base} (was {old})."]
+    pr = t.get("pr")
+    if pr:
+        v = pr_view(t)
+        if v and v.get("state") == "OPEN" and not ado.owns(pr.get("repo")):
+            ok, _, err = gh("pr", "edit", str(pr["number"]), "--repo", pr["repo"], "--base", base)
+            notes.append(f"Pull request #{pr['number']} now targets {base}." if ok else
+                         f"Couldn't move pull request #{pr['number']} to {base} ({err}): change its base on GitHub.")
+        elif v and v.get("state") == "OPEN":
+            notes.append(f"Pull request #{pr['number']} is still open: change its target branch to {base} on Azure DevOps.")
+        elif v and v.get("state") != "MERGED":
+            t.pop("pr")
+            notes.append(f"Its closed pull request #{pr['number']} is forgotten.")
+    repo = github(s)
+    if not t.get("pr") and repo and not ado.owns(repo):
+        found = pr_for_branch(t, repo)
+        if found:
+            t["pr"] = {"number": found["number"], "url": found["url"], "repo": repo}
+            notes.append(f"Its open pull request #{found['number']} into {base} is recorded ({found['url']}).")
+        else:
+            notes.append(f"Its next ready opens a pull request into {base}.")
+    br, wt = t.get("branch"), t.get("worktree")
+    tip = tip or t.get("start")
+    if tip and br and git(main, "merge-base", "--is-ancestor", tip, br)[0] \
+            and not git(main, "merge-base", "--is-ancestor", tip, base)[0]:
+        notes.append(f"Its branch still carries {old}'s commits: {rebase_hint(s, t, tip, base)}.")
+    elif wt:
+        notes.append(f"Its branch is already on {base}.")
+    s.dirty = True
+    return " ".join(notes)
 
 
 def set_notes(t, args):
@@ -892,6 +963,8 @@ def cmd_state(args, state):
                 t.pop(k, None)
         if state == "done" and t.get("worktree") and merged_here(s, t):
             t["merged"] = True
+            # SHEP-106: merged here by its agent (local_merge_msg()), which deletes its branch: stacked tasks move.
+            restack(s, t)
         t["state"] = state
         t[{"done": "done_at", "running": "reopened_at", "todo": "reopened_at"}[state]] = now()
         if state != "done":
@@ -931,7 +1004,7 @@ def cmd_edit(args):
             q = t.get("queue") or {}
             if q.get("argv") and not q.get("custom"):
                 q["argv"] = worker_argv(s, t, q.get("space"))
-        set_base(s, t, args.base)
+        moved = set_base(s, t, args.base)
         set_notes(t, args)
         if args.after is not None:
             set_after(s, t, *parse_after(s, args.after))
@@ -955,7 +1028,8 @@ def cmd_edit(args):
     left = name_tabs([(tab, tab_title(s, t)) for tab in tabs])
     if at:
         ensure_scheduler_quietly()
-    say(args, {**v, "rename": left}, f"{s.ref(t)} saved" + (f": {v['why']}." if v["status"] == "scheduled" else "."))
+    say(args, {**v, "rename": left, **({"moved": moved} if moved else {})},
+        f"{s.ref(t)} saved" + (f": {v['why']}." if v["status"] == "scheduled" else ".") + (f" {moved}" if moved else ""))
 
 
 def cmd_config(args):

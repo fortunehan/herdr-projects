@@ -3,7 +3,7 @@
 // or is starting does it wait, and the bubble says why.
 import clsx from 'clsx'
 import * as SL from '@core/slash.js'
-const { typing: slashTyping, match: slashMatch } = SL as any
+const { typing: slashTyping, match: slashMatch, atCaret, joinAtCaret } = SL as any
 import { openAccept } from '@client/screens/Accept.tsx'
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ComponentType, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from 'react'
 import { act, chatName, definePlugin, getDraft, getState, goChat, has, holdReload, openArtifact, openItem, openNeeds, openTask, registry, setDraft, setOutbox, setUI, taskOf, useDraft, useSnap, useStore, useUI, type UI } from '@client/kernel.ts'
@@ -1988,14 +1988,36 @@ function Composer({ chatKey, placeholder, cli, suggest = null }: { chatKey: stri
   // the "#" list: spaces this chat's agent reaches; the "@" list: tasks in them (mentions.tsx). Escape closes it for
   // what is typed, Up and Down choose, Enter or Tab takes
   const snap = useSnap()
-  const word = mentionTyping(text)
+  // SHEP-105: the lists match what is typed before the caret (the rest of the message may follow); its place is kept
+  // with the words it was in, so words set another way (a recall, a send) are read to their end
+  const [caret, setCaret] = useState<{ text: string; at: number } | null>(null)
+  const { before, after } = atCaret(text, caret?.text === text ? caret.at : null) as { before: string; after: string | null }
+  const typed = after === null ? '' : before
+  // a pick's caret, set once its words are in the box (a new value alone puts it at the end)
+  const pickedAt = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const el = ref.current, at = pickedAt.current
+    if (!el || at === null) return
+    pickedAt.current = null
+    el.setSelectionRange(at, at)
+    setCaret({ text, at })
+  }, [text])
+  const noteCaret = (el: HTMLTextAreaElement) =>
+    setCaret((c) => (c?.text === el.value && c.at === el.selectionEnd ? c : { text: el.value, at: el.selectionEnd }))
+  const fill = (head: string) => {
+    const done = joinAtCaret(head, after ?? '') as { text: string; caret: number }
+    pickedAt.current = done.caret
+    setText(done.text)
+    ref.current?.focus()
+  }
+  const word = mentionTyping(typed)
   const [mclosed, setMclosed] = useState<string | null>(null)
   const reach = useReach(chatKey, word !== null)
-  const mentions = word !== null && mclosed !== text ? mentionItems(snap, chatKey, text, reach) : []
+  const mentions = word !== null && mclosed !== text ? mentionItems(snap, chatKey, typed, reach) : []
   const choosable = pickable(mentions)
   const [msel, setMsel] = useState(0)
-  useEffect(() => setMsel(0), [word, (MNc as any).typingTask(text) === null])
-  const takeMention = (i: Item) => { setText(takeItem(chatKey, text, i)); ref.current?.focus() }
+  useEffect(() => setMsel(0), [word, (MNc as any).typingTask(typed) === null])
+  const takeMention = (i: Item) => fill(takeItem(chatKey, typed, i))
   const send = (hold = false, words = text) => {
     const t = expandPicked(chatKey, words.trim())
     if (!t && !files.length) return
@@ -2043,7 +2065,7 @@ function Composer({ chatKey, placeholder, cli, suggest = null }: { chatKey: stri
     // shows over the box (working, queued, jobs, lists) is a stack with one gap, none of its own: as the window's
     <div data-kb data-keep-box className={clsx('mx-auto flex w-full max-w-read shrink-0 flex-col gap-2 px-4 pt-2', keyboard && device === 'phone' ? 'pb-1' : 'pb-2.5')}>
       <ComposerAbove chatKey={chatKey} cli={cli} />
-      <SlashList chatKey={chatKey} text={text} pick={(name) => { setText(`/${name} `); ref.current?.focus() }} />
+      <SlashList chatKey={chatKey} text={typed} pick={(name) => fill(`/${name} `)} />
       <MentionList items={mentions} sel={msel} from={reach?.from ?? null} pick={takeMention} />
       {/* the window's box: the words across its full width, then a row in it of attach on the left and on the right
           what the agent runs on (the model menu), the mic and Send; nothing under it. Its corners are half a
@@ -2072,6 +2094,7 @@ function Composer({ chatKey, placeholder, cli, suggest = null }: { chatKey: stri
                 onChange={(e) => {
                   if (e.target.value && suggest) setSpent(suggest.id)
                   setText(e.target.value)
+                  noteCaret(e.target)
                 }}
                 onPaste={(e) => {
                   // a screenshot or a copied file attaches, as + does; text pastes as text
@@ -2084,6 +2107,7 @@ function Composer({ chatKey, placeholder, cli, suggest = null }: { chatKey: stri
                 // the caret moved (an arrow key, a tap, a letter typed, after which a phone scrolls to the caret
                 // itself, short of the padding): its line comes into full view
                 onSelect={(e) => {
+                  noteCaret(e.currentTarget)
                   reveal(e.currentTarget)
                   fades(e.currentTarget)
                 }}

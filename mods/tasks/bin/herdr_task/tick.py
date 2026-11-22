@@ -18,8 +18,8 @@ from .agents import (
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
 from . import ado, ado_flow
-from .github import (already_merged, BEHIND, CHECKS_NEVER, checks_missing, checks_since, drop_branch, expected_checks, finish, github, merged_here, needs_approval, note_checks, pr_merged, pr_pending, pr_problem,
-                     pr_view, pr_wait, queue_entry, queue_merge, tidy_done, tidy_due, update_main, watch_main)
+from .github import (already_merged, BEHIND, CHECKS_NEVER, checks_missing, checks_since, drop_branch, expected_checks, finish, github, heal_closed, merged_here, needs_approval, note_checks, pr_merged, pr_pending, pr_problem,
+                     pr_view, pr_wait, queue_entry, queue_merge, remote_of, tidy_done, tidy_due, update_main, watch_main)
 from .launch import default_space
 from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
@@ -99,6 +99,17 @@ def back_in_queue(s, t, report):
         report.setdefault("requeued", []).append(s.ref(t))
 
 
+def closed_why(s, t):
+    """A closed pull request's Needs you reason: with what to run when its base branch is gone from the
+    remote (SHEP-106: a stacked task whose base merged without Herdr seeing it)."""
+    main, base = s.loc["folder"], t.get("base") or "main"
+    ok, out, _ = git(main, "ls-remote", "--heads", remote_of(main), f"refs/heads/{base}")
+    if ok and not out:
+        return (f"The pull request was closed: its base {base} is gone. Move it to a new base with "
+                f"herdr-task edit {s.ref(t)} --base <branch> --folder {main}, then its agent rebases and runs ready.")
+    return "The pull request was closed."
+
+
 def facts(s, t, report):
     """A worktree task whose own work merged anywhere is done (once its agent is between turns, and
     a Working one once its agent is gone or says ready); a pull request's problems need the person."""
@@ -131,6 +142,12 @@ def facts(s, t, report):
             report["done"].append(t["id"])
             return
         problem = pr_problem(v)
+        if v.get("state") == "CLOSED" and t["state"] in ("ready", "running"):
+            # SHEP-106: closed because its base, a task's branch here, merged and went: it moves onto that one's base.
+            if heal_closed(s, t):
+                report.setdefault("restacked", []).append(s.ref(t))
+                return
+            problem = closed_why(s, t)
         if t.get("merge_queued"):
             queue_pass(s, t, v, report)
         else:
