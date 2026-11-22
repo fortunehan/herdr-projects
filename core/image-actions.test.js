@@ -38,7 +38,7 @@ describe("command", () => {
   test("macOS copies any format through NSImage, as PNG (not raw bytes as «class PNGf»)", () => {
     for (const p of ["/x/a.png", "/x/a.jpg", "/x/a.gif", "/x/a.webp", "/x/a.heic"]) {
       const [cmd, args] = command("copy", "macos", p);
-      expect(cmd).toBe("osascript");
+      expect(cmd).toBe("/usr/bin/osascript");
       expect(args).toEqual(["-l", "JavaScript", "-e", MAC_COPY, p]);
     }
     expect(MAC_COPY).not.toContain("PNGf");
@@ -60,8 +60,8 @@ describe("command", () => {
   });
 
   test("open and reveal per system", () => {
-    expect(command("open", "macos", "/x/a.png")).toEqual(["open", ["/x/a.png"]]);
-    expect(command("reveal", "macos", "/x/a.png")).toEqual(["open", ["-R", "/x/a.png"]]);
+    expect(command("open", "macos", "/x/a.png")).toEqual(["/usr/bin/open", ["/x/a.png"]]);
+    expect(command("reveal", "macos", "/x/a.png")).toEqual(["/usr/bin/open", ["-R", "/x/a.png"]]);
     expect(command("open", "windows", "C:\\a.png")).toEqual(["cmd", ["/c", "start", "", "C:\\a.png"]]);
     expect(command("reveal", "windows", "C:\\a.png")).toEqual(["explorer", ["/select,C:\\a.png"]]);
     expect(command("open", "linux", "/x/a.png")).toEqual(["xdg-open", ["/x/a.png"]]);
@@ -96,6 +96,13 @@ describe("problem", () => {
   test("osascript's error in plain words", () => {
     const r = { code: 1, stdout: "", stderr: "execution error: Error: Error: not a picture macOS can read (-2700)\n" };
     expect(problem("copy", { path: "/x/a.txt", gone: false }, r)).toEqual({ title: "Couldn't copy the image", body: "not a picture macOS can read" });
+  });
+
+  test("a failure with nothing on stderr names the program and its exit code (SHEP-104)", () => {
+    const r = { code: 1, stdout: "", stderr: "" }, t = { path: "/x/a.png", gone: false };
+    expect(problem("open", t, r, "/usr/bin/open").body).toBe("open didn't open it (exit 1)");
+    expect(problem("reveal", t, { ...r, code: 2 }, "/usr/bin/open").body).toBe("open didn't show it (exit 2)");
+    expect(problem("copy", t, r, "/usr/bin/osascript").body).toBe("osascript didn't copy it (exit 1)");
   });
 
   test("a command that isn't installed", () => {
@@ -141,7 +148,7 @@ describe("the viewer's buttons", () => {
   test("a command that exits non-zero is a toast, not silence", async () => {
     const w = viewer({ files: [GONE, OWN], run: () => ({ code: 1, stdout: "", stderr: "The file does not exist." }) });
     await w.act("reveal");
-    expect(w.seen.execs).toEqual([["open", "-R", GONE]]);
+    expect(w.seen.execs).toEqual([["/usr/bin/open", "-R", GONE]]);
     expect(w.seen.toasts[0]).toEqual({ title: "Couldn't show the image in its folder", body: "The file does not exist.", level: "error" });
   });
 });

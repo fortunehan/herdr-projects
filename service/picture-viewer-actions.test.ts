@@ -82,30 +82,30 @@ const toolbarNote = () => built.map((e: any) => e.kids).flat().find((k: unknown)
 beforeEach(() => { ran.length = 0; notes.length = 0; failures.length = 0; spawned = []; homeBroken = false; result = async () => ({ code: 0, stdout: "", stderr: "" }); });
 
 describe("the picture viewer's buttons run their command in the window (SHEP-98)", () => {
-  test("opened from an artifact: Copy copies the file with osascript, and says Copied", async () => {
+  test("opened from an artifact: Copy copies the file with /usr/bin/osascript, and says Copied", async () => {
     const v = await open([ART]);
     await click(v, "copy");
     expect(failures).toEqual([]);
     expect(ran).toHaveLength(1);
     const [cmd, args] = ran[0];
-    expect(cmd).toBe("osascript");
+    expect(cmd).toBe("/usr/bin/osascript");
     expect(args.slice(0, 2)).toEqual(["-l", "JavaScript"]);
     expect(args.slice(2)).toEqual(["-e", MAC_COPY, ART.path]);
     expect(toolbarNote()).toBe("Copied");
   });
 
-  test("opened from an artifact: Open runs open on the file", async () => {
+  test("opened from an artifact: Open runs /usr/bin/open on the file", async () => {
     const v = await open([ART]);
     await click(v, "open");
     expect(failures).toEqual([]);
-    expect(ran).toEqual([["open", [ART.path]]]);
+    expect(ran).toEqual([["/usr/bin/open", [ART.path]]]);
   });
 
-  test("opened from an artifact: Show in folder runs open -R on the file", async () => {
+  test("opened from an artifact: Show in folder runs /usr/bin/open -R on the file", async () => {
     const v = await open([ART]);
     await click(v, "reveal");
     expect(failures).toEqual([]);
-    expect(ran).toEqual([["open", ["-R", ART.path]]]);
+    expect(ran).toEqual([["/usr/bin/open", ["-R", ART.path]]]);
   });
 
   test("opened from a chat whose original is gone: Copy and Open use the viewer's own copy", async () => {
@@ -113,7 +113,7 @@ describe("the picture viewer's buttons run their command in the window (SHEP-98)
     await click(v, "copy");
     await click(v, "open");
     expect(failures).toEqual([]);
-    expect(ran.map(([c, a]) => [c, a[a.length - 1]])).toEqual([["osascript", join(home, CHAT.rel)], ["open", join(home, CHAT.rel)]]);
+    expect(ran.map(([c, a]) => [c, a[a.length - 1]])).toEqual([["/usr/bin/osascript", join(home, CHAT.rel)], ["/usr/bin/open", join(home, CHAT.rel)]]);
   });
 
   test("a command that fails says why in a toast and on the toolbar", async () => {
@@ -122,6 +122,16 @@ describe("the picture viewer's buttons run their command in the window (SHEP-98)
     await click(v, "copy");
     expect(notes).toEqual([{ title: "Couldn't copy the image", body: "not a picture macOS can read", level: "error" }]);
     expect(toolbarNote()).toBe("Couldn't copy the image: not a picture macOS can read");
+  });
+
+  // SHEP-104: Open failed with nothing on stderr, and the toast had no reason at all.
+  test("a command that fails without a word says which program ran and its exit code", async () => {
+    result = async () => ({ code: 1, stdout: "", stderr: "" });
+    const v = await open([ART]);
+    await click(v, "open");
+    await click(v, "reveal");
+    await click(v, "copy");
+    expect(notes.map((n: any) => n.body)).toEqual(["open didn't open it (exit 1)", "open didn't show it (exit 1)", "osascript didn't copy it (exit 1)"]);
   });
 
   test("anything else that goes wrong still ends in a toast and the toolbar note, never silence", async () => {
@@ -146,6 +156,53 @@ test("window mods call only the fs functions the window has (SHEP-98)", () => {
       const src = readFileSync(p, "utf8");
       if (!/import \* as fs from "fs\/promises"/.test(src)) continue;
       for (const m of src.matchAll(/\bfs\.([A-Za-z]+)\b/g)) if (!WINDOW_FS.includes(m[1])) bad.push(`${p.slice(ROOT.length + 1)}: fs.${m[1]}`);
+    }
+  };
+  walk(join(ROOT, "mods"));
+  walk(join(ROOT, "lib"));
+  expect(bad).toEqual([]);
+});
+
+// SHEP-104: exec resolves a bare program on the window's PATH, and the dev Mac's puts cmux's `open` wrapper before
+// /usr/bin/open. macOS programs a mod runs are absolute; a folder check uses the shell's own `[ -d ]` (macOS 26 has
+// no /usr/bin/test, and a remote machine's test may live elsewhere).
+const MAC_PROGRAMS = ["open", "osascript", "pbcopy", "pbpaste", "launchctl", "test"];
+function barePrograms(code: string): string[] {
+  const src = code.split("\n").filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join("\n");
+  const names = MAC_PROGRAMS.join("|");
+  const found: string[] = [];
+  // As a program with its argument list: exec("open", [p]), exec("open", args), return ["open", [p]].
+  for (const m of src.matchAll(new RegExp(`["'\`](${names})["'\`]\\s*,\\s*\\[`, "g"))) found.push(`"${m[1]}", [...]`);
+  for (const m of src.matchAll(new RegExp(`\\bexec\\(\\s*["'\`](${names})["'\`]\\s*,\\s*[^\\[\\s]`, "g"))) found.push(`exec("${m[1]}", ...)`);
+  // Inside a shell script (sh's own `test` is a builtin, no PATH): after exec, &&, || or ; (`open` only before an
+  // argument, as JS has `|| open ?`), or a macOS-only program followed by an argument.
+  for (const m of src.matchAll(/(?:\bexec|&&|\|\||;)\s+(?:(open)\s+[-<>"'$/]|(osascript|pbcopy|pbpaste|launchctl)\s)/g)) found.push(`sh: ${m[1] ?? m[2]}`);
+  // A script that starts with one ('open "$1"'), or a pipe into one ('cat "$1" | pbcopy').
+  for (const m of src.matchAll(/(?<=["'`]\s*)(open|osascript|pbcopy|pbpaste|launchctl)\s+[-<>"'$/]/g)) found.push(`sh: ${m[1]}`);
+  for (const m of src.matchAll(/(?<!\|)\|\s*(open|osascript|pbcopy|pbpaste|launchctl)\b/g)) found.push(`sh: ${m[1]}`);
+  for (const m of src.matchAll(/(?<![\w/.$-])(osascript|pbcopy|pbpaste|launchctl)\s+[-<>"'$]/g)) found.push(`sh: ${m[1]}`);
+  return found;
+}
+
+test("window mods run macOS programs by absolute path, never a bare name a PATH can shadow (SHEP-104)", () => {
+  expect(barePrograms('exec("open", [p])')).toEqual(['"open", [...]']);
+  expect(barePrograms('exec("open", args)')).toEqual(['exec("open", ...)']);
+  expect(barePrograms('return ["osascript", ["-l"]]')).toEqual(['"osascript", [...]']);
+  expect(barePrograms("exec('test', ['-d', p])")).toEqual(['"test", [...]']);
+  expect(barePrograms('sh -c "mkdir -p x && exec osascript -l JavaScript"')).toEqual(["sh: osascript", "sh: osascript"]);
+  expect(barePrograms('exec("sh", ["-c", "pbcopy < file"])')).toEqual(["sh: pbcopy", "sh: pbcopy"]);
+  expect(barePrograms(`exec("sh", ["-c", 'open "$1"', "viewer", p])`)).toEqual(["sh: open"]);
+  expect(barePrograms(`exec("sh", ["-c", 'cat "$1" | pbcopy', "clipboard", p])`)).toEqual(["sh: pbcopy"]);
+  expect(barePrograms('"systemctl --user start x || launchctl kickstart y"')).toEqual(["sh: launchctl"]);
+  expect(barePrograms('"cat f | /usr/bin/pbcopy; exec /usr/bin/osascript -e x"; // macOS (osascript): its copy')).toEqual([]);
+  expect(barePrograms('exec("/usr/bin/open", [p]); this.btn("open", "external-link")')).toEqual([]);
+  const bad: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== "node_modules" && e.name !== ".last") walk(p); continue; }
+      if (!e.name.endsWith(".js") || e.name.endsWith(".test.js")) continue;
+      for (const f of barePrograms(readFileSync(p, "utf8"))) bad.push(`${p.slice(ROOT.length + 1)}: ${f}`);
     }
   };
   walk(join(ROOT, "mods"));

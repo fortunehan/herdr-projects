@@ -26,7 +26,7 @@ describe("attach and paste on macOS (GitHub #774)", () => {
   test("the attach button opens macOS's own picker, several files at once", async () => {
     answer = () => ({ code: 0, stdout: "/tmp/demo/a.png\n/tmp/demo/notes.txt\n" });
     const r = await attach.pick("Attach files");
-    expect(calls[0][0]).toBe("osascript");
+    expect(calls[0][0]).toBe("/usr/bin/osascript");
     expect(calls[0].join(" ")).toContain("with multiple selections allowed");
     expect(calls[0].at(-1)).toBe("Attach files");
     expect(r).toEqual({ code: 0, paths: ["/tmp/demo/a.png", "/tmp/demo/notes.txt"] });
@@ -48,7 +48,7 @@ describe("attach and paste on macOS (GitHub #774)", () => {
   test("a pasted screenshot becomes an image attachment", async () => {
     answer = () => ({ code: 0, stdout: "image\n" });
     const got = await attach.fromClipboard();
-    expect(calls[0].join(" ")).toContain("osascript -l JavaScript");
+    expect(calls[0].join(" ")).toContain("exec /usr/bin/osascript -l JavaScript");
     expect(got).toHaveLength(1);
     expect(got[0]).toMatchObject({ image: true, temp: true });
     expect(got[0].path).toMatch(/^\/app\/data\/chat-attach\/pasted-\d{8}T\d{6}\.png$/);

@@ -227,6 +227,24 @@ export function commandList(kind, mine = []) {
   return [...list, ...mine.filter((c) => !seen.has(c.name) && seen.add(c.name))];
 }
 
+/**
+ * SHEP-105: what the "/", "#" and "@" lists match is the text before the caret (Enter's new line there left out);
+ * `after` is the rest, kept as it is by a pick, or null when the caret is inside a word (no list then).
+ * No caret known: the end of the text.
+ */
+export function atCaret(text, caret) {
+  const s = String(text ?? ""), at = caret == null ? s.length : Math.max(0, Math.min(caret, s.length));
+  const rest = s.slice(at);
+  const after = /^\n*$/.test(rest) ? "" : rest;
+  return { before: s.slice(0, at).replace(/\n+$/, ""), after: /^\S/.test(after) ? null : after };
+}
+
+/** A pick's text (`head` ends in its space) before the rest, and the caret: right after that space. */
+export function joinAtCaret(head, after) {
+  const h = /^[ \t]/.test(after ?? "") ? head.replace(/ $/, "") : head;
+  return { text: h + (after ?? ""), caret: head.length };
+}
+
 // The "/word" being typed, when the whole message is one command so far.
 export function typing(text) {
   const m = /^\/([\w:.-]*)$/.exec(text);

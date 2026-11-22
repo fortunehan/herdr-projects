@@ -1,5 +1,6 @@
 import { attentionCounts } from './attention.ts'
 import { TaskStatusBar } from './TaskStatusBar.tsx'
+import { TaskDepsHead } from './TaskDependencies.tsx'
 import { needsYou } from '@shared/needs-you.ts'
 // The layout: places | coordinator chat | tasks or artifacts on a desktop (sidebars resize, places hides), and an open
 // task's side panel after them (focus hides places and the chat, for the task); chat | tasks or artifacts with places in a drawer on a tablet; one column with a
@@ -519,6 +520,7 @@ function TaskPage({ task, middle, pane }: { task: Task; middle?: boolean; pane?:
     return (
       <section className="flex min-h-0 flex-1 flex-col">
         <TaskTop back={back} task={task} sub={sub} tools={tools} />
+        <TaskDepsHead task={task} />
         <TaskTabs task={task} />
         {/* no bar under a task's chat: the message box keeps clear of the home indicator itself */}
         <div className={clsx('flex min-h-0 flex-1 flex-col', !keyboard && 'pb-[env(safe-area-inset-bottom)]')}>
@@ -536,6 +538,7 @@ function TaskPage({ task, middle, pane }: { task: Task; middle?: boolean; pane?:
             <PaneButtons i={pane} />
           </div>
         </Head>
+        <TaskDepsHead task={task} />
         <Scroll chat={!!g && !gone}>{body}</Scroll>
       </section>
     )
@@ -559,6 +562,7 @@ function TaskPage({ task, middle, pane }: { task: Task; middle?: boolean; pane?:
           <TaskTabs task={task} head />
         </div>
       </Head>
+      <TaskDepsHead task={task} />
       <Scroll chat><TabBody task={task} chatKey={g?.chat ?? ''}>{body}</TabBody></Scroll>
     </section>
   )

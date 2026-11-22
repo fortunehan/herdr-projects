@@ -6,7 +6,7 @@ import { exec } from "herdr";
 
 // The lists and the scan are core/slash.js, shared with the web app.
 import { SCAN, scanned, commandList } from "./core/slash.js";
-export { opensMenu, typing, match } from "./core/slash.js";
+export { opensMenu, typing, match, atCaret, joinAtCaret } from "./core/slash.js";
 
 // Every command this agent knows: [{ name, about }], built-in first. The chat refreshes it periodically.
 export async function commands(kind, machine, cwd) {

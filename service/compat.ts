@@ -35,7 +35,7 @@ const { NOTIFY, everywhereOf, spaceLevel, machineLevel, machineOfSpace, spaceOwn
 import * as STcore from "../core/settings.js";
 const STc = STcore as any;
 
-const { ago } = T as any;
+const { ago, relationState } = T as any;
 
 export type Row = any;
 export type Space = any;
@@ -367,7 +367,8 @@ export class Compat {
     const relation = (d: any) => {
       const target = relationTargets.get(d.key);
       return { ref: d.ref, title: d.title, state: d.state, ...(SECTION[d.section] ? { status: SECTION[d.section] } : {}),
-        ...(target ? { task: taskId(target) } : {}), ...(d.external ? { external: true } : {}) };
+        ...(target ? { task: taskId(target) } : {}), ...(d.external ? { external: true } : {}),
+        ...(typeof d.pct === "number" ? { pct: d.pct } : {}), ...(d.where ? { where: d.where } : {}), word: relationState(d) };
     };
     const tasks: Task[] = rows.filter((r) => r.section !== "done" || (r.done_at && Date.now() - r.done_at < 7 * 86400000)).map((r) => {
       const id = taskId(r);

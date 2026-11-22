@@ -5420,7 +5420,7 @@ class AssistantSettings(unittest.TestCase):
         # nothing differs from Herdr's default: no line says who set it
         self.assertNotIn("; set for", note)
         self.assertNotIn("; your setting", note)
-        self.assertEqual(len(note.split("\n")), 14)  # head, 12 lines (Suggested next message included), the Reactions guide
+        self.assertEqual(len(note.split("\n")), 15)  # head, 13 lines (Suggested next message and Output language included), the Reactions guide
         self.assertIn("- Suggested next message: on (end each reply", note)
 
     def test_the_block_for_a_space_with_its_own(self):
@@ -5448,7 +5448,7 @@ class AssistantSettings(unittest.TestCase):
         labels = self.terminals["t5"]["labels"]
         self.assertEqual(labels["herdr.reactions"], "off")
         self.assertEqual(sorted(self.aset.parse(labels["herdr.settings"])),
-                         sorted(["review", "merge", "proof", "agent", "base", "worktrees", "max_running", "notes", "autopilot", "reactions", "suggestions", "feedback"]))
+                         sorted(["review", "merge", "proof", "agent", "base", "worktrees", "max_running", "notes", "autopilot", "reactions", "suggestions", "feedback", "language"]))
         # another space inherits Everywhere's, with its own merge
         self.assistant("t6", "sp2")
         other = self.aset.session_note("t6")
@@ -8184,3 +8184,183 @@ class StackedTasks(unittest.TestCase):
         self.assertEqual(self.down["pr"], {"number": 5, "url": "https://github.com/o/r/pull/5", "repo": "o/r"})
         self.assertIn("#5", text)
         self.assertIn("already on main", text)
+
+
+class OutputLanguage(unittest.TestCase):
+    """SHEP-101: Settings › Agents › Output language follows the person by default, or names one language, in the
+    same layers as other settings (Everywhere, a machine's from before, a space/folder) and per task (--set
+    language=…, the person's language the Assistant recorded). The brief's Settings block says it in one line; the
+    Assistant's own block says it too; ready's summary counts CJK characters, not bytes."""
+
+    setUp = TaskFlow.setUp
+    patch = TaskFlow.patch
+    git = TaskFlow.git
+    commit = TaskFlow.commit
+    settings = TaskFlow.settings
+
+    def line(self, settings):
+        return next(x for x in settings.settings_block(self.store, self.task).split("\n") if x.startswith("- Language: "))
+
+    def test_language_names_and_codes(self):
+        from herdr_task.settings import language_name
+        for given, name in [("zh", "Chinese"), ("ZH-cn", "Chinese"), ("中文", "Chinese"), ("en", "English"),
+                            ("english", "English"), ("日本語", "Japanese"), ("ko", "Korean"), ("zh-TW", "Traditional Chinese"),
+                            ("french", "French"), ("Brazilian Portuguese", "Brazilian Portuguese"),
+                            ("Chinese (Traditional)", "Chinese (Traditional)"), ("हिन्दी", "हिन्दी"), ("ไทย", "ไทย"),
+                            ("", ""), ("follow", ""),
+                            ("Follow the person", ""), ("  auto ", "")]:
+            self.assertEqual(language_name(given), name, given)
+        for bad in ("<b>", "zh1", "rm -rf /", "x" * 31, "a_b"):
+            self.assertIsNone(language_name(bad), bad)
+
+    def test_set_language_on_a_task(self):
+        from herdr_task.settings import set_task, set_opts
+        from types import SimpleNamespace
+        t = {}
+        set_task(t, "language", "zh")
+        self.assertEqual(t, {"set": {"language": "Chinese"}})
+        set_task(t, "output.language", "English")
+        self.assertEqual(t["set"]["language"], "English")
+        set_task(t, "language", "follow")
+        self.assertEqual(t["set"]["language"], "follow")
+        set_task(t, "language", "")
+        self.assertEqual(t, {})
+        with self.assertRaises(self.commands.Fail):
+            set_task(t, "language", "<script>")
+        set_opts(t, SimpleNamespace(set=["lang=日本語", "person_language=中文"]))
+        self.assertEqual(t["set"], {"language": "Japanese", "person_language": "Chinese"})
+        set_task(t, "language", "default")
+        set_task(t, "person", "")
+        self.assertEqual(t, {})
+        with self.assertRaises(self.commands.Fail):
+            set_task(t, "person_language", "follow")  # the language they asked in, never "follow"
+
+    def test_the_settings_block_line_follows_the_person_by_default(self):
+        settings = self.settings({})
+        self.assertEqual(self.line(settings), "- Language: " + settings.FOLLOW_NONE)
+        # the Assistant recorded the person's language on add (--set person_language=zh)
+        settings.set_task(self.task, "person_language", "zh")
+        self.assertEqual(self.line(settings), "- Language: Chinese (follows the person)")
+        block = settings.settings_block(self.store, self.task).split("\n")
+        self.assertLess(block.index("- Language: Chinese (follows the person)"),
+                        next(i for i, x in enumerate(block) if x.startswith("- Agent: ")))
+        self.assertEqual([x["value"] for x in settings.task_settings(self.store, self.task) if x["label"] == "Language"], ["Chinese"])
+
+    def test_a_tasks_own_language_under_follow_the_person(self):
+        """Review round 1: an explicit language for one task stays that task's own, not "follows the person"."""
+        settings = self.settings({})
+        settings.set_task(self.task, "person_language", "zh")
+        settings.set_task(self.task, "language", "ja")
+        self.assertEqual(self.line(settings), "- Language: Japanese (set by the assistant for this task)")
+
+    def test_a_fixed_language_in_each_layer(self):
+        settings = self.settings({"everywhere": {"agents": {"language": "English"}}})
+        self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
+        # the person's recorded language doesn't beat a fixed one
+        settings.set_task(self.task, "person_language", "zh")
+        self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
+        # the task's own wins; the same as the setting is the setting's; "follow" follows the person anyway
+        settings.set_task(self.task, "language", "ja")
+        self.assertEqual(self.line(settings), "- Language: Japanese (set by the assistant for this task)")
+        settings.set_task(self.task, "language", "en")
+        self.assertEqual(self.line(settings), "- Language: English (your setting everywhere)")
+        settings.set_task(self.task, "language", "follow")
+        self.assertEqual(self.line(settings), "- Language: Chinese (follows the person) (set by the assistant for this task)")
+        settings.set_task(self.task, "language", "")
+        settings.set_task(self.task, "person_language", "")
+        # this space's (folder's) own wins over Everywhere's; its "" follows the person again
+        self.task["space"] = "sp1"
+        settings = self.settings({"everywhere": {"agents": {"language": "English"}},
+                                  "spaces": {"sp1": {"folder": self.main, "agents": {"language": "Japanese"}}}})
+        self.assertEqual(self.line(settings), "- Language: Japanese (this folder's setting)")
+        settings = self.settings({"everywhere": {"agents": {"language": "English"}},
+                                  "spaces": {"sp1": {"folder": self.main, "agents": {"language": ""}}}})
+        self.assertEqual(self.line(settings), "- Language: " + settings.FOLLOW_NONE)
+        # a machine's value from before machine scope went still applies
+        settings = self.settings({"here": "local", "machines": {"local": {"agents": {"language": "Korean"}}}})
+        self.assertEqual(self.line(settings), "- Language: Korean (this machine's setting)")
+        # a value that isn't a language (hand-edited) follows the person
+        settings = self.settings({"everywhere": {"agents": {"language": "<b>"}}})
+        self.assertEqual(self.line(settings), "- Language: " + settings.FOLLOW_NONE)
+
+    def test_ready_counts_cjk_characters_not_bytes(self):
+        from types import SimpleNamespace
+        from herdr_task.agents import SUMMARY_MAX
+        said = "现在设置里可以选输出语言" * 13 + "默认跟随"
+        self.assertEqual(len(said), SUMMARY_MAX)
+        self.assertGreater(len(said.encode()), SUMMARY_MAX * 2)
+        args = SimpleNamespace(summary=said, details="", explain="", check=[])
+        self.assertEqual(self.commands.ready_words(args)[0], said)
+        with self.assertRaises(self.commands.Fail) as e:
+            self.commands.ready_words(SimpleNamespace(summary=said + "。", details="", explain="", check=[]))
+        self.assertIn(f"{SUMMARY_MAX + 1} characters", str(e.exception))
+
+    def test_a_status_line_in_chinese_is_cut_between_characters(self):
+        from herdr_task.agents import fit
+        text = "SHEP-101 正在给网页设置拍截图然后写证明文档并且检查所有的测试结果再提交给审查的同伴"
+        out = fit(text)
+        self.assertEqual(len(out), 40)
+        self.assertTrue(out.startswith("SHEP-101 正在给网页设置拍截图"), out)
+        self.assertTrue(out.endswith("…"))
+        self.assertEqual(fit("Writing the web settings screenshot and more words here"), "Writing the web settings screenshot and…")
+        # full-width punctuation isn't a word: the cut goes back to a space, as before
+        self.assertEqual(fit("Review API（details） next", 12), "Review…")
+
+    def test_the_templates_say_it(self):
+        from herdr_task import templates
+        worker = open(os.path.join(ROOT, "templates", "worker.md")).read()
+        reviewer = open(os.path.join(ROOT, "templates", "reviewer.md")).read()
+        assistant = open(os.path.join(ROOT, "templates", "assistant.md")).read()
+        for words in (worker, templates.WORKER_MD):
+            self.assertIn("as the Settings block's Language line says", words)
+            self.assertIn("status lines, questions and their cards, the ready summary", words)
+            self.assertIn("your proof and every artifact", words)
+            self.assertIn("commit messages, branch names, pull request titles and `--agents-md` lines stay in English", words)
+            self.assertIn("news, hooks, tool output and notifications never do", words)
+            self.assertIn("in the Settings block's language: `--explain", words)
+        self.assertEqual(templates.instructions.__module__, "herdr_task.templates")
+        self.assertIn(templates.REVIEWER_MD.strip(), reviewer)
+        self.assertIn("Language: write your findings in the brief's Settings block Language", templates.REVIEWER_MD)
+        self.assertIn("--set person_language=<that language>", assistant)
+        self.assertIn("`herdr-task auto add`, so each run's task keeps it", assistant)
+        self.assertIn("Task titles stay English", assistant)
+        self.assertIn("`--set language=follow --set person_language=<theirs>`", assistant)
+        self.assertIn('every artifact (a proof\'s title still ends in " · Proof")', worker)
+        self.assertIn("automated turns (news,", assistant)
+        self.assertIn("reply in the language of the last message the person typed", assistant)
+        self.assertIn("`person_language=<name or code>`", assistant)
+        self.assertIn(templates.WORKER_MD_BEFORE_LANGUAGE, templates.OLD_WORKERS)
+
+    def test_an_unedited_old_template_gets_todays(self):
+        from herdr_task import templates
+        d = tempfile.mkdtemp()
+        with self.mock.patch.object(templates, "TEMPLATES", d):
+            for role, old, new in (("worker", templates.WORKER_MD_BEFORE_LANGUAGE, templates.WORKER_MD),
+                                   ("reviewer", templates.REVIEWER_MD_BEFORE_LANGUAGE, templates.REVIEWER_MD)):
+                with open(os.path.join(d, f"{role}.md"), "w") as f:
+                    f.write(templates.TEMPLATE_HEADS[role] + old)
+                self.assertEqual(templates.instructions(role), new.strip())
+
+
+class AssistantOutputLanguage(unittest.TestCase):
+    """SHEP-101: the Assistant's "Your settings" block has an Output language line, and a change notices it."""
+
+    setUp = AssistantSettings.setUp
+    write = AssistantSettings.write
+    assistant = AssistantSettings.assistant
+    line = AssistantSettings.line
+
+    def test_follow_the_person_by_default_and_a_fixed_one(self):
+        self.assistant()
+        self.assertEqual(self.line(self.aset.session_note("t5"), "Output language"), "- Output language: " + self.aset.LANGUAGE_FOLLOWS)
+        self.write({"everywhere": {"agents": {"language": "zh"}}})
+        self.assertEqual(self.line(self.aset.session_note("t5"), "Output language"),
+                         "- Output language: Chinese (write to the person in Chinese, whatever they write in; every brief says it, "
+                         "so add no --set person_language); your setting everywhere")
+        self.write({"everywhere": {"agents": {"language": "Chinese"}}, "spaces": {"sp1": {"agents": {"language": ""}}}})
+        self.assertTrue(self.line(self.aset.session_note("t5"), "Output language").endswith("--set person_language=<it>)"))
+        rows = {r["key"]: r for r in self.aset.rows("sp1")}
+        self.assertEqual((rows["language"]["value"], rows["language"]["scope"]), ("follow", "space"))
+        notice = self.aset.notice([{**rows["language"], "text": "Japanese", "value": "Japanese", "by": "everywhere"}])
+        self.assertIn('name="language" value="Japanese"', notice)
+        self.assertIn("Output language is now Japanese; your setting everywhere.", notice)
