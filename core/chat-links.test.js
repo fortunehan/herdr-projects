@@ -167,8 +167,23 @@ test("code blocks read the same to marked after linkify", () => {
     "1. step\n   ```\n   /tmp/x/y.html\n   ```\n2. /tmp/z/w.pdf",
     "> > ```\n> > /tmp/q/r.txt\n> > ```\n> /tmp/s/t.txt",
     "````\n```\n/tmp/a/b\n```\n````",
+    "  ~~~sh\ncat /tmp/a/b.txt\n  ~~~",
+    "   ```\n/tmp/a/b.txt\n```\nafter /tmp/c/d.pdf",
   ];
   for (const s of samples) expect(codes(md(s))).toEqual(codes(s));
+});
+
+// A reference the agent defined still leads where it did.
+test("reference definitions resolve the same to marked after linkify", () => {
+  const hrefs = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "link") out.push(t.href); }); return out; };
+  const samples = [
+    "[docs]:\n  https://example.org/guide \"Open the guide\n  in a browser\"\n\n[docs]",
+    "> [docs]:\n>https://example.org/guide\n>\n> [docs]",
+    "[site]:\n    https://example.org/\n\nSee [site].",
+  ];
+  for (const s of samples) expect(hrefs(md(s))).toEqual(hrefs(s));
+  // "[x]:" right after a sentence is words: the path under it is still a link
+  expect(md("Build complete.\n[Preview]:\n/tmp/a/b.html")).toBe("Build complete.\n[Preview]:\n[/tmp/a/b.html](file:///tmp/a/b.html)");
 });
 
 describe("a clicked link's target", () => {

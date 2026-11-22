@@ -6,15 +6,10 @@ import { useMemo, type MouseEvent } from 'react'
 import { copyText } from '@client/copy.ts'
 import { act, goPlace, openTask, useSnap, useUI } from '@client/kernel.ts'
 import * as MNs from '@core/mentions.js'
-import * as CLs from '@core/chat-links.js'
 import { toast } from '@plugins/alerts/toasts.tsx'
+import { CL, linked, PATH_HREF } from './linked.ts'
 import { forMarkdown, hasMention, parseMention, parseTask, stateOf, taskStateOf, TITLE, useReach } from './mentions.tsx'
 const shortTitle = (MNs as any).short as (t: string) => string
-const CL = CLs as any as {
-  linkify: (md: string, o: { home: string; paths: boolean; pathHref: (p: string) => string | null }) => string
-  actionOf: (p: string) => 'browser' | 'reveal'
-  label: (kind: string, os?: string) => string
-}
 /** Finder's name on a Mac; "folder" elsewhere (the agent's machine is most likely the same kind as this one) */
 const MAC = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent)
 
@@ -37,17 +32,13 @@ const COPY = svg(
 )
 const DONE = svg(['M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z'], 'done')
 
-const PATH_HREF = '#shepherdr-path='
-const pathHref = (p: string) => { try { return PATH_HREF + encodeURIComponent(p) } catch { return null } }
-
 /** the reply as safe HTML: a copy button on each code block, and a bit of inline code copies when tapped. The marks
     go onto the sanitized elements themselves, never into the HTML as text, so nothing in the reply can turn into them.
     A link's or picture's title goes: nothing pops up on hover, but what a click does on a URL or a path it linked
     (SHEP-99, core/chat-links.js). paths: its paths are links too (a desktop's chat; a phone's has URLs only) */
 export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, paths: boolean | null = null) {
-  // only in a chat (paths not null): a recipe's markdown stays as written. ~/ stays as written ("~" as the home): the
-  // agent's machine expands it (service/actions.ts open-path)
-  const md = paths === null ? text : CL.linkify(text, { home: '~', paths, pathHref })
+  // only in a chat (paths not null): a recipe's markdown stays as written
+  const md = paths === null ? text : linked(text, paths)
   const root = DOMPurify.sanitize(marked.parse(md, { async: false }) as string, { RETURN_DOM: true, FORBID_ATTR: ['title'] }) as HTMLElement
   if (mention) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href^="#space="], a[href^="#task="]')) {
     const task = a.getAttribute('href')!.startsWith('#task=')

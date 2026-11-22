@@ -166,30 +166,38 @@ function linkInline(text, opts) {
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   const out = [];
-  let run = [], fence = null, blank = true, indented = false, ref = false;
+  let run = [], fence = null, blank = true, indented = false, ref = false, def = false, title = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
-  const depth = (l) => (/^[\s>]*/.exec(l)[0].match(/>/g) ?? []).length;
-  // a line without its quote markers, and how far in its words start (a list item's code is indented to its words)
+  // a line's containers: quote markers and list markers in front of its words ("- > ```" is a quote in a list item)
+  const PREFIX = /^(?:\s*(?:>|[-*+](?=\s)|\d+[.)](?=\s)))*/;
+  const depth = (l) => (PREFIX.exec(l)[0].match(/>/g) ?? []).length;
   const inner = (l) => l.replace(/^(?:\s*>)*/, "");
-  const lead = (l) => /^ */.exec(inner(l))[0].length;
+  // the line with its quote markers as spaces: how far in its words start (a list item's code is indented to its words)
+  const flat = (l) => l.replace(PREFIX, (m) => m.replace(/>/g, " "));
+  const lead = (l) => /^ */.exec(flat(l))[0].length;
   for (const line of lines) {
     const f = /^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))*\s*(`{3,}|~{3,})/.exec(line);
     // a fence opened in a quote ends with the quote, one in a list item when a line starts left of the item's words
     if (fence && depth(line) < fence.depth) fence = null;
-    if (fence && fence.indent > 0 && inner(line).trim() && lead(line) < fence.indent) fence = null;
+    if (fence && fence.indent > 0 && flat(line).trim() && lead(line) < fence.indent) fence = null;
     if (fence) {
       out.push(line);
       const c = /^[\s>]*(`{3,}|~{3,})\s*$/.exec(line);
       if (c && depth(line) === fence.depth && c[1][0] === fence.mark[0] && c[1].length >= fence.mark.length) fence = null;
     } else if (f) {
       flush();
-      fence = { mark: f[1], depth: depth(line), indent: inner(line).indexOf(f[1]) };
+      // only a list item's fence ends by indentation; a top-level one indented 1-3 spaces runs to its closing fence
+      fence = { mark: f[1], depth: depth(line), indent: /[-*+]|\d+[.)]/.test(PREFIX.exec(line)[0]) ? flat(line).indexOf(f[1]) : 0 };
       out.push(line);
-    } else if (/^[\s>]*\[[^\]]+\]:/.test(line) || (ref && /^\S+(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*$/.test(inner(line).trim()))) {
-      // a reference definition, and the line its destination is on when the definition ends at its colon (one word,
-      // maybe a title: "See /tmp/a" under it is words, not a destination)
+    } else if (title || ((blank || def) && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
+      // a reference definition (never in the middle of a paragraph: there it is words), the line its destination is on
+      // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
+      // of a title still open in quotes
       flush();
-      ref = /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
+      const quotes = (inner(line).match(/"/g) ?? []).length % 2 === 1;
+      ref = !title && /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
+      title = title ? !quotes : quotes;
+      def = true;
       out.push(line);
       blank = false;
       continue;
@@ -201,8 +209,9 @@ export function linkify(md, opts = {}) {
       if (line.trim()) indented = false;
       run.push(line);
     }
-    blank = !line.trim();
+    blank = !inner(line).trim();
     ref = false;
+    def = false;
   }
   flush();
   return out.join("\n");
