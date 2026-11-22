@@ -704,6 +704,42 @@
       ]
     },
     {
+      "id": "translate",
+      "addon": "chat",
+      "title": "Translate (messages, proofs, artifacts)",
+      "core": [
+        "translate"
+      ],
+      "herdr": {
+        "mods": [
+          "chat",
+          "artifacts",
+          "chat-image",
+          "shepherdr-settings"
+        ]
+      },
+      "web": {
+        "files": [
+          "plugins/chat/translate.ts",
+          "plugins/chat/markdown.tsx",
+          "plugins/chat/rows.tsx",
+          "src/screens/Recipe.tsx",
+          "plugins/artifacts/client.tsx",
+          "src/Settings.tsx"
+        ]
+      },
+      "forms": {
+        "herdr": "Translate icon in an agent message's band and in the artifact bars; the translation under each block, dim with a left rule; Settings › Translation",
+        "desktop": "Translate icon under an agent message and in the artifact viewer's bar; Settings › Translation",
+        "tablet": "Same",
+        "phone": "Translate in the message's hold menu and the artifact viewer's bar"
+      },
+      "service": [
+        "translate.ts",
+        "settings.ts"
+      ]
+    },
+    {
       "id": "attachments",
       "addon": "chat",
       "title": "Attachments and images",

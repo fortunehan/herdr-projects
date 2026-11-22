@@ -19,6 +19,7 @@ import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
 import { holdKeys } from "./keyholder.js";
 import { dirs } from "./dirs.js";
+import { translateOn, toggleArtifact, stateOf as translation, watchRetries } from "./artifact-translate.js";
 
 const ICON = "mods/artifacts/artifacts.svg";
 const modOf = (machine, id) => (machine ? `art-${machine.replace(/[^A-Za-z0-9_-]+/g, "-")}-${id}` : `art-${id}`);
@@ -35,6 +36,8 @@ function where() {
 
 export default class Artifacts extends View {
   init(_props, cx) {
+    // Translate (SHEP-102): a Retry pressed in the artifact shown under this head asks again
+    if (props()?.head) watchRetries(cx);
     if (props()?.bar || props()?.head || props()?.blank) return;
     this.ctx = null;      // { space, machine, cwd }
     this.store = null;    // { folder, name, store, machine }
@@ -337,6 +340,15 @@ export default class Artifacts extends View {
             .text_size(TEXT.label).font_medium().text_color(t.accent).hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { cx.stop_propagation(); step(null, cx); })
             .child("Latest ›")))))
+      // Translate / Hide translation (SHEP-102), as the viewer's bar and the web's: the whole version, each text's
+      // translation under it (recipe-view.js), while Settings › Translation is on
+      .when(Boolean(v) && translateOn(cx), (el) => {
+        const a = { id: v.id, version: shown, machine: v.machine ?? null }, on = Boolean(translation(a)?.shown);
+        return el.child(div().id("art-translate").size(24).flex_none().flex().items_center().justify_center().rounded(RADIUS.control)
+          .cursor_pointer().text_color(on ? t.foreground : t.muted).when(on, (b) => b.bg(t.hover)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); toggleArtifact(cx, a); cx.notify(); })
+          .child(svg("mods/artifacts/languages.svg").size(14)));
+      })
       // Mark up / Done, as the viewer's bar (chat-image/artifact-bar.js) and the web's: a pointer clicking a spot; while
       // marking, Done with a tick, tinted the accent of the frame round what you mark (square-cornered, as the window's other bar buttons)
       .when(Boolean(v), (el) => el.child(h_flex().id("art-markup").h(24).pl(5).pr(8).gap(5).flex_none().items_center().rounded(RADIUS.control).cursor_pointer()

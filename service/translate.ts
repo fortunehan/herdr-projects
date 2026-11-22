@@ -153,10 +153,10 @@ export class Translator {
   }
 
   /** Settings › Translation › Test connection: one short line to the endpoint, as set now (on or not). */
-  async test(): Promise<{ ok: boolean; error?: string }> {
+  async test(): Promise<{ ok: boolean; text?: string; error?: string }> {
     const cfg = { ...this.io.config(), on: true };
     const why = T.notReady(cfg);
-    const done = (ok: boolean, text: string) => { this.lastTest = { ok, text, at: this.now() }; return ok ? { ok } : { ok, error: text }; };
+    const done = (ok: boolean, text: string) => { this.lastTest = { ok, text, at: this.now() }; return ok ? { ok, text } : { ok, error: text }; };
     if (why) return done(false, why);
     this.keys.delete(cfg.key);
     const t0 = this.now();

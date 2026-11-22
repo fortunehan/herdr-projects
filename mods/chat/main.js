@@ -54,6 +54,8 @@ import * as mentions from "./core/mentions.js";
 import { SH } from "./core/paths.js";
 import { settle } from "./core/pending.js";
 import { dirs, dirsReady } from "./dirs.js";
+import { localService, localToken } from "./local.js";
+import * as TR from "./core/translate.js";
 import * as agent from "./agent.js";
 import { cleanCommand } from "./core/clean-env.js";
 import * as choices from "./settings.js";
@@ -163,7 +165,7 @@ const shownLines = (text, h, width) => {
   }
   return out.join("\n");
 };
-const ICONS = { copy: "copy", reply: "reply", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
+const ICONS = { copy: "copy", reply: "reply", rewind: "rewind", fork: "git-fork", react: "smile-plus", translate: "languages" };
 // Reaction pills: this wide and tall (inside the ACT row, so they sit on the icons' center line
 // without towering over them), this far apart; and the gap between them and the smiley.
 const PILL = 46, PILL_H = 20, PILL_GAP = 4, PILL_EDGE = 6;
@@ -300,6 +302,12 @@ export default class Chat extends View {
     this.pending = [];
     this.opened = new Set();
     this.results = new Map();
+    // Translate (SHEP-102): each agent message's translation shown here (by its id), and whether Settings ›
+    // Translation is on (read from the settings file every 15 s)
+    this.tr = new Map();
+    this.trOn = false;
+    cx.spawn(async (cx) => this.readTranslation(cx));
+    cx.timer.every(15000, (cx) => cx.spawn(async (cx) => this.readTranslation(cx)));
     this.pinned = true;
     this.width = 600;
     this.heights = new Map();
@@ -2322,9 +2330,50 @@ export default class Chat extends View {
     }
     if (what === "rewind") this.rewind(row, cx);
     if (what === "fork") this.fork(cx);
+    if (what === "translate") this.toggleTranslation(row.of, row.text, cx);
     if (what === "react") { this.keepIcons = row.of; this.openReactions(row, this.hitLeft); }
     // A pill: your reaction on or off.
     if (what.startsWith("pill:")) this.toggleReaction(row.of, row.target, what.slice(5), cx);
+  }
+
+  // ---- translate (SHEP-102) -------------------------------------------------------------------
+
+  // Settings › Translation on or off (the Translate icon shows only while it is on).
+  async readTranslation(cx) {
+    await dirsReady();
+    let on = false;
+    try { on = TR.configOf(JSON.parse((await readTextFile(dirs().settings)) ?? "{}")).on; } catch {}
+    if (on !== this.trOn) { this.trOn = on; cx.notify(); }
+  }
+
+  // The Translate icon: shows the message's translation (asked for once), or hides it.
+  toggleTranslation(id, text, cx) {
+    const s = this.tr.get(id);
+    if (s?.shown && s.state !== "loading") { this.tr.set(id, { ...s, shown: false }); return cx.notify(); }
+    if (s?.state === "done" && !s.failed?.length) { this.tr.set(id, { ...s, shown: true }); return cx.notify(); }
+    if (s?.state !== "loading") this.askTranslation(id, text, cx);
+  }
+
+  // This machine's service translates it (service/translate.ts), with Settings › Translation's endpoint and key, and
+  // keeps it for the web app and other windows; asked again, only the blocks that failed are sent.
+  askTranslation(id, text, cx) {
+    const was = this.tr.get(id);
+    this.tr.set(id, { ...was, shown: true, state: "loading", error: null });
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r = null;
+      try {
+        const svc = await localService(cx), token = await localToken();
+        if (!svc || !token) throw new Error(TR.WORDS.noService);
+        const res = await fetch(`${svc.base}/api/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ type: "translate", text }) });
+        r = await res.json().catch(() => null);
+        if (!res.ok || !r) throw new Error(`the service answered ${res.status}`);
+      } catch (e) { r = { ok: false, error: TR.WORDS.failed(plainError(e)) }; }
+      const shown = this.tr.get(id)?.shown ?? true;
+      this.tr.set(id, r.ok ? { shown, state: "done", blocks: r.blocks, failed: r.failed ?? [] } : { ...was, shown, state: "error", error: r.error });
+      cx.notify();
+    });
   }
 
   // ---- reactions ------------------------------------------------------------------------------
@@ -3118,6 +3167,14 @@ export default class Chat extends View {
         const md = mediaIn(x.text, { cwd: this.t?.foreground?.cwd ?? this.t?.cwd ?? null, home: this.machine ? null : home() });
         const ps = md.text || !md.media.length ? parts(md.text || x.text) : [];
         const first = out.length;
+        // Translated (SHEP-102): the whole message in one bubble, each block with its translation under it
+        const trd = this.tr.get(x.id);
+        if (trd?.shown && (md.text || x.text)) {
+          const src = md.text || x.text;
+          out.push({ kind: "agenttr", id: `${x.id}:tr:${trd.state}:${(trd.failed ?? []).length}`, of: x.id, text: src, tr: trd,
+            segs: TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []) });
+          ps.length = 0;
+        }
         // A long reply: its first lines (the part where they end cut off there), then Show more.
         const fold = ps.length ? this.foldOf(x, ps) : null;
         const clip = (n) => (fold && !fold.open ? fold.clips.get(n) : undefined);
@@ -3141,7 +3198,7 @@ export default class Chat extends View {
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "agent", at: x.at, pills: this.pills(x.id),
-            acts: bandActs("agent", x.text, { fork: Boolean(this.kind) }) };
+            acts: bandActs("agent", x.text, { fork: Boolean(this.kind), translate: this.trOn }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }
@@ -3316,6 +3373,7 @@ export default class Chat extends View {
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * BUBBLE - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
       case "agent": return 30 + (x.clip ?? lines(x.text, w * BUBBLE - 24) * 21);
+      case "agenttr": return 30 + x.segs.reduce((n, s) => n + (s.type === "code" ? 16 + String(s.code).split("\n").length * 19 : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36) * 21), 0) + (x.tr.state === "done" ? 0 : 22);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62 + (x.peek?.paths?.some((p) => this.views[p]) ? fitThumbs(x.peek.paths.filter((p) => this.views[p]).map((p) => this.views[p]), PEEK_W - 22).h + 8 : 0) + (x.peek?.text ? 8 + Math.ceil((x.peek.text.length * 7) / (PEEK_W - 22)) * 18 : 0);
       case "tasknews": return x.accept ? 26 : 20;
@@ -3355,7 +3413,7 @@ export default class Chat extends View {
   bar(bar, t, bottom, hover) {
     const done = this.copied === bar.id;
     const icon = (a) => div().size(ACT).flex().items_center().justify_center().rounded(5).cursor_pointer()
-      .text_color(done && a === "copy" ? t.foreground : t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .text_color((done && a === "copy") || (a === "translate" && this.tr.get(bar.of)?.shown) ? t.foreground : t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .child(svg(`mods/chat/${done && a === "copy" ? "check" : ICONS[a]}.svg`).size(14));
     const pill = (p) => h_flex().w(PILL).h(PILL_H).gap(4).items_center().justify_center().rounded(PILL_H / 2).border_1().cursor_pointer()
       .when(p.you, (el) => el.bg(t.accent + "26").border_color(t.accent))
@@ -3466,6 +3524,19 @@ export default class Chat extends View {
           .children(this.fitThumbs(x.paths).boxes.map((b) => this.shot(t, b).cursor_pointer())), 18, 4);
       case "agent":
         return pad(theirs(x.text));
+      case "agenttr": {
+        // SHEP-102, as Immersive Translate: each block, then its translation a step dimmer with a thin rule on its left;
+        // code as it is, with no translation; a failure one short line with Retry (a press on the message asks again)
+        const line = (text, color) => div().w_full().mt(2).mb(4).pl(8).border_l(2).border_color(t.border).text_color(color).child(text);
+        const segs = x.segs.map((g, n) => g.type === "md" ? TextView.markdown(`${pre}chat-trmd-${x.id}-${n}`, this.mentionsIn(g.text) || " ").selectable(true)
+          : g.type === "tr" ? line(TextView.markdown(`${pre}chat-tr-${x.id}-${n}`, g.text || " ").selectable(true), t.muted)
+          : g.type === "fail" ? line(`${TR.WORDS.blockFailed} \u00b7 ${TR.WORDS.retry}`, t.blocked)
+          : TextView.markdown(`${pre}chat-trcode-${x.id}-${n}`, "```" + (g.lang ?? "") + "\n" + g.code + "\n```").selectable(true));
+        const tail = x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)]
+          : x.tr.state === "error" ? [line(`${x.tr.error || TR.WORDS.failed("")} \u00b7 ${TR.WORDS.retry}`, t.blocked)] : [];
+        return pad(h_flex().w_full().justify_start().child(div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
+          .child(v_flex().w_full().children([...segs, ...tail]))));
+      }
       case "codehead": {
         const done = this.copied === x.id;
         return col(h_flex().w_full().h(28).pl(12).pr(4).items_center().rounded_t(8).bg(t.surface).border_1().border_b(0).border_color(t.border)
@@ -3601,6 +3672,7 @@ export default class Chat extends View {
       if (this.opened.has(key)) this.opened.delete(key);
       else { this.opened.add(key); this.loadResults(row, cx); }
     } else if (row.kind === "codehead") this.copy(row.code, row.id, cx);
+    else if (row.kind === "agenttr" && (row.tr.state === "error" || (row.tr.state === "done" && row.tr.failed?.length))) this.askTranslation(row.of, row.text, cx);
     else if (row.kind === "queued" && this.kind === "claude" && !this.steering) this.sendQueuedNow(cx);
     else if (row.kind === "pending" && row.failed) { const p = this.pending.find((x) => x.id === row.id); if (p?.msg) this.retry(p, cx); }
     else if (row.kind === "artifact" && row.art) this.openArtifact(row);

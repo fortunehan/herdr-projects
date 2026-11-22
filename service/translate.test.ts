@@ -139,7 +139,7 @@ describe("Test connection", () => {
   test("says the model answered, or why not", async () => {
     reset();
     const ok = make();
-    expect(await ok.t.test()).toEqual({ ok: true });
+    expect(await ok.t.test()).toMatchObject({ ok: true, text: expect.stringContaining("Connected") });
     expect(ok.t.lastTest?.text).toContain("Connected: stub-model answered");
     mode = "401";
     const bad = make();
@@ -147,7 +147,7 @@ describe("Test connection", () => {
   });
   test("works before it's turned on", async () => {
     reset();
-    expect(await make({ on: false }).t.test()).toEqual({ ok: true });
+    expect(await make({ on: false }).t.test()).toMatchObject({ ok: true });
   });
 });
 
