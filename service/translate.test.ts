@@ -188,6 +188,9 @@ describe("a message", () => {
     expect(hasMedia("Read the report.\n\n<!-- <img src=\"sample.png\"> -->")).toBe(false);
     expect(hasMedia("<video-player>More notes</video-player>")).toBe(false);
     expect(hasMedia("<img src=\"a.png\">")).toBe(true);
+    // round 13: a quoted "<!--" in an attribute doesn't hide a real video; an attribute's words aren't an image
+    expect(hasMedia("Read the report.\n\n<div title=\"<!--\"><video src=\"https://example.test/x.mp4\"></video></div>")).toBe(true);
+    expect(hasMedia("Read <span title=\"<img src=sample.png>\">the report</span>.")).toBe(false);
   });
 
   test("a key's minimum counts ASCII letters and digits only (a fraction or another script's letter doesn't)", async () => {
@@ -235,6 +238,10 @@ describe("a message", () => {
     // an invisible named reference between the key's parts: still the key on the page; a numeric one shown literally in
     // code is words
     expect(t.scrub(["sk-&ZeroWidthSpace;stub-secret-0123456789", "Leave `&#115;k-stub-secret-0123456789` as written."], used)).toEqual([null, "Leave `&#115;k-stub-secret-0123456789` as written."]);
+    // round 13: an unknown name stays as typed (its letters show, so "&stub;" spells the key; "&widget;" adds letters
+    // and doesn't), a comment holding ">" is gone whole
+    expect(t.scrub(["sk-&stub;-secret-0123456789", "sk-<!-- >foo -->stub-secret-0123456789", "sk-&widget;stub-secret-0123456789"], new Set(["sk-stub-secret-0123456789"])))
+      .toEqual([null, null, "sk-&widget;stub-secret-0123456789"]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept

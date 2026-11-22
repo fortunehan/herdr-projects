@@ -8,29 +8,32 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { marked } from "marked";
+import { parseFragment } from "parse5";
 import * as TR from "../core/translate.js";
 
 const T = TR as any;
-/** A code point as a page shows it: out of range is the replacement character. */
-const point = (n: number) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "\ufffd");
-const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
-/** The words a page shows for marked's HTML: tags out, then every character reference decoded exactly once (a code
- *  span's "&amp;#115;" stays the literal "&#115;"). A named reference other than the few marked writes itself becomes
- *  nothing: by the HTML spec none of them is an ASCII letter or digit, which is all the key check compares. */
-export const shownText = (html: string) => html.replace(/<[^>]*>/g, "")
-  .replace(/&(#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/gi, (_, r: string) => (r[0] === "#"
-    ? point(r[1].toLowerCase() === "x" ? parseInt(r.slice(2), 16) : Number(r.slice(1))) : NAMED[r] ?? ""));
-/** Whether marked's parse of the words holds a picture or clip: an image (a reference one too) or an HTML image or
- *  video, outside code (code blocks and code spans are code, examples included). The chat's own attachments (a link to
- *  a local picture or clip, core/chat-view.js mediaIn) count too: the caller adds them. */
+/** The words a browser shows for HTML (parse5 parses it as a browser does: character references decoded once,
+ *  comments, tags and attributes out, an unknown "&name;" left as typed). */
+export function shownText(html: string) {
+  const out: string[] = [];
+  const walk = (n: any) => {
+    if (n.nodeName === "#text") out.push(n.value);
+    for (const c of n.childNodes ?? []) walk(c);
+    if (n.content) walk(n.content);
+  };
+  walk(parseFragment(html));
+  return out.join("");
+}
+
+/** The elements that show a picture or clip in a page. */
+const MEDIA = new Set(["img", "video", "audio", "picture", "source", "embed", "object"]);
+
+/** Whether the words, as marked renders them and a browser parses that, show a picture or clip: a markdown image (a
+ *  reference one too) or an HTML image or video; an example in code, a comment or an attribute's words never are. The
+ *  chat's own attachments (a link to a local picture or clip, core/chat-view.js mediaIn) count too: the caller adds them. */
 export function hasMedia(raw: string) {
-  // a whole tag name (not <video-player>), outside comments
-  const html = /<(?:img|video|audio|picture|source)(?=[\s/>])/i;
-  const live = (s: string) => s.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
-  const walk = (ts: any[]): boolean => (ts ?? []).some((t) => t && t.type !== "code" && t.type !== "codespan" &&
-    (t.type === "image" || (t.type === "html" && html.test(live(String(t.raw ?? t.text ?? "")))) || walk(t.tokens) || (t.items ?? []).some((it: any) => walk(it.tokens))
-      || (t.header ?? []).some((c: any) => walk(c.tokens)) || (t.rows ?? []).some((r: any[]) => r.some((c) => walk(c.tokens)))));
-  return walk(marked.lexer(String(raw ?? "")) as any);
+  const walk = (n: any): boolean => (n.nodeName && MEDIA.has(String(n.nodeName).toLowerCase())) || (n.childNodes ?? []).some(walk) || (n.content ? walk(n.content) : false);
+  return walk(parseFragment(String(marked.parse(String(raw ?? ""), { async: false }))));
 }
 
 /** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
@@ -142,10 +145,9 @@ export class Translator {
   /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
    *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
   private scrub(got: (string | null)[], used: Set<string>) {
-    // the words as a page renders them (marked: links' addresses gone, emphasis and escapes resolved, numeric
-    // references decoded), ASCII letters and digits only: a translation whose rendered words hold a key that way is
-    // dropped whole (that block shows as not translated). A key is ASCII letters and digits (with punctuation between);
-    // no named character reference decodes to one of those, and marked decodes the numeric ones before this looks.
+    // the words as a page shows them (marked renders them, a browser's parse of that: links' addresses, comments and
+    // tags gone, emphasis and escapes resolved, character references decoded once), ASCII letters and digits only: a
+    // translation whose shown words hold a key that way is dropped whole (that block shows as not translated)
     const bare = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "");
     const rendered = (s: string) => bare(shownText(String(marked.parseInline(s, { async: false }))));
     const keys = [...used].map(bare).filter(Boolean);
@@ -183,7 +185,7 @@ export class Translator {
     // the cache's name says its layout and the very words sent (an older layout's, or other inputs', is never read;
     // two at once share one only when both match)
     const sent = JSON.stringify(blocks.map((b: any) => (b.skip ? null : b.text)));
-    const f = this.file("message:marked4", `${text}\0${sent}`, target);
+    const f = this.file("message:marked5", `${text}\0${sent}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -216,7 +218,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked4", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked5", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};
