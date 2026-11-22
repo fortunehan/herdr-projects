@@ -12,6 +12,7 @@ import { BackIcon, CheckIcon, CopyIcon, DownloadIcon, ic, NextIcon, OpenIcon, XI
 import { toast } from '@plugins/alerts/toasts.tsx'
 import { clampZoom, percent, STEP, toggledZoom } from '../pictures.ts'
 import { canCopyPicture, copyPicture } from '../copy.ts'
+import { overHost } from '../fullscreen.ts'
 
 /** one picture: its address, what the bar calls it, the file name it saves as */
 export type Picture = { url: string; name: string; file: string }
@@ -25,7 +26,7 @@ export function PictureViewer({ pics, at, device, onClose }: { pics: Picture[]; 
   const [i, setI] = useState(Math.min(Math.max(0, at), pics.length - 1))
   const p = pics[i]
   // over a full-screen artifact too: only what is inside the full-screen element shows
-  const host = document.fullscreenElement ?? document.body
+  const host = overHost()
   return createPortal(<Stage key={p.url} pics={pics} i={i} device={device} go={(n) => setI((n + pics.length) % pics.length)} onClose={onClose} />, host)
 }
 

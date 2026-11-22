@@ -29,6 +29,9 @@ const { chartShapes, choiceReply, formReply, isLink, answerLine, answerOf, check
 const OpenPicture = createContext<((src: string) => void) | null>(null)
 const PALETTE = ['var(--accent)', 'var(--focus)', 'var(--ready)', 'var(--work)', 'var(--merged)', 'var(--need)']
 const TONE: Record<string, string> = { info: 'bg-well shadow-soft', good: 'bg-ready/10', warn: 'bg-work/12', bad: 'bg-need/10' }
+/** SHEP-107: words keep a reading width (as the window's recipe view, mods/artifacts/recipe-view.js) while grids,
+ *  columns, tables and pictures take the whole width: a full-screen artifact on a wide screen */
+const PROSE = 'max-w-[46rem]'
 
 function Chart({ b }: { b: Block }) {
   const s = chartShapes(b)
@@ -311,8 +314,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   const one = (b: Block): ReactNode => {
     switch (b.type) {
       case 'heading': { const H = (`h${Math.min(3, Math.max(1, b.level ?? 2)) + 1}`) as 'h2'; return <H className={clsx('font-semibold text-balance', (b.level ?? 2) <= 1 ? 'text-xl' : 'text-base')}>{b.text}</H> }
-      case 'text': return <Markdown text={b.md} />
-      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} /></li>)}</L> }
+      case 'text': return <div className={PROSE}><Markdown text={b.md} /></div>
+      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', PROSE, b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} /></li>)}</L> }
       case 'table': return (
         <div className="overflow-x-auto rounded-box shadow-box">
           <table className="w-full border-collapse">

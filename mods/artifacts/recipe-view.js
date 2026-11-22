@@ -26,6 +26,9 @@ function holdKeys() {
 }
 
 const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
+// SHEP-107: words keep a reading width while columns, tables and pictures take the whole width (full screen on a
+// wide window; before, the whole recipe stopped at 860 px). The web's recipe view does the same (screens/Recipe.tsx).
+const PROSE = 760;
 
 // A picture file's first bytes, for its size (recipe.js imageSize): fs when it gives bytes, else od, which every Mac and
 // Linux has. null when neither can read it.
@@ -123,7 +126,7 @@ export default class RecipeView extends View {
 
   // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
   md(id, text, t) {
-    const words = (key, w) => div().w_full().min_w(0).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
+    const words = (key, w) => div().w_full().min_w(0).max_w(PROSE).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
     const parts = mdParts(text);
     if (!parts.some((x) => "code" in x)) return words(`md-${id}`, String(text ?? " "));
     return v_flex().w_full().min_w(0).gap(8).children(parts.map((x, i) => "code" in x ? this.code(`${id}-c${i}`, x.code, t) : words(`md-${id}-${i}`, x.md)));
@@ -366,6 +369,6 @@ export default class RecipeView extends View {
     const body = this.error ? [div().text_size(13).text_color(t.muted).child(this.error)]
       : !this.recipe ? [] : this.recipe.blocks.map((b) => v_flex().id(`blk-${b.id}`).w_full().min_w(0).child(this.block(b, t, cx)));
     return v_flex().id("recipe").size_full().overflow_y_scrollbar().bg(t.background).text_color(t.foreground)
-      .child(v_flex().p(16).gap(14).max_w(860).children(body));
+      .child(v_flex().id("recipe-body").w_full().p(16).gap(14).children(body));
   }
 }

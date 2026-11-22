@@ -2,7 +2,7 @@
 // the element given; where the browser has none for an element (an iPhone's Safari) or refuses it, the element fills
 // the page instead ("page": the caller lays it over everything and hides its own bar). Esc and the same button leave
 // either: the browser's own leaves on Esc by itself, the page's listens for it.
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useState, type RefObject } from 'react'
 
 type Doc = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => Promise<void> | void; webkitFullscreenEnabled?: boolean }
 type El = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void }
@@ -16,6 +16,37 @@ export function fullscreenWay(doc: Pick<Doc, 'fullscreenEnabled' | 'webkitFullsc
 const shownFull = () => {
   const d = document as Doc
   return d.fullscreenElement ?? d.webkitFullscreenElement ?? null
+}
+
+type Pop = Pick<HTMLElement, 'setAttribute' | 'removeAttribute'> & { showPopover?: () => void; hidePopover?: () => void }
+
+/** SHEP-107: the page's full screen goes on the top layer (a manual popover) where the browser has one, as the
+ *  browser's own does. Its `position: fixed` alone stays inside any parent that contains its layout: the side panel is
+ *  a @container, so the panel's artifact stayed the panel's width. Returns what puts it back, null where it can't. */
+export function liftToTop(el: Pop): (() => void) | null {
+  if (typeof el.showPopover !== 'function') return null
+  const drop = () => {
+    el.removeAttribute('popover')
+    el.removeAttribute('data-full-page')
+  }
+  el.setAttribute('popover', 'manual')
+  el.setAttribute('data-full-page', '')
+  try {
+    el.showPopover()
+  } catch {
+    drop()
+    return null
+  }
+  return () => {
+    try { el.hidePopover?.() } catch { /* already gone */ }
+    drop()
+  }
+}
+
+/** where whatever opens over an artifact goes (its picture viewer, a menu): inside the full-screen artifact when one
+ *  is, the only part of the page that shows then (the top layer); else the body */
+export function overHost(doc: Pick<Doc, 'fullscreenElement' | 'webkitFullscreenElement' | 'querySelector' | 'body'> = document): Element {
+  return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? doc.querySelector('[data-full-page]') ?? doc.body
 }
 
 /** Esc goes to whatever is over a page-filled artifact first (its picture viewer) */
@@ -38,6 +69,10 @@ export function useFullscreen(ref: RefObject<HTMLElement | null>) {
       if (el && shownFull() === el) void exit()
     }
   }, [ref])
+  useLayoutEffect(() => {
+    const el = ref.current
+    return page && el ? liftToTop(el) ?? undefined : undefined
+  }, [page, ref])
   useEffect(() => {
     if (!page) return
     const esc = (e: KeyboardEvent) => {
