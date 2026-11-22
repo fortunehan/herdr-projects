@@ -24,7 +24,7 @@ One page for every space (Everywhere's `translation` in Shepherdr's settings fil
 | Translate button | `on` | Off by default. The first time it is turned on, the page says that the words you translate are sent to the endpoint (`agreed` keeps when). |
 | Endpoint (base URL) | `base_url` | An OpenAI-compatible API, e.g. `https://api.openai.com/v1`; `/chat/completions` is added. |
 | Model | `model` | The model that translates, as the endpoint names it. |
-| API key | `key` | The name of a secret in Settings › Secrets (Everywhere), picked from that list (never typed). Its value is read into memory only, never shown or logged; it needs 16 letters and digits at least. |
+| API key | `key` | The name of a secret in Settings › Secrets (Everywhere), picked from that list (never typed). Its value is read into memory only, never shown or logged; it needs 16 ASCII letters and digits at least. |
 | Test connection | | Sends "Hello" and shows what came back. |
 
 Only the endpoint set here is ever called. There is no built-in public service.
@@ -58,11 +58,11 @@ Only the endpoint set here is ever called. There is no built-in public service.
 - A message is asked for by its chat and its id: the service reads its words from that chat's conversation itself
   (never the words a caller sends), and refuses one its agent may still be writing (its agent works and it is the
   newest reply). The band, the phone's hold menu and the window wait for it too.
-- A reply with any picture or clip (one its chat takes out to show under its words, an inline image, an HTML image or
-  video) isn't translated yet: one short line says so.
+- A reply with any picture or clip (one its chat shows as an attachment, a plain link to a local picture or clip
+  included, or an image or HTML image or video marked parses outside code) isn't translated yet: one short line says so.
 - The key written plainly in an answer is taken out; a translation whose words, as a page renders them (links'
-  addresses gone, emphasis, escapes and entities resolved), hold a key is dropped whole and shows as not translated; so
-  is one with an HTML entity the check can't read. A key with fewer than 16 letters and digits isn't used at all.
+  addresses gone, emphasis and escapes resolved, numeric references decoded), compared as ASCII letters and digits,
+  hold a key is dropped whole and shows as not translated. A key with fewer than 16 ASCII letters and digits isn't used.
 - Known limits: an ended task's chat read from its saved log can't be translated; a message more than 20 pages back
   in its chat isn't found.
 - Manual only: there is no switch to translate a whole chat by itself.

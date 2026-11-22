@@ -21,9 +21,10 @@ export const decoded = (s: string) => s
   .replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
   .replace(/\\([!-\/:-@[-`{-~])/g, "$1");
 /** Whether marked's parse of the words holds a picture or clip: an image (a reference one too) or an HTML image or
- *  video, outside code (code blocks and code spans are code, examples included). */
+ *  video, outside code (code blocks and code spans are code, examples included). The chat's own attachments (a link to
+ *  a local picture or clip, core/chat-view.js mediaIn) count too: the caller adds them. */
 export function hasMedia(raw: string) {
-  const html = /<(?:img|video|audio|picture|source|iframe)\b/i;
+  const html = /<(?:img|video|audio|picture|source)\b/i;
   const walk = (ts: any[]): boolean => (ts ?? []).some((t) => t && t.type !== "code" && t.type !== "codespan" &&
     (t.type === "image" || (t.type === "html" && html.test(String(t.raw ?? t.text ?? ""))) || walk(t.tokens) || (t.items ?? []).some((it: any) => walk(it.tokens))
       || (t.header ?? []).some((c: any) => walk(c.tokens)) || (t.rows ?? []).some((r: any[]) => r.some((c) => walk(c.tokens)))));
@@ -44,7 +45,8 @@ export type ArtifactResult = { ok: true; target: string; units: Record<string, s
 const MOST = 60_000;
 /** How long a found key is kept in memory (a key changed in Settings › Secrets is used after at most this long). */
 const KEY_KEEP = 10 * 60_000;
-/** The fewest letters and digits a key may have: every real API key has more, and a shorter one could hide in words. */
+/** The fewest ASCII letters and digits a key may have: every real API key has more, and a shorter one could hide in
+ *  words. Only these count, in the key and in the words it is looked for in (see scrub). */
 const KEY_MIN = 16;
 const CHANGED = "Settings › Translation changed while it translated: try again";
 
@@ -92,7 +94,7 @@ export class Translator {
     const k = await this.keyOf(cfg.key);
     if ("error" in k) throw new Error(k.error);
     // a key short enough to turn up in ordinary words can't be watched for in answers: it isn't used
-    if ([...k.key.replace(/[^\p{L}\p{N}]+/gu, "")].length < KEY_MIN) throw new Error(T.WORDS.shortKey);
+    if (k.key.replace(/[^A-Za-z0-9]+/g, "").length < KEY_MIN) throw new Error(T.WORDS.shortKey);
     used?.add(k.key);
     // right before it goes (after the key's lookup, which can take a while)
     const now = this.io.config();
@@ -138,22 +140,17 @@ export class Translator {
   /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
    *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
   private scrub(got: (string | null)[], used: Set<string>) {
-    // the words as a page renders them (marked: links' addresses gone, emphasis and escapes resolved, entities
-    // decoded), letters and digits only: a translation whose rendered words hold a key that way is dropped whole (that
-    // block shows as not translated)
-    const bare = (s: string) => decoded(s).replace(/[^\p{L}\p{N}]+/gu, "");
+    // the words as a page renders them (marked: links' addresses gone, emphasis and escapes resolved, numeric
+    // references decoded), ASCII letters and digits only: a translation whose rendered words hold a key that way is
+    // dropped whole (that block shows as not translated). A key is ASCII letters and digits (with punctuation between);
+    // no named character reference decodes to one of those, and marked decodes the numeric ones before this looks.
+    const bare = (s: string) => decoded(s).replace(/[^A-Za-z0-9]+/g, "");
     const rendered = (s: string) => bare(String(marked.parseInline(s, { async: false })).replace(/<[^>]*>/g, ""));
     const keys = [...used].map(bare).filter(Boolean);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      // a character reference other than the few marked writes itself could spell anything: such a translation goes
-      // too. Numeric ones as written (marked decodes them); named ones as marked passes them on (a plain "&", as in
-      // R&D, or a name with no semicolon, it escapes as &amp;: the page shows them as typed)
-      if (/&#(?:\d+|x[0-9a-f]+);?/i.test(x)) return null;
-      const refs = String(marked.parseInline(x, { async: false })).match(/&[a-z][a-z0-9]*;/gi) ?? [];
-      if (refs.some((r) => !/^&(?:amp|lt|gt|quot|apos|nbsp);$/i.test(r))) return null;
       const r = rendered(x), b = bare(x);
       return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
     });

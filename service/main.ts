@@ -338,9 +338,10 @@ const translator = new Translator({
       // the words its chat shows (pictures and clips out), as compat.ts makes them
       const md = (CVm as any).mediaIn(x.text, { cwd: t?.foreground?.cwd ?? t?.cwd ?? null, home: addr.includes("/") ? null : HOME });
       const shown = md.text || x.text;
-      // any picture or clip in it, as marked parses it (an image, a reference one too, an HTML image or video; an
-      // example in code isn't one): not translated
-      const media = hasMedia(x.text);
+      // any picture or clip in it: one its chat shows as an attachment (the same check the chat makes, a plain link to a
+      // local picture or clip included), or one marked parses (an image, a reference one too, an HTML image or video;
+      // an example in code isn't one): not translated
+      const media = md.media.length > 0 || hasMedia(x.text);
       // its agent works and this is its newest reply, with nothing the person said after it: it may still be writing it
       const newest = items.findLastIndex((i) => i.kind === "agent" && typeof i.text === "string" && i.text.trim());
       const writing = t?.status?.state === "working" && at === newest && !items.slice(at + 1).some((i) => i.kind === "user" && !i.from);

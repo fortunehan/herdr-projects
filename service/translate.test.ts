@@ -187,6 +187,14 @@ describe("a message", () => {
     expect(hasMedia("| a | b |\n|---|---|\n| ![p](q.png) | x |")).toBe(true);
   });
 
+  test("a key's minimum counts ASCII letters and digits only (a fraction or another script's letter doesn't)", async () => {
+    reset();
+    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "abcdefghijklmno¾" }),
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t") });
+    expect(await t.test()).toMatchObject({ ok: false, error: expect.stringContaining("too short") });
+    expect(seen.length).toBe(0);
+  });
+
   test("a key too short to watch for in answers isn't used", async () => {
     reset();
     const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "test" }),
@@ -215,11 +223,12 @@ describe("a message", () => {
     const t: any = make().t;
     const used = new Set(["sk-stub-secret-0123456789"]);
     expect(t.scrub(["see &#115;k-stub-secret-0123456789 now", "and &#x73;k\\-stub-secret-0123456789", "named &sfr;k-stub-secret-0123456789", "split sk-**stub**-secret-0123456789", "linked sk-[stub](https://example.com)-secret-0123456789", "plain words", "bad &#1114112; entity"], used))
-      .toEqual([null, null, null, null, null, "plain words", null]);
+      // (&sfr; is a fraktur letter, not an ASCII s: the page never shows the key there)
+      .toEqual([null, null, "named &sfr;k-stub-secret-0123456789", null, null, "plain words", "bad &#1114112; entity"]);
     // a named reference without its semicolon, and numeric ones, too; a plain ampersand isn't one
-    // (a name with no semicolon marked escapes: the page shows "&AElig" as typed)
-    expect(t.scrub(["named &copy; here", "Use &#169; here", "Use &#xA9; here", "Research at AT&T", "See R&D", "legacy &AElig bar"], used))
-      .toEqual([null, null, null, "Research at AT&T", "See R&D", "legacy &AElig bar"]);
+    // named references can't spell an ASCII key, and code spans and plain ampersands are words: all kept
+    expect(t.scrub(["named &copy; here", "Talk to R&D; we can start tomorrow.", "Leave `&#169;` as written.", "Research at AT&T"], used))
+      .toEqual(["named &copy; here", "Talk to R&D; we can start tomorrow.", "Leave `&#169;` as written.", "Research at AT&T"]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept
