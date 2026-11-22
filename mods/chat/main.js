@@ -2104,7 +2104,23 @@ export default class Chat extends View {
   /** A message's words: its markdown, or (md null: not ready, too long) the words as written in one code block: one
    *  element, selectable, every line and "<" kept, no link in it (SHEP-109). */
   words(id, md, text) {
-    return TextView.markdown(id, md !== null ? this.findMark(md) || " " : asCode(text)).selectable(true);
+    return TextView.markdown(id, md !== null ? this.findMark(md) || " " : this.codeOf(text)).selectable(true);
+  }
+
+  /** asCode(text), kept per text and made within the frame's budget (prepared()'s): past it, its first 2000 characters
+   *  for now (a 240 KB message's scan took ~13 ms, and the measurer draws up to 60 rows a frame). */
+  codeOf(text) {
+    const s = String(text);
+    const kept = this.codes?.get(s);
+    if (kept !== undefined) return kept;
+    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return asCode(s.length > 2000 ? `${s.slice(0, 2000)}\n…` : s); }
+    const at = Date.now();
+    const v = asCode(s);
+    this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
+    this.codes ??= new Map();
+    if (this.codes.size >= 200) this.codes.delete(this.codes.keys().next().value);
+    this.codes.set(s, v);
+    return v;
   }
 
   /** Mentions spelled out (mentionsIn()) and kept until what they name (the reach, the tasks) changes. */

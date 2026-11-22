@@ -150,6 +150,29 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     }
   });
 
+  test("a long message's code block is made once and within the budget: past it, its start for now, whole on the redraw", () => {
+    const c = chat();
+    const long = "start `a` " + "x `y` ".repeat(10000);
+    c.linkSpent = 1e9;
+    mds.length = 0;
+    c.safeRow({ kind: "user", id: "l1", text: long }, theme, "v0-");
+    const first = mds.find((m) => m.includes("start"))!;
+    expect(first.length).toBeLessThan(2100);
+    expect(first).toContain("\n…\n");
+    expect(c.linkWaiting).toBe(true);
+    c.linkSpent = 0;
+    mds.length = 0;
+    c.safeRow({ kind: "user", id: "l1", text: long }, theme, "v0-");
+    expect(codeOnly(mds.find((m) => m.includes("start"))!)).toEqual([long]);
+    // kept: the next frame, even past its budget, gets the whole block without making it again
+    c.linkSpent = 1e9;
+    c.linkWaiting = false;
+    mds.length = 0;
+    c.safeRow({ kind: "user", id: "l1", text: long }, theme, "v0-");
+    expect(codeOnly(mds.find((m) => m.includes("start"))!)).toEqual([long]);
+    expect(c.linkWaiting).toBe(false);
+  });
+
   test("the list's renderer, as main.js has it: every row's words, a throwing row plain, the row after it whole", () => {
     const src = require("node:fs").readFileSync(require.resolve("../mods/chat/main.js"), "utf8") as string;
     const at = src.indexOf('v_virtual_list("chat-rows", rows.length, sizes, (i) => rows[i].id, ');
