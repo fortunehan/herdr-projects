@@ -185,6 +185,9 @@ describe("a message", () => {
     expect(hasMedia("Example:\n\n    ![shot](https://example.test/shot.png)\n\nDone.")).toBe(false);
     expect(hasMedia("Inline `![x](y.png)` and\n\n```\n![x](y.png)\n```")).toBe(false);
     expect(hasMedia("| a | b |\n|---|---|\n| ![p](q.png) | x |")).toBe(true);
+    expect(hasMedia("Read the report.\n\n<!-- <img src=\"sample.png\"> -->")).toBe(false);
+    expect(hasMedia("<video-player>More notes</video-player>")).toBe(false);
+    expect(hasMedia("<img src=\"a.png\">")).toBe(true);
   });
 
   test("a key's minimum counts ASCII letters and digits only (a fraction or another script's letter doesn't)", async () => {
@@ -229,6 +232,9 @@ describe("a message", () => {
     // named references can't spell an ASCII key, and code spans and plain ampersands are words: all kept
     expect(t.scrub(["named &copy; here", "Talk to R&D; we can start tomorrow.", "Leave `&#169;` as written.", "Research at AT&T"], used))
       .toEqual(["named &copy; here", "Talk to R&D; we can start tomorrow.", "Leave `&#169;` as written.", "Research at AT&T"]);
+    // an invisible named reference between the key's parts: still the key on the page; a numeric one shown literally in
+    // code is words
+    expect(t.scrub(["sk-&ZeroWidthSpace;stub-secret-0123456789", "Leave `&#115;k-stub-secret-0123456789` as written."], used)).toEqual([null, "Leave `&#115;k-stub-secret-0123456789` as written."]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept

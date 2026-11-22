@@ -14,19 +14,21 @@ const T = TR as any;
 /** A code point as a page shows it: out of range is the replacement character. */
 const point = (n: number) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "\ufffd");
 const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
-/** Words as a page shows them: HTML entities and markdown's backslash escapes decoded. */
-export const decoded = (s: string) => s
-  .replace(/&#(\d+);?/g, (_, n) => point(Number(n)))
-  .replace(/&#x([0-9a-f]+);?/gi, (_, n) => point(parseInt(n, 16)))
-  .replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
-  .replace(/\\([!-\/:-@[-`{-~])/g, "$1");
+/** The words a page shows for marked's HTML: tags out, then every character reference decoded exactly once (a code
+ *  span's "&amp;#115;" stays the literal "&#115;"). A named reference other than the few marked writes itself becomes
+ *  nothing: by the HTML spec none of them is an ASCII letter or digit, which is all the key check compares. */
+export const shownText = (html: string) => html.replace(/<[^>]*>/g, "")
+  .replace(/&(#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/gi, (_, r: string) => (r[0] === "#"
+    ? point(r[1].toLowerCase() === "x" ? parseInt(r.slice(2), 16) : Number(r.slice(1))) : NAMED[r] ?? ""));
 /** Whether marked's parse of the words holds a picture or clip: an image (a reference one too) or an HTML image or
  *  video, outside code (code blocks and code spans are code, examples included). The chat's own attachments (a link to
  *  a local picture or clip, core/chat-view.js mediaIn) count too: the caller adds them. */
 export function hasMedia(raw: string) {
-  const html = /<(?:img|video|audio|picture|source)\b/i;
+  // a whole tag name (not <video-player>), outside comments
+  const html = /<(?:img|video|audio|picture|source)(?=[\s/>])/i;
+  const live = (s: string) => s.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
   const walk = (ts: any[]): boolean => (ts ?? []).some((t) => t && t.type !== "code" && t.type !== "codespan" &&
-    (t.type === "image" || (t.type === "html" && html.test(String(t.raw ?? t.text ?? ""))) || walk(t.tokens) || (t.items ?? []).some((it: any) => walk(it.tokens))
+    (t.type === "image" || (t.type === "html" && html.test(live(String(t.raw ?? t.text ?? "")))) || walk(t.tokens) || (t.items ?? []).some((it: any) => walk(it.tokens))
       || (t.header ?? []).some((c: any) => walk(c.tokens)) || (t.rows ?? []).some((r: any[]) => r.some((c) => walk(c.tokens)))));
   return walk(marked.lexer(String(raw ?? "")) as any);
 }
@@ -144,15 +146,15 @@ export class Translator {
     // references decoded), ASCII letters and digits only: a translation whose rendered words hold a key that way is
     // dropped whole (that block shows as not translated). A key is ASCII letters and digits (with punctuation between);
     // no named character reference decodes to one of those, and marked decodes the numeric ones before this looks.
-    const bare = (s: string) => decoded(s).replace(/[^A-Za-z0-9]+/g, "");
-    const rendered = (s: string) => bare(String(marked.parseInline(s, { async: false })).replace(/<[^>]*>/g, ""));
+    const bare = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "");
+    const rendered = (s: string) => bare(shownText(String(marked.parseInline(s, { async: false }))));
     const keys = [...used].map(bare).filter(Boolean);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      const r = rendered(x), b = bare(x);
-      return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
+      const r = rendered(x);
+      return keys.some((k) => r.includes(k)) ? null : x;
     });
   }
 
