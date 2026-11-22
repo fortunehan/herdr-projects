@@ -93,6 +93,10 @@ function trLine(cls: string, html: string, retry = false) {
   }
   return d
 }
+/** A translation's inline markdown as inert HTML: words, emphasis, code and links only (the service already keeps a
+ *  link only to an address the original names, and drops pictures and HTML): nothing in it loads anything */
+const inlineHtml = (md: string) => DOMPurify.sanitize(marked.parseInline(md, { async: false }) as string,
+  { ALLOWED_TAGS: ['b', 'strong', 'i', 'em', 'code', 'a', 'del', 's', 'br', 'span'], ALLOWED_ATTR: ['href'] })
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
 
 /** Each block's translation right under it, as Immersive Translate does: a paragraph's, a heading's and a quote's after
@@ -115,7 +119,7 @@ function addTranslations(root: HTMLElement, tr: Tr) {
   const failed = new Set(tr.failed ?? [])
   const under = (i: number) => {
     const t = tr.blocks?.[i]
-    if (t) return trLine('tr', marked.parseInline(t, { async: false }) as string)
+    if (t) return trLine('tr', inlineHtml(t))
     return failed.has(i) ? trLine('tr tr-fail', esc(TW.blockFailed), !!tr.retry) : null
   }
   if (ok) {
@@ -186,7 +190,7 @@ function onCopy(e: MouseEvent) {
 /** One translation line (SHEP-102), as under a chat message's block: its inline markdown, dim, a thin rule on its left.
  *  A failure says so, with Retry; note: a quiet line (Translating…). */
 export function TrLine({ text, fail, note, retry }: { text: string; fail?: boolean; note?: boolean; retry?: () => void }) {
-  const html = useMemo(() => (fail || note ? esc(text) : DOMPurify.sanitize(marked.parseInline(text, { async: false }) as string, { FORBID_ATTR: ['title', 'style'] })), [text, fail, note])
+  const html = useMemo(() => (fail || note ? esc(text) : inlineHtml(text)), [text, fail, note])
   return (
     <div data-tr className={clsx('tr-line', fail && 'tr-fail', note && 'tr-note')}>
       <span dangerouslySetInnerHTML={{ __html: html }} />

@@ -4,7 +4,7 @@
 // Levels as the window's scopes: Everywhere ("everywhere"), a space ("spaces"[its id], with its repo folder, which is
 // how herdr-task finds it), and for the Machines page each machine ("machines"[its name, "local" here]).
 import { existsSync, readFileSync, renameSync, watch, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { HOME, settingsFile, where, writableSettings } from "./paths.ts";
 import * as C from "../core/settings.js";
 import { normalizePick } from "../core/agents.js";
@@ -99,7 +99,8 @@ export class Settings {
 
   start() {
     this.read();
-    if (existsSync(dirname(settingsFile()))) watch(dirname(settingsFile()), (_e, name) => { if (name === "shepherdr.json") this.read(); });
+    // the file's own name: settings.json in Shepherdr's folders, shepherdr.json in ~/.herdr on an older machine
+    if (existsSync(dirname(settingsFile()))) watch(dirname(settingsFile()), (_e, name) => { if (name === basename(settingsFile())) this.read(); });
   }
 
   private read() {
@@ -160,8 +161,9 @@ export class Settings {
     return out;
   }
 
-  /** Settings › Translation (SHEP-102) as the settings file has it now: { on, base_url, model, key, agreed }. */
-  translation() { return TR.configOf(this.file); }
+  /** Settings › Translation (SHEP-102) as the settings file has it now: { on, base_url, model, key, agreed }, read
+   *  from the file each time (the window writes it too), so a change there applies at once. */
+  translation() { try { return TR.configOf(readSettings()); } catch { return TR.configOf(this.file); } }
   /** The Secrets names kept for Everywhere (the key row's choices), set by main. */
   secretNames: () => string[] = () => [];
   /** Test connection's last answer (service/translate.ts), set by main. */

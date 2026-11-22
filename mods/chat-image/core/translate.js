@@ -71,6 +71,15 @@ export function mdBlocks(md) {
   for (let i = 0; i < lines.length;) {
     const l = lines[i];
     if (blank(l)) { i++; continue; }
+    // an indented code block (four spaces in, not a paragraph's next line nor a list item's: those are read there)
+    if (indentOf(l) >= 4) {
+      const start = i;
+      while (i < lines.length && (blank(lines[i]) || indentOf(lines[i]) >= 4)) i++;
+      while (i > start && blank(lines[i - 1])) i--;
+      const body = lines.slice(start, i);
+      put({ kind: "code", text: "", src: body.join("\n"), lang: "", code: body.map((x) => x.replace(/^(?: {4}|\t)/, "")).join("\n") });
+      continue;
+    }
     const fence = FENCE.exec(l);
     if (fence) {
       const mark = fence[1], start = i;
@@ -95,12 +104,16 @@ export function mdBlocks(md) {
       continue;
     }
     if (QUOTE.test(l)) {
-      const start = i, inner = [];
+      const inner = [];
       while (i < lines.length && !blank(lines[i]) && (QUOTE.test(lines[i]) || !starts(lines[i]))) inner.push(lines[i++].replace(QUOTE, ""));
-      const src = lines.slice(start, i).join("\n");
-      // each paragraph of a quote is its own block (a ">" line on its own splits them)
-      const paras = inner.join("\n").split(/\n[ \t]*\n/).map((p) => p.trim()).filter(Boolean);
-      for (const p of paras) put({ kind: "quote", text: p.replace(/\n/g, " "), src: paras.length === 1 ? src : p.split("\n").map((x) => `> ${x}`).join("\n") });
+      // a quote holds markdown of its own (paragraphs, a heading, a list, a table), each block its own; a paragraph
+      // in it is a "quote"
+      const own = mdBlocks(inner.join("\n"));
+      const base = tables;
+      for (const b of own) {
+        put({ ...b, kind: b.kind === "para" ? "quote" : b.kind, src: b.src.split("\n").map((x) => `> ${x}`).join("\n"), ...(b.kind === "cell" ? { table: base + b.table } : {}) });
+        if (b.kind === "cell") tables = Math.max(tables, base + b.table + 1);
+      }
       continue;
     }
     const item = ITEM.exec(l);
@@ -227,55 +240,53 @@ export function apiError(status, body) {
   let msg = "";
   try { const d = JSON.parse(body); msg = d?.error?.message ?? d?.message ?? (typeof d?.error === "string" ? d.error : ""); } catch { msg = String(body ?? "").slice(0, 160); }
   msg = String(msg).replace(/\s+/g, " ").trim().slice(0, 160);
-  if (status === 401 || status === 403) return `the endpoint refused the key (${status})${msg ? `: ${msg}` : ""}`;
+  // a refusal of the key can quote the key: its own words never show
+  if (status === 401 || status === 403) return `the endpoint refused the key (${status})`;
   if (status === 404) return `the endpoint or model wasn't found (404)${msg ? `: ${msg}` : ""}`;
   if (status === 429) return `the endpoint is busy or out of quota (429)${msg ? `: ${msg}` : ""}`;
   return `the endpoint answered ${status}${msg ? `: ${msg}` : ""}`;
 }
 
-/** Texts in batches of at most `most` texts and about `chars` characters. */
-export function batches(texts, most = 40, chars = 6000) {
-  const out = [];
-  let cur = [], size = 0;
-  texts.forEach((t, i) => {
-    if (cur.length && (cur.length >= most || size + t.length > chars)) { out.push(cur); cur = []; size = 0; }
-    cur.push(i);
-    size += t.length;
-  });
-  if (cur.length) out.push(cur);
-  return out;
+/** A model's translation made inert against its original: no pictures or raw HTML (nothing that loads on its own),
+ *  and a link only to an address the original names (else its words alone). */
+export function inert(t, original = "") {
+  return String(t ?? "")
+    .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
+    .replace(/<\/?[A-Za-z][^>\n]*>/g, "")
+    .replace(/\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, words, url) => (String(original).includes(url) ? m : words));
 }
 
 /**
  * Translates texts into target. ask(texts) sends one request and gives the model's answer text (it throws on an
- * endpoint's error). Each batch goes as one request; an answer that isn't an array of as many strings is asked again
- * text by text. -> an array as long as texts: each translation, or null where it failed. Throws when nothing could be
- * translated (the error of the last try).
+ * endpoint's error). Every text goes in ONE request; an answer that isn't an array of as many strings is asked again
+ * text by text (a one-text message once more). -> an array as long as texts: each translation (inert), or null where it
+ * failed. Throws when nothing could be translated (the error of the last try); a refused key or a missing model at once.
  */
-export async function translateTexts(texts, target, ask, { most = 40, chars = 6000, parallel = 4 } = {}) {
+export async function translateTexts(texts, target, ask, { parallel = 4 } = {}) {
   const out = texts.map(() => null);
+  if (!texts.length) return out;
   let last = null, any = false;
   const one = async (idx) => {
     const got = parseTranslations(await ask(idx.map((i) => texts[i]), target), idx.length);
     if (!got) return false;
-    got.forEach((t, k) => { out[idx[k]] = t; });
+    got.forEach((t, k) => { out[idx[k]] = inert(t, texts[idx[k]]); });
     any = true;
     return true;
   };
-  for (const idx of batches(texts, most, chars)) {
-    let ok = false;
-    try { ok = await one(idx); } catch (e) { last = e; if (!retryable(e)) throw e; }
-    if (ok || idx.length === 1) continue;
+  const all = texts.map((_, i) => i);
+  let ok = false;
+  try { ok = await one(all); } catch (e) { last = e; if (!retryable(e)) throw e; }
+  if (!ok) {
     // the count or the shape didn't match: each text on its own
-    const left = [...idx];
+    const left = [...all];
     await Promise.all(Array.from({ length: Math.min(parallel, left.length) }, async () => {
       while (left.length) {
         const i = left.shift();
-        try { if (!(await one([i]))) last ??= new Error("the model's answer wasn't the translation asked for"); } catch (e) { last = e; }
+        try { if (!(await one([i]))) last ??= new Error("the model's answer wasn't the translation asked for"); } catch (e) { last = e; if (!retryable(e)) left.length = 0; }
       }
     }));
   }
-  if (!any && texts.length) throw last ?? new Error("the model's answer wasn't the translation asked for");
+  if (!any) throw last ?? new Error("the model's answer wasn't the translation asked for");
   return out;
 }
 
@@ -293,10 +304,11 @@ export function messageTexts(md) {
 }
 
 /**
- * The window's parts of a translated message, in order: { type: "md", text } (a block's own markdown), { type: "tr",
- * text } (its translation, under it), { type: "fail" } (a block that couldn't be translated), { type: "code", lang,
- * code }. A table is drawn whole, then its translation as a table of the translated cells. tr: the translations by
- * block index (null where there is none); failed: the indexes that failed.
+ * The window's parts of a translated message, in order: { type: "md", text, depth } (a block's own markdown; a list
+ * item's depth: how deep it is nested), { type: "tr", text, depth } (its translation, under it), { type: "fail", depth }
+ * (a block that couldn't be translated), { type: "code", lang, code } (drawn as the chat draws code: no translation),
+ * { type: "table", rows: [[{ text, tr, fail }]] } (each cell's translation inside the cell, under its words; the first
+ * row the header). tr: the translations by block index (null where there is none); failed: the indexes that failed.
  */
 export function windowParts(md, tr = [], failed = []) {
   const blocks = mdBlocks(md);
@@ -306,22 +318,19 @@ export function windowParts(md, tr = [], failed = []) {
     const b = blocks[i];
     if (b.kind === "code") { out.push({ type: "code", lang: b.lang, code: b.code }); continue; }
     if (b.kind === "cell") {
-      const t = b.table, cells = [];
-      while (i < blocks.length && blocks[i].kind === "cell" && blocks[i].table === t) cells.push({ ...blocks[i], at: i++ });
-      i--;
-      out.push({ type: "md", text: b.src });
-      const rows = [];
-      for (const c of cells) (rows[c.row] ??= [])[c.col] = tr[c.at] ?? (c.skip ? c.text : "");
-      if (cells.some((c) => tr[c.at])) {
-        const line = (r) => `| ${Array.from({ length: b.cols }, (_, k) => String(r?.[k] ?? "").replace(/\|/g, "\\|")).join(" | ")} |`;
-        out.push({ type: "tr", text: [line(rows[0]), `|${" --- |".repeat(b.cols)}`, ...rows.slice(1).map(line)].join("\n") });
+      const t = b.table, rows = [];
+      for (; i < blocks.length && blocks[i].kind === "cell" && blocks[i].table === t; i++) {
+        const c = blocks[i];
+        (rows[c.row] ??= [])[c.col] = { text: c.text, tr: tr[i] ?? null, fail: bad.has(i) };
       }
-      if (cells.some((c) => bad.has(c.at))) out.push({ type: "fail" });
+      i--;
+      out.push({ type: "table", rows: rows.map((r) => Array.from({ length: b.cols }, (_, k) => r?.[k] ?? { text: "", tr: null, fail: false })) });
       continue;
     }
-    out.push({ type: "md", text: b.src });
-    if (tr[i]) out.push({ type: "tr", text: b.kind === "heading" ? `**${tr[i]}**` : tr[i] });
-    else if (bad.has(i)) out.push({ type: "fail" });
+    const depth = b.kind === "item" ? b.depth ?? 0 : 0;
+    out.push({ type: "md", text: b.src, depth });
+    if (tr[i]) out.push({ type: "tr", text: b.kind === "heading" ? `**${tr[i]}**` : tr[i], depth });
+    else if (bad.has(i)) out.push({ type: "fail", depth });
   }
   return out;
 }
@@ -346,8 +355,8 @@ export function blockPaths(recipe) {
 /**
  * A recipe's texts to translate: [{ key, text }], key "<block's place>.<field>" (heading "3.text", a markdown block's
  * paragraphs "4.md.0", a list's items "5.items.2", a table's "6.col.1" and "6.cell.0.2", captions, a callout's title,
- * a stat's label and note, a check's summary, a question). Code, commands, buttons, a question's options and form fields
- * aren't translated, nor a text that is only code, links, paths or ids.
+ * a stat's label and note, a check's summary, a question, a tab's label, a chart's legend). Code, commands, buttons, a
+ * question's options, form fields and a bar or line chart's axis labels aren't translated, nor a text that is only code, links, paths or ids.
  */
 export function recipeUnits(recipe) {
   const out = [];
@@ -368,6 +377,12 @@ export function recipeUnits(recipe) {
       case "pair": put(`${p}.before`, b.before?.caption); put(`${p}.after`, b.after?.caption); break;
       case "check": put(`${p}.summary`, b.summary); put(`${p}.caption`, b.caption); break;
       case "details": put(`${p}.summary`, b.summary); break;
+      case "tabs": (b.tabs ?? []).forEach((x, i) => put(`${p}.tab.${i}`, x?.label)); break;
+      // a chart's legend: its series' names, and a pie's slices (a bar or line chart's axis labels stay in the chart)
+      case "chart":
+        (b.series ?? []).forEach((x, i) => put(`${p}.series.${i}`, x?.name));
+        if (b.kind === "pie") (b.labels ?? []).forEach((x, i) => put(`${p}.label.${i}`, typeof x === "string" ? x : null));
+        break;
       case "choice": put(`${p}.question`, b.question); break;
     }
   }

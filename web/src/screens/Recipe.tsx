@@ -34,7 +34,7 @@ const OpenPicture = createContext<((src: string) => void) | null>(null)
 const PALETTE = ['var(--accent)', 'var(--focus)', 'var(--ready)', 'var(--work)', 'var(--merged)', 'var(--need)']
 const TONE: Record<string, string> = { info: 'bg-well shadow-soft', good: 'bg-ready/10', warn: 'bg-work/12', bad: 'bg-need/10' }
 
-function Chart({ b }: { b: Block }) {
+function Chart({ b, T }: { b: Block; T?: (field: string) => string | undefined }) {
   const s = chartShapes(b)
   const W = 320, H = 160
   if (b.kind === 'pie') {
@@ -50,7 +50,7 @@ function Chart({ b }: { b: Block }) {
         </svg>
         <ul role="list" className="flex flex-col gap-1">
           {s.slices.map((x: any, i: number) => (
-            <li key={i} className="flex items-center gap-2"><span className="size-2.5 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />{x.label}<span className="text-fg3 tabular-nums">{Math.round(x.share * 100)}%</span></li>
+            <li key={i} className="flex items-center gap-2"><span className="size-2.5 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />{x.label}{T?.(`label.${i}`) ? <span data-tr className="text-fg2">· {T(`label.${i}`)}</span> : null}<span className="text-fg3 tabular-nums">{Math.round(x.share * 100)}%</span></li>
           ))}
         </ul>
       </div>
@@ -68,7 +68,7 @@ function Chart({ b }: { b: Block }) {
         ))}
       </svg>
       {(b.series ?? []).length > 1 ? (
-        <figcaption className="flex flex-wrap gap-3 text-fg2">{b.series.map((x: any, i: number) => <span key={i} className="flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />{x.name}</span>)}</figcaption>
+        <figcaption className="flex flex-wrap gap-3 text-fg2">{b.series.map((x: any, i: number) => <span key={i} className="flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: PALETTE[i % PALETTE.length] }} />{x.name}{T?.(`series.${i}`) ? <span data-tr className="text-fg3">· {T(`series.${i}`)}</span> : null}</span>)}</figcaption>
       ) : null}
     </figure>
   )
@@ -244,13 +244,13 @@ function Pair({ b, asset }: { b: Block; asset: (src: string) => string }) {
   )
 }
 
-function Tabs({ b, render }: { b: Block; render: (bs: Block[]) => ReactNode }) {
+function Tabs({ b, render, T }: { b: Block; render: (bs: Block[]) => ReactNode; T?: (field: string) => string | undefined }) {
   const [on, setOn] = useState(0)
   return (
     <div className="flex flex-col gap-3">
       <div role="tablist" className="scroll-x inline-flex max-w-full gap-0.5 self-start rounded-full bg-hover p-0.5">
         {b.tabs.map((t: any, i: number) => (
-          <button key={i} role="tab" aria-selected={on === i} type="button" onClick={() => setOn(i)} className={clsx('h-7 shrink-0 rounded-full px-3 phone:h-9', on === i ? 'bg-seg-on shadow-seg' : 'text-fg2')}>{t.label}</button>
+          <button key={i} role="tab" aria-selected={on === i} type="button" onClick={() => setOn(i)} className={clsx('h-7 shrink-0 rounded-full px-3 phone:h-9', on === i ? 'bg-seg-on shadow-seg' : 'text-fg2')}>{t.label}{T?.(`tab.${i}`) ? <span data-tr className="text-fg3"> · {T(`tab.${i}`)}</span> : null}</button>
         ))}
       </div>
       {render(b.tabs[on]?.blocks ?? [])}
@@ -310,6 +310,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
     if (t) return <TrLine text={t} />
     return failed.has(key) ? <TrLine text={(TRc as any).WORDS.blockFailed} fail retry={tr.retry} /> : null
   }
+  /** a short label's translation (a tab's, a chart legend's), as words beside it */
+  const words = (b: Block) => (field: string) => (tr ? tr.units?.[`${paths.get(b)}.${field}`] : undefined)
   /** a markdown block's paragraphs, each with its translation under it (as a chat message's) */
   const md = (b: Block, field: string, text: string) => {
     if (!tr) return <Markdown text={text} />
@@ -343,7 +345,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
           </table>
         </div>
       )
-      case 'chart': return <Chart b={b} />
+      case 'chart': return <Chart b={b} T={words(b)} />
       case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
       case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
       case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
@@ -354,7 +356,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
       case 'check': return <><Check b={b} />{T(b, 'summary')}{T(b, 'caption')}</>
       case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{T(b, 'title')}{b.md ? md(b, 'md', b.md) : null}</div>
       case 'columns': return <div className="grid gap-4 @2xl:grid-flow-col @2xl:auto-cols-fr">{b.columns.map((c: Block[], i: number) => <div key={i} className="flex min-w-0 flex-col gap-4">{c.map(wrap)}</div>)}</div>
-      case 'tabs': return <Tabs b={b} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} />
+      case 'tabs': return <Tabs b={b} T={words(b)} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} />
       case 'details': return <details className="group rounded-box shadow-box"><summary className="cursor-pointer px-3.5 py-2.5 font-medium">{b.summary}{T(b, 'summary')}</summary><div className="flex flex-col gap-4 px-3.5 pb-3.5">{b.blocks.map(wrap)}</div></details>
       case 'divider': return <hr className="border-line" />
       case 'choice': return <>{T(b, 'question')}<Choice b={b} reply={reply} answer={answerOf(answers, b.id)} /></>

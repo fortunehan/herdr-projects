@@ -66,11 +66,12 @@ export class Translator {
         body: JSON.stringify(T.requestBody(cfg.model, texts, target)),
       });
     } catch (e) {
-      throw new Error(`couldn't reach the endpoint (${String((e as Error)?.message ?? e).replace(k.key, "…").slice(0, 120)})`);
+      // the key out before anything is cut short: a cut can't leave a piece of it
+      throw new Error(`couldn't reach the endpoint (${String((e as Error)?.message ?? e).replaceAll(k.key, "…").slice(0, 120)})`);
     }
-    const body = await r.text();
+    const body = (await r.text()).replaceAll(k.key, "…");
     if (r.status === 401 || r.status === 403) this.keys.delete(cfg.key);
-    if (!r.ok) throw new Error(T.apiError(r.status, body).replaceAll(k.key, "…"));
+    if (!r.ok) throw new Error(T.apiError(r.status, body));
     let d: any = null;
     try { d = JSON.parse(body); } catch {}
     const text = T.answerText(d);

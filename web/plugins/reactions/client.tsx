@@ -24,7 +24,7 @@ export const RewindIcon = (p: { className?: string }) => (
 import type { Message } from '@shared/types.ts'
 import { canReply, startReply } from '@plugins/chat/reply.ts'
 import { forkChat } from '@plugins/chat/fork.ts'
-import { messageKey, toggle as toggleTranslate, useShown, useTranslateOn } from '@plugins/chat/translate.ts'
+import { isWriting, messageKey, toggle as toggleTranslate, useShown, useTranslateOn } from '@plugins/chat/translate.ts'
 import { frequent, loadEmoji, quickRow, remember, search, setTone, tone, TONES, withTone, type Emoji, type Group } from './emoji.ts'
 import { setDown } from './leave.ts'
 
@@ -252,8 +252,8 @@ function Lifted({ msg, chat }: { msg: Message; chat: string }) {
   const you = msg.who === 'you'
   const text = msg.text ?? ''
   // SHEP-102: Translate on the agent's words, as the band's icon (Hide translation while it shows)
-  const translateOn = useTranslateOn() && !you && !msg.card && !!text
   const tkey = messageKey(chat, msg.id)
+  const translateOn = useTranslateOn() && !you && !msg.card && !!text && !isWriting(tkey)
   const trShown = !!useShown(tkey)?.shown
 
   useLayoutEffect(() => {

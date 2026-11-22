@@ -59,6 +59,13 @@ describe("mdBlocks", () => {
     expect(b.every((x) => !x.skip)).toBe(true);
   });
 
+  test("a heading or a list in a quote, and an indented code block", () => {
+    const b = T.mdBlocks("> ## Quoted heading\n> words under it\n\nText.\n\n    const sample = \"hello world\";\n    more();\n\nAfter.");
+    expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Quoted heading"], ["quote", "words under it"], ["para", "Text."], ["code", ""], ["para", "After."]]);
+    expect(b[3]).toMatchObject({ skip: true, code: 'const sample = "hello world";\nmore();' });
+    expect(T.messageTexts("    const sample = \"hello world\";").texts).toEqual([]);
+  });
+
   test("a setext heading, a task list and a loose list item", () => {
     const b = T.mdBlocks("Title\n=====\n\n- [x] done thing\n- loose item\n\n  its second paragraph\n- last");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Title"], ["item", "done thing"], ["item", "loose item its second paragraph"], ["item", "last"]]);
@@ -82,7 +89,8 @@ describe("mdBlocks", () => {
       return out;
     };
     const samples = [MSG, "## 结果\n\n修好了。\n\n* 一\n* 二\n\n|列|值|\n|-|-|\n|a|b|", "Title\n=====\n\n- [x] done\n- loose\n\n  more\n- last",
-      "Text\n- list right after\n- two\n\nEnd.", "> one\n>\n> two\n\nafter", "1. a\n   1. b\n2. c"];
+      "Text\n- list right after\n- two\n\nEnd.", "> one\n>\n> two\n\nafter", "1. a\n   1. b\n2. c",
+      "> ## Quoted heading\n> words\n\n    indented code\n\nEnd.", "> - quoted item\n> - another"];
     for (const md of samples) expect(T.mdBlocks(md).map(T.domKind).filter(Boolean)).toEqual(domKinds(md));
   });
 });
@@ -120,9 +128,9 @@ describe("the request and its answer", () => {
     expect(T.endpointOf("ftp://x")).toBeNull();
     expect(T.endpointOf("")).toBeNull();
   });
-  test("batches by count and size", () => {
-    expect(T.batches(["a", "b", "c"], 2)).toEqual([[0, 1], [2]]);
-    expect(T.batches(["aaaa", "bbbb", "c"], 40, 6)).toEqual([[0], [1, 2]]);
+  test("an answer is made inert: no pictures, no HTML, links only to the original's addresses", () => {
+    expect(T.inert('看 ![x](https://evil.example/p.png) <img src="https://evil.example/q.png"> [文档](https://docs.example/a) [坏](https://evil.example/b)', "See [docs](https://docs.example/a)"))
+      .toBe("看 x  [文档](https://docs.example/a) 坏");
   });
 });
 
@@ -146,6 +154,18 @@ describe("translateTexts", () => {
     const ask = async (texts) => (texts.length > 1 ? "[]" : texts[0] === "b" ? "nope" : JSON.stringify([`[zh]${texts[0]}`]));
     expect(await T.translateTexts(["a", "b", "c"], "zh", ask)).toEqual(["[zh]a", null, "[zh]c"]);
   });
+  test("every block in ONE request, however many", async () => {
+    const f = fake();
+    const texts = Array.from({ length: 120 }, (_, i) => `block ${i}`);
+    expect((await T.translateTexts(texts, "zh", f.ask)).length).toBe(120);
+    expect(f.calls.map((c) => c.length)).toEqual([120]);
+  });
+  test("a one-block message whose answer doesn't match is asked once more", async () => {
+    const calls = [];
+    const ask = async (texts) => { calls.push(texts); return calls.length === 1 ? "[]" : JSON.stringify([`[zh]${texts[0]}`]); };
+    expect(await T.translateTexts(["only"], "zh", ask)).toEqual(["[zh]only"]);
+    expect(calls.length).toBe(2);
+  });
   test("a refused key fails at once, not block by block", async () => {
     let n = 0;
     const ask = async () => { n++; throw new Error("the endpoint refused the key (401)"); };
@@ -165,13 +185,17 @@ describe("windowParts", () => {
     const tr = [];
     at.forEach((i, k) => (tr[i] = ["你好世界。", "甲", "乙", "一"][k]));
     expect(T.windowParts(md, tr)).toEqual([
-      { type: "md", text: "Hello world." }, { type: "tr", text: "你好世界。" },
+      { type: "md", text: "Hello world.", depth: 0 }, { type: "tr", text: "你好世界。", depth: 0 },
       { type: "code", lang: "", code: "ls" },
-      { type: "md", text: "| Name | Value |\n|---|---|\n| one | `x` |" }, { type: "tr", text: "| 甲 | 乙 |\n| --- | --- |\n| 一 | `x` |" },
+      { type: "table", rows: [[{ text: "Name", tr: "甲", fail: false }, { text: "Value", tr: "乙", fail: false }], [{ text: "one", tr: "一", fail: false }, { text: "`x`", tr: null, fail: false }]] },
     ]);
   });
   test("a failed block says so under it", () => {
-    expect(T.windowParts("One.\n\nTwo.", ["一。", null], [1])).toEqual([{ type: "md", text: "One." }, { type: "tr", text: "一。" }, { type: "md", text: "Two." }, { type: "fail" }]);
+    expect(T.windowParts("One.\n\nTwo.", ["一。", null], [1])).toEqual([{ type: "md", text: "One.", depth: 0 }, { type: "tr", text: "一。", depth: 0 }, { type: "md", text: "Two.", depth: 0 }, { type: "fail", depth: 0 }]);
+  });
+  test("a nested list item keeps its depth", () => {
+    const parts = T.windowParts("- One\n  - Two", ["一", "二"]);
+    expect(parts.filter((x) => x.type === "md").map((x) => [x.text, x.depth])).toEqual([["- One", 0], ["- Two", 1]]);
   });
 });
 
@@ -185,6 +209,8 @@ describe("recipes", () => {
     { type: "check", command: "bun test", summary: "All tests pass", output: "ok" },
     { type: "columns", columns: [[{ type: "callout", title: "Note", md: "Inside a column." }]] },
     { type: "details", summary: "More", blocks: [{ type: "list", items: ["one item", "`code`"] }] },
+    { type: "tabs", tabs: [{ label: "First tab", blocks: [] }] },
+    { type: "chart", kind: "pie", labels: ["Passed", "Failed"], series: [{ name: "Tests run", values: [3, 1] }] },
     { type: "button", label: "Send" },
   ] };
   test("every text block's place and words; code, buttons and bare code skipped", () => {
@@ -197,6 +223,8 @@ describe("recipes", () => {
       { key: "6.c0.0.title", text: "Note" }, { key: "6.c0.0.md.0", text: "Inside a column." },
       { key: "7.summary", text: "More" },
       { key: "7.b.0.items.0", text: "one item" },
+      { key: "8.tab.0", text: "First tab" },
+      { key: "9.series.0", text: "Tests run" }, { key: "9.label.0", text: "Passed" }, { key: "9.label.1", text: "Failed" },
     ]);
   });
   test("a Chinese artifact goes to English", () => {

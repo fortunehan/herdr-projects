@@ -23,7 +23,7 @@ import { dayLabel } from './days.ts'
 import { FindBar, openFind } from './find.tsx'
 import { Fold } from './fold.tsx'
 import { Markdown, type Tr } from './markdown.tsx'
-import { messageKey, retry as retryTranslate, useShown } from './translate.ts'
+import { messageKey, retry as retryTranslate, setWriting, useShown } from './translate.ts'
 import { answeredBy, cancelReply, canReply, isArtifact, jumpTo, startReply } from './reply.ts'
 import { typing, working } from './typing.ts'
 import { suggestionOf, suggestionsOn } from './suggest.ts'
@@ -67,6 +67,8 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
   // SHEP-102: its translation under each block, while the Translate icon shows it (the agent's words only)
   const tkey = messageKey(chat.key, msg.id)
   const shownTr = useShown(tkey)
+  // a reply still being written gets no Translate (its band waits; a phone's hold menu asks isWriting)
+  useEffect(() => { setWriting(tkey, !!writing); return () => setWriting(tkey, false) }, [tkey, writing])
   const tr: Tr | undefined = !you && msg.text && shownTr?.shown
     ? { source: msg.text, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text! }) }
     : undefined

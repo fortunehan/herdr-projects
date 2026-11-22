@@ -253,6 +253,8 @@ export default class RecipeView extends View {
 
   chart(b, t) {
     const s = chartShapes(b);
+    // a legend's words with their translation beside them (SHEP-102)
+    const tw = (field, words) => { const x = translation()?.units?.[`${this.paths.get(b)}.${field}`]; return x ? `${words} \u00b7 ${x}` : words; };
     const colors = [t.accent, t.working, t.done, t.blocked, t.muted];
     if (b.kind === "pie") {
       // one bar of shares, then its legend: the same numbers as the web's pie, readable at any width
@@ -261,7 +263,7 @@ export default class RecipeView extends View {
           .children(s.slices.map((x, i) => div().h_full().flex_basis(`${Math.max(0.5, x.share * 100)}%`).flex_grow(0).bg(colors[i % colors.length]))))
         .children(s.slices.map((x, i) => h_flex().gap(8).items_center()
           .child(div().size(10).rounded(5).bg(colors[i % colors.length]))
-          .child(div().text_size(13).child(String(x.label)))
+          .child(div().text_size(13).child(tw(`label.${i}`, String(x.label))))
           .child(div().text_size(12).text_color(t.muted).child(`${Math.round(x.share * 100)}%`))));
     }
     if (b.kind === "line") {
@@ -279,7 +281,7 @@ export default class RecipeView extends View {
             .rounded_t(2).bg(colors[si % colors.length]))))))
       .child(h_flex().w_full().children((b.labels ?? []).map((l) => div().flex_1().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))))
       .when(series.length > 1, (e) => e.child(h_flex().flex_wrap().gap(10).children(series.map((x, si) => h_flex().gap(6).items_center()
-        .child(div().size(10).rounded(5).bg(colors[si % colors.length])).child(div().text_size(12).child(String(x.name ?? "")))))));
+        .child(div().size(10).rounded(5).bg(colors[si % colors.length])).child(div().text_size(12).child(tw(`series.${si}`, String(x.name ?? ""))))))));
   }
 
   // A clip, a sound or a PDF: the window's player can't play them, so it shows the clip's poster (or a tile) and says
@@ -310,7 +312,7 @@ export default class RecipeView extends View {
       case "stats": return h_flex().flex_wrap().gap(8).children(b.items.map((x, i) => v_flex().min_w(120).flex_1().p(10).gap(2).rounded(8).bg(t.surface)
         .child(this.withTr(div().text_size(12).text_color(t.muted).child(String(x.label)), b, `label.${i}`, t))
         .child(div().text_size(17).font_semibold().child(String(x.value)))
-        .when(!!x.note, (e) => e.child(div().text_size(12).text_color(t.dim).child(String(x.note))))));
+        .when(!!x.note, (e) => e.child(this.withTr(div().text_size(12).text_color(t.dim).child(String(x.note)), b, `note.${i}`, t)))));
       case "video": return this.withTr(this.media(b, t, "▶", "Video", b.poster ? b.poster : null), b, "caption", t);
       case "audio": return this.withTr(this.media(b, t, "♪", "Sound", null), b, "caption", t);
       case "pdf": return this.withTr(this.media(b, t, "PDF", "PDF", null), b, "caption", t);
@@ -334,7 +336,7 @@ export default class RecipeView extends View {
           .child(h_flex().gap(4).flex_wrap().children(b.tabs.map((x, i) => div().id(`tab-${b.id}-${i}`).h(26).px(10).flex().items_center().rounded(6).cursor_pointer()
             .bg(i === on ? t.surface : t.background).border_1().border_color(i === on ? t.border : t.background)
             .on_click((_e, cx) => { this.tab.set(b.id, i); cx.notify(); })
-            .child(div().text_size(13).text_color(i === on ? t.foreground : t.muted).child(x.label)))))
+            .child(div().text_size(13).text_color(i === on ? t.foreground : t.muted).child((() => { const w = translation()?.units?.[`${this.paths.get(b)}.tab.${i}`]; return w ? `${x.label} \u00b7 ${w}` : x.label; })())))))
           .child(v_flex().gap(14).children((b.tabs[on]?.blocks ?? []).map((x) => this.block(x, t, cx))));
       }
       case "details": {

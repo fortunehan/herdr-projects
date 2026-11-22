@@ -53,6 +53,12 @@ export function toggle(key: string, body: Ask) {
 /** Retry, under a failure: asks again (only what failed is sent; the rest comes from the service's copy) */
 export const retry = (key: string, body: Ask) => void ask(key, body)
 
+/** The agent's replies it is still writing (its chat's Bubble says so): no Translate on them anywhere, the band's icon
+ *  nor a phone's hold menu, until they are complete */
+const writing = new Set<string>()
+export const setWriting = (key: string, on: boolean) => void (on ? writing.add(key) : writing.delete(key))
+export const isWriting = (key: string) => writing.has(key)
+
 /** Settings › Translation is on (the Translate icon shows only then) */
 export function useTranslateOn() {
   const snap = useSnap()

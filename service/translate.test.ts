@@ -5,14 +5,15 @@ import { join } from "node:path";
 import { Translator } from "./translate.ts";
 
 // a stub translation endpoint on 127.0.0.1, never a real API: [zh]/[en] in front of each string; `mode` breaks it
-let mode: "ok" | "short" | "401" | "garbage" = "ok";
+let mode: "ok" | "short" | "401" | "500key" | "garbage" = "ok";
 const seen: { auth: string | null; body: any }[] = [];
 const stub = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   async fetch(req) {
     const body = await req.json();
     seen.push({ auth: req.headers.get("authorization"), body });
-    if (mode === "401") return Response.json({ error: { message: "Incorrect API key provided: sk-stub-secret" } }, { status: 401 });
+    if (mode === "401") return Response.json({ error: { message: `${"x".repeat(150)} Incorrect API key provided: sk-stub-secret` } }, { status: 401 });
+    if (mode === "500key") return Response.json({ error: { message: `${"y".repeat(150)} upstream said sk-stub-secret is odd` } }, { status: 500 });
     const texts: string[] = JSON.parse(body.messages[1].content);
     const to = body.messages[0].content.includes("Simplified Chinese") ? "zh" : "en";
     let out: unknown = texts.map((t) => `[${to}]${t}`);
@@ -93,6 +94,17 @@ describe("a message", () => {
     expect(r.error).toContain("refused the key (401)");
     expect(r.error).not.toContain("sk-stub-secret");
     expect(seen.length).toBe(1);
+  });
+
+  test("an endpoint's own words never carry a piece of the key, however long they are", async () => {
+    reset();
+    mode = "401";
+    const a: any = await make().t.message("Some words to translate.");
+    expect(a.error).toBe("Couldn't translate: the endpoint refused the key (401)");
+    mode = "500key";
+    const b: any = await make().t.message("Some words to translate.");
+    expect(b.error).toContain("answered 500");
+    for (let n = 4; n <= "sk-stub-secret".length; n++) expect(b.error).not.toContain("sk-stub-secret".slice(0, n));
   });
 
   test("an answer that is never the translation fails, and nothing is kept", async () => {
@@ -184,6 +196,11 @@ describe("Settings › Translation", () => {
     expect(() => s.set("translation.on", "on", "sp1", { id: "sp1", name: "x", machine: null })).toThrow();
     s.set("translation.on", "off");
     expect(JSON.parse(readFileSync(file, "utf8")).everywhere.translation.on).toBeUndefined();
+    // a change the window makes to the file applies at once (the service reads it each time)
+    const f2 = JSON.parse(readFileSync(file, "utf8"));
+    f2.everywhere.translation = { ...f2.everywhere.translation, on: true, model: "from-the-window" };
+    writeFileSync(file, JSON.stringify(f2));
+    expect(s.translation()).toMatchObject({ on: true, model: "from-the-window" });
     process.env.HERDR_TASK_SETTINGS = was;
   });
 });

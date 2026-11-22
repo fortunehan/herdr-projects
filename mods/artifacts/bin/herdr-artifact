@@ -1211,10 +1211,11 @@ def cmd_pack(o):
 
 
 def markup_hash():
-    """The version of Mark up and its helpers: a change to any of them reinstalls the artifacts that carry it."""
+    """The version of Mark up and its helpers, and of the shared recipe view and what it imports (its Translate lines,
+    SHEP-102): a change to any of them reinstalls the artifacts that carry it."""
     h = hashlib.sha1()
     try:
-        for p in [MARKUP] + [os.path.join(os.path.dirname(MARKUP), x) for x in MARKUP_HELPERS]:
+        for p in [MARKUP] + [os.path.join(os.path.dirname(MARKUP), x) for x in MARKUP_HELPERS] + [RECIPE_VIEW, RECIPE_CORE] + RECIPE_TRANSLATE:
             with open(p, "rb") as f:
                 h.update(f.read())
     except OSError:

@@ -2330,7 +2330,7 @@ export default class Chat extends View {
     }
     if (what === "rewind") this.rewind(row, cx);
     if (what === "fork") this.fork(cx);
-    if (what === "translate") this.toggleTranslation(row.of, row.text, cx);
+    if (what === "translate") this.toggleTranslation(row.of, row.trText ?? row.text, cx);
     if (what === "react") { this.keepIcons = row.of; this.openReactions(row, this.hitLeft); }
     // A pill: your reaction on or off.
     if (what.startsWith("pill:")) this.toggleReaction(row.of, row.target, what.slice(5), cx);
@@ -3167,12 +3167,25 @@ export default class Chat extends View {
         const md = mediaIn(x.text, { cwd: this.t?.foreground?.cwd ?? this.t?.cwd ?? null, home: this.machine ? null : home() });
         const ps = md.text || !md.media.length ? parts(md.text || x.text) : [];
         const first = out.length;
-        // Translated (SHEP-102): the whole message in one bubble, each block with its translation under it
+        // Translated (SHEP-102): each block with its translation under it, the words between code blocks in a bubble as
+        // before, the code blocks as the chat draws them (no translation); the words sent are the words drawn (src), so
+        // each translation lands under its own block
         const trd = this.tr.get(x.id);
-        if (trd?.shown && (md.text || x.text)) {
-          const src = md.text || x.text;
-          out.push({ kind: "agenttr", id: `${x.id}:tr:${trd.state}:${(trd.failed ?? []).length}`, of: x.id, text: src, tr: trd,
-            segs: TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []) });
+        const src = md.text || x.text;
+        if (trd?.shown && src) {
+          const tag = `${trd.state}:${(trd.failed ?? []).length}`;
+          let group = [], n = 0, lastTr = null;
+          const flush = () => { if (group.length) out.push(lastTr = { kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group }); group = []; };
+          TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []).forEach((g, k) => {
+            if (g.type !== "code") return void group.push(g);
+            flush();
+            lastTr = null;
+            out.push({ kind: "codehead", id: `${x.id}:trh${k}`, lang: g.lang, code: g.code });
+            out.push({ kind: "code", id: `${x.id}:trc${k}`, lang: g.lang, code: g.code });
+          });
+          flush();
+          // Translating…, or why it failed, under the last words (a bubble of its own after a code block)
+          if (trd.state !== "done") { if (lastTr) lastTr.tail = true; else out.push({ kind: "agenttr", id: `${x.id}:trt:${tag}`, of: x.id, text: src, tr: trd, segs: [], tail: true }); }
           ps.length = 0;
         }
         // A long reply: its first lines (the part where they end cut off there), then Show more.
@@ -3197,7 +3210,7 @@ export default class Chat extends View {
         // only the one it may still be writing (the newest, while working) waits. The actions go
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
-          const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "agent", at: x.at, pills: this.pills(x.id),
+          const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, trText: src, side: "agent", at: x.at, pills: this.pills(x.id),
             acts: bandActs("agent", x.text, { fork: Boolean(this.kind), translate: this.trOn }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
@@ -3373,7 +3386,8 @@ export default class Chat extends View {
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * BUBBLE - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
       case "agent": return 30 + (x.clip ?? lines(x.text, w * BUBBLE - 24) * 21);
-      case "agenttr": return 30 + x.segs.reduce((n, s) => n + (s.type === "code" ? 16 + String(s.code).split("\n").length * 19 : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36) * 21), 0) + (x.tr.state === "done" ? 0 : 22);
+      case "agenttr": return 30 + x.segs.reduce((n, s) => n + (s.type === "table" ? 10 + s.rows.reduce((m, r) => m + (r.some((c) => c.tr || c.fail) ? 48 : 28), 0)
+        : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36 - (s.depth ?? 0) * 18) * 21), 0) + (x.tail ? 22 : 0);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62 + (x.peek?.paths?.some((p) => this.views[p]) ? fitThumbs(x.peek.paths.filter((p) => this.views[p]).map((p) => this.views[p]), PEEK_W - 22).h + 8 : 0) + (x.peek?.text ? 8 + Math.ceil((x.peek.text.length * 7) / (PEEK_W - 22)) * 18 : 0);
       case "tasknews": return x.accept ? 26 : 20;
@@ -3528,11 +3542,21 @@ export default class Chat extends View {
         // SHEP-102, as Immersive Translate: each block, then its translation a step dimmer with a thin rule on its left;
         // code as it is, with no translation; a failure one short line with Retry (a press on the message asks again)
         const line = (text, color) => div().w_full().mt(2).mb(4).pl(8).border_l(2).border_color(t.border).text_color(color).child(text);
-        const segs = x.segs.map((g, n) => g.type === "md" ? TextView.markdown(`${pre}chat-trmd-${x.id}-${n}`, this.mentionsIn(g.text) || " ").selectable(true)
-          : g.type === "tr" ? line(TextView.markdown(`${pre}chat-tr-${x.id}-${n}`, g.text || " ").selectable(true), t.muted)
-          : g.type === "fail" ? line(`${TR.WORDS.blockFailed} \u00b7 ${TR.WORDS.retry}`, t.blocked)
-          : TextView.markdown(`${pre}chat-trcode-${x.id}-${n}`, "```" + (g.lang ?? "") + "\n" + g.code + "\n```").selectable(true));
-        const tail = x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)]
+        const failLine = () => line(`${TR.WORDS.blockFailed} \u00b7 ${TR.WORDS.retry}`, t.blocked);
+        // a nested list item as deep as it was
+        const deep = (g, el) => (g.depth ? div().w_full().pl(g.depth * 18).child(el) : el);
+        // a table as cells, each cell's translation inside it under its words
+        const table = (g, n) => v_flex().w_full().my(4).rounded(8).border_1().border_color(t.border).overflow_hidden()
+          .children(g.rows.map((r, ri) => h_flex().w_full().px(10).py(6).gap(10).items_start().when(ri > 0, (e) => e.border_t_1().border_color(t.border))
+            .children(r.map((c, ci) => v_flex().flex_1().min_w(0).text_size(13).when(ri === 0, (e) => e.font_medium().text_color(t.muted))
+              .child(TextView.markdown(`${pre}chat-trcell-${x.id}-${n}-${ri}-${ci}`, c.text || " ").selectable(true))
+              .when(Boolean(c.tr), (e) => e.child(line(TextView.markdown(`${pre}chat-trcelltr-${x.id}-${n}-${ri}-${ci}`, c.tr).selectable(true), t.muted)))
+              .when(!c.tr && c.fail, (e) => e.child(failLine()))))));
+        const segs = x.segs.map((g, n) => g.type === "md" ? deep(g, TextView.markdown(`${pre}chat-trmd-${x.id}-${n}`, this.mentionsIn(g.text) || " ").selectable(true))
+          : g.type === "tr" ? deep(g, line(TextView.markdown(`${pre}chat-tr-${x.id}-${n}`, g.text || " ").selectable(true), t.muted))
+          : g.type === "fail" ? deep(g, failLine())
+          : table(g, n));
+        const tail = !x.tail ? [] : x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)]
           : x.tr.state === "error" ? [line(`${x.tr.error || TR.WORDS.failed("")} \u00b7 ${TR.WORDS.retry}`, t.blocked)] : [];
         return pad(h_flex().w_full().justify_start().child(div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
           .child(v_flex().w_full().children([...segs, ...tail]))));

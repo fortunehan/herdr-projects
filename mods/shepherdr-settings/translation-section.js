@@ -10,8 +10,9 @@ import { toggleSwitch, button, toast, TEXT } from "./ui.js";
 import { localService, localToken } from "./local.js";
 import { SETTINGS as S, configOf, endpointOf } from "./core/translate.js";
 
-const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
-const FIELDS = [["base_url", S.base, S.baseAbout, S.basePlaceholder], ["model", S.model, S.modelAbout, S.modelPlaceholder], ["key", S.key, S.keyAbout, "TRANSLATE_API_KEY"]];
+// the endpoint and the model are typed; the key is picked from Settings › Secrets' names (never typed: a value pasted
+// there by mistake would be kept in the clear)
+const FIELDS = [["base_url", S.base, S.baseAbout, S.basePlaceholder], ["model", S.model, S.modelAbout, S.modelPlaceholder]];
 
 // Made in the window's init (an input needs a live host call): a box per field, saved on Enter and on leaving it.
 export function translationInit(view) {
@@ -31,13 +32,33 @@ const cfgOf = (view) => configOf(view.cfg);
 function save(view, tr, field, cx) {
   const want = String(tr.boxes[field].value() ?? "").trim();
   if (field === "base_url" && want && !endpointOf(want)) { tr.err[field] = S.badUrl; return cx.notify(); }
-  if (field === "key" && want && !NAME.test(want)) { tr.err[field] = "That isn't a secret's name (letters, digits and _)."; return cx.notify(); }
   tr.err[field] = "";
   if (want === cfgOf(view)[field]) return cx.notify();
   view.change((next) => {
     const t = ((next.everywhere ??= {}).translation ??= {});
     if (want) t[field] = want; else delete t[field];
   }, cx);
+}
+
+// The key: one of the secrets kept for Everywhere (the Secrets page's list), by its name.
+function pickKey(view, name, cx) {
+  view.change((next) => {
+    const t = ((next.everywhere ??= {}).translation ??= {});
+    if (name) t.key = name; else delete t.key;
+  }, cx);
+}
+
+function keyPicker(view, t, c) {
+  const names = [...new Set([...(view.sec?.list ?? []).filter((e) => e.scope === "everywhere").map((e) => e.name), ...(c.key ? [c.key] : [])])].sort();
+  if (!names.length) return div().w(260).text_size(TEXT.label).line_height("17px").text_color(t.dim).child(S.keyNone);
+  return h_flex().max_w(300).flex_wrap().justify_end().gap(6).children(names.map((n) => {
+    const on = n === c.key;
+    return div().id(`translation-key-${n}`).h(26).px(10).flex().items_center().rounded(13).cursor_pointer().border_1()
+      .border_color(on ? t.accent : t.border).bg(on ? `${t.accent}24` : t.background).text_size(TEXT.label).text_color(on ? t.foreground : t.muted)
+      .hover((x) => x.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); pickKey(view, on ? "" : n, cx); })
+      .child(n);
+  }));
 }
 
 function turn(view, on, cx) {
@@ -89,6 +110,7 @@ export function translationSection(view, t) {
     .child(div().pb(6).text_size(TEXT.label).line_height("17px").text_color(t.muted).child(S.about))
     .child(view.row(t, S.on, S.onAbout(c.base_url), toggleSwitch("translation-on", c.on, (next, _e, cx) => turn(view, next, cx))))
     .children(FIELDS.map(([field, title, about, placeholder]) => view.row(t, title, about, box(field, placeholder))))
+    .child(view.row(t, S.key, S.keyAbout, keyPicker(view, t, c)))
     .child(view.row(t, S.test, S.testAbout, h_flex().gap(10).items_center()
       .when(Boolean(result), (el) => el.child(result))
       .child(button("translation-test", S.testButton, { disabled: tr.testing, onClick: (_e, cx) => test(tr, cx) }))));
