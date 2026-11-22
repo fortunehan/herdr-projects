@@ -12,16 +12,16 @@ const stub = Bun.serve({
   async fetch(req) {
     const body = await req.json();
     seen.push({ auth: req.headers.get("authorization"), body });
-    if (mode === "401") return Response.json({ error: { message: `${"x".repeat(150)} Incorrect API key provided: sk-stub-secret` } }, { status: 401 });
-    if (mode === "500key") return Response.json({ error: { message: `${"y".repeat(150)} upstream said sk-stub-secret is odd` } }, { status: 500 });
+    if (mode === "401") return Response.json({ error: { message: `${"x".repeat(150)} Incorrect API key provided: sk-stub-secret-0123456789` } }, { status: 401 });
+    if (mode === "500key") return Response.json({ error: { message: `${"y".repeat(150)} upstream said sk-stub-secret-0123456789 is odd` } }, { status: 500 });
     const texts: string[] = JSON.parse(body.messages[1].content);
     const to = body.messages[0].content.includes("Simplified Chinese") ? "zh" : "en";
     let out: unknown = texts.map((t) => `[${to}]${t}`);
     if (mode === "short" && texts.length > 1) out = (out as string[]).slice(1);
     // the key in a translation, its first letter escaped twice over (in the answer's JSON and in the array's)
-    if (mode === "keyecho") return new Response(`{"choices":[{"message":{"content":"[\\"key \\\\u0073k-stub-secret here\\"]"}}]}`, { headers: { "content-type": "application/json" } });
+    if (mode === "keyecho") return new Response(`{"choices":[{"message":{"content":"[\\"key \\\\u0073k-stub-secret-0123456789 here\\"]"}}]}`, { headers: { "content-type": "application/json" } });
     // an answer in words around its array, the key's first letter escaped in it
-    if (mode === "keyprose") return new Response(`{"choices":[{"message":{"content":"Translation: [\\"key \\\\u0073k-stub-secret here\\"] done"}}]}`, { headers: { "content-type": "application/json" } });
+    if (mode === "keyprose") return new Response(`{"choices":[{"message":{"content":"Translation: [\\"key \\\\u0073k-stub-secret-0123456789 here\\"] done"}}]}`, { headers: { "content-type": "application/json" } });
     if (mode === "garbage") return Response.json({ choices: [{ message: { content: "I can't do that." } }] });
     return Response.json({ choices: [{ message: { content: JSON.stringify(out) } }] });
   },
@@ -34,7 +34,7 @@ const make = (cfg: Partial<{ on: boolean; base_url: string; model: string; key: 
   let keyAsks = 0;
   const t = new Translator({
     config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1, ...cfg }),
-    key: async (name) => { keyAsks++; return name === "TR_KEY" ? { key: "sk-stub-secret" } : { error: `there's no secret ${name}` }; },
+    key: async (name) => { keyAsks++; return name === "TR_KEY" ? { key: "sk-stub-secret-0123456789" } : { error: `there's no secret ${name}` }; },
     recipe: async () => recipe,
     dir,
   });
@@ -54,9 +54,9 @@ describe("a message", () => {
     expect(r.parts.map((p: any) => p.type)).toEqual(["md", "tr", "md", "tr", "md", "tr", "md", "tr", "code", "md"]);
     expect(r.parts[8]).toEqual({ type: "code", lang: "", code: "herdr-task ready SHEP-1" });
     expect(seen.length).toBe(1);
-    expect(seen[0].auth).toBe("Bearer sk-stub-secret");
+    expect(seen[0].auth).toBe("Bearer sk-stub-secret-0123456789");
     expect(seen[0].body.model).toBe("stub-model");
-    expect(JSON.stringify(seen[0].body)).not.toContain("sk-stub-secret");
+    expect(JSON.stringify(seen[0].body)).not.toContain("sk-stub-secret-0123456789");
     expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Plan", "I fixed the merge step.", "Ran `bun test`", "All green"]);
   });
 
@@ -99,7 +99,7 @@ describe("a message", () => {
     const r: any = await make().t.message("Some words to translate.");
     expect(r.ok).toBe(false);
     expect(r.error).toContain("refused the key (401)");
-    expect(r.error).not.toContain("sk-stub-secret");
+    expect(r.error).not.toContain("sk-stub-secret-0123456789");
     expect(seen.length).toBe(1);
   });
 
@@ -111,7 +111,7 @@ describe("a message", () => {
     mode = "500key";
     const b: any = await make().t.message("Some words to translate.");
     expect(b.error).toContain("answered 500");
-    for (let n = 4; n <= "sk-stub-secret".length; n++) expect(b.error).not.toContain("sk-stub-secret".slice(0, n));
+    for (let n = 4; n <= "sk-stub-secret-0123456789".length; n++) expect(b.error).not.toContain("sk-stub-secret-0123456789".slice(0, n));
   });
 
   test("turned off or pointed elsewhere while it translates: nothing more is sent, to the old endpoint or the new", async () => {
@@ -119,7 +119,7 @@ describe("a message", () => {
     mode = "short";
     let cfg = { on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 };
     // the whole request comes back with the wrong count, and meanwhile the person turns it off and changes the URL
-    const t2 = new Translator({ config: () => cfg, key: async () => ({ key: "sk-stub-secret" }), recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
+    const t2 = new Translator({ config: () => cfg, key: async () => ({ key: "sk-stub-secret-0123456789" }), recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
       fetchFn: (async (u: any, i: any) => { const res = await fetch(u, i); cfg = { ...cfg, on: false, base_url: "http://old.invalid/v1" }; return res; }) as typeof fetch });
     const r2: any = await t2.message("One paragraph here.\n\nAnother paragraph here.");
     expect(r2).toMatchObject({ ok: false, error: expect.stringContaining("changed while it translated") });
@@ -149,7 +149,7 @@ describe("a message", () => {
     reset();
     let cfg = { on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 };
     const t = new Translator({ config: () => cfg, recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
-      key: async () => { cfg = { ...cfg, on: false, base_url: "http://old.invalid/v1" }; return { key: "sk-stub-secret" }; } });
+      key: async () => { cfg = { ...cfg, on: false, base_url: "http://old.invalid/v1" }; return { key: "sk-stub-secret-0123456789" }; } });
     expect(await t.message("Private draft.")).toMatchObject({ ok: false, error: expect.stringContaining("changed while it translated") });
     expect(seen.length).toBe(0);
   });
@@ -161,7 +161,7 @@ describe("a message", () => {
     a3: { text: "- Intro. echo KeepThisPrivate\n\nReady now.", raw: "- Intro.\n  # Before: ![proof](/tmp/proof.png)\n      echo KeepThisPrivate\n\nReady now.", writing: false },
     a4: { text: "- Intro. pwd\n\nReady now.", raw: "- Intro.\n  # ![proof](/tmp/proof.png)\n      pwd\n\nReady now.", writing: false },
   };
-  const chatT = () => new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
+  const chatT = () => new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret-0123456789" }),
     recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), messageOf: async (w, id) => (w.chat === "sp1" ? convo[id] ?? null : null) });
 
   test("a message's words are read from its chat by its id, never taken from the caller; one still being written is refused", async () => {
@@ -178,6 +178,24 @@ describe("a message", () => {
     expect(seen.length).toBe(1);
   });
 
+  test("a key too short to watch for in answers isn't used", async () => {
+    reset();
+    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "test" }),
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t") });
+    expect(await t.message("Update state.")).toMatchObject({ ok: false, error: expect.stringContaining("too short") });
+    expect(await t.test()).toMatchObject({ ok: false, error: expect.stringContaining("too short") });
+    expect(seen.length).toBe(0);
+  });
+
+  test("a reply with any picture or clip (its chat's flag) isn't translated, and nothing is sent", async () => {
+    reset();
+    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret-0123456789" }),
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
+      messageOf: async () => ({ text: "![x](/tmp/a b.png)", raw: "![x](/tmp/a b.png)", writing: false, media: true }) });
+    expect(await t.handle({ chat: "sp1", id: "p1" })).toMatchObject({ ok: false, error: expect.stringContaining("pictures or clips") });
+    expect(seen.length).toBe(0);
+  });
+
   test("a reply whose pictures its chat takes out isn't translated, and nothing is sent", async () => {
     reset();
     for (const id of ["a3", "a4"]) expect(await chatT().handle({ chat: "sp1", id })).toMatchObject({ ok: false, error: expect.stringContaining("pictures or clips") });
@@ -186,13 +204,13 @@ describe("a message", () => {
 
   test("a translation holding the key as any page could render it is dropped whole", () => {
     const t: any = make().t;
-    const used = new Set(["sk-stub-secret"]);
-    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "split sk-**stub**-secret", "linked sk-[stub](https://example.com)-secret", "plain words", "bad &#1114112; entity"], used))
-      .toEqual([null, null, null, null, "plain words", "bad &#1114112; entity"]);
-    // a short key too
-    expect(t.scrub(["x ab-*cd*-ef y", "fine"], new Set(["ab-cd-ef"]))).toEqual([null, "fine"]);
+    const used = new Set(["sk-stub-secret-0123456789"]);
+    expect(t.scrub(["see &#115;k-stub-secret-0123456789 now", "and &#x73;k\\-stub-secret-0123456789", "named &sfr;k-stub-secret-0123456789", "split sk-**stub**-secret-0123456789", "linked sk-[stub](https://example.com)-secret-0123456789", "plain words", "bad &#1114112; entity"], used))
+      .toEqual([null, null, null, null, null, "plain words", "bad &#1114112; entity"]);
+    // an ordinary sentence is kept whole
+    expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept
-    expect(t.scrub(["key sk-stub-secret here"], used)).toEqual(["key … here"]);
+    expect(t.scrub(["key sk-stub-secret-0123456789 here"], used)).toEqual(["key … here"]);
   });
 
   test("a kept translation comes back only where its block has words (a code slot never does)", async () => {

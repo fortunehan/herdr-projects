@@ -34,6 +34,8 @@ export type ArtifactResult = { ok: true; target: string; units: Record<string, s
 const MOST = 60_000;
 /** How long a found key is kept in memory (a key changed in Settings › Secrets is used after at most this long). */
 const KEY_KEEP = 10 * 60_000;
+/** The fewest letters and digits a key may have: every real API key has more, and a shorter one could hide in words. */
+const KEY_MIN = 16;
 const CHANGED = "Settings › Translation changed while it translated: try again";
 
 export type TranslatorIO = {
@@ -46,7 +48,7 @@ export type TranslatorIO = {
   /** a chat's message by its id, read from its conversation here (never the words a caller sends): text, the words its
    *  chat shows (core/chat-view.js mediaIn); raw, the agent's words as written; writing, its agent may still be writing
    *  it (or that can't be told). null: no such agent reply. */
-  messageOf?: (where: { chat?: string; addr?: string }, id: string) => Promise<{ text: string; raw: string; writing: boolean } | null>;
+  messageOf?: (where: { chat?: string; addr?: string }, id: string) => Promise<{ text: string; raw: string; writing: boolean; media?: boolean } | null>;
   /** where translations are kept */
   dir: string;
   fetchFn?: typeof fetch;
@@ -79,6 +81,8 @@ export class Translator {
     if (!url) throw new Error(T.WORDS.notSet);
     const k = await this.keyOf(cfg.key);
     if ("error" in k) throw new Error(k.error);
+    // a key short enough to turn up in ordinary words can't be watched for in answers: it isn't used
+    if (k.key.replace(/[^\p{L}\p{N}]+/gu, "").length < KEY_MIN) throw new Error(T.WORDS.shortKey);
     used?.add(k.key);
     // right before it goes (after the key's lookup, which can take a while)
     const now = this.io.config();
@@ -129,11 +133,13 @@ export class Translator {
     // block shows as not translated)
     const bare = (s: string) => decoded(s).replace(/[^\p{L}\p{N}]+/gu, "");
     const rendered = (s: string) => bare(String(marked.parseInline(s, { async: false })).replace(/<[^>]*>/g, ""));
-    const keys = [...used].map(bare).filter((k) => k.length >= 4);
+    const keys = [...used].map(bare).filter(Boolean);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
+      // an HTML entity this check can't read could spell anything: such a translation goes too
+      if (/&(?!(?:amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*;/i.test(x)) return null;
       const r = rendered(x), b = bare(x);
       return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
     });
@@ -241,6 +247,7 @@ export class Translator {
     return this.io.messageOf(where, id).then((m) => {
       if (!m) return { ok: false, error: "That message isn't in its chat any more." } as MessageResult;
       if (m.writing) return { ok: false, error: T.WORDS.writing } as MessageResult;
+      if (m.media) return { ok: false, error: T.WORDS.media } as MessageResult;
       return this.message(m.text, m.raw);
     });
   }

@@ -336,11 +336,14 @@ const translator = new Translator({
       if (!x || x.kind !== "agent" || typeof x.text !== "string" || !x.text.trim()) return null;
       const t: any = hub.terminals.get(addr);
       // the words its chat shows (pictures and clips out), as compat.ts makes them
-      const shown = (CVm as any).mediaIn(x.text, { cwd: t?.foreground?.cwd ?? t?.cwd ?? null, home: addr.includes("/") ? null : HOME }).text || x.text;
+      const md = (CVm as any).mediaIn(x.text, { cwd: t?.foreground?.cwd ?? t?.cwd ?? null, home: addr.includes("/") ? null : HOME });
+      const shown = md.text || x.text;
+      // any picture or clip in it (one its chat takes out, an inline image, an HTML image or video): not translated
+      const media = md.media.length > 0 || /!\[[^\]\n]*\]\(|<(?:img|video|audio|picture|source)\b/i.test(x.text);
       // its agent works and this is its newest reply, with nothing the person said after it: it may still be writing it
       const newest = items.findLastIndex((i) => i.kind === "agent" && typeof i.text === "string" && i.text.trim());
       const writing = t?.status?.state === "working" && at === newest && !items.slice(at + 1).some((i) => i.kind === "user" && !i.from);
-      return { text: shown, raw: x.text, writing };
+      return { text: shown, raw: x.text, writing, media };
     } finally { f.stop(); }
   },
   recipe: async (id, v, on) => (await artifacts.recipe(id, v, on)) as { blocks: unknown[] } | null,

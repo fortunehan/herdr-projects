@@ -21,6 +21,7 @@ export const WORDS = {
   noService: "Shepherdr's service isn't running on this machine.",
   writing: "This reply is still being written: translate it once it's complete.",
   media: "A reply with pictures or clips can't be translated yet.",
+  shortKey: "The key named in Settings › Translation is too short to be an API key (16 letters and digits at least).",
 };
 
 // ---- blocks ------------------------------------------------------------------------------------------------------
@@ -352,7 +353,7 @@ export const SETTINGS = {
   modelAbout: "The model that translates, as the endpoint names it.",
   modelPlaceholder: "gpt-4o-mini",
   key: "API key",
-  keyAbout: "A secret's name from Settings › Secrets (Everywhere): its value is used here only, never shown or logged.",
+  keyAbout: "A secret's name from Settings › Secrets (Everywhere): its value is used here only, never shown or logged (16 letters and digits at least).",
   keyNone: "No secrets kept yet: add one in Settings › Secrets first.",
   test: "Test connection",
   testButton: "Test",
