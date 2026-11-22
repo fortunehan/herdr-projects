@@ -209,6 +209,8 @@ function el() { const e = {}; for (const m of ["id", "size_full", "min_h", "item
 const theme = () => ({}), appHome = () => "/app", shared = (k) => (k === "layout" ? "shepherdr" : k === "tasks.thread" ? st.thread : k === "tasks.thread.where" ? st.where : null);
 const setShared = (k, v) => { if (k === "tasks.thread.where") st.where = v; };
 const dirs = () => ({ tasks: "/tasks" }), addonOn = () => false, ARTIFACTS = "tasks-thread-artifacts";
+// core/tasks.js ownRelations (SHEP-103: the header's after/then), not under test here
+const ownRelations = () => ({ after: [], then: [] });
 const layout = () => JSON.parse(file), readTextFile = async (path) => path.startsWith("/tasks/") ? JSON.stringify(record) : file;
 const writeTextFile = async (_p, text) => { if (input.writeFails) throw new Error("read-only"); file = text; };
 const toasts = [], logs = [];
