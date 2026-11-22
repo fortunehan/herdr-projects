@@ -558,12 +558,193 @@ def queue_entry(task):
 
 def drop_branch(s, task):
     """After GitHub's merge queue merged it: its branch on GitHub goes, as --delete-branch would have
-    (gh refuses that flag on a queue, #801). Already gone (the repo deletes merged branches): fine."""
+    (gh refuses that flag on a queue, #801). Already gone (the repo deletes merged branches): fine.
+    Tasks stacked on it move to its base first (restack()): GitHub closes a pull request whose base goes."""
     if task.get("branch"):
+        restack(s, task)
         main = s.loc["folder"]
         # --no-verify: a pre-push hook (a typecheck) checks what is pushed; a deletion has nothing to
         # check, and the hook would hold the task list's lock for minutes (#1007).
         git(main, "push", "--quiet", "--no-verify", remote_of(main), "--delete", task["branch"])
+
+
+# ---- SHEP-106: stacked tasks ---------------------------------------------------------------------
+# A task started with --base <another task's branch> is stacked on it. When the task below merges, its
+# branch goes (here and on GitHub), and GitHub closes every pull request into that branch. Before that
+# happens the stacked task moves to the merged task's base: its base, its pull request's base, and its
+# branch (the task below was squash-merged, so its original commits are dropped with rebase --onto).
+
+def stacked_on(s, task):
+    """This folder's tasks, not done, whose base is task's branch."""
+    br = task.get("branch")
+    return [o for o in s.data.get("tasks") or [] if br and o is not task and o.get("base") == br and o.get("state") != "done"]
+
+
+def branch_tip_of(s, task):
+    """The last commit of task's branch: here, else as last fetched from its remote, else as it said ready."""
+    main, br = s.loc["folder"], task.get("branch")
+    for ref in (f"refs/heads/{br}", f"refs/remotes/{remote_of(main)}/{br}") if br else ():
+        ok, sha, _ = git(main, "rev-parse", "--verify", "--quiet", ref)
+        if ok and sha:
+            return sha
+    return task.get("head") or task.get("own")
+
+
+def rebase_target(main, onto):
+    """The ref a stacked branch is rebased onto: the remote's base when it holds the local one (the
+    merge landed there), else the local base."""
+    remote = remote_of(main)
+    theirs = f"refs/remotes/{remote}/{onto}"
+    if remote in git(main, "remote")[1].split():
+        git(main, "fetch", "--quiet", remote, onto)
+        if git(main, "show-ref", "--verify", "--quiet", theirs)[0]:
+            mine = git(main, "show-ref", "--verify", "--quiet", f"refs/heads/{onto}")[0]
+            if not mine or git(main, "merge-base", "--is-ancestor", f"refs/heads/{onto}", theirs)[0]:
+                return f"{remote}/{onto}"
+    return onto
+
+
+def rebase_hint(s, t, tip, onto):
+    """The commands that move t's branch onto onto, dropping the commits up to tip."""
+    wt, main = t.get("worktree"), s.loc["folder"]
+    remote = remote_of(main)
+    has_remote = remote in git(main, "remote")[1].split()
+    target = f"{remote}/{onto}" if has_remote else onto
+    fetch = f"git fetch {remote} {onto} && " if has_remote else ""
+    push = f", then git push --force-with-lease {remote} {t['branch']}" if has_remote else ""
+    return f"in {wt}: {fetch}git rebase --onto {target} {tip}{push}"
+
+
+def restack(s, task):
+    """SHEP-106: before task's branch goes (it merged), every task stacked on it moves to task's base
+    (restack_one()). Not on Azure DevOps (its own flow; out of SHEP-106's scope)."""
+    below = stacked_on(s, task)
+    if not below or ado.repo_of(s):
+        return []
+    onto, tip = task.get("base") or "main", branch_tip_of(s, task)
+    return [restack_one(s, task, t, onto, tip) for t in below]
+
+
+def restack_one(s, up, t, onto, tip, closed=False):
+    """t (stacked on up's branch) moves onto `onto`: its base, its open pull request's base (gh pr edit,
+    before the old base goes and GitHub closes it), and its branch: rebased here with rebase --onto when its
+    worktree is clean and no agent is mid-turn, then pushed with --force-with-lease (its own branch, as it
+    was on the remote); else, or on a conflict, its agent is asked to (Needs you when none is live). A
+    pull request already closed (closed, or GitHub refused the edit on a closed one) is dropped from the
+    task: its next ready opens a new one against the new base. Returns what happened, for tests and news."""
+    main, old = s.loc["folder"], t.get("base")
+    t["base"], t["base_set"] = onto, True
+    t.pop("base_by", None)
+    s.dirty = True
+    did = {"task": t["id"], "from": old, "onto": onto, "tip": tip, "at": now()}
+    pr = t.get("pr") or {}
+    if pr and not closed and not ado.owns(pr.get("repo")):
+        ok, _, err = gh("pr", "edit", str(pr["number"]), "--repo", pr["repo"], "--base", onto)
+        if ok:
+            did["pr_moved"] = pr["number"]
+        else:
+            v = pr_view(t)
+            closed = bool(v and v.get("state") == "CLOSED")
+            if not closed:
+                did["pr_error"] = err or "gh pr edit failed"
+    if closed and pr:
+        did["pr_dropped"] = pr.get("number")
+        t.pop("pr", None)
+        if str(t.get("attention") or "").startswith("The pull request was closed"):
+            t.pop("attention", None)
+            t.pop("attention_at", None)
+    wt, br = t.get("worktree"), t.get("branch")
+    if not (wt and br and os.path.isdir(wt)):
+        did["how"] = "base"  # not started yet: it starts from the new base
+        t["restacked"] = did
+        return did
+    if not tip or not git(wt, "merge-base", "--is-ancestor", tip, br)[0]:
+        did["how"] = "already"  # none of up's original commits on it (rebased already)
+    else:
+        target = rebase_target(main, onto)
+        clean = git(wt, "status", "--porcelain", "--untracked-files=no")
+        if clean[0] and not clean[1] and not mid_turn(s, t):
+            ok, _, err = git(wt, "rebase", "--onto", target, tip, br)
+            if ok:
+                did["how"] = "rebased"
+                pushed = push_rebased(s, t)
+                if pushed is not None:
+                    did["pushed"] = pushed
+            else:
+                git(wt, "rebase", "--abort")
+                did["how"], did["conflict"] = "conflict", (err or "").splitlines()[-1:] or ["rebase failed"]
+        else:
+            did["how"] = "busy"
+    if did["how"] in ("conflict", "busy") or did.get("pr_dropped") or did.get("pr_error") or did.get("pushed") is False:
+        hand_over(s, up, t, did)
+    t["restacked"] = did
+    return did
+
+
+def push_rebased(s, t):
+    """A rebased stacked branch pushed over its old self on the remote, only if the remote still has
+    exactly what it had (--force-with-lease at that commit). None when it was never pushed."""
+    main, br = s.loc["folder"], t["branch"]
+    remote = remote_of(main)
+    if remote not in git(main, "remote")[1].split():
+        return None
+    ok, out, _ = git(main, "ls-remote", remote, f"refs/heads/{br}")
+    there = out.split()[0] if ok and out else None
+    if not there:
+        return None
+    # --no-verify: the same commits replayed onto a base that already passed; a pre-push hook would hold the
+    # task list's lock for minutes (#1007), and the pull request's checks run on the push anyway.
+    return git(t["worktree"], "push", "--quiet", "--no-verify", f"--force-with-lease=refs/heads/{br}:{there}",
+               remote, f"{br}:{br}")[0]
+
+
+def hand_over(s, up, t, did):
+    """What restack_one() couldn't finish goes to t's agent, or to the person (Needs you) when none is live."""
+    from .news import send_or_hold
+    ref, onto, tip = s.ref(t), did["onto"], did["tip"]
+    head = (f"Task {ref} \"{t['title']}\": the task below it, {s.ref(up)}, merged into {onto}, so {ref} now merges into {onto}"
+            + (f" and its pull request #{did['pr_moved']} targets {onto}" if did.get("pr_moved") else "") + ".")
+    steps = []
+    if did["how"] in ("conflict", "busy"):
+        why = "the rebase conflicts" if did["how"] == "conflict" else "its worktree had uncommitted work or its agent was busy"
+        steps.append(f"Move its branch onto {onto} ({why}; Herdr left it as it was): commit your work, then "
+                     f"{rebase_hint(s, t, tip, onto)}. That drops {s.ref(up)}'s original commits (they are in {onto} "
+                     "already, squashed). Resolve any conflicts and run the checks.")
+    elif did.get("pushed") is False:
+        steps.append(f"Its branch was rebased onto {onto} here, but the push was refused (the remote moved): look at "
+                     f"git log {t['branch']} and {remote_of(s.loc['folder'])}/{t['branch']}, then push it.")
+    if did.get("pr_dropped"):
+        steps.append(f"Its pull request #{did['pr_dropped']} was closed by GitHub when its base went: run "
+                     f"`herdr-task ready {ref} --folder {s.loc['folder']}` again to open a new one into {onto}.")
+    if did.get("pr_error"):
+        steps.append(f"Herdr couldn't move its pull request to {onto} ({did['pr_error']}): change its base on GitHub.")
+    msg = head + "\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(steps, 1))
+    to = [detail(k) for k in live_agents(s.key(t))]
+    to = [k for k in to if agent_running(k) and (k.get("labels") or {}).get("herdr.role") not in ("reviewer", "helper")]
+    if to and send_or_hold(to[-1]["address"], msg):
+        did["told"] = to[-1]["address"]
+        return
+    t["attention"], t["attention_at"] = f"{RESTACK_NEEDS}: {msg}", now()
+    did["needs_you"] = True
+
+
+RESTACK_NEEDS = "The task below it merged"
+
+
+def heal_closed(s, t):
+    """SHEP-106: t's pull request was closed because its base branch went: the branch of a task here that
+    merged. t moves onto that task's base as restack_one() does. Returns what happened, or None when that
+    isn't why (the person's own close, an unknown base)."""
+    base = t.get("base")
+    up = next((u for u in s.data.get("tasks") or [] if base and u is not t and u.get("branch") == base
+               and u.get("state") == "done" and u.get("merged")), None)
+    if not up or ado.owns((t.get("pr") or {}).get("repo")):
+        return None
+    main = s.loc["folder"]
+    ok, out, _ = git(main, "ls-remote", "--heads", remote_of(main), f"refs/heads/{base}")
+    if not ok or out:
+        return None  # its base is still there (or the remote couldn't say): not this
+    return restack_one(s, up, t, up.get("base") or "main", branch_tip_of(s, up), closed=True)
 
 
 def queue_merge(task, head):
@@ -794,6 +975,9 @@ def finish(s, task, even_if_busy=False):
     for k in ("attention", "merge_requested", "queue", "queued_at", "merge_queued", "kept_open", "accepting"):
         task.pop(k, None)
     s.dirty = True
+    if task.get("merged"):
+        # SHEP-106: its branch goes here (remove_worktree(), tidy_done()): tasks stacked on it move first.
+        restack(s, task)
     end_shells(s.key(task))
     if not task.get("worktree") or mid_turn(s, task) or (not even_if_busy and any(agent_running(k) for k in live_agents(s.key(task)))):
         return
