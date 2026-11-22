@@ -171,6 +171,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   agent-browser `mouse move/down/up` drives clicks and drags on the layer. `herdr-artifact preview` takes no `--folder`.
 - `herdr-artifact preview` with a branch's viewer: copy mods/artifacts into a scratch folder with `web/dist/artifact-viewer.html`
   beside it as viewer.html, and run that copy with `HOME=<scratch>` so it uses a throwaway store.
+- The web app's page-filling full screen in agent-browser: eval
+  `Object.defineProperty(Document.prototype,'fullscreenEnabled',{get:()=>false,configurable:true})` before clicking
+  Full screen. Tailwind's `@container` (container-type) traps `position:fixed` descendants.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
