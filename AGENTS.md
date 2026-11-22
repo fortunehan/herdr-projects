@@ -25,7 +25,10 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window-mod methods (e.g. chat's `refocus()`) can be tested by extracting the method text from `mods/chat/main.js`
   and running it in node with stubs (see `test/test_chat_refocus.py`).
 - `herdr-app check` never runs a v_virtual_list's rows: window-mod list rows must take no handlers (on_*) and no kept
-  cx (gpui-kit.d.ts 'no handlers and no retained state'); service/chat-rows.test.ts checks the chat's rows.
+  cx (gpui-kit.d.ts 'no handlers and no retained state'); service/chat-rows.test.ts runs the chat's list renderer as written.
+- Window chat `rows()` can be run in a bun test with stubs: status, resolveArts, newsLines, loadAskEnds, workerTasks,
+  timelineCards plus conv/replied/pending/queue/tr fields (see service/chat-paths.test.ts); the chat's log page caps at
+  ~258 items whatever record count the SHEP-109 render harness asks for.
 - Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
   the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.
 - Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and
@@ -178,6 +181,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - The web app's page-filling full screen in agent-browser: eval
   `Object.defineProperty(Document.prototype,'fullscreenEnabled',{get:()=>false,configurable:true})` before clicking
   Full screen. Tailwind's `@container` (container-type) traps `position:fixed` descendants.
+- Translation proofs: a stub OpenAI-compatible endpoint on 127.0.0.1 driving service/translate.ts Translator from a Bun
+  stub; translation keys need 16 ASCII letters and digits, so give the stub a long fake key.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --

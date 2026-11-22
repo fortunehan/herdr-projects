@@ -14,6 +14,7 @@ import { Primary } from '../ui.tsx'
 import * as R from '@core/recipe.js'
 import * as TRc from '@core/translate.js'
 import { marked } from 'marked'
+import { FULL_TEXT, fullStyle, pairGrid, picturePlace } from './recipe-full.ts'
 
 type Block = any
 export type Answer = { value: unknown; at: number; by?: string }
@@ -23,7 +24,9 @@ export type Reply = (text: string, keep?: { key: string; value: unknown }) => Pr
 /** SHEP-102: an artifact's translation (web/plugins/chat/translate.ts): each text's by its place (core/translate.js
  *  recipeUnits), the places that failed, loading or why it failed as a whole, and Retry */
 export type RecipeTr = { units?: Record<string, string>; failed?: string[]; loading?: boolean; error?: string; retry?: () => void }
-type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; reply?: Reply; answers?: Answers; tr?: RecipeTr }
+/** fullScreen (SHEP-111): the artifact fills the screen: the recipe centred, words at most FULL_TEXT px wide, each
+ *  picture at most its own size; else today's layout */
+type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; reply?: Reply; answers?: Answers; tr?: RecipeTr; fullScreen?: boolean }
 
 /** the window's words when a recipe can't be read */
 export const UNREADABLE = "This artifact's recipe can't be read."
@@ -32,6 +35,8 @@ const { chartShapes, choiceReply, formReply, isLink, answerLine, answerOf, check
 
 /** opens the picture viewer on a picture, by its src in the recipe */
 const OpenPicture = createContext<((src: string) => void) | null>(null)
+/** full screen: pictures and clips centred in their place */
+const Full = createContext(false)
 const PALETTE = ['var(--accent)', 'var(--focus)', 'var(--ready)', 'var(--work)', 'var(--merged)', 'var(--need)']
 const TONE: Record<string, string> = { info: 'bg-well shadow-soft', good: 'bg-ready/10', warn: 'bg-work/12', bad: 'bg-need/10' }
 /** SHEP-107: words keep a reading width (as the window's recipe view, mods/artifacts/recipe-view.js) while grids,
@@ -167,18 +172,19 @@ function Clip({ src, poster, caption, loop, muted, autoplay, asset, videoRef, ev
   const own = useRef<HTMLVideoElement>(null)
   const ref = videoRef ?? own
   const silent = !!muted || !!autoplay
+  const full = useContext(Full)
   // React doesn't write the muted attribute, so a silent clip is muted on the element (autoplay needs it)
   useEffect(() => { if (ref.current && silent) ref.current.muted = true }, [silent, ref])
   return (
-    <figure className="flex min-w-0 flex-col gap-1.5">
+    <figure className={clsx('flex min-w-0 flex-col gap-1.5', full && 'items-center')}>
       {broken ? (
         <p className="rounded-box bg-well p-3 text-fg2">This browser can't play this clip. <a className="underline" href={asset(src)} target="_blank" rel="noopener noreferrer" download>Open the file</a></p>
       ) : (
         <video ref={ref} src={asset(src)} poster={poster ? asset(poster) : undefined} controls autoPlay={!!autoplay} loop={!!loop} muted={silent} playsInline preload="metadata"
           aria-label={label ?? caption ?? 'Clip'} onError={() => setBroken(true)} {...events}
-          className="block h-auto max-h-[70vh] w-full rounded-box bg-black shadow-box" />
+          className={clsx('block h-auto max-h-[70vh] rounded-box bg-black shadow-box', full ? 'w-auto max-w-full' : 'w-full')} />
       )}
-      {caption ? <figcaption className="text-fg2">{caption}</figcaption> : null}
+      {caption ? <figcaption className={clsx('text-fg2', full && 'text-center text-pretty')} style={full ? { maxWidth: FULL_TEXT } : undefined}>{caption}</figcaption> : null}
     </figure>
   )
 }
@@ -213,15 +219,17 @@ function Pdf({ src, caption, asset }: { src: string; caption?: string; asset: (s
  *  new address so no cached failure answers (#983). */
 function Pic({ src, file, alt, w, h }: { src: string; file: string; alt: string; w?: number; h?: number }) {
   const open = useContext(OpenPicture)
+  const full = useContext(Full)
   const [tries, setTries] = useState(0)
   useEffect(() => setTries(0), [src])
   const retry = () => { if (tries < 3) setTimeout(() => setTries((n) => n + 1), 1000 * 2 ** tries) }
   const url = tries ? `${src}${src.includes('?') ? '&' : '?'}retry=${tries}` : src
   const pic = <img src={url} alt={alt} width={w} height={h} onError={retry} className="h-auto max-w-full rounded-box shadow-box" loading="lazy" />
-  if (!open) return <div className="self-start">{pic}</div>
+  const place = picturePlace(full)
+  if (!open) return <div className={place}>{pic}</div>
   return (
     <button type="button" aria-label={`Open ${alt || file.split('/').pop()}`} onClick={() => open(file)}
-      className="press-dim block max-w-full self-start cursor-zoom-in rounded-box">
+      className={clsx('press-dim block max-w-full cursor-zoom-in rounded-box', place)}>
       {pic}
     </button>
   )
@@ -232,6 +240,7 @@ function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; u
   const left = useRef<HTMLVideoElement>(null), right = useRef<HTMLVideoElement>(null)
   const sides = [['Before', b.before, left, right], ['After', b.after, right, left]] as const
   const clips = R.mediaKind(b.before?.src) === 'video' && R.mediaKind(b.after?.src) === 'video'
+  const full = useContext(Full)
   // the other clip: follows this one's play, pause and seek (a seek only when it has drifted, so the two don't fight)
   const follow = (me: RefObject<HTMLVideoElement | null>, other: RefObject<HTMLVideoElement | null>) => ({
     onPlay: () => { other.current?.play().catch(() => undefined) },
@@ -239,7 +248,7 @@ function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; u
     onSeeked: () => { const o = other.current, m = me.current; if (o && m && Math.abs(o.currentTime - m.currentTime) > 0.05) o.currentTime = m.currentTime },
   })
   return (
-    <div className="grid gap-3 @lg:grid-cols-2">
+    <div className={clsx('grid gap-3', pairGrid(full))}>
       {sides.map(([w, x, mine, theirs]) => {
         const kind = R.mediaKind(x?.src)
         // each side's caption translation under its own caption (SHEP-102)
@@ -251,7 +260,7 @@ function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; u
             {under?.(side)}
           </div>
         ) : (
-          <figure key={w} className="flex min-w-0 flex-col gap-1.5"><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}{under?.(side)}</figcaption></figure>
+          <figure key={w} className={clsx('flex min-w-0 flex-col gap-1.5', full && 'items-center')}><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}{under?.(side)}</figcaption></figure>
         )
       })}
     </div>
@@ -312,7 +321,8 @@ function Check({ b }: { b: Block }) {
   )
 }
 
-export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props) {
+export function Recipe({ recipe, asset, reply: send, answers: given, tr, fullScreen = false }: Props) {
+  const prose = fullScreen ? undefined : PROSE
   // each block's place, as the translation names its texts
   const paths = useMemo(() => (TRc as any).blockPaths(recipe) as Map<Block, string>, [recipe])
   const failed = new Set(tr?.failed ?? [])
@@ -351,8 +361,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
   const one = (b: Block): ReactNode => {
     switch (b.type) {
       case 'heading': { const H = (`h${Math.min(3, Math.max(1, b.level ?? 2)) + 1}`) as 'h2'; return <><H className={clsx('font-semibold text-balance', (b.level ?? 2) <= 1 ? 'text-xl' : 'text-base')}>{b.text}</H>{T(b, 'text')}</> }
-      case 'text': return <div className={PROSE}>{md(b, 'md', b.md)}</div>
-      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', PROSE, b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} />{T(b, `items.${i}`)}</li>)}</L> }
+      case 'text': return <div className={prose}>{md(b, 'md', b.md)}</div>
+      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', prose, b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} />{T(b, `items.${i}`)}</li>)}</L> }
       case 'table': return (
         <div className="overflow-x-auto rounded-box shadow-box">
           <table className="w-full border-collapse">
@@ -363,7 +373,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
       )
       case 'chart': return <><Chart b={b} T={words(b)} />{failedIn(b)}</>
       case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
-      case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
+      case 'image': return <figure className={clsx('flex flex-col gap-1.5', fullScreen && 'items-center')}><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className={clsx('text-fg2', fullScreen && 'text-center text-pretty')} style={fullScreen ? { maxWidth: FULL_TEXT } : undefined}>{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
       case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
       case 'audio': return <><Sound src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
       case 'pdf': return <><Pdf src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
@@ -391,12 +401,16 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
     }
     return null
   }
-  const wrap = (b: Block) => (
-    <section key={b.id} data-block={b.id} className="min-w-0">
-      {one(b)}
-    </section>
-  )
+  const wrap = (b: Block) => {
+    const f = fullStyle(b, fullScreen)
+    return (
+      <section key={b.id} data-block={b.id} className={clsx('min-w-0', f.className)} style={f.style}>
+        {one(b)}
+      </section>
+    )
+  }
   return (
+    <Full.Provider value={fullScreen}>
     <OpenPicture.Provider value={(src) => setShown(Math.max(0, pics.findIndex((x) => x.src === src)))}>
       <div ref={root} className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">
         {tr?.loading ? <TrLine text={(TRc as any).WORDS.translating} note /> : null}
@@ -405,5 +419,6 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
       </div>
       {shown !== null && pics.length ? <PictureViewer pics={pics} at={shown} device={root.current?.closest('[data-device]')?.getAttribute('data-device') ?? undefined} onClose={() => setShown(null)} /> : null}
     </OpenPicture.Provider>
+    </Full.Provider>
   )
 }
