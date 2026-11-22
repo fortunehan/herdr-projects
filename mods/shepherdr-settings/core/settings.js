@@ -105,6 +105,14 @@ export const REACTIONS = { title: "Reactions", about: "Agents react to some of y
 // Suggested next message (SHEP-186): an agent ends its reply with what you would likely say next, shown greyed out in the
 // box: Enter sends it, Tab fills it in, typing replaces it. Off: no agent suggests, and none is shown.
 export const SUGGESTIONS = { title: "Suggested next message", about: "Your agents suggest what you'd likely say next, greyed out in the box: Enter sends it, Tab fills it in." };
+// Output language (SHEP-101, herdr-task's settings.language_line): the language Assistants and task agents write to you
+// in, their proofs and artifacts too; code, commits and pull requests stay English. "" (the default) follows you: the
+// language of the last message you typed. Kept as agents.language; a value not in the list (set by hand) still shows.
+export const LANGUAGE = { title: "Output language", about: "What your agents write to you in, proofs and artifacts too. Code and commits stay English.",
+  follow: "Follow the person" };
+export const LANGUAGES = [["", LANGUAGE.follow], ["English", "English"], ["Chinese", "Chinese"], ["Japanese", "Japanese"], ["Korean", "Korean"]];
+// The choices with a value set by hand added, so the row can show it.
+export const languageChoices = (v) => (LANGUAGES.some(([x]) => x === (v ?? "")) ? LANGUAGES : [...LANGUAGES, [v, v]]);
 // A settings file's layers (everywhere, machines, spaces) with SHEP-42's assistant.reactions moved to agents.reactions
 // (a layer that has both keeps agents'), and Everywhere's star_prompt dropped (the one-time GitHub star card, SHEP-79,
 // is gone: SHEP-225). Changes cfg in place and returns it.
@@ -382,7 +390,7 @@ export const ARCHIVE = [[0, "Off"], [1, "1 day"], [3, "3 days"], [7, "1 week"], 
 export const ONOFF = [[true, "On"], [false, "Off"]];
 
 export const DEFAULTS = { tasks: { merge: "ask", fix_rounds: 3, review_rounds: 0, must_fix: "major", max_running: 10, worktrees: true, archive_after: 7, proof: true, slug_max: 40 }, automations: { enabled: true },
-  agents: { reactions: true, suggestions: true, feedback: true, feedback_repo: "" } };
+  agents: { reactions: true, suggestions: true, feedback: true, feedback_repo: "", language: "" } };
 
 // [section, field, label, choices | { min, max }]
 export const TASK_ROWS = [

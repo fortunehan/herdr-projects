@@ -14,7 +14,7 @@ import * as HC from "../core/host.js";
 import * as APc from "../core/autopilot.js";
 import type { SettingRow, SettingSection } from "../web/shared/types.ts";
 
-const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, MACHINES, OLD_NAMES, SECTIONS,
+const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, LANGUAGE, languageChoices, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, MACHINES, OLD_NAMES, SECTIONS,
   WEB, modelLabel, roleSel, otherCli, otherCliWords, backupProblem, homeAbout, webState, fromWord, LOADING_AGENTS, RESET, machineLabel } = C as any;
 const AP = APc as any;
 /** Autopilot as Everywhere has it now (herdr-task's view: what Settings keeps, else what it kept before, else the
@@ -222,6 +222,11 @@ export class Settings {
     const sg = this.pick(scope, "agents", "suggestions");
     rows.push({ label: SUGGESTIONS.title, key: "agents.suggestions", value: ON(sg.value !== false), options: ["on", "off"], hint: SUGGESTIONS.about,
       ...this.follows(s, sg, (v) => ON(v !== false), "agents", "suggestions") });
+    // Output language (SHEP-101): what every agent writes to you in; "" follows you (herdr-task's Settings block Language line)
+    const lg = this.pick(scope, "agents", "language");
+    const lgWord = (v: unknown) => wordFor(languageChoices(String(v ?? "")), String(v ?? ""));
+    rows.push({ label: LANGUAGE.title, key: "agents.language", value: lgWord(lg.value), options: languageChoices(String(lg.value ?? "")).map(([, w]: any) => w),
+      hint: LANGUAGE.about, ...this.follows(s, lg, lgWord, "agents", "language") });
     // Feedback offers: agents offer once to file a problem in Shepherdr itself, only on your yes (herdr-task's feedback.py);
     // the repo it files to is Everywhere's only
     const fb = this.pick(scope, "agents", "feedback");
@@ -502,6 +507,17 @@ export class Settings {
       if (word !== null && word !== "on" && word !== "off") throw new Error("Not one of its choices.");
       const parent = space ? file.everywhere?.agents?.suggestions ?? DEFAULTS.agents.suggestions : DEFAULTS.agents.suggestions;
       put("agents", "suggestions", word === null || (word === "on") === parent ? null : word === "on");
+    } else if (key === "agents.language") {
+      // a language from the list (its word), "Follow the person" (""); the same as what this level would inherit unsets it
+      // what this level inherits, as the row reads it (a machine's value from before included), from the file as it
+      // is now: the window may have changed it since this page read it
+      const lang = (l: any) => (l?.agents?.language ?? undefined) as string | undefined;
+      const m = space ? (space.includes("/") ? space.split("/")[0] : LOCAL) : null;
+      const parent = String((space ? lang(file.machines?.[m!]) ?? lang(file.everywhere) : undefined) ?? DEFAULTS.agents.language);
+      const now = String((space ? lang(file.spaces?.[space]) : lang(file.everywhere)) ?? parent);
+      const v = word === null ? null : [...languageChoices(parent), ...languageChoices(now)].find(([, w]: any) => w === word)?.[0];
+      if (v === undefined) throw new Error("Not one of its choices.");
+      put("agents", "language", v === null || v === parent ? null : v);
     } else if (key === "agents.feedback") {
       // on or off; the same as what this level would inherit unsets it, so it follows again (as Reactions)
       if (word !== null && word !== "on" && word !== "off") throw new Error("Not one of its choices.");

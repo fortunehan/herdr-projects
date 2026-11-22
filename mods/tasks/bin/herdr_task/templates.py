@@ -122,7 +122,17 @@ EXPLAIN_RULE = ("never one dense paragraph. Explain it simply too, as to someone
                 "(code names stay as they are). Each thing to check goes in its own `--check \"…\"`, a short plain line. "
                 "The Accept card leads with these, then your proof, then your details folded under Technical details. "
                 "That puts the task in Ready")
-WORKER_MD = WORKER_MD_BEFORE_EXPLAIN.replace(EXPLAIN_OLD, EXPLAIN_RULE)
+WORKER_MD_BEFORE_LANGUAGE = WORKER_MD_BEFORE_EXPLAIN.replace(EXPLAIN_OLD, EXPLAIN_RULE)
+# Since agents write to the person in the Settings block's Language, code and commits in English (SHEP-101).
+LANGUAGE_RULE = ("- Language, as the Settings block's Language line says (SHEP-101): write everything the person reads in it: "
+                 'your chat, status lines, questions and their cards, the ready summary, `--explain`, `--check` and '
+                 '`--details`, your proof and every artifact (a proof\'s title still ends in " · Proof"). When it follows the '
+                 'person, the last message the person typed to you decides (news, hooks, tool output and notifications never '
+                 "do); until they write, the language it names, else the brief's. Code, comments, identifiers, commit "
+                 'messages, branch names, pull request titles and `--agents-md` lines stay in English.\n')
+LANGUAGE_AT = "- Commit as you go,"
+LANGUAGE_EXPLAIN = ("in the language the person writes in: `--explain", "in the Settings block's language: `--explain")
+WORKER_MD = WORKER_MD_BEFORE_LANGUAGE.replace(LANGUAGE_AT, LANGUAGE_RULE + LANGUAGE_AT, 1).replace(*LANGUAGE_EXPLAIN)
 # The fork's worker.md before upstream's #1000 ask rule: the login wrapper on the older text.
 WORKER_MD_LOGIN_BEFORE_ASK = WORKER_MD_BEFORE_ASK.replace(COMMAND_RULE, LOGIN_RULE)
 
@@ -144,7 +154,13 @@ REVIEWER_SANDBOX = ("- A check that can't run in a read-only sandbox (Codex's): 
                     "services and `shepherdr doctor` can't reach the Shepherdr service, as with anything needing the network, a "
                     "window or writes outside the folder. Don't run or wait on those: list them in your findings under \"Not run "
                     "in my sandbox:\", and your worker runs them and checks the output.\n")
-REVIEWER_MD = REVIEWER_MD_BEFORE_SANDBOX + REVIEWER_SANDBOX
+REVIEWER_MD_BEFORE_LANGUAGE = REVIEWER_MD_BEFORE_SANDBOX + REVIEWER_SANDBOX
+# Since findings are in the Settings block's Language (SHEP-101).
+REVIEWER_LANGUAGE = ("- Language: write your findings in the brief's Settings block Language (the language it names; when it "
+                     "follows the person, the language of the person's last typed message, else the brief's). Code, file "
+                     'names, identifiers and quoted output stay as they are; any fix you suggest for code, comments or commits'
+                     ' is in English.\n')
+REVIEWER_MD = REVIEWER_MD_BEFORE_LANGUAGE + REVIEWER_LANGUAGE
 
 
 # Earlier worker defaults: a file still saying one, unedited, gets today's.
@@ -157,7 +173,7 @@ OLD_WORKER_READY = """You work on one Herdr task. Stay within the task's scope a
 - When the work is finished, run the `herdr-task ready` command given at the end of your brief, with a short summary. That puts the task in Ready for the person, who accepts it. Never mark a task done yourself.
 """
 OLD_WORKER_MD = OLD_WORKER_READY.split("- When the work is finished")[0]
-OLD_WORKERS = (WORKER_MD_BEFORE_EXPLAIN, WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
+OLD_WORKERS = (WORKER_MD_BEFORE_LANGUAGE, WORKER_MD_BEFORE_EXPLAIN, WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
 
 
 TEMPLATE_HEADS = {
@@ -191,7 +207,7 @@ def instructions(role):
         text = None
     if body is None or (role == "worker" and body.strip() in [x.strip() for x in OLD_WORKERS]) \
             or (role == "reviewer" and body.strip() in (REVIEWER_MD_BEFORE_SUBAGENT.strip(), REVIEWER_MD_BEFORE_FEEDBACK.strip(),
-                                                    REVIEWER_MD_BEFORE_SANDBOX.strip())):
+                                                    REVIEWER_MD_BEFORE_SANDBOX.strip(), REVIEWER_MD_BEFORE_LANGUAGE.strip())):
         body = WORKER_MD if role == "worker" else REVIEWER_MD
     new = head + body.strip() + "\n"
     if text is None or new.strip() != text.strip():
