@@ -28,6 +28,7 @@ import { secretsInit, secretsSection } from "./secrets-section.js";
 import { baseInit, baseRow } from "./base-branch.js";
 import { branchInit, branchRow, slugRow } from "./branch-names.js";
 import { feedbackInit, feedbackRow, feedbackRepoRow } from "./feedback-repo.js";
+import { languageRow } from "./language-row.js";
 import { autopilotInit, autopilotSection, autopilotFlush } from "./autopilot-section.js";
 import { spaceName } from "./core/spaces.js";
 import { NOTIFY, NOTIFY_DEFAULT, notifyMachine, notifyMachineOwn, notifyOf, notifyOwn, notifyEverywhere,
@@ -497,6 +498,7 @@ export default class ShepherdrSettings extends View {
       .children(ROLES.map((r) => this.roleRow(t, r, cx)))
       .child(this.backupRow(t))
       .child(this.reactionsRow(t))
+      .child(languageRow(this, t))
       .child(feedbackRow(this, t))
       .children([feedbackRepoRow(this, t)].filter(Boolean));
   }
