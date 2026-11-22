@@ -572,4 +572,10 @@ export function besideRow(row, menu, width, right) {
 }
 
 // Ends a coordinator's tab; "stop" ends its workers first.
-export const closeCoordinator = (tabId, coord, mode) => script("close", [tabId, coord.address, mode]);
+// The space whose only tab is `tabId` (closing it closes the space, and Herdr drops the space's id: SHEP-112), or null.
+export const lastTabOf = (tabId) => allSpaces().find((s) => s.tabs.length === 1 && s.tabs[0].id === tabId) ?? null;
+export function closeCoordinator(tabId, coord, mode) {
+  const last = lastTabOf(tabId);
+  if (last) logSpace("close", last.id, "coordinator.js closeCoordinator (its last tab: Close the Assistant)");
+  return script("close", [tabId, coord.address, mode]);
+}
