@@ -27,13 +27,16 @@ export async function artifactCli(machine, args) {
 // The latest version's mod name, from any version's (art-<id>--v<n>).
 export const baseMod = (mod) => String(mod).replace(/--v\d+$/, "");
 
+// The artifact's own mod; full screen it's told so (props().full), and a recipe lays itself out for it (SHEP-111).
+export const artifactContent = (artifact) => (artifact.full ? { mod: artifact.mod, props: { full: true } } : { mod: artifact.mod });
+
 // The viewer's layout: the toolbar over the artifact's own mod, on the backdrop.
 export function viewerLayout(artifact) {
   return {
     type: "column", background: `${theme().background}f2`, children: [
       { type: "block", size: { px: 48 }, content: { mod: "chat-image", props: { artifact } } },
       { type: "column", padding: artifact.full ? [0, 0] : [8, 24], children: [
-        { type: "block", radius: 8, background: "background", border: { width: 1, color: "border" }, content: { mod: artifact.mod } }] }],
+        { type: "block", radius: 8, background: "background", border: { width: 1, color: "border" }, content: artifactContent(artifact) }] }],
   };
 }
 
@@ -55,7 +58,7 @@ function showModal(artifact) {
   openOverlay({ kind: "dialog", ...(artifact.full ? { width: 1, height: 1 } : modalSize()), layout: {
     type: "column", background: "popover", divider: { width: 1, color: "border" }, children: [
       { type: "block", size: { px: 48 }, content: { mod: "chat-image", props: { artifact } } },
-      { type: "block", background: "background", content: { mod: artifact.mod } }] } });
+      { type: "block", background: "background", content: artifactContent(artifact) }] } });
 }
 
 // Shows an artifact whose mod is already in this app: over artifact.area ({ x, y, width, height }

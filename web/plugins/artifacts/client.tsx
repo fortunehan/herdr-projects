@@ -491,7 +491,7 @@ function PanelArtifact({ art, onBack }: { art: Artifact; onBack: () => void }) {
       </div>
       <div className="relative min-h-0 flex-1">
         <div className="absolute inset-0">
-          <ArtifactFrame art={art} v={shown} full />
+          <ArtifactFrame art={art} v={shown} full fullScreen={full.on} />
         </div>
         {marking ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarking(false)} /> : null}
       </div>
@@ -545,7 +545,7 @@ export function ArtifactFrame(p: Parameters<typeof PageFrame>[0]) {
 }
 
 /** A recipe of the version shown, its pictures from the service (Mark up lays its layer over it: MarkupLayer). */
-function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
+function RecipeFrame({ art, v, full, fullScreen }: Parameters<typeof PageFrame>[0]) {
   const [recipe, setRecipe] = useState<{ blocks: unknown[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [answers, setAnswers] = useState<Answers>({})
@@ -575,7 +575,7 @@ function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   return (
     <div className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
       <Recipe recipe={recipe} asset={(src) => `api/artifacts/${encodeURIComponent(art.id)}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${v}${on}`}
-        answers={answers} tr={tr}
+        answers={answers} tr={tr} fullScreen={fullScreen}
         reply={(text, keep) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text, ...(keep ? { answer: keep.key, value: keep.value } : {}) })} />
     </div>
   )
@@ -612,6 +612,8 @@ function PageFrame({
   art: Artifact
   v: number
   full?: boolean
+  /** the browser's or the page's full screen is on (SHEP-111): a recipe lays itself out for it */
+  fullScreen?: boolean
   markup?: boolean
   onPick?: (p: Pick) => void
   /** more of the page is below what shows */
@@ -894,7 +896,7 @@ function Viewer() {
         )}
         <div className="relative min-h-0 flex-1">
           <div className="absolute inset-0">
-            <ArtifactFrame art={art} v={shown} full />
+            <ArtifactFrame art={art} v={shown} full fullScreen={full.on} />
           </div>
           {markup && full.how !== 'page' ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarkup(false)} /> : null}
         </div>

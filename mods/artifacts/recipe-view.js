@@ -14,7 +14,7 @@ import * as fs from "fs/promises";
 import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_M } from "./artifact.js";
 import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
-import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, imageSize, isDiff, isLink, mdParts, mediaKind, pictures, withIds } from "./recipe.js";
+import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, FULL_TEXT, fullWide, imageSize, isDiff, isLink, mdParts, mediaKind, pictureMax, pictures, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
 // it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
@@ -30,6 +30,9 @@ const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
 // SHEP-107: words keep a reading width while columns, tables and pictures take the whole width (full screen on a
 // wide window; before, the whole recipe stopped at 860 px). The web's recipe view does the same (screens/Recipe.tsx).
 const PROSE = 760;
+// SHEP-111: full screen (the viewer tells it, artview.js artifactContent) the recipe is centred, words at most FULL_TEXT
+// wide, each picture at most its own size; elsewhere as before. The web's recipe view does the same.
+const isFull = () => Boolean(props()?.full);
 
 // Translate (SHEP-102): this version's translation as the bar asked for it (lib/artifact-translate.js), by its texts'
 // places (core/translate.js recipeUnits); a Retry sets it to "retry" and the bar asks again.
@@ -81,6 +84,12 @@ export default class RecipeView extends View {
     walk(this.recipe?.blocks);
     this.pics = pictures(this.recipe);
     this.paths = this.recipe ? blockPaths(this.recipe) : new Map();
+    // full screen: each picture's own size, read from its file, so none is drawn past it
+    this.sizes = new Map();
+    if (isFull() && this.pics.length) cx?.spawn?.(async (cx) => {
+      for (const p of this.pics) this.sizes.set(p.src, imageSize(await head(`${appHome()}/${asset(p.src)}`)));
+      cx.notify();
+    });
     // the answers kept with this version, then its forms' fields as sent
     cx?.spawn?.(async (cx) => {
       this.answers = { ...(await answers()), ...this.answers };
@@ -109,8 +118,9 @@ export default class RecipeView extends View {
   }
 
   // A picture: a click opens it in the picture viewer, at its place among the recipe's pictures.
-  picture(src, el) {
-    return div().id(`pic-${src}`).w_full().min_w(0).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.openPicture(src, cx); }).child(el);
+  picture(src, el, b = null) {
+    const max = isFull() ? pictureMax(b, this.sizes?.get(src)) : null;
+    return div().id(`pic-${src}`).w_full().min_w(0).when(Boolean(max), (e) => e.max_w(max)).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.openPicture(src, cx); }).child(el);
   }
 
   // The window's picture viewer (mods/chat-image) over the whole window, on every picture in the recipe from this one:
@@ -135,7 +145,7 @@ export default class RecipeView extends View {
 
   // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
   md(id, text, t, b = null, field = "md") {
-    const words = (key, w) => div().w_full().min_w(0).max_w(PROSE).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
+    const words = (key, w) => div().w_full().min_w(0).max_w(isFull() ? FULL_TEXT : PROSE).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
     // translated: each paragraph, then its translation under it (as the chat's), in the parts the service made from
     // marked's own parse (this window has none)
     const parts0 = b ? translation()?.mdParts?.[`${this.paths.get(b)}.${field}`] : null;
@@ -344,13 +354,13 @@ export default class RecipeView extends View {
       case "video": return this.withTr(this.media(b, t, "▶", "Video", b.poster ? b.poster : null), b, "caption", t);
       case "audio": return this.withTr(this.media(b, t, "♪", "Sound", null), b, "caption", t);
       case "pdf": return this.withTr(this.media(b, t, "PDF", "PDF", null), b, "caption", t);
-      case "image": return v_flex().gap(4)
-        .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border)))
+      case "image": return v_flex().gap(4).when(isFull(), (e) => e.w_full().items_center())
+        .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border), b))
         .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(b.caption)))
         .when(Boolean(this.tr(b, "caption", t)), (e) => e.child(this.tr(b, "caption", t)));
-      case "pair": return h_flex().flex_wrap().gap(10).children([["Before", b.before], ["After", b.after]].map(([w, x]) => v_flex().flex_1().min_w(240).gap(4)
+      case "pair": return h_flex().flex_wrap().gap(10).when(isFull(), (e) => e.w_full().justify_center()).children([["Before", b.before], ["After", b.after]].map(([w, x]) => v_flex().flex_1().min_w(240).gap(4).when(isFull(), (e) => e.items_center())
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
-          : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border)))
+          : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border), x))
         .child(this.withTr(div().text_size(12).text_color(t.muted).child(x.caption ?? w), b, w === "Before" ? "before" : "after", t))));
       case "code": return isDiff(b) ? this.diff(b, t) : this.code(b.id, b.text, t);
       case "check": return this.withTr(this.withTr(this.check(b, t), b, "summary", t), b, "caption", t);
@@ -436,7 +446,7 @@ export default class RecipeView extends View {
   }
 
   render(cx) {
-    const t = theme();
+    const t = theme(), full = isFull();
     const tr = translation();
     // the whole version's translation on its way, or why it failed (a press asks again)
     const head = !tr || tr.state === "done" ? [] : [div().id("tr-head").w_full().pl(8).border_l(2).border_color(t.border).text_size(13)
@@ -444,8 +454,10 @@ export default class RecipeView extends View {
       .when(tr.state !== "error", (e) => e.text_color(t.dim))
       .child(tr.state === "error" ? `${tr.error || TW.failed("")} \u00b7 ${TW.retry}` : TW.translating)];
     const body = this.error ? [div().text_size(13).text_color(t.muted).child(this.error)]
-      : !this.recipe ? [] : [...head, ...this.recipe.blocks.map((b) => v_flex().id(`blk-${b.id}`).w_full().min_w(0).child(this.block(b, t, cx)))];
+      : !this.recipe ? [] : [...head, ...this.recipe.blocks.map((b) => v_flex().id(`blk-${b.id}`).w_full().min_w(0)
+        // full screen: words at most FULL_TEXT wide; the window shows a clip as its poster, so it keeps that width too
+        .when(full && (!fullWide(b) || b.type === "video"), (e) => e.max_w(FULL_TEXT)).child(this.block(b, t, cx)))];
     return v_flex().id("recipe").size_full().overflow_y_scrollbar().bg(t.background).text_color(t.foreground)
-      .child(v_flex().id("recipe-body").w_full().p(16).gap(14).children(body));
+      .child(v_flex().id("recipe-body").w_full().p(16).gap(14).when(full, (e) => e.items_center()).children(body));
   }
 }
