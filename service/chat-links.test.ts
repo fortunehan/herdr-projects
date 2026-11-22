@@ -75,10 +75,20 @@ describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () 
     expect(ran).toEqual([]);
   });
 
-  test("a URL and this machine's paths are links; ~/ is this machine's home", () => {
+  test("a URL, and a path a viewer opens, are links; ~/ is this machine's home", () => {
     expect(drawn(chat(), "See https://example.com/docs。").text).toBe("See [https://example.com/docs](https://example.com/docs)。");
-    expect(drawn(chat(), "Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/").text)
-      .toBe("Changed [\\~/dev/shop/src/app.ts:12](file:///h/me/dev/shop/src/app.ts) and [/h/me/dev/shop/](file:///h/me/dev/shop/)");
+    expect(drawn(chat(), "Proof at ~/proof/shot.png and `/tmp/r.pdf`").text)
+      .toBe("Proof at [\\~/proof/shot.png](file:///h/me/proof/shot.png) and [`/tmp/r.pdf`](file:///tmp/r.pdf)");
+  });
+
+  // SHEP-109 review: the system's opener runs what it's given, so nothing a click could launch or run is a link
+  test("a folder, a source file, an app or a script stays words, also when the agent linked it", () => {
+    expect(drawn(chat(), "Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/ in /Applications/Preview.app").text)
+      .toBe("Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/ in /Applications/Preview.app");
+    expect(drawn(chat(), "[run it](file:///tmp/go.command) and [the page](/tmp/a.html)").text)
+      .toBe("run it and [the page](file:///tmp/a.html)");
+    expect(drawn(chat(), "[app][a]\n\n[a]: /Applications/Preview.app").text).toBe("[app][a]\n\n\\[a]: /Applications/Preview.app");
+    expect(drawn(chat(), "<file:///tmp/go.sh>").text).toBe("\\<file:///tmp/go.sh\\>");
   });
 
   test("a fenced code block isn't linked", () => {
@@ -90,6 +100,12 @@ describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () 
   test("another machine's agent: URLs are links, its paths stay plain", () => {
     const v = drawn(chat("mini"), "At `/tmp/a/index.html`, docs https://x.y/z");
     expect(v.text).toBe("At `/tmp/a/index.html`, docs [https://x.y/z](https://x.y/z)");
+  });
+
+  test("another machine's agent: a file link it wrote never opens this machine's file of that name (SHEP-109)", () => {
+    const c = chat("mini");
+    expect(drawn(c, "[report][r]\n\n[r]: file:///tmp/report.txt").text).toBe("[report][r]\n\n\\[r]: file:///tmp/report.txt");
+    expect(drawn(c, "[report](file:///tmp/report.txt) <file:///tmp/report.txt>").text).toBe("report \\<file:///tmp/report.txt\\>");
   });
 
   test("find's bold marks words, never a link's target", () => {

@@ -15,6 +15,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = open(os.path.join(ROOT, "mods", "chat", "main.js"), encoding="utf-8").read()
 MATCH = re.search(r"\n  linked\(text\) \{\n.*?\n  \}\n", SRC, re.S)
+PREPARED = re.search(r"\n  prepared\(key, raw, fn\) \{\n.*?\n  \}\n", SRC, re.S)
 LIMIT = re.search(r"\nconst LINK_MS = (\d+);", SRC)
 
 HARNESS = r"""
@@ -23,9 +24,9 @@ const home = () => "/Users/me";
 let calls = 0, clock = 0;
 const realNow = Date.now;
 Date.now = () => clock;
-const links = { linkify: (t) => { calls++; if (t.includes("BAD")) throw new Error("boom"); clock += t.includes("SLOW") ? 20 : 1; return "L:" + t; } };
-const obj = { %(method)s };
-const self = { machine: null, linkSpent: 0, linked: obj.linked };
+const links = { actionOf: () => "browser", fileHref: (a) => "file://" + a, linkify: (t) => { calls++; if (t.includes("BAD")) throw new Error("boom"); clock += t.includes("SLOW") ? 20 : 1; return "L:" + t; } };
+const obj = { %(method)s, %(prepared)s };
+const self = { machine: null, linkSpent: 0, linked: obj.linked, prepared: obj.prepared };
 const out = {};
 out.bad = self.linked("a BAD reply");
 out.first = self.linked("SLOW one");
@@ -44,7 +45,7 @@ console.log(JSON.stringify(out));
 
 
 def run():
-    script = HARNESS % {"method": MATCH.group(0).strip(), "limit": LIMIT.group(1)}
+    script = HARNESS % {"method": MATCH.group(0).strip(), "prepared": PREPARED.group(0).strip(), "limit": LIMIT.group(1)}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "linked.mjs")
         with open(path, "w") as f:
@@ -55,7 +56,7 @@ def run():
 class LinkedNeverBlanksTheChat(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if MATCH is None or LIMIT is None or shutil.which("node") is None:
+        if MATCH is None or PREPARED is None or LIMIT is None or shutil.which("node") is None:
             raise unittest.SkipTest("main.js linked() or LINK_MS not found, or no node")
         cls.out = run()
 
@@ -69,7 +70,7 @@ class LinkedNeverBlanksTheChat(unittest.TestCase):
         self.assertTrue(self.out["waiting"])
 
     def test_linked_never_keeps_or_uses_a_cx(self):
-        self.assertNotIn("cx", MATCH.group(0).replace("context", ""))
+        self.assertNotIn("cx", MATCH.group(0) + PREPARED.group(0).split("*/")[-1])
 
     def test_a_linked_reply_is_kept_and_the_waiting_one_links_next_frame(self):
         self.assertEqual(self.out["firstKept"], "L:SLOW one")

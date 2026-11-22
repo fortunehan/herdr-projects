@@ -7,12 +7,15 @@ import { fakeHerdr } from "./fake-herdr";
 import { fakeGpuiBase, fakeGpuiKit } from "./fake-gpui";
 
 const handlers: string[] = [];
+/** The words a row shows: each TextView's markdown and each plain child string, in order. */
+const shown: string[] = [];
 function el(): any {
   const self: any = new Proxy({}, {
     get(_t, k) {
       if (k === "then") return undefined;
       if (k === "when") return (c: unknown, f: (e: any) => any) => (c ? f(self) : self);
       if (typeof k === "string" && k.startsWith("on_")) return () => { handlers.push(k); return self; };
+      if (k === "child") return (c: unknown) => { if (typeof c === "string") shown.push(c); return self; };
       return () => self;
     },
   });
@@ -27,7 +30,7 @@ mock.module("herdr", () => fakeHerdr({
   readTextFile: async () => null, writeTextFile: async () => {}, watchFolder: () => {},
 }));
 mock.module("gpui-kit", () => fakeGpuiKit({ View: class {}, div: el, svg: el, image: el }));
-mock.module("gpui-base", () => fakeGpuiBase({ v_flex: el, h_flex: el, v_virtual_list: el, Scrollbar: el, TextView: { markdown: () => el() } }));
+mock.module("gpui-base", () => fakeGpuiBase({ v_flex: el, h_flex: el, v_virtual_list: el, Scrollbar: el, TextView: { markdown: (_id: string, md: string) => { shown.push(md); return el(); } } }));
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
 const { default: Chat } = await import("../mods/chat/main.js");
@@ -74,10 +77,46 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     });
   }
 
-  test("a row that throws shows its words plain, the rest of the list unharmed", () => {
+  test("each message's words are on its row: a reply, the person's words, the 35 KB brief", () => {
     const c = chat();
-    c.row = () => { throw new Error("boom"); };
-    expect(() => c.safeRow({ kind: "agent", id: "a1", text: "hello" }, theme, "v0-")).not.toThrow();
+    const words = (x: any) => { shown.length = 0; c.safeRow(x, theme, "v0-"); return shown.join("\n"); };
+    expect(words(ROWS[5])).toContain("SHEP-99 is ready.");
+    expect(words(ROWS[5])).toContain("[`/tmp/shep99/index.html`](file:///tmp/shep99/index.html)");
+    expect(words(ROWS[3])).toContain("看看 /tmp/a.png");
+    // the brief is longer than one frame's budget: the first frame may show it as written, never empty
+    const brief = words(ROWS[2]);
+    expect(brief.length).toBeGreaterThan(30000);
+    expect(brief).toContain("You are the coordinator of one space in Herdr.");
+  });
+
+  test("past a frame's budget the rest show as written, ask for a redraw, and get their links on it", () => {
+    const c = chat();
+    const words = (x: any) => { shown.length = 0; c.safeRow(x, theme, "v0-"); return shown.join("\n"); };
+    c.linkSpent = 1e9;
+    const x = { kind: "agent", id: "a9", text: "See https://example.com/late" };
+    expect(words(x)).toContain("See https://example.com/late");
+    expect(words(x)).not.toContain("](https://example.com/late)");
+    expect(c.linkWaiting).toBe(true);
+    c.linkSpent = 0;
+    expect(words(x)).toContain("[https://example.com/late](https://example.com/late)");
+  });
+
+  test("a row that throws shows its words plain, and the next row still draws", () => {
+    const c = chat();
+    const real = c.row.bind(c);
+    c.row = (x: any, ...a: any[]) => { if (x.id === "bad") throw new Error("boom"); return real(x, ...a); };
+    shown.length = 0;
+    expect(() => c.safeRow({ kind: "agent", id: "bad", text: "the broken one" }, theme, "v0-")).not.toThrow();
+    expect(shown).toContain("the broken one");
+    shown.length = 0;
+    c.safeRow({ kind: "agent", id: "next", text: "the next one" }, theme, "v0-");
+    expect(shown.join("\n")).toContain("the next one");
+  });
+
+  test("init() runs a timer that redraws once rows are waiting, also ones drawn from inside layout", () => {
+    const src = require("node:fs").readFileSync(require.resolve("../mods/chat/main.js"), "utf8") as string;
+    const init = src.slice(src.indexOf("  init(_props, cx) {"), src.indexOf("    this.inner = _props?.inner === true;") + 2000);
+    expect(init).toMatch(/cx\.timer\.every\(\d+, \(cx\) => \{ if \(this\.linkWaiting\) \{ this\.linkWaiting = false; cx\.notify\(\); \} \}\)/);
   });
 
   test("the main.js list renderer draws rows only through safeRow", () => {

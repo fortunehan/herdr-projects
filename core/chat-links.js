@@ -158,6 +158,18 @@ function linkAuthored(m, opts) {
   return href ? `[${words}](${href})` : words;
 }
 
+/** An autolink or an HTML tag under opts.strict: <file://…> or <a href="file:…"> follows pathHref, else shows as
+ *  words; anything else as written. */
+function strictTag(tag, opts) {
+  const auto = /^<(file:[^>\s]*)>$/i.exec(tag);
+  if (auto) {
+    const p = pathOf(auto[1], "");
+    const href = p ? hrefOf({ kind: "path", path: p.path }, opts) : null;
+    return href ? `[${escText(auto[1])}](${href})` : escText(tag);
+  }
+  return /^<a\s/i.test(tag) && /href\s*=\s*["']?\s*(file:|\/|~\/)/i.test(tag) ? escText(tag) : tag;
+}
+
 // Within a line run outside fences: code spans, links and pictures, autolinks and HTML tags are left whole.
 const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+\"[^\"\\n]*\")?\\)|<[^>\\n]*>";
 const refName = (t) => t.trim().replace(/\s+/g, " ").toLowerCase();
@@ -178,16 +190,31 @@ function linkInline(text, opts) {
     out += linkText(text.slice(at, m.index), opts);
     if (m[1]) out += linkCode(m[0], m[2], opts) ?? m[0];
     else if (m[4] !== undefined) out += linkAuthored([m[0], m[3], m[4], m[5]], opts);
-    else out += m[0];
+    else out += opts.strict ? strictTag(m[0], opts) : m[0];
     at = m.index + m[0].length;
   }
   return out + linkText(text.slice(at), opts);
 }
 
+/** A reference definition's destination (kind "def": `[name]: dest`, "dest": the destination alone on the line after
+ *  `[name]:`) under opts.strict: a path's as one of ours, a path ours won't link made plain, anything else as written. */
+function strictRef(line, kind, opts) {
+  const m = (kind === "def" ? /^([\s>]*\[[^\]]+\]:[ \t]*)(<[^>\n]*>|\S+)([\s\S]*)$/ : /^([\s>]*)(<[^>\n]*>|\S+)([\s\S]*)$/).exec(line);
+  if (!m) return line;
+  const dest = m[2].replace(/^<([\s\S]*)>$/, "$1");
+  const p = /^(\/(?!\/)|~\/|file:)/i.test(dest) ? pathOf(dest, "") : null;
+  if (!p && !/^file:/i.test(dest)) return line;
+  const href = p ? hrefOf({ kind: "path", path: p.path }, opts) : null;
+  if (href) return m[1] + href + m[3];
+  return kind === "def" ? line.replace("[", "\\[") : `${m[1]}<>${m[3]}`;
+}
+
 /** Markdown with its URLs and paths as links, code blocks left as they are: fenced ones (also in a quote or a list)
  *  and indented ones after a blank line.
  *  opts: home (expands ~/; null: no home paths), paths (false: URLs only, as on a phone or for another machine's
- *  agent), pathHref(abs) (a path's link target; the window's file:// URL by default). */
+ *  agent), pathHref(abs) (a path's link target, null: no link; the window's file:// URL by default), strict (the
+ *  window, SHEP-109: its links open with the system's opener, no check of ours on the way, so a path the agent linked
+ *  itself through a reference definition, an autolink or an HTML tag follows pathHref too, or stays plain). */
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   // the names the reply defines ([name]: …), so [name] alone stays its link
@@ -222,10 +249,12 @@ export function linkify(md, opts = {}) {
       // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
       // of a title still open in quotes
       flush();
+      const kind = title ? null : !para && /^[\s>]*\[[^\]]+\]:/.test(line) ? "def" : "dest";
+      const shown = opts.strict && kind ? strictRef(line, kind, opts) : line;
       const quotes = (inner(line).match(/"/g) ?? []).length % 2 === 1;
       ref = !title && /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       title = title ? !quotes : quotes;
-      out.push(line);
+      out.push(shown);
       blank = false;
       para = false;
       continue;
