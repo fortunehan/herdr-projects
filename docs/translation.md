@@ -59,11 +59,14 @@ Only the endpoint set here is ever called. There is no built-in public service.
   (never the words a caller sends), and refuses one its agent may still be writing (its agent works and it is the
   newest reply). The band, the phone's hold menu and the window wait for it too.
 - A reply with any picture or clip (one its chat shows as an attachment, a plain link to a local picture or clip
-  included, or an image or video element in marked's rendering as a browser parses it, with parse5) isn't translated
+  included, or an image, video, audio, picture or source element in marked's rendering as a browser parses it, with
+  parse5; a PDF embed isn't one) isn't translated
   yet: one short line says so.
 - The key written plainly in an answer is taken out; a translation whose words, as a page shows them (marked's
   rendering parsed as a browser does, with parse5: tags, comments and links' addresses out, character references
-  decoded once), compared as ASCII letters and digits, hold a key is dropped whole and shows as not translated. A key with fewer than 16 ASCII letters and digits isn't used.
+  decoded once), compared as ASCII letters and digits, hold a key is dropped whole and shows as not translated. So is
+  any translation with raw HTML in it (a tag or a comment): a translation has no reason to write one, and how a page
+  would sanitize it never matters to the check. A key with fewer than 16 ASCII letters and digits isn't used.
 - Known limits: an ended task's chat read from its saved log can't be translated; a message more than 20 pages back
   in its chat isn't found.
 - Manual only: there is no switch to translate a whole chat by itself.

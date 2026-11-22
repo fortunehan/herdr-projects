@@ -188,6 +188,9 @@ describe("a message", () => {
     expect(hasMedia("Read the report.\n\n<!-- <img src=\"sample.png\"> -->")).toBe(false);
     expect(hasMedia("<video-player>More notes</video-player>")).toBe(false);
     expect(hasMedia("<img src=\"a.png\">")).toBe(true);
+    // round 14: a PDF embed isn't a picture or clip; a deeply nested tree doesn't overflow
+    expect(hasMedia("Read the report.\n\n<embed src=\"r.pdf\" type=\"application/pdf\">")).toBe(false);
+    expect(hasMedia("Read the report.\n\n<div>" + "<q>".repeat(19500) + "Notes")).toBe(false);
     // round 13: a quoted "<!--" in an attribute doesn't hide a real video; an attribute's words aren't an image
     expect(hasMedia("Read the report.\n\n<div title=\"<!--\"><video src=\"https://example.test/x.mp4\"></video></div>")).toBe(true);
     expect(hasMedia("Read <span title=\"<img src=sample.png>\">the report</span>.")).toBe(false);
@@ -242,6 +245,8 @@ describe("a message", () => {
     // and doesn't), a comment holding ">" is gone whole
     expect(t.scrub(["sk-&stub;-secret-0123456789", "sk-<!-- >foo -->stub-secret-0123456789", "sk-&widget;stub-secret-0123456789"], new Set(["sk-stub-secret-0123456789"])))
       .toEqual([null, null, "sk-&widget;stub-secret-0123456789"]);
+    // round 14: any raw HTML in a translation drops it (a script a page would remove with its words included)
+    expect(t.scrub(["sk-<script\n><noise\n></script\n>stub-secret-0123456789", "words <b>bold</b>", "plain **bold** words"], used)).toEqual([null, null, "plain **bold** words"]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept

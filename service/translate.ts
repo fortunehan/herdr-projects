@@ -16,24 +16,45 @@ const T = TR as any;
  *  comments, tags and attributes out, an unknown "&name;" left as typed). */
 export function shownText(html: string) {
   const out: string[] = [];
-  const walk = (n: any) => {
-    if (n.nodeName === "#text") out.push(n.value);
-    for (const c of n.childNodes ?? []) walk(c);
-    if (n.content) walk(n.content);
-  };
-  walk(parseFragment(html));
+  // without recursion: a deeply nested tree can't overflow the stack
+  const stack: any[] = [parseFragment(html)];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.nodeName === "#text") { out.push(n.value); continue; }
+    const kids = [...(n.childNodes ?? []), ...(n.content ? [n.content] : [])];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+  }
   return out.join("");
 }
 
+/** Whether marked parses any raw HTML in the words (a tag, a comment, a block of HTML), anywhere: read as blocks (the
+ *  window's markdown) and as one inline line (the web's translation lines), which can split them differently. */
+export function hasHtml(md: string) {
+  const src = String(md ?? "");
+  const stack: any[] = [...(marked.lexer(src) as any), ...((marked as any).Lexer.lexInline(src) as any[])];
+  while (stack.length) {
+    const t = stack.pop();
+    if (!t) continue;
+    if (t.type === "html") return true;
+    stack.push(...(t.tokens ?? []), ...(t.items ?? []), ...(t.header ?? []), ...((t.rows ?? []) as any[]).flat());
+  }
+  return false;
+}
+
 /** The elements that show a picture or clip in a page. */
-const MEDIA = new Set(["img", "video", "audio", "picture", "source", "embed", "object"]);
+const MEDIA = new Set(["img", "video", "audio", "picture", "source"]);
 
 /** Whether the words, as marked renders them and a browser parses that, show a picture or clip: a markdown image (a
  *  reference one too) or an HTML image or video; an example in code, a comment or an attribute's words never are. The
  *  chat's own attachments (a link to a local picture or clip, core/chat-view.js mediaIn) count too: the caller adds them. */
 export function hasMedia(raw: string) {
-  const walk = (n: any): boolean => (n.nodeName && MEDIA.has(String(n.nodeName).toLowerCase())) || (n.childNodes ?? []).some(walk) || (n.content ? walk(n.content) : false);
-  return walk(parseFragment(String(marked.parse(String(raw ?? ""), { async: false }))));
+  const stack: any[] = [parseFragment(String(marked.parse(String(raw ?? ""), { async: false })))];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.nodeName && MEDIA.has(String(n.nodeName).toLowerCase())) return true;
+    stack.push(...(n.childNodes ?? []), ...(n.content ? [n.content] : []));
+  }
+  return false;
 }
 
 /** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
@@ -149,12 +170,16 @@ export class Translator {
     // tags gone, emphasis and escapes resolved, character references decoded once), ASCII letters and digits only: a
     // translation whose shown words hold a key that way is dropped whole (that block shows as not translated)
     const bare = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "");
-    const rendered = (s: string) => bare(shownText(String(marked.parseInline(s, { async: false }))));
+    // (as one inline line, the web's translation lines, and as blocks, the window's)
+    const rendered = (s: string) => bare(shownText(String(marked.parseInline(s, { async: false })))) + "\n" + bare(shownText(String(marked.parse(s, { async: false }))));
     const keys = [...used].map(bare).filter(Boolean);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
+      // any raw HTML in a translation (a tag, a comment): it goes whole. A translation has no reason to write any, and
+      // how a page would sanitize it (a script dropped with its words, ...) then never matters to this check
+      if (hasHtml(x)) return null;
       const r = rendered(x);
       return keys.some((k) => r.includes(k)) ? null : x;
     });
@@ -185,7 +210,7 @@ export class Translator {
     // the cache's name says its layout and the very words sent (an older layout's, or other inputs', is never read;
     // two at once share one only when both match)
     const sent = JSON.stringify(blocks.map((b: any) => (b.skip ? null : b.text)));
-    const f = this.file("message:marked5", `${text}\0${sent}`, target);
+    const f = this.file("message:marked6", `${text}\0${sent}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -218,7 +243,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked5", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked6", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};
