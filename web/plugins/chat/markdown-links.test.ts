@@ -37,3 +37,8 @@ test('a link the reply already had leads where it did, or the reply stays as it 
     '[docs]:\n  https://example.org/guide "Open the guide\n  in a browser"\n\n[docs]',
   ]) for (const h of hrefs(s)) expect(hrefs(linked(s, true))).toContain(h)
 })
+
+test('a reference link the agent wrote keeps its words and where they lead', () => {
+  const s = 'Open [`/tmp/build/report.html`][report].\n\n[report]: https://example.org/build'
+  expect(linked(s, true)).toBe(s)
+})

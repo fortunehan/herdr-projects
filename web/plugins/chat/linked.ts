@@ -13,13 +13,13 @@ export const PATH_HREF = '#shepherdr-path='
 const pathHref = (p: string) => { try { return PATH_HREF + encodeURIComponent(p) } catch { return null } }
 
 /** what marked makes of some markdown that linking must not change: its code blocks as they read, and where each link
-    it already has leads (a reference definition, a link the agent wrote) */
+    it already has leads, with its words (a reference definition, a link the agent wrote) */
 function kept(md: string) {
   const code: string[] = [], hrefs: string[] = []
   marked.walkTokens(marked.lexer(md), (t) => {
     if (t.type === 'code') code.push(t.text)
     // written as a link ([words](…), [words][ref]); a bare URL marked links itself is ours to link better
-    if (t.type === 'link' && t.raw.startsWith('[')) hrefs.push(t.href)
+    if (t.type === 'link' && t.raw.startsWith('[')) hrefs.push(`${t.href}\0${t.text}`)
   })
   return { code: code.join('\0'), hrefs }
 }
@@ -36,7 +36,7 @@ export function linked(text: string, paths: boolean) {
   if (was.code !== now.code) return text
   const left = [...now.hrefs]
   for (const h of was.hrefs) {
-    if (/^(\/(?!\/)|~\/|file:)/i.test(h)) continue
+    if (/^(\/(?!\/)|~\/|file:)/i.test(h.split("\0")[0])) continue
     const i = left.indexOf(h)
     if (i < 0) return text
     left.splice(i, 1)

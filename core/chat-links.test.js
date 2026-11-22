@@ -189,6 +189,15 @@ test("reference definitions resolve the same to marked after linkify", () => {
   expect(md("Build complete.\n[Preview]:\n/tmp/a/b.html")).toBe("Build complete.\n[Preview]:\n[/tmp/a/b.html](file:///tmp/a/b.html)");
 });
 
+test("round 9: a reference link the agent wrote keeps its words and where they lead", () => {
+  const s = "Open [`/tmp/build/report.html`][report].\n\n[report]: https://example.org/build";
+  expect(md(s)).toBe(s);
+  expect(md("See [`/tmp/a/b.html`][] and [report].\n\n[report]: https://x.y/z\n[`/tmp/a/b.html`]: https://x.y/b")).toBe("See [`/tmp/a/b.html`][] and [report].\n\n[report]: https://x.y/z\n[`/tmp/a/b.html`]: https://x.y/b");
+  expect(md("Open [`/tmp/build/report.html`].\n\n[`/tmp/build/report.html`]: https://example.org/build")).toBe("Open [`/tmp/build/report.html`].\n\n[`/tmp/build/report.html`]: https://example.org/build");
+  // brackets that aren't a link still get their paths linked
+  expect(md("[see /tmp/a/b.pdf]")).toBe("[see [/tmp/a/b.pdf](file:///tmp/a/b.pdf)]");
+});
+
 describe("a clicked link's target", () => {
   test("URLs, file URLs and paths", () => {
     expect(L.fromHref("https://x.y/z?q=1", HOME)).toEqual({ kind: "url", url: "https://x.y/z?q=1" });
