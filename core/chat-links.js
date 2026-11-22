@@ -212,8 +212,8 @@ export function linkify(md, opts = {}) {
     }
     blank = !inner(line).trim();
     ref = false;
-    // a line of a paragraph: not blank, not a heading or a rule, not code
-    para = run.length > 0 && run[run.length - 1] === line && !blank && !/^[\s>]*(#{1,6}(\s|$)|([-*_])(\s*\3){2,}\s*$)/.test(line);
+    // a line of a paragraph: not blank, not a heading (# or an === / --- underline) or a rule, not code
+    para = run.length > 0 && run[run.length - 1] === line && !blank && !/^[\s>]*(#{1,6}(\s|$)|([-*_])(\s*\3){2,}\s*$|=+\s*$|-+\s*$)/.test(line);
   }
   flush();
   return out.join("\n");

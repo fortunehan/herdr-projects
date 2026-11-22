@@ -24,3 +24,16 @@ test('an odd nesting the scanner reads otherwise leaves the reply as it was, nev
     '  see /tmp/c/d.pdf\n  > - ```\n   /tmp/a/b.txt\n> > ```\n1. see /tmp/c/d.pdf',
   ]) expect(codes(linked(s, true))).toEqual(codes(s))
 })
+
+test('a link the reply already had leads where it did, or the reply stays as it was', () => {
+  const hrefs = (md: string) => {
+    const out: string[] = []
+    marked.walkTokens(marked.lexer(md), (t) => { if (t.type === 'link') out.push(t.href) })
+    return out
+  }
+  for (const s of [
+    'Build results\n=============\n[report]: https://example.org/build\n\nRead [report]',
+    '# Build results\n[report]: https://example.org/build\n\nRead [report]',
+    '[docs]:\n  https://example.org/guide "Open the guide\n  in a browser"\n\n[docs]',
+  ]) for (const h of hrefs(s)) expect(hrefs(linked(s, true))).toContain(h)
+})

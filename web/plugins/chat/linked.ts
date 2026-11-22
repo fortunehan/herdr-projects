@@ -12,17 +12,34 @@ export const CL = CLs as any as {
 export const PATH_HREF = '#shepherdr-path='
 const pathHref = (p: string) => { try { return PATH_HREF + encodeURIComponent(p) } catch { return null } }
 
-/** the code blocks marked finds in some markdown, as they read */
-const codes = (md: string) => {
-  const out: string[] = []
-  marked.walkTokens(marked.lexer(md), (t) => { if (t.type === 'code') out.push(t.text) })
-  return out.join('\0')
+/** what marked makes of some markdown that linking must not change: its code blocks as they read, and where each link
+    it already has leads (a reference definition, a link the agent wrote) */
+function kept(md: string) {
+  const code: string[] = [], hrefs: string[] = []
+  marked.walkTokens(marked.lexer(md), (t) => {
+    if (t.type === 'code') code.push(t.text)
+    // written as a link ([words](…), [words][ref]); a bare URL marked links itself is ours to link better
+    if (t.type === 'link' && t.raw.startsWith('[')) hrefs.push(t.href)
+  })
+  return { code: code.join('\0'), hrefs }
 }
 
-/** the reply with its URLs and paths as links, unless that would change what any code block reads to marked (an odd
-    nesting of quotes, lists and fences the line scanner reads otherwise): then as it was, since a code block's Copy
-    takes its text as it is. ~/ stays as written ("~" as the home): the agent's machine expands it */
+/** the reply with its URLs and paths as links, unless that would change what any code block reads or where a link the
+    reply already had leads, to marked (an odd nesting of quotes, lists and fences, or a reference definition, that the
+    line scanner reads otherwise): then as it was, since a code block's Copy takes its text as it is and a link must
+    not lead elsewhere. A path link the agent wrote may become ours. ~/ stays as written ("~" as the home): the agent's
+    machine expands it */
 export function linked(text: string, paths: boolean) {
   const md = CL.linkify(text, { home: '~', paths, pathHref })
-  return md === text || codes(md) === codes(text) ? md : text
+  if (md === text) return md
+  const was = kept(text), now = kept(md)
+  if (was.code !== now.code) return text
+  const left = [...now.hrefs]
+  for (const h of was.hrefs) {
+    if (/^(\/(?!\/)|~\/|file:)/i.test(h)) continue
+    const i = left.indexOf(h)
+    if (i < 0) return text
+    left.splice(i, 1)
+  }
+  return md
 }
