@@ -1295,6 +1295,9 @@ export type Action =
       leave it off */
   | { type: 'send'; chat: string; text: string; attachments?: string[]; cid?: string; reply?: string; human?: boolean }
   | { type: 'react'; chat: string; message: string; emoji: string }
+  /** a path an agent wrote, clicked in its reply (SHEP-99, core/chat-links.js): opened on that agent's machine, a page
+      or a picture in the default browser, anything else shown in Finder; only in its home folder or /tmp */
+  | { type: 'open-path'; chat: string; path: string }
   /** a secret kept at a level (all, m:<machine>, p:<machine>:<space>), or removed (null); kept on the main machine, so
       it names no chat or place to be passed on by. card: the agent's ask it answers, told once it is kept */
   | { type: 'secret'; level: string; name: string; value: string | null; card?: { chat: string; id: string } }

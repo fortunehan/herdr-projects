@@ -52,6 +52,7 @@ import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
 import { SH } from "./core/paths.js";
+import * as links from "./core/chat-links.js";
 import { settle } from "./core/pending.js";
 import { dirs, dirsReady } from "./dirs.js";
 import * as agent from "./agent.js";
@@ -2020,7 +2021,38 @@ export default class Chat extends View {
     const q = this.findQuery();
     if (!q || /[*_`\[\]\\]/.test(q)) return text;
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    return String(text).split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => (i % 2 ? part : part.replace(re, (m) => `**${m}**`))).join("");
+    // a link's target stays as it is (linked()): only its words are marked
+    return String(text).split(/(```[\s\S]*?```|`[^`\n]*`|\]\([^)\s]*\))/).map((part, i) => (i % 2 ? part : part.replace(re, (m) => `**${m}**`))).join("");
+  }
+
+  // An agent's words with their URLs and paths as links (SHEP-99, core/chat-links.js): paths only for this machine's
+  // agent (another machine's aren't here to open), ~/ against this machine's home.
+  linked(text) {
+    return links.linkify(text, { home: this.machine ? null : home(), paths: !this.machine });
+  }
+
+  // A link clicked in an agent's words: a URL in the default browser; a path as core/chat-links.js says (a page or a
+  // picture in the default browser, anything else shown in Finder), with a toast when it isn't there or didn't open.
+  openLink(url, cx) {
+    const l = links.fromHref(url, this.machine ? null : home());
+    if (!l) return;
+    if (l.kind === "url") { cx.open_url(l.url); return; }
+    if (this.machine) { toast({ title: "That path is on another machine", body: `It's on ${this.machine}: open it there.`, level: "info" }); return; }
+    return this.openPath(l.path);
+  }
+
+  async openPath(p) {
+    const os = window()?.platform ?? "macos";
+    const action = links.actionOf(p);
+    // Windows has no sh to look first: the window's own exists()
+    if (os === "windows" && !(await fs.exists(p).catch(() => false))) {
+      toast({ ...links.problem(action, os, p, { code: 3 }), level: "error" });
+      return;
+    }
+    const [prog, args] = links.command(action, os, p);
+    const r = await exec(prog, args).catch(() => null);
+    const why = links.problem(action, os, p, r);
+    if (why) toast({ ...why, level: "error" });
   }
 
   // The find bar: the box, how many, up and down, earlier messages, close.
@@ -3419,8 +3451,10 @@ export default class Chat extends View {
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
         // Folded: only the lines that show (shownLines()), as their own view
-        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.mentionsIn(shownLines(text, x.clip, laidMost - 24))) || " ").selectable(true))
-          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.mentionsIn(text)) || " ").selectable(true)));
+        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.linked(this.mentionsIn(shownLines(text, x.clip, laidMost - 24)))) || " ").selectable(true)
+            .on_link_click((url, cx) => this.openLink(url, cx)))
+          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.linked(this.mentionsIn(text))) || " ").selectable(true)
+            .on_link_click((url, cx) => this.openLink(url, cx))));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
     switch (x.kind) {

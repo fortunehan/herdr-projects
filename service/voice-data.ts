@@ -55,7 +55,7 @@ export const WRITES = ["plugin", "limits-check", "send", "react", "secret", "sec
   "reopen", "dismiss", "task-resume", "schedule", "stop", "stop-job", "steer", "pin", "rename", "order", "move", "section", "space-remove", "space-commit",
   "assistant-close", "tab-new", "tab-close", "tab-rename", "tab-switch", "tab-move", "restart", "model-pin", "rewind", "fork", "handback", "held-drop",
   "held-now", "read", "keys", "text", "dictation", "call", "machine-add", "machine-mac-open", "secrets-move", "serve-from", "pause", "usage",
-  "automation", "effort", "model"];
+  "automation", "effort", "model", "open-path"];
 
 // ---- keeping secrets out ------------------------------------------------------------------
 
