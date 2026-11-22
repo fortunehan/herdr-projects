@@ -7970,3 +7970,217 @@ class SelfUpdate(unittest.TestCase):
         self.assertEqual((st["last"]["ok"], st["last"]["step"]), (False, "cut off"))
         self.assertIn('event="self-update-stopped"', self.sent[-1][1])
         self.assertIn("./install.sh --yes", self.sent[-1][1])
+
+
+class StackedTasks(unittest.TestCase):
+    """SHEP-106: a task started with --base <another task's branch> moves to that task's base when it merges,
+    in a throwaway repo with a bare remote; gh and hc are faked."""
+
+    def setUp(self):
+        from unittest import mock
+        import shutil
+        sys.path.insert(0, BIN)
+        import herdr_task.commands as commands
+        import herdr_task.github as github
+        import herdr_task.news as news
+        self.commands, self.github, self.mock = commands, github, mock
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.main = os.path.join(self.root, "repo")
+        self.remote = os.path.join(self.root, "remote.git")
+        self.git(self.root, "init", "-q", "-b", "main", self.main)
+        for k, v in (("user.name", "T"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+            self.git(self.main, "config", k, v)
+        self.commit(self.main, "base", "a.txt", "one\n")
+        self.git(self.root, "init", "-q", "--bare", self.remote)
+        self.git(self.main, "remote", "add", "origin", self.remote)
+        self.git(self.main, "push", "-q", "origin", "main")
+        up_wt, down_wt = os.path.join(self.root, "wt1"), os.path.join(self.root, "wt2")
+        self.git(self.main, "worktree", "add", "-q", "-b", "task/1", up_wt, "main")
+        up_start = self.git(up_wt, "rev-parse", "HEAD")
+        self.commit(up_wt, "upstream one", "b.txt", "b1\n")
+        self.up_tip = self.commit(up_wt, "upstream two", "b.txt", "b2\n")
+        self.git(up_wt, "push", "-q", "origin", "task/1")
+        self.git(self.main, "worktree", "add", "-q", "-b", "task/2", down_wt, "task/1")
+        down_start = self.git(down_wt, "rev-parse", "HEAD")
+        self.down_own = self.commit(down_wt, "downstream work", "c.txt", "c\n")
+        self.git(down_wt, "push", "-q", "origin", "task/2")
+        self.store = Store([
+            {"id": 1, "title": "Below", "state": "ready", "mode": "worktree", "worktree": up_wt, "branch": "task/1",
+             "base": "main", "start": up_start, "head": self.up_tip, "agents": [], "pr": {"number": 3, "url": "u3", "repo": "o/r"}},
+            {"id": 2, "title": "Above", "state": "running", "mode": "worktree", "worktree": down_wt, "branch": "task/2",
+             "base": "task/1", "base_set": True, "start": down_start, "agents": [], "after": [1],
+             "pr": {"number": 4, "url": "u4", "repo": "o/r"}},
+        ])
+        self.store.loc["folder"] = self.main
+        self.up, self.down = self.store.data["tasks"]
+        self.live, self.sent, self.calls = [], [], []
+        self.pr_state = {3: "MERGED", 4: "OPEN", 5: "OPEN"}
+        self.listed = []
+        self.patch(github, "live_agents", lambda key: self.live if key == "f#2" else [])
+        self.patch(github, "live_helpers", lambda key: [])
+        self.patch(github, "detail", lambda k: k)
+        self.patch(github, "agent_running", lambda k: True)
+        self.patch(github, "end_shells", lambda key: None)
+        self.patch(news, "send_or_hold", lambda address, text, how="send": self.sent.append((address, text)) or "sent")
+        self.patch(github, "gh", self.gh)
+        self.patch(commands, "gh", self.gh)
+
+    def gh(self, *a, **k):
+        # What the remote held when gh was asked: the pull request must move before the old base goes.
+        self.calls.append((a, self.on_remote("task/1")))
+        if a[:2] == ("pr", "edit"):
+            return (True, "", "") if self.pr_state.get(int(a[2])) == "OPEN" else (False, "", "PR is closed")
+        if a[:2] == ("pr", "view"):
+            return True, json.dumps({"state": self.pr_state.get(int(a[2]), "OPEN"), "headRefOid": ""}), ""
+        if a[:2] == ("pr", "list"):
+            return True, json.dumps(self.listed), ""
+        return True, "", ""
+
+    def patch(self, mod, name, value):
+        p = self.mock.patch.object(mod, name, value)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def commit(self, cwd, words, file, text):
+        with open(os.path.join(cwd, file), "w") as f:
+            f.write(text)
+        self.git(cwd, "add", file)
+        self.git(cwd, "commit", "-q", "-m", words)
+        return self.git(cwd, "rev-parse", "HEAD")
+
+    def on_remote(self, br):
+        return bool(self.git(self.main, "ls-remote", "--heads", "origin", f"refs/heads/{br}"))
+
+    def squash_merge_up(self):
+        """The task below squash-merged into main on GitHub (one new commit, not its own)."""
+        self.git(self.main, "merge", "-q", "--squash", "task/1")
+        self.git(self.main, "commit", "-q", "-m", "Below (#3)")
+        self.git(self.main, "push", "-q", "origin", "main")
+        self.up["merged"] = True
+
+    def subjects(self, ref, base="main"):
+        return self.git(self.main, "log", "--format=%s", f"{base}..{ref}").splitlines()
+
+    def test_merge_moves_the_stacked_pull_request_and_branch_before_the_branch_goes(self):
+        self.squash_merge_up()
+        self.assertEqual(self.subjects("task/2"), ["downstream work", "upstream two", "upstream one"])
+        self.github.drop_branch(self.store, self.up)
+        edits = [(a, there) for a, there in self.calls if a[:2] == ("pr", "edit")]
+        self.assertEqual(edits, [(("pr", "edit", "4", "--repo", "o/r", "--base", "main"), True)])
+        self.assertFalse(self.on_remote("task/1"))
+        self.assertEqual((self.down["base"], self.down["pr"]["number"]), ("main", 4))
+        # The upstream's original commits are gone; only its own work sits on main, here and on the remote.
+        self.assertEqual(self.subjects("task/2"), ["downstream work"])
+        self.assertEqual(self.subjects("origin/task/2", "origin/main"), ["downstream work"])
+        self.assertEqual((self.down["restacked"]["how"], self.down["restacked"]["pushed"]), ("rebased", True))
+        self.assertEqual(self.sent, [])
+        self.assertNotIn("attention", self.down)
+
+    def test_a_conflict_goes_to_the_agent_and_leaves_the_branch(self):
+        self.squash_merge_up()
+        self.commit(self.main, "someone else's", "c.txt", "other\n")
+        self.git(self.main, "push", "-q", "origin", "main")
+        before = self.git(self.main, "rev-parse", "task/2")
+        self.live = [{"address": "t2"}]
+        self.github.drop_branch(self.store, self.up)
+        self.assertEqual(self.git(self.main, "rev-parse", "task/2"), before)
+        self.assertEqual(self.git(self.down["worktree"], "status", "--porcelain"), "")
+        self.assertEqual((self.down["base"], self.down["restacked"]["how"]), ("main", "conflict"))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn(f"git rebase --onto origin/main {self.up_tip}", self.sent[0][1])
+        self.assertIn("--force-with-lease", self.sent[0][1])
+
+    def test_a_conflict_with_no_agent_needs_the_person(self):
+        self.squash_merge_up()
+        self.commit(self.main, "someone else's", "c.txt", "other\n")
+        self.git(self.main, "push", "-q", "origin", "main")
+        self.github.drop_branch(self.store, self.up)
+        self.assertTrue(self.down["attention"].startswith(self.github.RESTACK_NEEDS))
+        self.assertIn(f"git rebase --onto origin/main {self.up_tip}", self.down["attention"])
+
+    def test_uncommitted_work_is_never_rebased(self):
+        self.squash_merge_up()
+        with open(os.path.join(self.down["worktree"], "c.txt"), "a") as f:
+            f.write("mid-edit\n")
+        before = self.git(self.main, "rev-parse", "task/2")
+        self.live = [{"address": "t2"}]
+        self.github.drop_branch(self.store, self.up)
+        self.assertEqual(self.git(self.main, "rev-parse", "task/2"), before)
+        self.assertEqual(self.down["restacked"]["how"], "busy")
+        self.assertIn("uncommitted", self.sent[0][1])
+
+    def test_a_local_merge_moves_the_stacked_task_before_the_branch_is_deleted(self):
+        """No GitHub: the task below fast-forwards into main here; finish() deletes its branch."""
+        self.down.pop("pr")
+        self.git(self.main, "merge", "-q", "--ff-only", "task/1")
+        self.up["merged"] = True
+        self.github.finish(self.store, self.up, even_if_busy=True)
+        self.assertEqual(self.git(self.main, "branch", "--list", "task/1"), "")
+        self.assertEqual(self.down["base"], "main")
+        self.assertEqual(self.subjects("task/2"), ["downstream work"])
+
+    def test_heal_a_pull_request_closed_when_its_base_went(self):
+        """Merged on GitHub with its branch deleted there, Herdr not asked: the tick heals the closed one."""
+        self.squash_merge_up()
+        self.up["state"] = "done"
+        self.git(self.main, "push", "-q", "origin", "--delete", "task/1")
+        self.pr_state[4] = "CLOSED"
+        self.down["attention"] = "The pull request was closed."
+        self.live = [{"address": "t2"}]
+        did = self.github.heal_closed(self.store, self.down)
+        self.assertEqual((did["how"], did["pr_dropped"]), ("rebased", 4))
+        self.assertNotIn("pr", self.down)
+        self.assertEqual(self.subjects("task/2"), ["downstream work"])
+        self.assertIn("herdr-task ready SHEP-2", self.sent[0][1])
+
+    def edit(self, base):
+        import argparse
+        self.patch(self.commands, "open_store", lambda args, write=True: self.store)
+        self.patch(self.commands, "view", lambda s, t, live=None: {"status": t["state"]})
+        said = []
+        self.patch(self.commands, "say", lambda args, v, text: said.append(text))
+        self.patch(self.commands, "github", lambda s: "o/r")
+        self.patch(self.commands, "task_tabs", lambda s, t: [])
+        args = argparse.Namespace(id="SHEP-2", json=False, folder=None, title=None, prompt=None, prompt_file=None, base=base,
+                                  after=None, at=None, in_=None, here=False, worktree=False, branch=None, agent=None,
+                                  launcher=None, model=None, effort=None, start_notes=None, finish_notes=None)
+        self.patch(self.commands, "set_opts", lambda t, args, launcher=None: None)
+        self.patch(self.commands, "worker_pick", lambda s, t, space: {})
+        self.commands.cmd_edit(args)
+        return said[-1]
+
+    def test_edit_base_refused_while_the_old_base_is_there(self):
+        with self.assertRaises(self.commands.Fail):
+            self.edit("main")
+        self.assertEqual(self.down["base"], "task/1")
+
+    def test_edit_base_on_a_stuck_task_drops_the_closed_pull_request(self):
+        """OVIS-6: its base went, GitHub closed its pull request; edit --base main frees it and says how to rebase."""
+        self.squash_merge_up()
+        self.git(self.main, "push", "-q", "origin", "--delete", "task/1")
+        self.pr_state[4] = "CLOSED"
+        self.down["attention"] = "The pull request was closed."
+        text = self.edit("main")
+        self.assertEqual(self.down["base"], "main")
+        self.assertNotIn("pr", self.down)
+        self.assertNotIn("attention", self.down)
+        self.assertIn(f"git rebase --onto origin/main {self.up_tip}", text)
+        self.assertIn("next ready opens a pull request into main", text)
+
+    def test_edit_base_records_the_pull_request_its_agent_opened(self):
+        """OVIS-6 for real: its agent rebased onto main, force-pushed and opened #5 into main: that one is recorded."""
+        self.squash_merge_up()
+        self.git(self.main, "push", "-q", "origin", "--delete", "task/1")
+        wt = self.down["worktree"]
+        self.git(wt, "rebase", "-q", "--onto", "main", self.up_tip, "task/2")
+        self.pr_state[4] = "CLOSED"
+        self.listed = [{"number": 5, "url": "https://github.com/o/r/pull/5", "isCrossRepository": False,
+                        "baseRefName": "main", "headRefOid": self.git(wt, "rev-parse", "HEAD")}]
+        text = self.edit("main")
+        self.assertEqual(self.down["pr"], {"number": 5, "url": "https://github.com/o/r/pull/5", "repo": "o/r"})
+        self.assertIn("#5", text)
+        self.assertIn("already on main", text)
