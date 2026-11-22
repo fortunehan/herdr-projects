@@ -12,11 +12,14 @@ import { SH } from "../core/paths.js";
 import * as M from "../core/machines.js";
 import * as HC from "../core/host.js";
 import * as APc from "../core/autopilot.js";
+import * as TRc from "../core/translate.js";
 import type { SettingRow, SettingSection } from "../web/shared/types.ts";
 
 const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, LANGUAGE, languageChoices, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, MACHINES, OLD_NAMES, SECTIONS,
   WEB, modelLabel, roleSel, otherCli, otherCliWords, backupProblem, homeAbout, webState, fromWord, LOADING_AGENTS, RESET, machineLabel } = C as any;
 const AP = APc as any;
+const TR = TRc as any;
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
 /** Autopilot as Everywhere has it now (herdr-task's view: what Settings keeps, else what it kept before, else the
  *  defaults): its schedule's words, events, heartbeat words and what wakes it in plain words */
 export type PilotEverywhere = { every: string | null; events: string[]; words: string; trigger?: string };
@@ -153,7 +156,32 @@ export class Settings {
     // Machines, as the window's page: the limits for every machine, then each machine's block
     out.push({ name: title("machines"), level: "all", rows: [null, LOCAL, ...machines].flatMap((m) => this.machines(m)) });
     out.push(this.web(typeof web === "string" ? { on: true, link: web, why: null } : web ?? { on: true, link: null, why: "Tailscale isn't running here" }));
+    out.push(this.translationSection());
     return out;
+  }
+
+  /** Settings › Translation (SHEP-102) as the settings file has it now: { on, base_url, model, key, agreed }. */
+  translation() { return TR.configOf(this.file); }
+  /** The Secrets names kept for Everywhere (the key row's choices), set by main. */
+  secretNames: () => string[] = () => [];
+  /** Test connection's last answer (service/translate.ts), set by main. */
+  lastTest: () => { ok: boolean; text: string } | null = () => null;
+
+  /** Translation, one page for every space: on or off (the first time on it says where the words go), the endpoint, the
+   *  model, the key's Secrets name and Test connection. */
+  private translationSection(): SettingSection {
+    const c = this.translation(), S = TR.SETTINGS;
+    const names = [...new Set([...this.secretNames(), ...(c.key ? [c.key] : [])])].sort();
+    const test = this.lastTest();
+    const rows: SettingRow[] = [
+      { label: S.on, key: "translation.on", value: ON(c.on), options: ["on", "off"], hint: S.onAbout(c.base_url), ...(c.agreed ? {} : { confirm: S.first(c.base_url) }) },
+      { label: S.base, key: "translation.base_url", value: c.base_url, text: true, hint: S.baseAbout, placeholder: S.basePlaceholder },
+      { label: S.model, key: "translation.model", value: c.model, text: true, hint: S.modelAbout, placeholder: S.modelPlaceholder },
+      names.length ? { label: S.key, key: "translation.key", value: c.key, options: c.key ? names : ["", ...names], hint: S.keyAbout }
+        : { label: S.key, key: "", value: S.keyNone, hint: S.keyAbout, fixed: true },
+      { label: S.test, key: "translation.test", value: "", button: S.testButton, hint: test?.ok ? test.text : S.testAbout, ...(test && !test.ok ? { warn: test.text } : {}) },
+    ];
+    return { name: title("translation"), global: true, about: S.about, rows };
   }
   private checks: Record<string, any> = {};
   private readAt = 0;
@@ -534,6 +562,25 @@ export class Settings {
       const parent = space ? file.everywhere?.backup?.agent ?? null : null;
       const worker = (space ? file.spaces?.[space]?.worker?.agent : null) ?? file.everywhere?.worker?.agent ?? "claude";
       put("backup", "agent", word === null ? null : word === "off" ? "off" : parent === "off" ? (worker === "codex" ? "claude" : "codex") : null);
+    } else if (section === "translation") {
+      // Everywhere's only (one for every space and machine); the first time it is turned on is kept (agreed), so the
+      // page asks only once
+      if (space) throw new Error("Translation is set for every space at once.");
+      const v = (word ?? "").trim();
+      if (field === "on") {
+        if (word !== null && word !== "on" && word !== "off") throw new Error("Not one of its choices.");
+        put("translation", "on", word === "on" ? true : null);
+        if (word === "on" && !file.everywhere?.translation?.agreed) put("translation", "agreed", Date.now());
+      } else if (field === "base_url") {
+        if (v && !TR.endpointOf(v)) throw new Error(TR.SETTINGS.badUrl);
+        put("translation", "base_url", v || null);
+      } else if (field === "model") {
+        if (v.length > 200) throw new Error("That model name is too long.");
+        put("translation", "model", v || null);
+      } else if (field === "key") {
+        if (v && !SECRET_NAME.test(v)) throw new Error("That isn't a secret's name.");
+        put("translation", "key", v || null);
+      } else throw new Error("That setting can't be changed here.");
     } else throw new Error("That setting can't be changed here.");
 
     writeSettings(next);

@@ -42,9 +42,11 @@ import { voiceCall, callToResume, callsOn, handOff, pageWhere, type ChatView } f
 import { hearing, type HearIO, type Hearing } from "./voice-hear.ts";
 import { voiceTool, type VoiceIO, type Where } from "./voice-tools.ts";
 import { Artifacts } from "./artifacts.ts";
+import { Translator, translationsDir } from "./translate.ts";
+import * as TRc from "../core/translate.js";
 import { TaskLogs } from "./task-logs.ts";
 import { Settings, onWritten, PUSH, pushBody } from "./settings.ts";
-import { Secrets, SecretsHome } from "./secrets.ts";
+import { Secrets, SecretsHome, secretBin } from "./secrets.ts";
 import { Agents } from "./agents.ts";
 import { Machines } from "./machines.ts";
 import { Push, alertsOf, agentAlerts } from "./push.ts";
@@ -296,6 +298,29 @@ const taskLogs = new TaskLogs();
 taskLogs.onChange = () => model.rebuild();
 compat.taskLogs = taskLogs;
 artifacts.start();
+// Translate (SHEP-102): Settings › Translation's endpoint, with its key read as a voice call reads its own (the vault
+// here, or the machine that keeps the secrets, into memory only); kept translations in this service's folder
+const translator = new Translator({
+  config: () => settings.translation(),
+  key: (name) => (TRc as any).findKey({
+    where: async () => {
+      const p = Bun.spawn([secretBin(), "where", "--json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const out = await new Response(p.stdout).text();
+      return (await p.exited) === 0 ? JSON.parse(out) : null;
+    },
+    vault: () => { try { return readFileSync(where().vault, "utf8"); } catch { return null; } },
+    machines: async () => ((await hub.call<{ machines: any[] }>("machine.list", {})).machines ?? [])
+      .filter((m) => !m.temporary && m.state === "connected" && m.name).map((m) => String(m.name)),
+    ask: async (on: string, script: string) => {
+      const r = await hub.call<{ code: number; stdout: string }>("machine.exec", { on, argv: ["python3", "-c", script], timeout: 15 }, 20_000);
+      return r.code === 0 ? Buffer.from(r.stdout ?? "", "base64").toString("utf8") : null;
+    },
+  }, name),
+  recipe: async (id, v, on) => (await artifacts.recipe(id, v, on)) as { blocks: unknown[] } | null,
+  dir: translationsDir(DATA),
+});
+settings.secretNames = () => secretNames.filter((x) => !x.space).map((x) => x.name);
+settings.lastTest = () => translator.lastTest;
 const asks = new Asks();
 compat.asks = asks;
 asks.on(() => { model.rebuild(); live.chats?.refreshAll(); });
@@ -601,6 +626,10 @@ async function doAction(body: any): Promise<Response> {
     await store.set("notify", (NF as any).withMachine(model.value("notify") ?? {}, body.key.slice("notify.machine@".length), null));
     return json({ ok: true });
   }
+  // Translate (SHEP-102): a message's words ({ text }) or an artifact's version ({ artifact, v, on }), from the web
+  // app or this machine's window; Settings › Translation's Test connection
+  if (body?.type === "translate") return json(await translator.handle(body));
+  if (body?.type === "setting" && body.key === "translation.test") { const r = await translator.test(); model.rebuild(); return json(r); }
   if (body?.type === "autopilot-run" && typeof body.place === "string") {
     try { await runPilot(body.place); await model.readPilot(body.place); return json({ ok: true }); }
     catch (err) { return json({ ok: false, error: (err as Error).message }); }

@@ -1048,6 +1048,8 @@ export interface SettingRow {
   extra?: { label: string; key: string }
   /** words a Copy button beside it copies (Web's link) */
   copy?: string
+  /** asked first when its switch turns on (Translation's: where the words go, the first time only) */
+  confirm?: string
   /** a machine's block starts here (Settings › Machines): its health and plans first ("local": this computer) */
   details?: string
 }
