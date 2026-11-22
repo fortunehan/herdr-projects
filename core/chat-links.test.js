@@ -189,6 +189,21 @@ test("reference definitions resolve the same to marked after linkify", () => {
   expect(md("Build complete.\n[Preview]:\n/tmp/a/b.html")).toBe("Build complete.\n[Preview]:\n[/tmp/a/b.html](file:///tmp/a/b.html)");
 });
 
+// SHEP-109: where paths aren't links (the window, a phone, another machine's agent), no link of the agent's own leads
+// to a file, inline or by reference; code reads the same.
+test("paths off: a reference definition leading to a path is words; an indented code block stays as it is", () => {
+  const off = (s) => L.linkify(s, { home: null, paths: false });
+  const hrefs = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "link") out.push(t.href); }); return out; };
+  const codes = (md) => { const out = []; marked.walkTokens(marked.lexer(md), (t) => { if (t.type === "code" || t.type === "codespan") out.push(t.text); }); return out; };
+  for (const s of ["[Report][r]\n\n[r]: file:///tmp/report.pdf", "[r]:\n/tmp/a.pdf\n\n[r]", "[a](~/x.pdf) [b][c]\n\n[c]: </tmp/My%20Report.pdf>"])
+    expect(hrefs(off(s)).filter(Boolean)).toEqual([]);
+  expect(hrefs(off("[d][x]\n\n[x]: https://x.y/d"))).toEqual(["https://x.y/d"]);
+  for (const s of ["Run:\n\n    [r]: /tmp/x\n    [a](/tmp/x.app)", "```\n[r]: /tmp/x\n```"]) {
+    expect(codes(off(s))).toEqual(codes(s));
+    expect(codes(md(s))).toEqual(codes(s));
+  }
+});
+
 test("round 9: a reference link the agent wrote keeps its words and where they lead", () => {
   const s = "Open [`/tmp/build/report.html`][report].\n\n[report]: https://example.org/build";
   expect(md(s)).toBe(s);

@@ -1,6 +1,6 @@
 """The window chat's linked() (mods/chat/main.js) can never blank the chat again (SHEP-108): a render past the window's
 ~50 ms limit draws nothing, so each reply is linked once and kept, a frame spends at most LINK_MS linking (the rest
-show plain and say so with linkWaiting, for render() to ask for a redraw: linked() runs inside the virtual list's rows,
+show as plain text and say so with linkWaiting, for render() to ask for a redraw: linked() runs inside the virtual list's rows,
 where no cx may be kept or used, SHEP-109), and a reply linkify throws on shows as written.
 The method is run as written in main.js, in node, with core/chat-links.js's linkify stubbed."""
 import home_guard  # noqa: F401  (first: every test on a throwaway home, never the real one)
@@ -64,12 +64,12 @@ class LinkedNeverBlanksTheChat(unittest.TestCase):
         cls.out = run()
 
     def test_a_reply_linkify_throws_on_shows_as_written(self):
-        self.assertEqual(self.out["bad"], "a BAD reply")
+        self.assertIsNone(self.out["bad"])  # null: the row shows its words as plain text (rowBare words())
 
     def test_past_the_frame_budget_replies_show_plain_and_say_they_wait(self):
         self.assertEqual(self.out["first"], "L:SLOW one")
-        self.assertEqual(self.out["second"], "two")
-        self.assertEqual(self.out["secondAgain"], "two")
+        self.assertIsNone(self.out["second"])
+        self.assertIsNone(self.out["secondAgain"])
         self.assertTrue(self.out["waiting"])
 
     def test_linked_never_keeps_or_uses_a_cx(self):

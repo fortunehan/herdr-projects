@@ -2054,16 +2054,17 @@ export default class Chat extends View {
   // the virtual list, which takes no handler (one there left every chat blank), so a link opens with TextView's own
   // opener, whatever it leads to: a path is words (the Terminal view's Cmd-click opens it), and a path the agent
   // linked itself shows its words only. Opening paths from the window chat is a task of its own.
+  // null: not ready yet (past this frame's budget) or too long to rework: the row shows the words as plain text.
   linked(text) {
-    if (String(text).length > PREP_MAX) return text;
-    return this.prepared(`l\0${text}`, text, () => links.linkify(text, { home: null, paths: false }));
+    if (String(text).length > PREP_MAX) return null;
+    return this.prepared(`l\0${text}`, null, () => links.linkify(text, { home: null, paths: false }));
   }
 
   /**
    * A row's words made ready to draw (fn(): linked, mentions spelled out, typed's breaks), kept per key. SHEP-108/109:
    * it runs for every row drawn and measured on every frame, and a render past the window's ~50 ms limit draws nothing:
-   * so each is made once, a frame spends at most LINK_MS making them (the rest show `raw` for now and set linkWaiting,
-   * which the init() timer turns into a redraw), and one fn throws on shows `raw`. Never a cx here: rows are drawn from
+   * so each is made once, a frame spends at most LINK_MS making them (the rest get `raw` for now and set linkWaiting,
+   * which the init() timer turns into a redraw), and one fn throws on gets `raw`. Never a cx here: rows are drawn from
    * inside layout, where none may be kept or used.
    */
   prepared(key, raw, fn) {
@@ -2080,11 +2081,18 @@ export default class Chat extends View {
     return v;
   }
 
-  /** The person's words as typed() shows them, kept per text (prepared()). */
+  /** The person's words as typed() shows them, kept per text (prepared()); null as linked(). */
   typedOnce(text) {
     const s = String(text);
-    if (s.length > PREP_MAX) return s;
-    return this.prepared(`t\0${s}`, s, () => typed(s));
+    if (s.length > PREP_MAX) return null;
+    return this.prepared(`t\0${s}`, null, () => typed(s));
+  }
+
+  /** A message's words: its markdown, or (md null: not ready, too long) the words as plain text, no link in them,
+   *  each line kept (SHEP-109). */
+  words(id, md, text) {
+    if (md !== null) return TextView.markdown(id, this.findMark(md) || " ").selectable(true);
+    return v_flex().w_full().children(String(text).split("\n").map((l) => div().w_full().child(l || " ")));
   }
 
   /** Mentions spelled out (mentionsIn()) and kept until what they name (the reach, the tasks) changes. */
@@ -3497,15 +3505,15 @@ export default class Chat extends View {
       // accent's own text color on the full accent was too faint on light accents).
       div().max_w(most).px(12).py(8).rounded(12).bg(t.accent + "33").border_1().border_color(t.accent + "4d")
         .text_color(t.foreground).when(faded, (el) => el.opacity(0.55))
-        .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.typedOnce(this.spelled(text))) || " ").selectable(true)));
+        .child(this.words(`${pre}chat-md-${x.id}`, this.typedOnce(this.spelled(text)), text)));
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
         // Folded: only the lines that show (shownLines()), as their own view
         // No on_link_click (SHEP-109): rows are drawn by the virtual list, whose rows take no handlers, and one
         // there left every chat's list blank. TextView opens a link itself: a URL in the browser, a file:// path
         // with the system's opener.
-        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.linked(this.spelled(shownLines(text, x.clip, laidMost - 24)))) || " ").selectable(true))
-          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.linked(this.spelled(text))) || " ").selectable(true)));
+        .child(x.clip ? this.clipped(t.raised, x.clip, this.words(`${pre}chat-md-fold-${x.id}`, this.linked(this.spelled(shownLines(text, x.clip, laidMost - 24))), shownLines(text, x.clip, laidMost - 24)))
+          : this.words(`${pre}chat-md-${x.id}`, this.linked(this.spelled(text)), text)));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
     switch (x.kind) {
