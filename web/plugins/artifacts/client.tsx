@@ -9,6 +9,7 @@ import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
 import * as CV from '@core/chat-view.js'
 import { Markdown } from '@plugins/chat/markdown.tsx'
+import { artifactKey, retry as retryTranslate, toggle as toggleTranslate, useShown as useTranslation, useTranslateOn } from '@plugins/chat/translate.ts'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import {
   act,
@@ -52,6 +53,7 @@ import {
   Row,
   RowText,
   TextBox,
+  TranslateIcon,
   UnfitIcon,
   UpIcon,
   XIcon,
@@ -449,6 +451,22 @@ function FullButton({ on, onClick, className }: { on: boolean; onClick: () => vo
   )
 }
 
+/** Translate / Hide translation (SHEP-102), in the viewer's bar and the panel's: the whole version translated, each
+ *  text block's translation under it; shown only for a recipe while Settings › Translation is on */
+function TranslateButton({ art, v, className }: { art: Artifact; v: number; className?: string }) {
+  const on = useTranslateOn()
+  const s = useTranslation(artifactKey(art, v))
+  const kind = art.versions.find((x) => x.n === v)?.kind ?? art.kind
+  if (!on || kind !== 'recipe') return null
+  const shown = !!s?.shown
+  return (
+    <IconButton label={shown ? 'Hide translation' : 'Translate'} pressed={shown} className={clsx('rounded-full!', shown && 'text-fg', className)}
+      onClick={() => toggleTranslate(artifactKey(art, v), { artifact: art.id, v, on: art.machine ?? null })}>
+      <TranslateIcon className={ic} />
+    </IconButton>
+  )
+}
+
 /** An artifact in the side panel, under the window's sidebar bar: ‹ Artifacts back to the list, its title, which
  *  version (‹ v2 of 5 ›, · Latest ›), and Mark up / Done, which marks it up right there */
 function PanelArtifact({ art, onBack }: { art: Artifact; onBack: () => void }) {
@@ -467,6 +485,7 @@ function PanelArtifact({ art, onBack }: { art: Artifact; onBack: () => void }) {
         </button>
         <div className="min-w-0 flex-1 truncate font-semibold">{art.title}</div>
         <Stepper art={art} shown={shown} bar="sidebar" onStep={(n) => { setMarking(false); setV(n) }} />
+        <TranslateButton art={art} v={shown} />
         <MarkUpButton on={marking} onClick={() => setMarking(!marking)} />
         <FullButton on={full.on} onClick={full.toggle} />
       </div>
@@ -530,6 +549,11 @@ function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   const [recipe, setRecipe] = useState<{ blocks: unknown[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [answers, setAnswers] = useState<Answers>({})
+  // SHEP-102: its translation while the bar's Translate shows it
+  const tkey = artifactKey(art, v)
+  const ts = useTranslation(tkey)
+  const tr = ts?.shown ? { units: ts.units, failed: ts.failed as string[] | undefined, loading: ts.state === 'loading', error: ts.state === 'error' ? ts.error : undefined,
+    retry: () => retryTranslate(tkey, { artifact: art.id, v, on: art.machine ?? null }) } : undefined
   // another machine's: the service reads its files there
   const on = art.machine ? `&on=${encodeURIComponent(art.machine)}` : ''
   useEffect(() => {
@@ -551,7 +575,7 @@ function RecipeFrame({ art, v, full }: Parameters<typeof PageFrame>[0]) {
   return (
     <div className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
       <Recipe recipe={recipe} asset={(src) => `api/artifacts/${encodeURIComponent(art.id)}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${v}${on}`}
-        answers={answers}
+        answers={answers} tr={tr}
         reply={(text, keep) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text, ...(keep ? { answer: keep.key, value: keep.value } : {}) })} />
     </div>
   )
@@ -854,6 +878,7 @@ function Viewer() {
           <PageIcon className={clsx(ic, 'shrink-0 text-fg2 phone:hidden')} />
           <div className="min-w-0 flex-1 truncate font-medium">{art.title || 'Artifact'}</div>
           <Stepper art={art} shown={shown} bar="viewer" onStep={(n) => openArtifact(art.id, n)} />
+          <TranslateButton art={art} v={shown} className={phone ? 'bg-bubble' : undefined} />
           <MarkUpButton on={markup} onClick={() => setMarkup(!markup)} round />
           <FullButton on={full.on} onClick={full.toggle} className={phone ? 'bg-bubble' : undefined} />
           {/* beside the chat, in the Artifacts panel */}

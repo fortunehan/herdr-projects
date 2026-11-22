@@ -18,6 +18,8 @@ export const SECTIONS = [
   { id: "autopilot", title: "Autopilot", icon: "plane", space: true },
   { id: "notify", title: "Notify", icon: "bell", space: true },
   { id: "secrets", title: "Secrets", icon: "key", space: true },
+  // SHEP-102: the Translate button's endpoint, model and key (core/translate.js), one for every space
+  { id: "translation", title: "Translation", icon: "languages" },
   { id: "machines", title: "Machines", icon: "network" },
   { id: "window", title: "Window", icon: "layout" },
   { id: "web", title: "Web", icon: "globe" },

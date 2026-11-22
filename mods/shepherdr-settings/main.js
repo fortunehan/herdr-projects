@@ -36,6 +36,7 @@ import { NOTIFY, NOTIFY_DEFAULT, notifyMachine, notifyMachineOwn, notifyOf, noti
 import { machinesSection } from "./machines-section.js";
 import { TEXT, RADIUS, H, button, link, toggleSwitch, segmented, menuRow } from "./ui.js";
 import { webSection } from "./web-section.js";
+import { translationInit, translationSection } from "./translation-section.js";
 import { SH } from "./core/paths.js";
 import { dirs } from "./dirs.js";
 import { dialogKeys } from "./keyholder.js";
@@ -106,6 +107,8 @@ export default class ShepherdrSettings extends View {
     // Tasks > Branch names, Everywhere's or a space's (branch-names.js).
     this.bn = branchInit(this);
     this.fr = feedbackInit(this);
+    // Translation (SHEP-102): its endpoint, model and key boxes (translation-section.js).
+    this.tr = translationInit(this);
     // Autopilot: one setting for every space, kept by herdr-task (autopilot-section.js).
     this.ap = autopilotInit(this, cx);
     // The add-ons Window's switches offer (lib/addons.json, layout.js).
@@ -705,6 +708,7 @@ export default class ShepherdrSettings extends View {
       : this.section === "secrets" ? secretsSection(this, t)
       : this.section === "window" ? layoutSection(this, t)
       : this.section === "web" ? webSection(this, t)
+      : this.section === "translation" ? translationSection(this, t)
       : this.section === "notify" ? this.notify(t)
       : this.section === "autopilot" ? autopilotSection(this, t, cx)
       : machinesSection(this, t, cx);

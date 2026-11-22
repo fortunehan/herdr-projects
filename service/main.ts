@@ -42,9 +42,12 @@ import { voiceCall, callToResume, callsOn, handOff, pageWhere, type ChatView } f
 import { hearing, type HearIO, type Hearing } from "./voice-hear.ts";
 import { voiceTool, type VoiceIO, type Where } from "./voice-tools.ts";
 import { Artifacts } from "./artifacts.ts";
+import { Translator, translationsDir, hasMedia } from "./translate.ts";
+import * as TRc from "../core/translate.js";
+import * as CVm from "../core/chat-view.js";
 import { TaskLogs } from "./task-logs.ts";
 import { Settings, onWritten, PUSH, pushBody } from "./settings.ts";
-import { Secrets, SecretsHome } from "./secrets.ts";
+import { Secrets, SecretsHome, secretBin } from "./secrets.ts";
 import { Agents } from "./agents.ts";
 import { Machines } from "./machines.ts";
 import { Push, alertsOf, agentAlerts } from "./push.ts";
@@ -296,6 +299,60 @@ const taskLogs = new TaskLogs();
 taskLogs.onChange = () => model.rebuild();
 compat.taskLogs = taskLogs;
 artifacts.start();
+// Translate (SHEP-102): Settings › Translation's endpoint, with its key read as a voice call reads its own (the vault
+// here, or the machine that keeps the secrets, into memory only); kept translations in this service's folder
+const translator = new Translator({
+  config: () => settings.translation(),
+  key: (name) => (TRc as any).findKey({
+    where: async () => {
+      const p = Bun.spawn([secretBin(), "where", "--json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const out = await new Response(p.stdout).text();
+      return (await p.exited) === 0 ? JSON.parse(out) : null;
+    },
+    vault: () => { try { return readFileSync(where().vault, "utf8"); } catch { return null; } },
+    machines: async () => ((await hub.call<{ machines: any[] }>("machine.list", {})).machines ?? [])
+      .filter((m) => !m.temporary && m.state === "connected" && m.name).map((m) => String(m.name)),
+    ask: async (on: string, script: string) => {
+      const r = await hub.call<{ code: number; stdout: string }>("machine.exec", { on, argv: ["python3", "-c", script], timeout: 15 }, 20_000);
+      return r.code === 0 ? Buffer.from(r.stdout ?? "", "base64").toString("utf8") : null;
+    },
+  }, name),
+  // a reply its agent may still be writing: the agent works, and these are the words of its newest reply, with nothing
+  // the person said after it
+  messageOf: async (w, id) => {
+    const addr = w.addr ?? (w.chat ? compat.addrOf(w.chat) : null);
+    if (!addr || addr.startsWith("log:")) return null;
+    // the chat read here (kept read while this looks), its older messages loaded as far as the one asked for
+    const f = follow(addr);
+    try {
+      await Promise.race([f.ready, Bun.sleep(8000)]);
+      const r: any = compat.reader?.(addr);
+      if (!r?.conv) return null;
+      const want = String(id).split(":")[0];
+      for (let n = 0; n < 20 && !(r.conv.items ?? []).some((i: any) => i.id === want); n++) if (!(await r.earlier().catch(() => false))) break;
+      const items = (r.conv.items ?? []) as any[];
+      const at = items.findIndex((i) => i.id === want);
+      const x = items[at];
+      if (!x || x.kind !== "agent" || typeof x.text !== "string" || !x.text.trim()) return null;
+      const t: any = hub.terminals.get(addr);
+      // the words its chat shows (pictures and clips out), as compat.ts makes them
+      const md = (CVm as any).mediaIn(x.text, { cwd: t?.foreground?.cwd ?? t?.cwd ?? null, home: addr.includes("/") ? null : HOME });
+      const shown = md.text || x.text;
+      // any picture or clip in it: one its chat shows as an attachment (the same check the chat makes, a plain link to a
+      // local picture or clip included), or one marked parses (an image, a reference one too, an HTML image or video;
+      // an example in code isn't one): not translated
+      const media = md.media.length > 0 || hasMedia(x.text);
+      // its agent works and this is its newest reply, with nothing the person said after it: it may still be writing it
+      const newest = items.findLastIndex((i) => i.kind === "agent" && typeof i.text === "string" && i.text.trim());
+      const writing = t?.status?.state === "working" && at === newest && !items.slice(at + 1).some((i) => i.kind === "user" && !i.from);
+      return { text: shown, raw: x.text, writing, media };
+    } finally { f.stop(); }
+  },
+  recipe: async (id, v, on) => (await artifacts.recipe(id, v, on)) as { blocks: unknown[] } | null,
+  dir: translationsDir(DATA),
+});
+settings.secretNames = () => secretNames.filter((x) => !x.space).map((x) => x.name);
+settings.lastTest = () => translator.lastTest;
 const asks = new Asks();
 compat.asks = asks;
 asks.on(() => { model.rebuild(); live.chats?.refreshAll(); });
@@ -601,6 +658,10 @@ async function doAction(body: any): Promise<Response> {
     await store.set("notify", (NF as any).withMachine(model.value("notify") ?? {}, body.key.slice("notify.machine@".length), null));
     return json({ ok: true });
   }
+  // Translate (SHEP-102): a message's words ({ text }) or an artifact's version ({ artifact, v, on }), from the web
+  // app or this machine's window; Settings › Translation's Test connection
+  if (body?.type === "translate") return json(await translator.handle(body));
+  if (body?.type === "setting" && body.key === "translation.test") { const r = await translator.test(); model.rebuild(); return json(r); }
   if (body?.type === "autopilot-run" && typeof body.place === "string") {
     try { await runPilot(body.place); await model.readPilot(body.place); return json({ ok: true }); }
     catch (err) { return json({ ok: false, error: (err as Error).message }); }

@@ -12,7 +12,7 @@ import { act, definePlugin, setUI, useStore, useUI } from '@client/kernel.ts'
 import { AWAY, buzz, moveTo, project, settleMs, SPRING, useMotion } from '@client/motion.ts'
 import { useDialogFocus } from '@client/focus.ts'
 import { follow as followFinger, mayPanDown } from '@client/gestures.ts'
-import { ClockIcon, CopyIcon, ic, MenuItem, PlusIcon, ReplyIcon, SearchIcon } from '@client/ui.tsx'
+import { ClockIcon, CopyIcon, ic, MenuItem, PlusIcon, ReplyIcon, SearchIcon, TranslateIcon } from '@client/ui.tsx'
 
 /** Fork and Rewind, drawn as the window's (lucide git-fork, rotate-ccw) */
 export const ForkIcon = (p: { className?: string }) => (
@@ -24,6 +24,7 @@ export const RewindIcon = (p: { className?: string }) => (
 import type { Message } from '@shared/types.ts'
 import { canReply, startReply } from '@plugins/chat/reply.ts'
 import { forkChat } from '@plugins/chat/fork.ts'
+import { isWriting, messageKey, toggle as toggleTranslate, useShown, useTranslateOn } from '@plugins/chat/translate.ts'
 import { frequent, loadEmoji, quickRow, remember, search, setTone, tone, TONES, withTone, type Emoji, type Group } from './emoji.ts'
 import { setDown } from './leave.ts'
 
@@ -250,6 +251,10 @@ function Lifted({ msg, chat }: { msg: Message; chat: string }) {
   const leaving = useRef(false)
   const you = msg.who === 'you'
   const text = msg.text ?? ''
+  // SHEP-102: Translate on the agent's words, as the band's icon (Hide translation while it shows)
+  const tkey = messageKey(chat, msg.id)
+  const translateOn = useTranslateOn() && !you && !msg.card && !!text && !isWriting(tkey)
+  const trShown = !!useShown(tkey)?.shown
 
   useLayoutEffect(() => {
     const anchor = anchorOf(chat, msg.id)?.querySelector<HTMLElement>('[data-anchor]')
@@ -393,9 +398,16 @@ function Lifted({ msg, chat }: { msg: Message; chat: string }) {
               {/* Shepherdr 3: an agent's message forks the conversation into a new tab; yours rewinds it there (the CLI's own) */}
               {/* as the window's: Rewind on yours but a /command, Fork on the agent's */}
               {msg.card || (msg.who !== 'agent' && msg.text?.trimStart().startsWith('/')) ? null : msg.who === 'agent' ? (
-                <MenuItem icon={<ForkIcon className={ic} />} onClick={() => leave(() => void forkChat(chat).catch((e) => alert(e.message)))}>
-                  Fork
-                </MenuItem>
+                <>
+                  <MenuItem icon={<ForkIcon className={ic} />} onClick={() => leave(() => void forkChat(chat).catch((e) => alert(e.message)))}>
+                    Fork
+                  </MenuItem>
+                  {translateOn ? (
+                    <MenuItem icon={<TranslateIcon className={ic} />} onClick={() => leave(() => toggleTranslate(tkey, { text, chat, id: msg.id }))}>
+                      {trShown ? 'Hide translation' : 'Translate'}
+                    </MenuItem>
+                  ) : null}
+                </>
               ) : (
                 <MenuItem icon={<RewindIcon className={ic} />} onClick={() => leave(() => void act({ type: 'rewind', chat, message: msg.id } as never).catch((e) => alert(e.message)))}>
                   Rewind

@@ -1054,6 +1054,8 @@ export interface SettingRow {
   extra?: { label: string; key: string }
   /** words a Copy button beside it copies (Web's link) */
   copy?: string
+  /** asked first when its switch turns on (Translation's: where the words go, the first time only) */
+  confirm?: string
   /** a machine's block starts here (Settings › Machines): its health and plans first ("local": this computer) */
   details?: string
 }
@@ -1290,6 +1292,8 @@ export type Action =
   | { type: 'plugin'; plugin: string; method: string; input?: unknown; cid: string }
   /** read every machine's plan limits again, unless they were read a moment ago */
   | { type: 'limits-check' }
+  /** SHEP-102: a message's words (text) or an artifact's version translated by Settings › Translation's endpoint */
+  | { type: 'translate'; text?: string; chat?: string; id?: string; artifact?: string; v?: number; on?: string | null }
   /** cid: the screen's own id for what it sent, which comes back on the message (Message.cid); reply: the id of the
       message it answers; human: said in the app itself, the only kind of message that can take back a merge yes. Scripts
       leave it off */

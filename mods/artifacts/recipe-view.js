@@ -11,7 +11,8 @@ import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
 import { image } from "gpui-kit";
 import { theme, shared, setShared, props, openOverlay, appHome, exec, settings } from "herdr";
 import * as fs from "fs/promises";
-import { asset, answer, answers } from "./artifact.js";
+import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_M } from "./artifact.js";
+import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
 import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, imageSize, isDiff, isLink, mdParts, mediaKind, pictures, withIds } from "./recipe.js";
 
@@ -29,6 +30,13 @@ const TONE = { info: "surface", good: "done", warn: "working", bad: "blocked" };
 // SHEP-107: words keep a reading width while columns, tables and pictures take the whole width (full screen on a
 // wide window; before, the whole recipe stopped at 860 px). The web's recipe view does the same (screens/Recipe.tsx).
 const PROSE = 760;
+
+// Translate (SHEP-102): this version's translation as the bar asked for it (lib/artifact-translate.js), by its texts'
+// places (core/translate.js recipeUnits); a Retry sets it to "retry" and the bar asks again.
+const TR_KEY = "artifacts.translate";
+const trKey = () => `${ART_M ?? ""}|${ART_ID}|${ART_V}`;
+const translation = () => { const s = (shared(TR_KEY) ?? {})[trKey()]; return s?.shown ? s : null; };
+const retryTranslation = () => { const all = shared(TR_KEY) ?? {}, s = all[trKey()]; if (s) setShared(TR_KEY, { ...all, [trKey()]: { ...s, state: "retry" } }); };
 
 // A picture file's first bytes, for its size (recipe.js imageSize): fs when it gives bytes, else od, which every Mac and
 // Linux has. null when neither can read it.
@@ -72,6 +80,7 @@ export default class RecipeView extends View {
     });
     walk(this.recipe?.blocks);
     this.pics = pictures(this.recipe);
+    this.paths = this.recipe ? blockPaths(this.recipe) : new Map();
     // the answers kept with this version, then its forms' fields as sent
     cx?.spawn?.(async (cx) => {
       this.answers = { ...(await answers()), ...this.answers };
@@ -125,11 +134,58 @@ export default class RecipeView extends View {
   }
 
   // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
-  md(id, text, t) {
+  md(id, text, t, b = null, field = "md") {
     const words = (key, w) => div().w_full().min_w(0).max_w(PROSE).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
+    // translated: each paragraph, then its translation under it (as the chat's), in the parts the service made from
+    // marked's own parse (this window has none)
+    const parts0 = b ? translation()?.mdParts?.[`${this.paths.get(b)}.${field}`] : null;
+    if (Array.isArray(parts0)) {
+      return v_flex().w_full().min_w(0).gap(2).children(parts0.map((x, i) => x.type === "code" ? this.code(`${id}-tc${i}`, x.code, t)
+        : x.type === "table" ? this.trTable(`${id}-tt${i}`, x, t)
+        : x.type === "tr" ? this.trLine(`${id}-t${i}`, x.text, t) : x.type === "fail" ? this.trLine(`${id}-t${i}`, null, t) : words(`md-${id}-tm${i}`, x.text)));
+    }
     const parts = mdParts(text);
     if (!parts.some((x) => "code" in x)) return words(`md-${id}`, String(text ?? " "));
     return v_flex().w_full().min_w(0).gap(8).children(parts.map((x, i) => "code" in x ? this.code(`${id}-c${i}`, x.code, t) : words(`md-${id}-${i}`, x.md)));
+  }
+
+  // One translation line (SHEP-102): a step dimmer, a thin rule on its left; null text: it failed (Retry asks again).
+  trLine(key, text, t) {
+    const el = div().id(`tr-${key}`).w_full().min_w(0).mt(2).pl(8).border_l(2).border_color(t.border).text_size(13);
+    if (text === null) return el.cursor_pointer().text_color(t.blocked).on_click((_e, cx) => { retryTranslation(); cx.notify(); }).child(`${TW.blockFailed} \u00b7 ${TW.retry}`);
+    return el.text_color(t.muted).child(TextView.markdown(`trmd-${key}`, text || " ").selectable(true));
+  }
+
+  // A markdown table translated (core/translate.js windowParts): its cells as they were, each one's translation under
+  // its words inside the cell.
+  trTable(key, g, t) {
+    return v_flex().w_full().rounded(8).border_1().border_color(t.border).overflow_hidden()
+      .children(g.rows.map((r, ri) => h_flex().w_full().px(10).py(6).gap(10).items_start().when(ri > 0, (e) => e.border_t_1().border_color(t.border)).when(ri === 0, (e) => e.bg(t.surface))
+        .children(r.map((c, ci) => v_flex().flex_1().min_w(0).text_size(ri === 0 ? 12 : 13).when(ri === 0, (e) => e.font_medium().text_color(t.muted))
+          .child(TextView.markdown(`trc-${key}-${ri}-${ci}`, c.text || " ").selectable(true))
+          .when(Boolean(c.tr), (e) => e.child(this.trLine(`${key}-${ri}-${ci}`, c.tr, t)))
+          .when(!c.tr && c.fail, (e) => e.child(this.trLine(`${key}-${ri}-${ci}`, null, t)))))));
+  }
+
+  // A chart's or tabs' labels that couldn't be translated: one line with Retry under them, or el as it is.
+  withFail(el, b, t) {
+    const s = translation(), at = ["tab.", "label.", "series."].map((f) => `${this.paths.get(b)}.${f}`);
+    return s && (s.failed ?? []).some((k) => at.some((a) => k.startsWith(a))) ? v_flex().w_full().min_w(0).child(el).child(this.trLine(`${b.id}-fail`, null, t)) : el;
+  }
+
+  // A block's text's translation (field: its place in the block, as recipeUnits names it), or null.
+  tr(b, field, t) {
+    const s = translation();
+    if (!s) return null;
+    const k = `${this.paths.get(b)}.${field}`;
+    if (s.units?.[k]) return this.trLine(`${b.id}-${field}`, s.units[k], t);
+    return (s.failed ?? []).includes(k) ? this.trLine(`${b.id}-${field}`, null, t) : null;
+  }
+
+  // el with the translation of the block's field under it, when it has one.
+  withTr(el, b, field, t) {
+    const line = this.tr(b, field, t);
+    return line ? v_flex().w_full().min_w(0).child(el).child(line) : el;
   }
 
   // A code box: its text, and a Copy button at its top right that puts all of it on the clipboard (the
@@ -215,6 +271,8 @@ export default class RecipeView extends View {
 
   chart(b, t) {
     const s = chartShapes(b);
+    // a legend's words with their translation beside them (SHEP-102)
+    const tw = (field, words) => { const x = translation()?.units?.[`${this.paths.get(b)}.${field}`]; return x ? `${words} \u00b7 ${x}` : words; };
     const colors = [t.accent, t.working, t.done, t.blocked, t.muted];
     if (b.kind === "pie") {
       // one bar of shares, then its legend: the same numbers as the web's pie, readable at any width
@@ -223,14 +281,20 @@ export default class RecipeView extends View {
           .children(s.slices.map((x, i) => div().h_full().flex_basis(`${Math.max(0.5, x.share * 100)}%`).flex_grow(0).bg(colors[i % colors.length]))))
         .children(s.slices.map((x, i) => h_flex().gap(8).items_center()
           .child(div().size(10).rounded(5).bg(colors[i % colors.length]))
-          .child(div().text_size(13).child(String(x.label)))
+          .child(div().text_size(13).child(tw(`label.${i}`, String(x.label))))
           .child(div().text_size(12).text_color(t.muted).child(`${Math.round(x.share * 100)}%`))));
     }
     if (b.kind === "line") {
       // each series' points, joined by their order: dots on a plot, a value's height from the bottom
-      return div().relative().w_full().h(140).border_b_1().border_color(t.border)
-        .children(s.lines.flatMap((l, li) => l.points.map((p, i) => div().absolute().size(6).rounded(3).bg(colors[li % colors.length])
-          .left(`${p.x * 96}%`).bottom(`${p.y * 92}%`))));
+      // its labels under the plot, each with its translation under it (SHEP-102)
+      const tl = (i) => translation()?.units?.[`${this.paths.get(b)}.label.${i}`];
+      return v_flex().w_full().gap(6)
+        .child(div().relative().w_full().h(140).border_b_1().border_color(t.border)
+          .children(s.lines.flatMap((l, li) => l.points.map((p, i) => div().absolute().size(6).rounded(3).bg(colors[li % colors.length])
+            .left(`${p.x * 96}%`).bottom(`${p.y * 92}%`)))))
+        .when((b.labels ?? []).length > 0, (e) => e.child(h_flex().w_full().children((b.labels ?? []).map((l, i) => v_flex().flex_1().min_w(0).items_center()
+          .child(div().w_full().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))
+          .when(Boolean(tl(i)), (x) => x.child(div().w_full().text_size(11).text_color(t.foreground).text_center().truncate().child(String(tl(i) ?? ""))))))));
     }
     // bars: each label's group, a bar per series, its height from the biggest value
     const series = b.series ?? [], groups = (b.labels ?? []).length || Math.max(0, ...series.map((x) => x.values.length));
@@ -239,9 +303,13 @@ export default class RecipeView extends View {
         .children(Array.from({ length: groups }, (_, gi) => h_flex().flex_1().h_full().items_end().justify_center().gap(2)
           .children(series.map((x, si) => div().flex_1().max_w(28).h(`${Math.max(1, (Math.max(0, x.values[gi] ?? 0) / s.max) * 100)}%`)
             .rounded_t(2).bg(colors[si % colors.length]))))))
-      .child(h_flex().w_full().children((b.labels ?? []).map((l) => div().flex_1().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))))
+      .child(h_flex().w_full().children((b.labels ?? []).map((l, i) => v_flex().flex_1().min_w(0).items_center()
+        .child(div().w_full().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))
+        // its translation under it (SHEP-102)
+        .when(Boolean(translation()?.units?.[`${this.paths.get(b)}.label.${i}`]), (e) => e.child(div().w_full().text_size(11).text_color(t.foreground).text_center().truncate()
+          .child(String(translation()?.units?.[`${this.paths.get(b)}.label.${i}`] ?? "")))))))
       .when(series.length > 1, (e) => e.child(h_flex().flex_wrap().gap(10).children(series.map((x, si) => h_flex().gap(6).items_center()
-        .child(div().size(10).rounded(5).bg(colors[si % colors.length])).child(div().text_size(12).child(String(x.name ?? "")))))));
+        .child(div().size(10).rounded(5).bg(colors[si % colors.length])).child(div().text_size(12).child(tw(`series.${si}`, String(x.name ?? ""))))))));
   }
 
   // A clip, a sound or a PDF: the window's player can't play them, so it shows the clip's poster (or a tile) and says
@@ -257,45 +325,47 @@ export default class RecipeView extends View {
 
   block(b, t, cx) {
     switch (b.type) {
-      case "heading": return div().text_size((b.level ?? 2) <= 1 ? 17 : 15).font_semibold().whitespace_normal().child(b.text);
-      case "text": return this.md(b.id, b.md, t);
+      case "heading": return this.withTr(div().text_size((b.level ?? 2) <= 1 ? 17 : 15).font_semibold().whitespace_normal().child(b.text), b, "text", t);
+      case "text": return this.md(b.id, b.md, t, b);
       case "list": return v_flex().gap(4).children(b.items.map((x, i) => h_flex().gap(8).items_start()
         .child(div().flex_none().w(16).text_size(13).text_color(t.muted).child(b.ordered ? `${i + 1}.` : "•"))
-        .child(this.md(`${b.id}-${i}`, x, t))));
+        .child(this.withTr(this.md(`${b.id}-${i}`, x, t), b, `items.${i}`, t))));
       case "table": return v_flex().w_full().rounded(8).border_1().border_color(t.border).overflow_hidden()
         .child(h_flex().w_full().px(10).py(6).bg(t.surface).children(b.columns.map((c, i) => div().flex_1().min_w(0).text_size(12).font_medium().text_color(t.muted)
-          .when((c.align ?? "") === "right", (e) => e.text_right()).child(String(c.label ?? c)))))
+          .when((c.align ?? "") === "right", (e) => e.text_right()).child(String(c.label ?? c)).when(Boolean(this.tr(b, `col.${i}`, t)), (e) => e.child(this.tr(b, `col.${i}`, t))))))
         .children(b.rows.map((r, ri) => h_flex().w_full().px(10).py(6).border_t_1().border_color(t.border)
-          .children(r.map((c, i) => div().flex_1().min_w(0).text_size(13).whitespace_normal().when(b.columns[i]?.align === "right", (e) => e.text_right()).child(String(c ?? ""))))));
-      case "chart": return this.chart(b, t);
-      case "stats": return h_flex().flex_wrap().gap(8).children(b.items.map((x) => v_flex().min_w(120).flex_1().p(10).gap(2).rounded(8).bg(t.surface)
-        .child(div().text_size(12).text_color(t.muted).child(String(x.label)))
+          .children(r.map((c, i) => div().flex_1().min_w(0).text_size(13).whitespace_normal().when(b.columns[i]?.align === "right", (e) => e.text_right()).child(String(c ?? ""))
+            .when(Boolean(this.tr(b, `cell.${ri}.${i}`, t)), (e) => e.child(this.tr(b, `cell.${ri}.${i}`, t)))))));
+      case "chart": return this.withFail(this.chart(b, t), b, t);
+      case "stats": return h_flex().flex_wrap().gap(8).children(b.items.map((x, i) => v_flex().min_w(120).flex_1().p(10).gap(2).rounded(8).bg(t.surface)
+        .child(this.withTr(div().text_size(12).text_color(t.muted).child(String(x.label)), b, `label.${i}`, t))
         .child(div().text_size(17).font_semibold().child(String(x.value)))
-        .when(!!x.note, (e) => e.child(div().text_size(12).text_color(t.dim).child(String(x.note))))));
-      case "video": return this.media(b, t, "▶", "Video", b.poster ? b.poster : null);
-      case "audio": return this.media(b, t, "♪", "Sound", null);
-      case "pdf": return this.media(b, t, "PDF", "PDF", null);
+        .when(!!x.note, (e) => e.child(this.withTr(div().text_size(12).text_color(t.dim).child(String(x.note)), b, `note.${i}`, t)))));
+      case "video": return this.withTr(this.media(b, t, "▶", "Video", b.poster ? b.poster : null), b, "caption", t);
+      case "audio": return this.withTr(this.media(b, t, "♪", "Sound", null), b, "caption", t);
+      case "pdf": return this.withTr(this.media(b, t, "PDF", "PDF", null), b, "caption", t);
       case "image": return v_flex().gap(4)
         .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border)))
-        .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(b.caption)));
+        .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(b.caption)))
+        .when(Boolean(this.tr(b, "caption", t)), (e) => e.child(this.tr(b, "caption", t)));
       case "pair": return h_flex().flex_wrap().gap(10).children([["Before", b.before], ["After", b.after]].map(([w, x]) => v_flex().flex_1().min_w(240).gap(4)
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
           : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border)))
-        .child(div().text_size(12).text_color(t.muted).child(x.caption ?? w))));
+        .child(this.withTr(div().text_size(12).text_color(t.muted).child(x.caption ?? w), b, w === "Before" ? "before" : "after", t))));
       case "code": return isDiff(b) ? this.diff(b, t) : this.code(b.id, b.text, t);
-      case "check": return this.check(b, t);
+      case "check": return this.withTr(this.withTr(this.check(b, t), b, "summary", t), b, "caption", t);
       case "callout": return v_flex().gap(4).p(12).rounded(8).bg(t[TONE[b.tone ?? "info"]] ? t.surface : t.surface).border_l(3).border_color(t[TONE[b.tone ?? "info"]] ?? t.border)
-        .when(!!b.title, (e) => e.child(div().text_size(13).font_semibold().child(b.title)))
-        .when(!!b.md, (e) => e.child(this.md(b.id, b.md, t)));
+        .when(!!b.title, (e) => e.child(this.withTr(div().text_size(13).font_semibold().child(b.title), b, "title", t)))
+        .when(!!b.md, (e) => e.child(this.md(b.id, b.md, t, b)));
       case "columns": return h_flex().flex_wrap().gap(16).items_start().children(b.columns.map((c) => v_flex().flex_1().min_w(240).gap(14).children(c.map((x) => this.block(x, t, cx)))));
       case "tabs": {
         const on = this.tab.get(b.id) ?? 0;
-        return v_flex().gap(12)
+        return this.withFail(v_flex().gap(12)
           .child(h_flex().gap(4).flex_wrap().children(b.tabs.map((x, i) => div().id(`tab-${b.id}-${i}`).h(26).px(10).flex().items_center().rounded(6).cursor_pointer()
             .bg(i === on ? t.surface : t.background).border_1().border_color(i === on ? t.border : t.background)
             .on_click((_e, cx) => { this.tab.set(b.id, i); cx.notify(); })
-            .child(div().text_size(13).text_color(i === on ? t.foreground : t.muted).child(x.label)))))
-          .child(v_flex().gap(14).children((b.tabs[on]?.blocks ?? []).map((x) => this.block(x, t, cx))));
+            .child(div().text_size(13).text_color(i === on ? t.foreground : t.muted).child((() => { const w = translation()?.units?.[`${this.paths.get(b)}.tab.${i}`]; return w ? `${x.label} \u00b7 ${w}` : x.label; })())))))
+          .child(v_flex().gap(14).children((b.tabs[on]?.blocks ?? []).map((x) => this.block(x, t, cx)))), b, t);
       }
       case "details": {
         const open = this.open.has(b.id);
@@ -303,6 +373,7 @@ export default class RecipeView extends View {
           .child(div().id(`det-${b.id}`).cursor_pointer().text_size(13).font_medium().text_color(t.muted)
             .on_click((_e, cx) => { if (open) this.open.delete(b.id); else this.open.add(b.id); cx.notify(); })
             .child(`${open ? "▾" : "▸"} ${b.summary}`))
+          .when(Boolean(this.tr(b, "summary", t)), (e) => e.child(this.tr(b, "summary", t)))
           .when(open, (e) => e.child(v_flex().gap(14).pl(14).children(b.blocks.map((x) => this.block(x, t, cx)))));
       }
       case "divider": return div().w_full().h(1).bg(t.border);
@@ -311,7 +382,7 @@ export default class RecipeView extends View {
         const chosen = answerOf(this.answers, b.id)?.value ?? null, busy = this.sending.has(b.id);
         const note = this.answered("choice", b.id, t);
         return v_flex().gap(6)
-          .child(div().text_size(13).font_semibold().whitespace_normal().child(b.question))
+          .child(this.withTr(div().text_size(13).font_semibold().whitespace_normal().child(b.question), b, "question", t))
           .children(b.options.map((o, i) => {
             const on = chosen === o.label, live = !on && !busy;
             return v_flex().id(`ch-${b.id}-${i}`).p(10).gap(2).rounded(8).border_1().border_color(on ? t.foreground : t.border)
@@ -366,8 +437,14 @@ export default class RecipeView extends View {
 
   render(cx) {
     const t = theme();
+    const tr = translation();
+    // the whole version's translation on its way, or why it failed (a press asks again)
+    const head = !tr || tr.state === "done" ? [] : [div().id("tr-head").w_full().pl(8).border_l(2).border_color(t.border).text_size(13)
+      .when(tr.state === "error", (e) => e.cursor_pointer().text_color(t.blocked).on_click((_e, cx) => { retryTranslation(); cx.notify(); }))
+      .when(tr.state !== "error", (e) => e.text_color(t.dim))
+      .child(tr.state === "error" ? `${tr.error || TW.failed("")} \u00b7 ${TW.retry}` : TW.translating)];
     const body = this.error ? [div().text_size(13).text_color(t.muted).child(this.error)]
-      : !this.recipe ? [] : this.recipe.blocks.map((b) => v_flex().id(`blk-${b.id}`).w_full().min_w(0).child(this.block(b, t, cx)));
+      : !this.recipe ? [] : [...head, ...this.recipe.blocks.map((b) => v_flex().id(`blk-${b.id}`).w_full().min_w(0).child(this.block(b, t, cx)))];
     return v_flex().id("recipe").size_full().overflow_y_scrollbar().bg(t.background).text_color(t.foreground)
       .child(v_flex().id("recipe-body").w_full().p(16).gap(14).children(body));
   }
