@@ -139,7 +139,8 @@ export class Translator {
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
       // an HTML entity this check can't read could spell anything: such a translation goes too
-      if (/&(?!(?:amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*;/i.test(x)) return null;
+      // (with or without its semicolon: a page reads some named ones either way)
+      if (/&(?!(?:amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*/i.test(x)) return null;
       const r = rendered(x), b = bare(x);
       return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
     });

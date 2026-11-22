@@ -207,6 +207,8 @@ describe("a message", () => {
     const used = new Set(["sk-stub-secret-0123456789"]);
     expect(t.scrub(["see &#115;k-stub-secret-0123456789 now", "and &#x73;k\\-stub-secret-0123456789", "named &sfr;k-stub-secret-0123456789", "split sk-**stub**-secret-0123456789", "linked sk-[stub](https://example.com)-secret-0123456789", "plain words", "bad &#1114112; entity"], used))
       .toEqual([null, null, null, null, null, "plain words", "bad &#1114112; entity"]);
+    // a named reference without its semicolon too
+    expect(t.scrub(["legacy &AElig bar"], used)).toEqual([null]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept
