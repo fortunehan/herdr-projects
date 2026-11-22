@@ -1505,8 +1505,11 @@ export default class Chat extends View {
     const list = this.suggestions();
     if (list.length) {
       const c = list[Math.min(this.slashSel, list.length - 1)];
-      if (c.task || c.space) { this.pick(c, cx); const v = this.box.value(); cx.timer.after(30, () => this.box.set_value(v)); return; }
-      if (this.box.value().trim() !== `/${c.name}`) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(`/${c.name} `)); return; }
+      if (c.task || c.space || this.caretText().before !== `/${c.name}`) {
+        const done = this.pick(c, cx);
+        cx.timer.after(30, () => this.dropEnterLine(done));
+        return;
+      }
     }
     this.send(cx, hold);
   }
@@ -1682,44 +1685,72 @@ export default class Chat extends View {
     // Enter's new line may already be in the box when the submit comes.
     const v = this.box.value().replace(/\n+$/, "");
     if (this.slashOff === v) return [];
-    // "#" at the end: the spaces this agent reaches (a pick names one for it).
-    const h = mentions.typing(v);
+    // What is typed before the caret (SHEP-105: the rest of the message may follow it).
+    const { before, after } = this.caretText();
+    if (after === null) return [];
+    // "#" just before the caret: the spaces this agent reaches (a pick names one for it).
+    const h = mentions.typing(before);
     if (h !== null) {
       const sp = mentions.match(this.reach?.spaces ?? [], h.toLowerCase()).map((x) => ({ space: x, name: `#${x.name}`, about: x.route ? x.machine : "This machine", key: `space-${x.id}` }));
       if (sp.length) return sp;
     }
-    // "@" at the end: the tasks on this agent's machine (herdr-task), by ID or title; a pick names
+    // "@" just before the caret: the tasks on this agent's machine (herdr-task), by ID or title; a pick names
     // the exact one (its folder when not this one's).
-    const at = mentions.typingTask(v);
+    const at = mentions.typingTask(before);
     if (at !== null) {
       const tk = mentions.matchTasks(this.mentionableTasks().map((x) => ({ ref: taskRef(x), title: x.title, status: SECTION_DOT[x.status ?? x.state] ?? x.state, at: x.ready_at ?? x.started ?? 0, x })), at, 8)
         .map(({ x }) => ({ task: x, name: `@${taskRef(x)}`, about: x.title, state: x.status_text ?? x.state, key: `task-${x.folder}-${taskRef(x)}` }));
       if (tk.length) return tk;
     }
-    const w = slash.typing(v);
+    const w = slash.typing(before);
     if (w === null || !this.cmds.length) return [];
     return slash.match(this.cmds, w);
   }
 
+  caretText() {
+    return slash.atCaret(this.box.value(), this.box.selected_range().end);
+  }
+
+  // A pick replaces what is typed before the caret and keeps the rest; returns the new text and caret.
   pick(c, cx) {
+    let { before, after } = this.caretText();
+    // a list drawn before the caret moved into a word: as before SHEP-105, the end of the text
+    if (after === null) ({ before, after } = slash.atCaret(this.box.value()));
+    let head;
     if (c.space) {
-      const next = mentions.pickInto(this.box.value(), c.space);
+      head = mentions.pickInto(before, c.space);
       this.picked = [...this.picked.filter((x) => x.name !== c.space.name), c.space];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else if (c.task) {
       const own = (this.t?.foreground?.cwd ?? this.t?.cwd) === c.task.folder;
       const t = { ref: taskRef(c.task), route: "", folder: own ? "" : c.task.folder ?? "" };
-      const next = mentions.pickTaskInto(this.box.value(), t);
+      head = mentions.pickTaskInto(before, t);
       this.pickedTasks = [...this.pickedTasks.filter((x) => x.ref !== t.ref), t];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else {
-      this.box.set_value(`/${c.name} `);
-      this.slashOff = `/${c.name} `;
+      head = `/${c.name} `;
     }
+    const done = slash.joinAtCaret(head, after);
+    this.put(done.text, done.caret);
+    this.slashOff = done.text.replace(/\n+$/, "");
     this.box.focus();
     cx.notify();
+    return done;
+  }
+
+  /** Text in the box and the caret in it (SHEP-105: set_value alone leaves the caret at the start). */
+  put(text, caret = text.length) {
+    this.box.set_value(text);
+    this.box.set_selected_range({ start: caret, end: caret });
+  }
+
+  /**
+   * Enter's own new line can land in the box just after its pick: only that line goes, never what was typed since
+   * (SHEP-105; it used to set the whole text again, dropping a quick first letter).
+   */
+  dropEnterLine({ text, caret }) {
+    const v = this.box.value(), head = text.slice(0, caret), tail = text.slice(caret);
+    if (v.length <= text.length || !v.startsWith(`${head}\n`) || !v.endsWith(tail)) return;
+    const end = this.box.selected_range().end;
+    this.put(head + v.slice(caret + 1), end > caret ? end - 1 : end);
   }
 
   // ---- a chat with no agent yet (Coordinator tab) --------------------------------------------
