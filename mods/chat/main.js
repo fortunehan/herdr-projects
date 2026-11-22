@@ -213,7 +213,19 @@ async function answerRemote(machine, id, text, how) {
 // The person's words keep the line breaks they typed: markdown joins single lines, so each one
 // becomes a hard break (outside code fences, which keep theirs). A "<word>" they typed shows as
 // typed, not read as HTML and dropped (core/chat-view.js literal(), #591).
-const typed = (text) => literal(String(text).split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?!\n)/g, "$1  \n"))).join(""));
+const typedKept = new Map();
+// Kept per text (SHEP-109): the window's QuickJS runs a split pattern at every character, so a long message (a 35 KB
+// brief) took ~25 ms here on every frame it was drawn or measured, half the window's render limit.
+const typed = (text) => {
+  const s = String(text);
+  let v = typedKept.get(s);
+  if (v === undefined) {
+    v = literal(s.split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?!\n)/g, "$1  \n"))).join(""));
+    if (typedKept.size >= 300) typedKept.delete(typedKept.keys().next().value);
+    typedKept.set(s, v);
+  }
+  return v;
+};
 
 // An agent message in parts: markdown, and fenced code blocks (drawn with a Copy bar).
 function parts(text) {
@@ -2031,18 +2043,13 @@ export default class Chat extends View {
   // agent (another machine's aren't here to open), ~/ against this machine's home.
   // SHEP-108: it runs for every row drawn and measured on every frame, and a render that passes the window's time
   // limit (~50 ms) draws nothing at all: so each reply is linked once (kept), at most LINK_MS of linking per frame
-  // (the rest show plain and get their links a frame later), and a reply linking can't handle shows plain.
+  // (the rest show plain and get their links on the redraw render() asks for), and a reply linking can't handle shows
+  // plain. It never touches a cx: the list's rows are drawn from inside layout, where a kept one can't be used.
   linked(text) {
     const key = `${this.machine ? "r" : "l"}\0${text}`;
     const kept = this.links?.get(key);
     if (kept !== undefined) return kept;
-    if ((this.linkSpent ?? 0) >= LINK_MS) {
-      if (!this.linkTick && this.linkCx) {
-        this.linkTick = true;
-        this.linkCx.timer.after(30, (cx) => { this.linkTick = false; cx.notify(); });
-      }
-      return text;
-    }
+    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return text; }
     const at = Date.now();
     let md = text;
     try { md = links.linkify(text, { home: this.machine ? null : home(), paths: !this.machine }); } catch {}
@@ -2051,30 +2058,6 @@ export default class Chat extends View {
     if (this.links.size >= 600) this.links.delete(this.links.keys().next().value);
     this.links.set(key, md);
     return md;
-  }
-
-  // A link clicked in an agent's words: a URL in the default browser; a path as core/chat-links.js says (a page or a
-  // picture in the default browser, anything else shown in Finder), with a toast when it isn't there or didn't open.
-  openLink(url, cx) {
-    const l = links.fromHref(url, this.machine ? null : home());
-    if (!l) return;
-    if (l.kind === "url") { cx.open_url(l.url); return; }
-    if (this.machine) { toast({ title: "That path is on another machine", body: `It's on ${this.machine}: open it there.`, level: "info" }); return; }
-    return this.openPath(l.path);
-  }
-
-  async openPath(p) {
-    const os = window()?.platform ?? "macos";
-    const action = links.actionOf(p);
-    // Windows has no sh to look first: the window's own exists()
-    if (os === "windows" && !(await fs.exists(p).catch(() => false))) {
-      toast({ ...links.problem(action, os, p, { code: 3 }), level: "error" });
-      return;
-    }
-    const [prog, args] = links.command(action, os, p);
-    const r = await exec(prog, args).catch(() => null);
-    const why = links.problem(action, os, p, r);
-    if (why) toast({ ...why, level: "error" });
   }
 
   // The find bar: the box, how many, up and down, earlier messages, close.
@@ -3420,6 +3403,13 @@ export default class Chat extends View {
   // a band below it, in a layer over the whole row that shows while the pointer is on the row:
   // the row's own hover, so it is always the message under the pointer (the list redraws as
   // the pointer moves, so the hover follows it), and its room is always kept, so nothing moves.
+  /** A row, or its words plain when drawing it throws: one bad message never takes the whole list with it (SHEP-109). */
+  safeRow(x, t, pre) {
+    try { return this.row(x, t, pre); } catch {
+      return div().w_full().px(18).py(6).text_size(12.5).text_color(t.muted).child(String(x.text ?? x.code ?? "").slice(0, 2000) || " ");
+    }
+  }
+
   row(x, t, pre = "") {
     const keep = this.keepIcons === x.bar?.of;
     // The band row: its pills always; the rest while the pointer is on it.
@@ -3473,10 +3463,11 @@ export default class Chat extends View {
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
         // Folded: only the lines that show (shownLines()), as their own view
-        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.linked(this.mentionsIn(shownLines(text, x.clip, laidMost - 24)))) || " ").selectable(true)
-            .on_link_click((url, cx) => this.openLink(url, cx)))
-          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.linked(this.mentionsIn(text))) || " ").selectable(true)
-            .on_link_click((url, cx) => this.openLink(url, cx))));
+        // No on_link_click (SHEP-109): rows are drawn by the virtual list, whose rows take no handlers, and one
+        // there left every chat's list blank. TextView opens a link itself: a URL in the browser, a file:// path
+        // with the system's opener.
+        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.linked(this.mentionsIn(shownLines(text, x.clip, laidMost - 24)))) || " ").selectable(true))
+          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.linked(this.mentionsIn(text))) || " ").selectable(true)));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
     switch (x.kind) {
@@ -4625,13 +4616,19 @@ export default class Chat extends View {
   }
 
   render(cx) {
-    return inRender(() => this.draw(cx));
+    const el = inRender(() => this.draw(cx));
+    // Replies left plain past this frame's linking budget (linked()) get their links on a redraw.
+    if (this.linkWaiting && !this.linkTick) {
+      this.linkWaiting = false;
+      this.linkTick = true;
+      cx.timer.after(30, (cx) => { this.linkTick = false; cx.notify(); });
+    }
+    return el;
   }
 
   draw(cx) {
     if (this.host) return this.host.render(cx);
     this.linkSpent = 0;
-    this.linkCx = cx;
     // The pane getting focus (opened, clicked, gone to) puts the keyboard in the message box.
     const mine = this.myPane();
     const paneFocused = Boolean(mine && focused()?.pane === mine);
@@ -4851,7 +4848,7 @@ export default class Chat extends View {
               // Ids carry the width's generation, as the measurer's do: a reply's words keep the
               // width they were first laid out at, so after a resize (a restart's first narrow
               // frames) they'd stay narrow and tall, spilling under the next row.
-              .child(this.row(x, t, `v${this.measureGen}-`))
+              .child(this.safeRow(x, t, `v${this.measureGen}-`))
               .when(Boolean(flash), (el) => el.child(div().id(`flash-${x.id}`).absolute().inset_0().rounded(10).bg(t.accent + "26")
                 .opacity(this.flash.on ? 1 : 0).transition("opacity", { duration: 1100, easing: "ease-out" })));
           });
@@ -4948,6 +4945,6 @@ export default class Chat extends View {
         })
         // Its words' ids carry the width's generation too, as the list's rows do: kept from an older width, a
         // reply measured at the wrap it first had there (shorter or taller than drawn: the next row over it, #775).
-        .child(this.row(rows[i], t, `m${this.measureGen}-`)))));
+        .child(this.safeRow(rows[i], t, `m${this.measureGen}-`)))));
   }
 }
