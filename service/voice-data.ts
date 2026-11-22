@@ -35,6 +35,7 @@ export const SOURCES: Record<string, { about: string; arg?: "task" | "task-or-sp
 export const NOT_DATA: Record<string, string> = {
   "api:ws": "the live snapshot and chats: look data reads the snapshot, look chat the chats",
   "api:action": "the actions themselves (act; their read ones are SOURCES)",
+  "action:translate": "a message or artifact translated for the screen (SHEP-102): the voice reads the original words",
   "api:dictate": "dictation turns speech into text, nothing shown",
   "api:upload": "uploads a file to send",
   "api:spaces": "makes a new space (a change, the space's Assistant or screen does it)",

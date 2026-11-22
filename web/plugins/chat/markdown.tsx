@@ -1,14 +1,17 @@
 // An agent's reply, drawn from markdown: links open in a new tab (the app stays where it is), a code block has a copy
 // button in its corner (like ChatGPT and Claude), and a tap on a bit of `code` (a command, a path, a branch) copies it.
+import clsx from 'clsx'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useMemo, type MouseEvent } from 'react'
 import { copyText } from '@client/copy.ts'
 import { goPlace, openTask, useSnap } from '@client/kernel.ts'
 import * as MNs from '@core/mentions.js'
+import * as TR from '@core/translate.js'
 import { CL, linked } from './linked.ts'
 import { forMarkdown, hasMention, parseMention, parseTask, stateOf, taskStateOf, TITLE, useReach } from './mentions.tsx'
 const shortTitle = (MNs as any).short as (t: string) => string
+const TW = (TR as any).WORDS as Record<string, string>
 
 marked.setOptions({ gfm: true, breaks: false })
 
@@ -32,11 +35,14 @@ const DONE = svg(['M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.15
 /** the reply as safe HTML: a copy button on each code block, and a bit of inline code copies when tapped. The marks
     go onto the sanitized elements themselves, never into the HTML as text, so nothing in the reply can turn into them.
     A link's or picture's title goes: nothing pops up on hover, but what a click does on a URL it linked (SHEP-99,
-    core/chat-links.js). inChat: its URLs become links; paths stay words (SHEP-110: the file isn't on this device) */
-export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, inChat = false) {
+    core/chat-links.js). inChat: its URLs become links; paths stay words (SHEP-110: the file isn't on this device). tr:
+    its translation under each block (SHEP-102) */
+export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, inChat = false, tr?: Tr) {
   // only in a chat: a recipe's markdown stays as written
   const md = inChat ? linked(text) : text
   const root = DOMPurify.sanitize(marked.parse(md, { async: false }) as string, { RETURN_DOM: true, FORBID_ATTR: ['title'] }) as HTMLElement
+  // the translation under each block goes in first: the marks below go onto the original's elements only
+  if (tr) addTranslations(root, tr)
   if (mention) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href^="#space="], a[href^="#task="]')) {
     const task = a.getAttribute('href')!.startsWith('#task=')
     mention(a, (a.textContent ?? '').replace(/^[#@]/, ''), decodeURIComponent(a.getAttribute('href')!.slice(task ? 6 : 7)), task ? 'task' : 'space')
@@ -71,6 +77,70 @@ export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: str
   const h = root.innerHTML.trim()
   const one = h.match(/^<p>([\s\S]*)<\/p>$/)
   return one && !one[1].includes('<p>') ? one[1] : h
+}
+
+/** A message's translation as the Markdown under it shows it (web/plugins/chat/translate.ts): source, the words the
+ *  service split (core/translate.js blocksFromTokens, on marked's own parse: the same as this page draws); blocks, each block's translation (null: none); failed, the blocks that
+ *  couldn't be; loading, asked and not back yet; error, why it failed as a whole; retry, asks again. */
+export type Tr = { source: string; blocks?: (string | null)[]; failed?: number[]; loading?: boolean; error?: string; retry?: () => void }
+
+const BLOCKS = 'h1,h2,h3,h4,h5,h6,p,li,th,td'
+const kindOf = (el: Element) => (/^H\d$/.test(el.tagName) ? 'h' : el.tagName === 'P' ? 'p' : el.tagName === 'LI' ? 'li' : 'td')
+
+/** A dim line (a translation, a failure with Retry, Translating…) under a block. */
+function trLine(cls: string, html: string, retry = false) {
+  const d = document.createElement('div')
+  d.className = cls
+  d.innerHTML = DOMPurify.sanitize(html, { FORBID_ATTR: ['title', 'style'] })
+  if (retry) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.setAttribute('data-retry', '')
+    b.textContent = TW.retry
+    d.append(' · ', b)
+  }
+  return d
+}
+/** A translation's inline markdown as inert HTML: words, emphasis, code and links only (the service already keeps a
+ *  link only to an address the original names, and drops pictures and HTML): nothing in it loads anything */
+const inlineHtml = (md: string) => DOMPurify.sanitize(marked.parseInline(md, { async: false }) as string,
+  { ALLOWED_TAGS: ['b', 'strong', 'i', 'em', 'code', 'a', 'del', 's', 'br', 'span'], ALLOWED_ATTR: ['href'] })
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
+
+/** Each block's translation right under it, as Immersive Translate does: a paragraph's, a heading's and a quote's after
+ *  it, a list item's at the end of its own words (before a list nested in it), a table cell's inside the cell. The page's
+ *  blocks are found in reading order and must match core's (kinds and count); where they don't, the translations go
+ *  under the whole message in order instead. */
+function addTranslations(root: HTMLElement, tr: Tr) {
+  const blocks = (TR as any).blocksFromTokens(marked.lexer(tr.source)) as { kind: string }[]
+  const els = [...root.querySelectorAll(BLOCKS)].filter((el) => !(el.tagName === 'P' && el.closest('li, td, th')) && !el.closest('pre'))
+  const pairs: [number, Element][] = []
+  let j = 0, ok = true
+  blocks.forEach((b, i) => {
+    const k = (TR as any).domKind(b)
+    if (!k || !ok) return
+    const el = els[j++]
+    if (!el || kindOf(el) !== k) ok = false
+    else pairs.push([i, el])
+  })
+  if (j !== els.length) ok = false
+  const failed = new Set(tr.failed ?? [])
+  const under = (i: number) => {
+    const t = tr.blocks?.[i]
+    if (t) return trLine('tr', inlineHtml(t))
+    return failed.has(i) ? trLine('tr tr-fail', esc(TW.blockFailed), !!tr.retry) : null
+  }
+  if (ok) {
+    for (const [i, el] of pairs) {
+      const line = under(i)
+      if (!line) continue
+      if (el.tagName === 'LI') { const nested = [...el.children].find((c) => c.tagName === 'UL' || c.tagName === 'OL'); if (nested) nested.before(line); else el.append(line) }
+      else if (el.tagName === 'TD' || el.tagName === 'TH') el.append(line)
+      else el.after(line)
+    }
+  } else blocks.forEach((_, i) => { const line = under(i); if (line) root.append(line) })
+  if (tr.loading) root.append(trLine('tr tr-note', esc(TW.translating)))
+  if (tr.error) root.append(trLine('tr tr-fail', esc(tr.error), !!tr.retry))
 }
 
 /** a task's id (GTM-15) never breaks at its hyphen onto two lines */
@@ -125,22 +195,47 @@ function onCopy(e: MouseEvent) {
   void copyText(code.textContent.replace(/\n$/, ''), el).then((ok) => ok && copied(el))
 }
 
-/** chat: the chat it is in, so a #-mention of a space (core/mentions.js) draws as a chip, open or locked, and a URL
-    the agent wrote is a link */
-export function Markdown({ text, chat }: { text: string; chat?: string }) {
-  if (chat && hasMention(text)) return <WithMentions text={text} chat={chat} />
-  return <Plain text={text} inChat={Boolean(chat)} />
+/** One translation line (SHEP-102), as under a chat message's block: its inline markdown, dim, a thin rule on its left.
+ *  A failure says so, with Retry; note: a quiet line (Translating…). */
+export function TrLine({ text, fail, note, retry }: { text: string; fail?: boolean; note?: boolean; retry?: () => void }) {
+  const html = useMemo(() => (fail || note ? esc(text) : inlineHtml(text)), [text, fail, note])
+  return (
+    <div data-tr className={clsx('tr-line', fail && 'tr-fail', note && 'tr-note')}>
+      <span dangerouslySetInnerHTML={{ __html: html }} />
+      {retry ? <>{' · '}<button type="button" data-retry onClick={retry}>{TW.retry}</button></> : null}
+    </div>
+  )
 }
 
-function Plain({ text, inChat }: { text: string; inChat: boolean }) {
-  const html = useMemo(() => toHtml(text, null, inChat), [text, inChat])
-  return <div className="prose-reply" onClick={onCopy} dangerouslySetInnerHTML={{ __html: html }} />
+/** chat: the chat it is in, so a #-mention of a space (core/mentions.js) draws as a chip, open or locked, and a URL
+    the agent wrote is a link. tr: its translation (SHEP-102) */
+export function Markdown({ text, chat, tr }: { text: string; chat?: string; tr?: Tr }) {
+  if (chat && hasMention(text)) return <WithMentions text={text} chat={chat} tr={tr} />
+  return <Plain text={text} inChat={Boolean(chat)} tr={tr} />
+}
+
+/** what a translation shows, as a key for useMemo (its Retry aside) */
+const trKey = (tr?: Tr) => (tr ? JSON.stringify([tr.source, tr.blocks, tr.failed, tr.loading, tr.error, !!tr.retry]) : '')
+
+/** a press on a translation's Retry */
+function onRetry(e: MouseEvent, tr?: Tr) {
+  const el = (e.target as Element).closest('[data-retry]')
+  if (!el || !e.currentTarget.contains(el)) return false
+  e.stopPropagation()
+  tr?.retry?.()
+  return true
+}
+
+function Plain({ text, inChat, tr }: { text: string; inChat: boolean; tr?: Tr }) {
+  const html = useMemo(() => toHtml(text, null, inChat, tr), [text, inChat, trKey(tr)])
+  const click = (e: MouseEvent) => { if (!onRetry(e, tr)) onCopy(e) }
+  return <div className="prose-reply" onClick={click} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 const CHIP = 'inline-flex max-w-full items-baseline rounded-md px-1.5 align-baseline whitespace-nowrap no-underline'
 const LOCK = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" class="size-3 shrink-0 self-center mr-1"><path fill-rule="evenodd" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z" clip-rule="evenodd"/></svg>'
 
-function WithMentions({ text, chat }: { text: string; chat: string }) {
+function WithMentions({ text, chat, tr }: { text: string; chat: string; tr?: Tr }) {
   const snap = useSnap()
   const got = useReach(chat)
   const states = new Map<string, ReturnType<typeof stateOf>>()
@@ -174,8 +269,9 @@ function WithMentions({ text, chat }: { text: string; chat: string }) {
     }
     chip.append(words)
     a.replaceWith(chip)
-  }, true), [text, key])
+  }, true, tr), [text, key, trKey(tr)])
   const click = (e: MouseEvent) => {
+    if (onRetry(e, tr)) return
     const t = (e.target as Element).closest('[data-task]')
     if (t && e.currentTarget.contains(t)) { e.stopPropagation(); return openTask(t.getAttribute('data-task')!) }
     const el = (e.target as Element).closest('[data-place]')

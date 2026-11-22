@@ -22,7 +22,8 @@ import { draggingFiles, dropped, named, pasted } from './paste.ts'
 import { dayLabel } from './days.ts'
 import { FindBar, openFind } from './find.tsx'
 import { Fold } from './fold.tsx'
-import { Markdown } from './markdown.tsx'
+import { Markdown, type Tr } from './markdown.tsx'
+import { messageKey, retry as retryTranslate, setWriting, useShown } from './translate.ts'
 import { answeredBy, cancelReply, canReply, isArtifact, jumpTo, startReply } from './reply.ts'
 import { typing, working } from './typing.ts'
 import { suggestionOf, suggestionsOn } from './suggest.ts'
@@ -63,6 +64,14 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
   const picked = usePicked(msg.id, chat.key)
   const selecting = useUI((u) => u.selecting === msg.id)
   const text = useRef<HTMLDivElement>(null)
+  // SHEP-102: its translation under each block, while the Translate icon shows it (the agent's words only)
+  const tkey = messageKey(chat.key, msg.id)
+  const shownTr = useShown(tkey)
+  // a reply still being written gets no Translate (its band waits; a phone's hold menu asks isWriting)
+  useEffect(() => { setWriting(tkey, !!writing); return () => setWriting(tkey, false) }, [tkey, writing])
+  const tr: Tr | undefined = !you && msg.text && shownTr?.shown
+    ? { source: msg.text, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text!, chat: chat.key, id: msg.id }) }
+    : undefined
   // one on its way isn't a message yet: a hold (or ⋯ with a mouse) offers only to take it out
   const [menu, setMenu] = useState(false)
   const pending = out && out.state !== 'failed' ? out : undefined
@@ -199,7 +208,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
                     return blocker ? <LinkButton onClick={() => jumpTo(chat.key, blocker.id, { card: true })}>Go to question</LinkButton> : null
                   })()}
                 </> : msg.waitsFor === 'queue' ? <InQueue chatKey={chat.key} /> : waitLine(msg.waitsFor)}</div> : null}
-                {msg.text ? <div ref={text} data-text>{you ? <YourText text={msg.text} chat={chat.key} /> : <Fold id={msg.id}><Markdown text={msg.text} chat={chat.key} /></Fold>}</div> : null}
+                {msg.text ? <div ref={text} data-text>{you ? <YourText text={msg.text} chat={chat.key} /> : <Fold id={msg.id}><Markdown text={msg.text} chat={chat.key} tr={tr} /></Fold>}</div> : null}
               </div>,
               true,
             )
@@ -1256,8 +1265,11 @@ const Messages = memo(function Messages({ chat, from }: { chat: Chat; from: stri
     } else rows.push({ at: it.at, album: [m], out: it.out, last: it.last })
   }
   // the agent's newest reply while it works: it may still be writing it, so its band waits
-  const tail = chat.messages.findLast((m) => !m.question && !m.secret)
-  const writing = chat.working && tail?.who === 'agent' && tail.text && !tail.brief && !tail.news ? tail.id : null
+  // (the agent's newest words, whatever quiet rows, files or queued prompts the service put after them: the reply is
+  // done only once the person's own delivered message comes after it, or the agent stops working)
+  const tail = chat.messages.findLast((m) => m.who === 'agent' && !!m.text && !m.question && !m.secret && !m.brief && !m.news && !m.card && !m.answered && !m.asked)
+  const answered = !!tail && chat.messages.slice(chat.messages.indexOf(tail) + 1).some((m) => m.who === 'you' && !m.waiting && !m.brief && !m.news && !m.card)
+  const writing = chat.working && tail && !answered ? tail.id : null
   const newAt = useContext(NewAt)
   // a message just sent, or just in, rises into place
   const list = useRef<HTMLDivElement>(null)

@@ -128,9 +128,10 @@ export function clock(at, now = new Date()) {
 // The actions under a message, in order: reply and copy; then the CLI's rewind on your own (not a /command, not one
 // another agent sent), or on the agent's its paths (the window chat's Paths, when the reply names one: SHEP-110) and
 // its fork (when the CLI is known).
-export function bandActs(side, text, { from = null, fork = true, paths = false } = {}) {
+// translate (SHEP-102): the agent's words get Translate while Settings › Translation is on; yours never do.
+export function bandActs(side, text, { from = null, fork = true, paths = false, translate = false } = {}) {
   if (side === "user") return ["reply", "copy", ...(/^\//.test(String(text ?? "")) || from ? [] : ["rewind"])];
-  return ["reply", "copy", ...(paths ? ["paths"] : []), ...(fork ? ["fork"] : [])];
+  return ["reply", "copy", ...(paths ? ["paths"] : []), ...(fork ? ["fork"] : []), ...(translate ? ["translate"] : [])];
 }
 
 // The whole band, in order from left to right (DECISIONS, Chat > Message actions): the reaction pills flush under the
@@ -513,6 +514,7 @@ export function mediaIn(text, { cwd = null, home = null } = {}) {
     if (marks.length === 1 && label && rest.length <= 40 && (/:[*_]*$/.test(rest) || /^[*_]/.test(rest))) { media[Number(marks[0][1])].alt = label; return []; }
     return rest ? [l.replace(/\u0000\d+\u0000[ \t]*/g, "").replace(/[ \t]+$/, "")] : [];
   });
-  const words = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // only blank lines and trailing space go at the ends: an indented code block left first keeps its indent (SHEP-102)
+  const words = lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
   return { text: words, media };
 }

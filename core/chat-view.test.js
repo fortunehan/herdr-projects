@@ -37,6 +37,7 @@ describe("rows", () => {
     expect(bandActs("agent", "done")).toEqual(["reply", "copy", "fork"]);
     expect(bandActs("agent", "done", { fork: false })).toEqual(["reply", "copy"]);
     expect(bandActs("agent", "at /tmp/a/b", { paths: true })).toEqual(["reply", "copy", "paths", "fork"]);
+    expect(bandActs("agent", "at /tmp/a/b", { paths: true, translate: true })).toEqual(["reply", "copy", "paths", "fork", "translate"]);
   });
   test("who sent a message, never its address", () => {
     const terms = { t1: { labels: { "herdr.role": "reviewer" } }, t2: { labels: { "herdr.role": "coordinator" } }, "vm/t3": { name: "herd-12-fix" } };

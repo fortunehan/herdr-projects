@@ -57,7 +57,7 @@ function chat(machine: string | null = null, texts = [REPLY, URLS]) {
   const c: any = Object.create(Chat.prototype);
   Object.assign(c, { width: 760, listW: { laid: 760 }, finding: false, machine, reach: null, opened: new Set(), copied: null,
     results: new Map(), heights: new Map(), unfolded: new Set(), myReacts: new Map(), views: {}, arts: [], askEnds: [], pending: [],
-    queue: [], replied: [], asks: [], cardW: new Map(), start: 0, kind: "claude", t: null, addr: "t1" });
+    queue: [], replied: [], asks: [], cardW: new Map(), tr: new Map(), start: 0, kind: "claude", t: null, addr: "t1" });
   c.conv = { items: texts.map((text, i) => ({ kind: "agent", id: `a${i}`, text, at: Date.now() - 1000 * (texts.length - i) })), reactions: new Map() };
   Object.assign(c, { status: (): string => "idle", resolveArts: () => new Map(), newsLines: () => ({ extra: [], inline: new Map() }),
     loadAskEnds: () => {}, workerTasks: () => new Map(), timelineCards: () => [] });
@@ -79,6 +79,12 @@ describe("the window chat's Paths action (SHEP-110)", () => {
     const rows = built(chat());
     expect(rows.find((r: any) => r.id === "ab:a0").bar.acts).toEqual(["reply", "copy", "paths", "fork"]);
     expect(rows.find((r: any) => r.id === "ab:a1").bar.acts).toEqual(["reply", "copy", "fork"]);
+  });
+
+  test("with Translation on (SHEP-102) the band has both: Paths beside Copy, Translate last", () => {
+    const c = chat();
+    c.trOn = true;
+    expect(built(c).find((r: any) => r.id === "ab:a0").bar.acts).toEqual(["reply", "copy", "paths", "fork", "translate"]);
   });
 
   test("pressing Paths lists the reply's paths under its band, never one only in a code block; again closes it", () => {

@@ -193,6 +193,23 @@ class Publish(unittest.TestCase):
         self.assertLess(time.time() - t, 10)
         self.assertIn("didn't finish", out["unchecked"])
 
+    def test_a_new_recipe_view_reinstalls_installed_artifacts(self):
+        """SHEP-102: the recipe view and what it imports (recipe.js, translate.js, paths.js) count in the installed
+        version, so an artifact installed before a change to them (its Translate lines) is installed again."""
+        before = A.markup_hash()
+        for name in ("RECIPE_VIEW", "RECIPE_CORE"):
+            f = os.path.join(self.dir, f"{name}.js")
+            with open(f, "w") as fh:
+                fh.write("// changed\n")
+            with mock.patch.object(A, name, f):
+                self.assertNotEqual(A.markup_hash(), before, name)
+        f = os.path.join(self.dir, "translate.js")
+        with open(f, "w") as fh:
+            fh.write("// changed\n")
+        with mock.patch.object(A, "RECIPE_TRANSLATE", [f, A.RECIPE_TRANSLATE[1]]):
+            self.assertNotEqual(A.markup_hash(), before)
+        self.assertEqual(A.markup_hash(), before)
+
     def test_every_installed_import_resolves(self):
         """#870: the installed Mark up imports dirs.js (and that imports core/paths.js), which the artifact's mod
         must carry: a relative import with no file beside it fails the whole artifact in the desktop app."""

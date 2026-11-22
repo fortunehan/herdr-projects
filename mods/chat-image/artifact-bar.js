@@ -14,12 +14,18 @@ import { showInSidebar, hasSidebarView } from "./artifact-sidebar.js";
 import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
 import { releaseKeys } from "./keyholder.js";
+import { translateOn, toggleArtifact, stateOf as translation, watchRetries, isRecipe } from "./artifact-translate.js";
 
 const MARKUP = "artifacts.markup";
 
 export function initArtifactBar(view, cx) {
   const a = props().artifact;
   view.art = { versions: null, busy: false };
+  // Translate (SHEP-102): whether Settings › Translation is on, and a Retry pressed in the artifact asked again
+  translateOn(cx);
+  isRecipe(cx, a.mod);
+  cx.timer.every(15000, (cx) => translateOn(cx));
+  watchRetries(cx);
   // Its versions (kept: the last 20), for the stepper; the record lives on the artifact's machine.
   cx.spawn(async (cx) => {
     try { view.art.versions = (await cli(a.machine, ["show", a.id])).versions ?? []; } catch { view.art.versions = []; }
@@ -136,6 +142,16 @@ export function artifactBar(view, a, handle) {
       .when(older && !busy, (el) => el.child(div().px(2).text_size(TEXT.label).text_color(t.dim).child("·"))
         .child(textBtn("latest", null, "Latest ›", (cx) => step(view, a, null, cx), false, t)))
       .child(rule(t)))
+    // Translate / Hide translation (SHEP-102), as the sidebar's and the web's: the whole version translated, each text's
+    // translation under it (mods/artifacts/recipe-view.js)
+    .when(translateOn(null) && isRecipe(null, a.mod) === true, (el) => {
+      const ta = { id: a.id, version: shown, machine: a.machine ?? null }, on = Boolean(translation(ta)?.shown);
+      return el.child(h_flex().id("translate").size(32).flex_none().items_center().justify_center().rounded(RADIUS.control).cursor_pointer()
+        .text_color(on ? t.foreground : t.muted).when(on, (b) => b.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover).text_color(t.foreground))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); toggleArtifact(cx, ta); cx.notify(); })
+        .child(svg("mods/chat-image/languages.svg").size(16)));
+    })
     // Mark up / Done, as the sidebar's (artifacts/main.js) and the web's: a pointer clicking a spot; while marking, Done
     // with a tick, tinted the accent of the frame round what you mark
     .child(h_flex().id("markup").h(32).flex_none().pl(8).pr(10).gap(6).items_center().rounded(RADIUS.control).cursor_pointer()
