@@ -30,6 +30,7 @@ const QUOTE = /^ {0,3}>[ \t]?/;
 const ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)(.*)$/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
 const LINK_DEF = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S+/;
+const LINK_DEF_OPEN = /^ {0,3}\[[^\]\n]+\]:[ \t]*$/;
 const TABLE_SEP = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
 
 const indentOf = (s) => s.replace(/\t/g, "    ").match(/^ */)[0].length;
@@ -74,6 +75,11 @@ export function mdBlocks(md) {
     if (blank(l)) { i++; continue; }
     // a link's reference ([help]: https://…): no words of its own, and no element in the page
     if (LINK_DEF.test(l)) { out.push({ kind: "def", text: "", src: l, skip: true }); i++; continue; }
+    if (LINK_DEF_OPEN.test(l) && i + 1 < lines.length && /^\s*\S+/.test(lines[i + 1]) && !blank(lines[i + 1])) {
+      out.push({ kind: "def", text: "", src: `${l}\n${lines[i + 1]}`, skip: true });
+      i += 2;
+      continue;
+    }
     // an indented code block (four spaces in, not a paragraph's next line, nor in a list: a list's deeper item or its
     // indented lines are the list's)
     if (indentOf(l) >= 4 && !(out.length && out[out.length - 1].kind === "item")) {
@@ -103,6 +109,7 @@ export function mdBlocks(md) {
       const rows = [cellsOf(l)];
       i += 2;
       while (i < lines.length && !blank(lines[i]) && lines[i].includes("|")) rows.push(cellsOf(lines[i++]));
+      for (const r of rows) { r.length = Math.min(r.length, rows[0].length); while (r.length < rows[0].length) r.push(""); }
       const src = lines.slice(start, i).join("\n");
       rows.forEach((r, ri) => r.forEach((c, ci) => put({ kind: "cell", text: c, src, table: t, row: ri, col: ci, cols: rows[0].length })));
       continue;
@@ -137,6 +144,15 @@ export function mdBlocks(md) {
           const next = lines.slice(i + 1).find((x) => !blank(x));
           if (next !== undefined && indentOf(next) > ind + 1 && !ITEM.test(next)) { i++; afterBlank = true; continue; }
           break;
+        }
+        // a fence deeper than the item's marker is the item's own code block: kept in its markdown, never in its words
+        const deepFence = /^\s*(`{3,}|~{3,})/.exec(n);
+        if (deepFence && indentOf(n) > ind) {
+          const mark = deepFence[1];
+          i++;
+          while (i < lines.length && !new RegExp(`^\\s*${mark[0]}{${mark.length},}[ \\t]*$`).test(lines[i])) i++;
+          if (i < lines.length) i++;
+          continue;
         }
         if (ITEM.test(n) || HEADING.test(n) || FENCE.test(n) || QUOTE.test(n) || (RULE.test(n) && indentOf(n) <= ind)) break;
         // its indented code: kept in its markdown, never in its words
@@ -321,6 +337,8 @@ export function windowParts(md, tr = [], failed = []) {
   // the message's link references ([help]: https://…), under each part drawn on its own, so its links still link
   const defs = blocks.filter((b) => b.kind === "def").map((b) => b.src).join("\n");
   const own = (src) => (defs ? `${src}\n\n${defs}` : src);
+  // each depth's last ordered number, while a list goes on
+  const numbers = {};
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.kind === "def") continue;
@@ -336,7 +354,17 @@ export function windowParts(md, tr = [], failed = []) {
       continue;
     }
     const depth = b.kind === "item" ? b.depth ?? 0 : 0;
-    out.push({ type: "md", text: own(b.src), depth });
+    // an ordered item drawn on its own keeps its place in its list ("1." "1." "1." is 1, 2, 3)
+    let src = b.src;
+    if (b.kind === "item" && b.ordered) {
+      const start = Number(/^\s*(\d+)/.exec(src)?.[1] ?? 1);
+      const prev = numbers[depth];
+      const n = prev && blocks[i - 1] && (blocks[i - 1].kind === "item") ? prev + 1 : start;
+      for (const d of Object.keys(numbers)) if (Number(d) > depth) delete numbers[d];
+      numbers[depth] = n;
+      src = src.replace(/^(\s*)\d+([.)])/, `$1${n}$2`);
+    } else if (b.kind !== "item") for (const d of Object.keys(numbers)) delete numbers[d];
+    out.push({ type: "md", text: own(src), depth });
     if (tr[i]) out.push({ type: "tr", text: b.kind === "heading" ? `**${tr[i]}**` : tr[i], depth });
     else if (bad.has(i)) out.push({ type: "fail", depth });
   }

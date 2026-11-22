@@ -56,12 +56,13 @@ export class Translator {
   /** One request to the endpoint: the model's answer text. Settings › Translation as it is now first: turned off or
    *  pointed elsewhere since this translation started, nothing more is sent (not to the old endpoint, nor the new). */
   private async ask(cfg: Config, texts: string[], target: string, testing = false): Promise<string> {
-    const now = this.io.config();
-    if ((!testing && !now.on) || now.base_url !== cfg.base_url || now.model !== cfg.model || now.key !== cfg.key) throw new Error(CHANGED);
     const url = T.endpointOf(cfg.base_url);
     if (!url) throw new Error(T.WORDS.notSet);
     const k = await this.keyOf(cfg.key);
     if ("error" in k) throw new Error(k.error);
+    // right before it goes (after the key's lookup, which can take a while)
+    const now = this.io.config();
+    if ((!testing && !now.on) || now.base_url !== cfg.base_url || now.model !== cfg.model || now.key !== cfg.key) throw new Error(CHANGED);
     let r: Response;
     try {
       r = await (this.io.fetchFn ?? fetch)(url, {
@@ -81,6 +82,12 @@ export class Translator {
     const text = T.answerText(d);
     if (typeof text !== "string") throw new Error("the endpoint's answer had no message in it");
     return text;
+  }
+
+  /** The translations with the key taken out, as decoded (an answer can carry it escaped): never returned nor kept. */
+  private async scrub(cfg: Config, got: (string | null)[]) {
+    const k = await this.keyOf(cfg.key);
+    return "key" in k && k.key ? got.map((t) => (t ? t.split(k.key).join("…") : t)) : got;
   }
 
   private file(kind: string, id: string, target: string) {
@@ -119,7 +126,7 @@ export class Translator {
       const need = at.map((i: number, k: number) => ({ i, text: texts[k] })).filter((x: { i: number }) => !out[x.i]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
+        try { got = await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); got = await this.scrub(cfg, got); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as MessageResult; }
         need.forEach((x: { i: number }, k: number) => { if (got[k]) out[x.i] = got[k]; });
         this.write(f, { target, at: this.now(), blocks: out });
@@ -148,7 +155,7 @@ export class Translator {
       const need = units.filter((u) => !out[u.key]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
+        try { got = await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); got = await this.scrub(cfg, got); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as ArtifactResult; }
         need.forEach((u, k) => { if (got[k]) out[u.key] = got[k]!; });
         this.write(f, { target, at: this.now(), units: out });

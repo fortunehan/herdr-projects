@@ -8,7 +8,7 @@ the translation sits under it, a step dimmer with a thin rule on its left. Press
   app's chat (the same icon; on a phone, Translate in the message's hold menu), and the artifact viewer's and sidebar's
   bars (one button for the whole version).
 - **What:** the agent's messages, once complete (no button while it still writes one, nor in a phone's hold menu),
-  proofs and recipe artifacts (their text blocks, captions, table cells, a tab's label and a chart's legend; a bar or
+  proofs and recipe artifacts (a custom panel, which only the window draws, gets no button; their text blocks, captions, table cells, a tab's label and a chart's legend; a bar or
   line chart's axis labels stay as they are).
   Never your own messages or question cards. Code blocks, inline code, commands, paths, task ids (SHEP-96) and links
   stay as they are and get no translation line.

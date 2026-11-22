@@ -14,7 +14,7 @@ import { showInSidebar, hasSidebarView } from "./artifact-sidebar.js";
 import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
 import { releaseKeys } from "./keyholder.js";
-import { translateOn, toggleArtifact, stateOf as translation, watchRetries } from "./artifact-translate.js";
+import { translateOn, toggleArtifact, stateOf as translation, watchRetries, isRecipe } from "./artifact-translate.js";
 
 const MARKUP = "artifacts.markup";
 
@@ -23,6 +23,7 @@ export function initArtifactBar(view, cx) {
   view.art = { versions: null, busy: false };
   // Translate (SHEP-102): whether Settings › Translation is on, and a Retry pressed in the artifact asked again
   translateOn(cx);
+  isRecipe(cx, a.mod);
   cx.timer.every(15000, (cx) => translateOn(cx));
   watchRetries(cx);
   // Its versions (kept: the last 20), for the stepper; the record lives on the artifact's machine.
@@ -143,7 +144,7 @@ export function artifactBar(view, a, handle) {
       .child(rule(t)))
     // Translate / Hide translation (SHEP-102), as the sidebar's and the web's: the whole version translated, each text's
     // translation under it (mods/artifacts/recipe-view.js)
-    .when(translateOn(null), (el) => {
+    .when(translateOn(null) && isRecipe(null, a.mod) === true, (el) => {
       const ta = { id: a.id, version: shown, machine: a.machine ?? null }, on = Boolean(translation(ta)?.shown);
       return el.child(h_flex().id("translate").size(32).flex_none().items_center().justify_center().rounded(RADIUS.control).cursor_pointer()
         .text_color(on ? t.foreground : t.muted).when(on, (b) => b.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover).text_color(t.foreground))

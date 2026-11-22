@@ -68,6 +68,17 @@ describe("mdBlocks", () => {
     expect(T.windowParts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]: https://example.invalid/guide");
   });
 
+  test("a nested item's fenced code isn't sent; a short table row is as wide as its header; numbers and references kept", () => {
+    const md = "- First\n  - Second\n    ```sh\n    echo KeepThisPrivate\n    ```\n- Third\n\n1. a one\n1. b two\n1. c three\n\n| A | B |\n|---|---|\n| only |\n\nRead [the guide][help].\n\n[help]:\n  https://example.invalid/guide";
+    expect(T.messageTexts(md).texts).toEqual(["First", "Second", "Third", "a one", "b two", "c three", "only", "Read [the guide][help]."]);
+    expect(T.mdBlocks(md).filter((b) => b.kind === "cell").length).toBe(4);
+    const parts = T.windowParts(md).filter((x) => x.type === "md").map((x) => x.text.split("\n")[0]);
+    expect(parts).toContain("2. b two");
+    expect(parts).toContain("3. c three");
+    expect(T.windowParts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]:\n  https://example.invalid/guide");
+    expect(T.direction("Build ready.\n\n- Steps\n  - Run\n    ```\n    // 这是一段很长的中文注释，写在代码里面\n    ```")).toBe("zh");
+  });
+
   test("a heading or a list in a quote, and an indented code block", () => {
     const b = T.mdBlocks("> ## Quoted heading\n> words under it\n\nText.\n\n    const sample = \"hello world\";\n    more();\n\nAfter.");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Quoted heading"], ["quote", "words under it"], ["para", "Text."], ["code", ""], ["para", "After."]]);
@@ -100,6 +111,7 @@ describe("mdBlocks", () => {
     const samples = [MSG, "## 结果\n\n修好了。\n\n* 一\n* 二\n\n|列|值|\n|-|-|\n|a|b|", "Title\n=====\n\n- [x] done\n- loose\n\n  more\n- last",
       "Text\n- list right after\n- two\n\nEnd.", "> one\n>\n> two\n\nafter", "1. a\n   1. b\n2. c",
       "> ## Quoted heading\n> words\n\n    indented code\n\nEnd.", "> - quoted item\n> - another",
+      "- First\n  - Second\n    ```sh\n    echo KeepThisPrivate\n    ```\n- Third", "| A | B |\n|---|---|\n| only |",
       "- Run this:\n\n      echo KeepThisPrivate\n\n- alpha\n  - beta\n    - gamma\n\nRead [the guide][help].\n\n[help]: https://example.invalid/guide"];
     for (const md of samples) expect(T.mdBlocks(md).map(T.domKind).filter(Boolean)).toEqual(domKinds(md));
   });

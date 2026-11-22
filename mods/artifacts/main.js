@@ -19,7 +19,7 @@ import { artifactCli as cli, showViewer } from "./artview.js";
 import { toast, plainError, TEXT, RADIUS } from "./ui.js";
 import { holdKeys } from "./keyholder.js";
 import { dirs } from "./dirs.js";
-import { translateOn, toggleArtifact, stateOf as translation, watchRetries } from "./artifact-translate.js";
+import { translateOn, toggleArtifact, stateOf as translation, watchRetries, isRecipe } from "./artifact-translate.js";
 
 const ICON = "mods/artifacts/artifacts.svg";
 const modOf = (machine, id) => (machine ? `art-${machine.replace(/[^A-Za-z0-9_-]+/g, "-")}-${id}` : `art-${id}`);
@@ -342,7 +342,7 @@ export default class Artifacts extends View {
             .child("Latest ›")))))
       // Translate / Hide translation (SHEP-102), as the viewer's bar and the web's: the whole version, each text's
       // translation under it (recipe-view.js), while Settings › Translation is on
-      .when(Boolean(v) && translateOn(cx), (el) => {
+      .when(Boolean(v) && translateOn(cx) && isRecipe(cx, v?.mod) === true, (el) => {
         const a = { id: v.id, version: shown, machine: v.machine ?? null }, on = Boolean(translation(a)?.shown);
         return el.child(div().id("art-translate").size(24).flex_none().flex().items_center().justify_center().rounded(RADIUS.control)
           .cursor_pointer().text_color(on ? t.foreground : t.muted).when(on, (b) => b.bg(t.hover)).hover((s) => s.bg(t.hover).text_color(t.foreground))

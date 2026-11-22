@@ -45,7 +45,7 @@ async function ask(key: string, body: Ask) {
 /** The Translate icon: shows the translation (asking for it once), or hides it when it shows */
 export function toggle(key: string, body: Ask) {
   const s = all.get(key)
-  if (s?.shown && s.state !== 'loading') return put(key, { ...s, shown: false })
+  if (s?.shown) return put(key, { ...s, shown: false })
   if (s?.state === 'done' && !s.failed?.length) return put(key, { ...s, shown: true })
   if (s?.state !== 'loading') void ask(key, body)
 }

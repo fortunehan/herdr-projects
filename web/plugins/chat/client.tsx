@@ -1265,9 +1265,11 @@ const Messages = memo(function Messages({ chat, from }: { chat: Chat; from: stri
     } else rows.push({ at: it.at, album: [m], out: it.out, last: it.last })
   }
   // the agent's newest reply while it works: it may still be writing it, so its band waits
-  // (a picture or file the service puts after its words isn't the reply: the words before it still are)
-  const tail = chat.messages.findLast((m) => !m.question && !m.secret && !(m.file && !m.text))
-  const writing = chat.working && tail?.who === 'agent' && tail.text && !tail.brief && !tail.news ? tail.id : null
+  // (the agent's newest words, whatever quiet rows, files or queued prompts the service put after them: the reply is
+  // done only once the person's own delivered message comes after it, or the agent stops working)
+  const tail = chat.messages.findLast((m) => m.who === 'agent' && !!m.text && !m.question && !m.secret && !m.brief && !m.news)
+  const answered = !!tail && chat.messages.slice(chat.messages.indexOf(tail) + 1).some((m) => m.who === 'you' && !m.waiting)
+  const writing = chat.working && tail && !answered ? tail.id : null
   const newAt = useContext(NewAt)
   // a message just sent, or just in, rises into place
   const list = useRef<HTMLDivElement>(null)

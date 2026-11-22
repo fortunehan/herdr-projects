@@ -286,9 +286,15 @@ export default class RecipeView extends View {
     }
     if (b.kind === "line") {
       // each series' points, joined by their order: dots on a plot, a value's height from the bottom
-      return div().relative().w_full().h(140).border_b_1().border_color(t.border)
-        .children(s.lines.flatMap((l, li) => l.points.map((p, i) => div().absolute().size(6).rounded(3).bg(colors[li % colors.length])
-          .left(`${p.x * 96}%`).bottom(`${p.y * 92}%`))));
+      // its labels under the plot, each with its translation under it (SHEP-102)
+      const tl = (i) => translation()?.units?.[`${this.paths.get(b)}.label.${i}`];
+      return v_flex().w_full().gap(6)
+        .child(div().relative().w_full().h(140).border_b_1().border_color(t.border)
+          .children(s.lines.flatMap((l, li) => l.points.map((p, i) => div().absolute().size(6).rounded(3).bg(colors[li % colors.length])
+            .left(`${p.x * 96}%`).bottom(`${p.y * 92}%`)))))
+        .when((b.labels ?? []).length > 0, (e) => e.child(h_flex().w_full().children((b.labels ?? []).map((l, i) => v_flex().flex_1().min_w(0).items_center()
+          .child(div().w_full().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))
+          .when(Boolean(tl(i)), (x) => x.child(div().w_full().text_size(11).text_color(t.foreground).text_center().truncate().child(String(tl(i) ?? ""))))))));
     }
     // bars: each label's group, a bar per series, its height from the biggest value
     const series = b.series ?? [], groups = (b.labels ?? []).length || Math.max(0, ...series.map((x) => x.values.length));

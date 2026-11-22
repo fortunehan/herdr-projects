@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Translator } from "./translate.ts";
 
 // a stub translation endpoint on 127.0.0.1, never a real API: [zh]/[en] in front of each string; `mode` breaks it
-let mode: "ok" | "short" | "401" | "500key" | "garbage" = "ok";
+let mode: "ok" | "short" | "401" | "500key" | "garbage" | "keyecho" = "ok";
 const seen: { auth: string | null; body: any }[] = [];
 const stub = Bun.serve({
   hostname: "127.0.0.1", port: 0,
@@ -18,6 +18,8 @@ const stub = Bun.serve({
     const to = body.messages[0].content.includes("Simplified Chinese") ? "zh" : "en";
     let out: unknown = texts.map((t) => `[${to}]${t}`);
     if (mode === "short" && texts.length > 1) out = (out as string[]).slice(1);
+    // the key in a translation, its first letter escaped twice over (in the answer's JSON and in the array's)
+    if (mode === "keyecho") return new Response(`{"choices":[{"message":{"content":"[\\"key \\\\u0073k-stub-secret here\\"]"}}]}`, { headers: { "content-type": "application/json" } });
     if (mode === "garbage") return Response.json({ choices: [{ message: { content: "I can't do that." } }] });
     return Response.json({ choices: [{ message: { content: JSON.stringify(out) } }] });
   },
@@ -117,6 +119,25 @@ describe("a message", () => {
     const r2: any = await t2.message("One paragraph here.\n\nAnother paragraph here.");
     expect(r2).toMatchObject({ ok: false, error: expect.stringContaining("changed while it translated") });
     expect(seen.length).toBe(1);
+  });
+
+  test("a translation that carries the key, however it is escaped, is neither shown nor kept", async () => {
+    reset();
+    mode = "keyecho";
+    const { t, dir } = make();
+    const r: any = await t.message("Some words to translate.");
+    expect(r.ok).toBe(true);
+    expect(r.blocks[0]).toBe("key … here");
+    expect(readFileSync(join(dir, readdirSync(dir)[0]), "utf8")).not.toContain("stub-secret");
+  });
+
+  test("turned off while the key is looked up: nothing goes to the old endpoint", async () => {
+    reset();
+    let cfg = { on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 };
+    const t = new Translator({ config: () => cfg, recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
+      key: async () => { cfg = { ...cfg, on: false, base_url: "http://old.invalid/v1" }; return { key: "sk-stub-secret" }; } });
+    expect(await t.message("Private draft.")).toMatchObject({ ok: false, error: expect.stringContaining("changed while it translated") });
+    expect(seen.length).toBe(0);
   });
 
   test("an answer that is never the translation fails, and nothing is kept", async () => {

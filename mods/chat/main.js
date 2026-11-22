@@ -1967,7 +1967,8 @@ export default class Chat extends View {
     if (!q) return [];
     const out = [];
     rows.forEach((r, index) => {
-      const text = (["user", "agent", "pending", "brief"].includes(r.kind) ? r.text : r.kind === "code" ? r.code : null) ?? "";
+      // a translated reply's rows: their own blocks' words and translations (SHEP-102)
+      const text = (["user", "agent", "pending", "brief"].includes(r.kind) ? r.text : r.kind === "agenttr" ? r.find : r.kind === "code" ? r.code : null) ?? "";
       let n = 0, at = 0;
       const low = text.toLowerCase();
       while ((at = low.indexOf(q, at)) >= 0) { n++; at += q.length; }
@@ -2200,7 +2201,7 @@ export default class Chat extends View {
   // (the light fades natively: one flip of its target, no timer driving frames).
   goTo(to, before, rows) {
     const i = rows.findIndex((r) => r.id === before);
-    const target = [...rows.slice(0, i < 0 ? rows.length : i)].reverse().find((r) => (r.kind === "user" || r.kind === "agent") && r.text && names(r.text, String(to).slice(0, 60)));
+    const target = [...rows.slice(0, i < 0 ? rows.length : i)].reverse().find((r) => (r.kind === "user" || r.kind === "agent" || r.kind === "agenttr") && (r.find ?? r.text) && names(r.find ?? r.text, String(to).slice(0, 60)));
     if (!target) return;
     this.pinned = false;
     // A jump into a folded reply opens it.
@@ -2349,7 +2350,7 @@ export default class Chat extends View {
   // The Translate icon: shows the message's translation (asked for once), or hides it.
   toggleTranslation(id, text, cx) {
     const s = this.tr.get(id);
-    if (s?.shown && s.state !== "loading") { this.tr.set(id, { ...s, shown: false }); return cx.notify(); }
+    if (s?.shown) { this.tr.set(id, { ...s, shown: false }); return cx.notify(); }
     if (s?.state === "done" && !s.failed?.length) { this.tr.set(id, { ...s, shown: true }); return cx.notify(); }
     if (s?.state !== "loading") this.askTranslation(id, text, cx);
   }
@@ -3175,7 +3176,12 @@ export default class Chat extends View {
         if (trd?.shown && src) {
           const tag = `${trd.state}:${(trd.failed ?? []).length}`;
           let group = [], n = 0, lastTr = null;
-          const flush = () => { if (group.length) out.push(lastTr = { kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group }); group = []; };
+          const flush = () => {
+            if (group.length) out.push(lastTr = { kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group,
+              // what Find and a reply's jump read: this row's own words and their translations
+              find: group.flatMap((g) => (g.type === "table" ? g.rows.flat().flatMap((c) => [c.text, c.tr ?? ""]) : [g.text ?? ""])).join("\n") });
+            group = [];
+          };
           // a failure is a line of its own under its block (a row: a press on it, and only on it, asks again)
           const fail = (k, words, depth = 0) => { flush(); lastTr = null; out.push({ kind: "trfail", id: `${x.id}:trf${k}:${tag}`, of: x.id, text: src, words, depth }); };
           TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []).forEach((g, k) => {

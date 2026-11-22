@@ -224,7 +224,7 @@ function Pic({ src, file, alt, w, h }: { src: string; file: string; alt: string;
 }
 
 /** before and after side by side: a picture or a clip each; two clips play together (one's play, pause and seek are the other's) */
-function Pair({ b, asset }: { b: Block; asset: (src: string) => string }) {
+function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; under?: (side: 'before' | 'after') => ReactNode }) {
   const left = useRef<HTMLVideoElement>(null), right = useRef<HTMLVideoElement>(null)
   const sides = [['Before', b.before, left, right], ['After', b.after, right, left]] as const
   const clips = R.mediaKind(b.before?.src) === 'video' && R.mediaKind(b.after?.src) === 'video'
@@ -238,11 +238,16 @@ function Pair({ b, asset }: { b: Block; asset: (src: string) => string }) {
     <div className="grid gap-3 @lg:grid-cols-2">
       {sides.map(([w, x, mine, theirs]) => {
         const kind = R.mediaKind(x?.src)
+        // each side's caption translation under its own caption (SHEP-102)
+        const side = w === 'Before' ? 'before' : 'after'
         return kind === 'video' ? (
-          <Clip key={w} src={x.src} poster={x.poster} caption={x.caption ?? w} asset={asset} videoRef={mine} label={`${w}: ${x.caption ?? w}`}
-            events={clips ? follow(mine, theirs) : undefined} />
+          <div key={w} className="flex min-w-0 flex-col">
+            <Clip src={x.src} poster={x.poster} caption={x.caption ?? w} asset={asset} videoRef={mine} label={`${w}: ${x.caption ?? w}`}
+              events={clips ? follow(mine, theirs) : undefined} />
+            {under?.(side)}
+          </div>
         ) : (
-          <figure key={w} className="flex min-w-0 flex-col gap-1.5"><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}</figcaption></figure>
+          <figure key={w} className="flex min-w-0 flex-col gap-1.5"><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}{under?.(side)}</figcaption></figure>
         )
       })}
     </div>
@@ -358,7 +363,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
       case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
       case 'audio': return <><Sound src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
       case 'pdf': return <><Pdf src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
-      case 'pair': return <><Pair b={b} asset={asset} />{T(b, 'before')}{T(b, 'after')}</>
+      case 'pair': return <Pair b={b} asset={asset} under={(side) => T(b, side)} />
       case 'code': return <Code b={b} />
       case 'check': return <><Check b={b} />{T(b, 'summary')}{T(b, 'caption')}</>
       case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{T(b, 'title')}{b.md ? md(b, 'md', b.md) : null}</div>
