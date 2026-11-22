@@ -27,7 +27,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - `herdr-app check` never runs a v_virtual_list's rows: window-mod list rows must take no handlers (on_*) and no kept
   cx (gpui-kit.d.ts 'no handlers and no retained state'); service/chat-rows.test.ts runs the chat's list renderer as written.
 - Window chat `rows()` can be run in a bun test with stubs: status, resolveArts, newsLines, loadAskEnds, workerTasks,
-  timelineCards plus conv/replied/pending/queue fields (see service/chat-paths.test.ts); the chat's log page caps at
+  timelineCards plus conv/replied/pending/queue/tr fields (see service/chat-paths.test.ts); the chat's log page caps at
   ~258 items whatever record count the SHEP-109 render harness asks for.
 - Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
   the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.

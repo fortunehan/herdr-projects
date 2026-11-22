@@ -184,7 +184,7 @@ const shownLines = (text, h, width) => {
   }
   return out.join("\n");
 };
-const ICONS = { copy: "copy", reply: "reply", rewind: "rewind", fork: "git-fork", react: "smile-plus", translate: "languages" };
+const ICONS = { copy: "copy", reply: "reply", rewind: "rewind", fork: "git-fork", react: "smile-plus", paths: "folder-open", translate: "languages" };
 // Reaction pills: this wide and tall (inside the ACT row, so they sit on the icons' center line
 // without towering over them), this far apart; and the gap between them and the smiley.
 const PILL = 46, PILL_H = 20, PILL_GAP = 4, PILL_EDGE = 6;
@@ -2475,6 +2475,7 @@ export default class Chat extends View {
     if (what === "fork") this.fork(cx);
     if (what === "translate") this.toggleTranslation(row.of, row.trText ?? row.text, cx);
     if (what === "react") { this.keepIcons = row.of; this.openReactions(row, this.hitLeft); }
+    if (what === "paths") this.togglePaths(row);
     // A pill: your reaction on or off.
     if (what.startsWith("pill:")) this.toggleReaction(row.of, row.target, what.slice(5), cx);
   }
@@ -2595,6 +2596,58 @@ export default class Chat extends View {
       this.saveSoon(cx);
     } else personHc(["send", this.addr, line]);
     cx.notify();
+  }
+
+  /**
+   * Whether a reply's band gets the Paths action (SHEP-110): links.mayHavePath(), kept per message and length. The rows
+   * are built for every message on every frame and the window's QuickJS has no regexp JIT: a look took ~4 ms per 100
+   * replies there, so they share prepared()'s frame budget (past it: no Paths yet, and a redraw), and a look reads at
+   * most PREP_MAX characters.
+   */
+  mayHavePaths(x) {
+    const s = String(x.text ?? "");
+    const key = `${x.id}|${s.length}`;
+    this.pathy ??= new Map();
+    let v = this.pathy.get(key);
+    if (v === undefined) {
+      if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return false; }
+      const at = Date.now();
+      v = links.mayHavePath(s.length > PREP_MAX ? s.slice(0, PREP_MAX) : s);
+      this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
+      if (this.pathy.size >= 2000) this.pathy.delete(this.pathy.keys().next().value);
+      this.pathy.set(key, v);
+    }
+    return v;
+  }
+
+  /**
+   * The Paths action (SHEP-110): the reply's paths (core/chat-links.js pathsIn(): plain text and inline code, never code
+   * blocks) listed under its band, or the list closed again. Each opens from clickRow() (openPath()). Only this
+   * machine's agent: another machine's paths aren't here to open. bar: the band's { of, text }.
+   */
+  togglePaths(bar) {
+    if (this.picking?.of === bar.of) { this.picking = null; return; }
+    if (this.machine) { toast({ title: "Those paths are on another machine", body: `They're on ${this.machine}: open them there.`, level: "info" }); return; }
+    let paths = [];
+    try { paths = links.pathsIn(bar.text, home()); } catch {}
+    if (!paths.length) { toast({ title: "No paths to open", body: "This reply names no file or folder outside its code blocks.", level: "info" }); return; }
+    this.picking = { of: bar.of, paths };
+  }
+
+  /** A path picked from a reply's Paths list, opened as core/chat-links.js says: a page, picture, PDF or text in the
+   *  default browser, anything else shown in Finder (a folder opened, an app only shown); a toast when it didn't. */
+  async openPath(p) {
+    const os = window()?.platform ?? "macos";
+    const action = links.actionOf(p);
+    // Windows has no sh to look first: the window's own exists()
+    if (os === "windows" && !(await fs.exists(p).catch(() => false))) {
+      toast({ ...links.problem(action, os, p, { code: 3 }), level: "error" });
+      return;
+    }
+    const [prog, args] = links.command(action, os, p);
+    const r = await exec(prog, args).catch(() => null);
+    const why = links.problem(action, os, p, r);
+    if (why) toast({ ...why, level: "error" });
   }
 
   copy(text, id, cx) {
@@ -3368,9 +3421,11 @@ export default class Chat extends View {
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, trText: src, side: "agent", at: x.at, pills: this.pills(x.id),
-            acts: bandActs("agent", x.text, { fork: Boolean(this.kind), translate: this.trOn && i !== unfinished }) };
+            acts: bandActs("agent", x.text, { fork: Boolean(this.kind), paths: this.mayHavePaths(x), translate: this.trOn && i !== unfinished }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
+          // its Paths list, open under the band (SHEP-110): one row per path, opened from clickRow()
+          if (this.picking?.of === x.id) this.picking.paths.forEach((path, n) => out.push({ kind: "pathpick", id: `pp:${x.id}:${n}`, of: x.id, path }));
         }
         block(first, x.id);
       } else if (x.kind !== "mark") out.push(x);
@@ -3537,6 +3592,7 @@ export default class Chat extends View {
       case "chips": return 30;
       case "imgs": return this.fitThumbs(x.paths).h + 8;
       case "video": return 24;
+      case "pathpick": return 24;
       case "codehead": return 34;
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": case "queued": return 26;
@@ -3694,6 +3750,15 @@ export default class Chat extends View {
             .when(!open && !x.bare, (el) => el.child(div().flex_1().min_w(0).truncate().child(String(x.text ?? "").split("\n").find((l) => l.trim()) ?? ""))))
           .when(open, (el) => el.child(div().pl(18).pt(6).text_size(12.5).text_color(t.muted)
             .child(TextView.markdown(`${pre}chat-brief-${x.id}`, literal(x.text) || " ").selectable(true)))), 12, 0);
+      }
+      case "pathpick": {
+        // One path from a reply's Paths list (SHEP-110), under its band: the path, and what a press does (clickRow)
+        const action = links.actionOf(x.path);
+        return col(h_flex().w_full().py(QUIET_PY).px(6).gap(6).items_center().text_size(12.5).text_color(t.muted).rounded(7).cursor_pointer()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .child(svg(`mods/chat/${action === "browser" ? "file" : "folder-open"}.svg`).size(12).flex_none())
+          .child(div().flex_1().min_w(0).truncate().child(x.path))
+          .child(div().flex_none().text_size(11.5).text_color(t.dim).child(links.label(action, window()?.platform ?? "macos"))), 18, 2);
       }
       case "video":
         // A video the agent showed: the window can't play one, so a line that opens it in the system's player (clickRow)
@@ -3926,6 +3991,7 @@ export default class Chat extends View {
       }
     }
     else if (row.kind === "video") this.openVideo(row.path);
+    else if (row.kind === "pathpick") this.openPath(row.path);
     cx.notify();
   }
 

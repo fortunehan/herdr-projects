@@ -5,16 +5,13 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useMemo, type MouseEvent } from 'react'
 import { copyText } from '@client/copy.ts'
-import { act, goPlace, openTask, useSnap, useUI } from '@client/kernel.ts'
+import { goPlace, openTask, useSnap } from '@client/kernel.ts'
 import * as MNs from '@core/mentions.js'
 import * as TR from '@core/translate.js'
-import { toast } from '@plugins/alerts/toasts.tsx'
-import { CL, linked, PATH_HREF } from './linked.ts'
+import { CL, linked } from './linked.ts'
 import { forMarkdown, hasMention, parseMention, parseTask, stateOf, taskStateOf, TITLE, useReach } from './mentions.tsx'
 const shortTitle = (MNs as any).short as (t: string) => string
 const TW = (TR as any).WORDS as Record<string, string>
-/** Finder's name on a Mac; "folder" elsewhere (the agent's machine is most likely the same kind as this one) */
-const MAC = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent)
 
 marked.setOptions({ gfm: true, breaks: false })
 
@@ -37,12 +34,12 @@ const DONE = svg(['M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.15
 
 /** the reply as safe HTML: a copy button on each code block, and a bit of inline code copies when tapped. The marks
     go onto the sanitized elements themselves, never into the HTML as text, so nothing in the reply can turn into them.
-    A link's or picture's title goes: nothing pops up on hover, but what a click does on a URL or a path it linked
-    (SHEP-99, core/chat-links.js). paths: its paths are links too (a desktop's chat; a phone's has URLs only). tr: its
-    translation under each block (SHEP-102) */
-export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, paths: boolean | null = null, tr?: Tr) {
-  // only in a chat (paths not null): a recipe's markdown stays as written
-  const md = paths === null ? text : linked(text, paths)
+    A link's or picture's title goes: nothing pops up on hover, but what a click does on a URL it linked (SHEP-99,
+    core/chat-links.js). inChat: its URLs become links; paths stay words (SHEP-110: the file isn't on this device). tr:
+    its translation under each block (SHEP-102) */
+export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: string, target: string, kind: 'space' | 'task') => void) | null, inChat = false, tr?: Tr) {
+  // only in a chat: a recipe's markdown stays as written
+  const md = inChat ? linked(text) : text
   const root = DOMPurify.sanitize(marked.parse(md, { async: false }) as string, { RETURN_DOM: true, FORBID_ATTR: ['title'] }) as HTMLElement
   // the translation under each block goes in first: the marks below go onto the original's elements only
   if (tr) addTranslations(root, tr)
@@ -50,17 +47,8 @@ export function toHtml(text: string, mention?: ((a: HTMLAnchorElement, name: str
     const task = a.getAttribute('href')!.startsWith('#task=')
     mention(a, (a.textContent ?? '').replace(/^[#@]/, ''), decodeURIComponent(a.getAttribute('href')!.slice(task ? 6 : 7)), task ? 'task' : 'space')
   }
-  if (paths !== null) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    const href = a.getAttribute('href')!
-    if (href.startsWith(PATH_HREF)) {
-      let p = ''
-      try { p = decodeURIComponent(href.slice(PATH_HREF.length)) } catch {}
-      if (!paths || !p) { a.replaceWith(...a.childNodes); continue }
-      a.removeAttribute('target')
-      a.removeAttribute('rel')
-      a.setAttribute('data-path', p)
-      a.setAttribute('title', CL.label(CL.actionOf(p), MAC ? 'macos' : 'linux'))
-    } else if (/^https?:/i.test(href)) a.setAttribute('title', CL.label('url'))
+  if (inChat) for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    if (/^https?:/i.test(a.getAttribute('href')!)) a.setAttribute('title', CL.label('url'))
   }
   for (const pre of root.querySelectorAll('pre')) {
     const box = document.createElement('div')
@@ -219,28 +207,11 @@ export function TrLine({ text, fail, note, retry }: { text: string; fail?: boole
   )
 }
 
-/** a path the reply linked (data-path): opened on the agent's machine by the service, as the window's chat opens it;
-    a toast says why when it couldn't. Cmd+click is a click too. true when the click was one */
-export function onPath(e: MouseEvent, chat: string | undefined) {
-  const a = (e.target as Element).closest('a[data-path]')
-  if (!a || !e.currentTarget.contains(a)) return false
-  e.preventDefault()
-  e.stopPropagation()
-  // a drag that selected words in it is not a click
-  if (getSelection()?.toString()) return true
-  if (chat) void act({ type: 'open-path', chat, path: a.getAttribute('data-path')! })
-    .then((r: { ok?: boolean; title?: string; error?: string }) => { if (r?.ok === false) toast({ title: r.title ?? "Couldn't open it", body: r.error, level: 'error' }) })
-    .catch((err: Error) => toast({ title: "Couldn't open it", body: err.message, level: 'error' }))
-  return true
-}
-
-/** chat: the chat it is in, so a #-mention of a space (core/mentions.js) draws as a chip, open or locked, and a path
-    the agent wrote is a link (not on a phone: there only URLs are). tr: its translation (SHEP-102) */
+/** chat: the chat it is in, so a #-mention of a space (core/mentions.js) draws as a chip, open or locked, and a URL
+    the agent wrote is a link. tr: its translation (SHEP-102) */
 export function Markdown({ text, chat, tr }: { text: string; chat?: string; tr?: Tr }) {
-  const desk = useUI((u) => u.device !== 'phone')
-  const paths = chat ? desk : null
-  if (chat && hasMention(text)) return <WithMentions text={text} chat={chat} paths={paths} tr={tr} />
-  return <Plain text={text} chat={chat} paths={paths} tr={tr} />
+  if (chat && hasMention(text)) return <WithMentions text={text} chat={chat} tr={tr} />
+  return <Plain text={text} inChat={Boolean(chat)} tr={tr} />
 }
 
 /** what a translation shows, as a key for useMemo (its Retry aside) */
@@ -255,16 +226,16 @@ function onRetry(e: MouseEvent, tr?: Tr) {
   return true
 }
 
-function Plain({ text, chat, paths, tr }: { text: string; chat?: string; paths: boolean | null; tr?: Tr }) {
-  const html = useMemo(() => toHtml(text, null, paths, tr), [text, paths, trKey(tr)])
-  const click = (e: MouseEvent) => { if (!onRetry(e, tr) && !onPath(e, chat)) onCopy(e) }
+function Plain({ text, inChat, tr }: { text: string; inChat: boolean; tr?: Tr }) {
+  const html = useMemo(() => toHtml(text, null, inChat, tr), [text, inChat, trKey(tr)])
+  const click = (e: MouseEvent) => { if (!onRetry(e, tr)) onCopy(e) }
   return <div className="prose-reply" onClick={click} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 const CHIP = 'inline-flex max-w-full items-baseline rounded-md px-1.5 align-baseline whitespace-nowrap no-underline'
 const LOCK = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" class="size-3 shrink-0 self-center mr-1"><path fill-rule="evenodd" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z" clip-rule="evenodd"/></svg>'
 
-function WithMentions({ text, chat, paths, tr }: { text: string; chat: string; paths: boolean | null; tr?: Tr }) {
+function WithMentions({ text, chat, tr }: { text: string; chat: string; tr?: Tr }) {
   const snap = useSnap()
   const got = useReach(chat)
   const states = new Map<string, ReturnType<typeof stateOf>>()
@@ -298,9 +269,9 @@ function WithMentions({ text, chat, paths, tr }: { text: string; chat: string; p
     }
     chip.append(words)
     a.replaceWith(chip)
-  }, paths, tr), [text, key, paths, trKey(tr)])
+  }, true, tr), [text, key, trKey(tr)])
   const click = (e: MouseEvent) => {
-    if (onRetry(e, tr) || onPath(e, chat)) return
+    if (onRetry(e, tr)) return
     const t = (e.target as Element).closest('[data-task]')
     if (t && e.currentTarget.contains(t)) { e.stopPropagation(); return openTask(t.getAttribute('data-task')!) }
     const el = (e.target as Element).closest('[data-place]')

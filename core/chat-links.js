@@ -1,10 +1,10 @@
 // Shared core: the source is core/chat-links.js; bin/sync-shared copies it into mods/chat/core/. Edit it here.
-// Clickable paths and links in an agent's reply (SHEP-99): the window's chat (mods/chat) and the web app's
-// (web/plugins/chat/markdown.tsx) turn http(s) URLs, absolute and home paths and file:// URLs, in plain text and in
-// inline code (never in a fenced block), into markdown links. A click opens a URL in the default browser; a file a
-// browser can show opens in the default browser too (not the file type's own app: Preview for a PDF); any other path
-// is shown in Finder (a folder opens there). The web app asks the service on the agent's machine (service/actions.ts
-// "open-path"), which refuses paths outside the home folder and /tmp.
+// Links and paths in an agent's reply (SHEP-99, SHEP-110): the window's chat (mods/chat) and the web app's
+// (web/plugins/chat/markdown.tsx) turn http(s) URLs into markdown links. Absolute and home paths and file:// URLs, in
+// plain text and in inline code (never in a fenced block), are found the same way: the window chat's Paths action
+// lists them (pathsIn()) and opens the picked one. A file a browser can show opens in the default browser (not the
+// file type's own app: Preview for a PDF); any other path is shown in Finder (a folder opens there). The web app keeps
+// paths as words: the file is on the agent's machine, never on the phone reading it.
 // Plain JS: no herdr, node or DOM.
 
 /** File types the default browser opens (by extension, lower case). */
@@ -246,6 +246,19 @@ export function linkify(md, opts = {}) {
   return out.join("\n");
 }
 
+/** Whether a reply may name a path: a cheap first look (one pattern, no list) for whether its band gets the Paths
+ *  action, run on every message as the rows are built. A path only in a fenced block passes too: pathsIn() says. */
+const MAYBE_PATH = /(?:^|[^\w.~/:@%+=#?&-])(?:file:\/\/|~\/|\/[^\s/]+\/)/;
+export const mayHavePath = (text) => MAYBE_PATH.test(String(text ?? ""));
+
+/** The paths a reply names, for the window chat's Paths action (SHEP-110): each one linkify() would link (plain text,
+ *  inline code, a path link the agent wrote; never in fenced or indented code), absolute, once each, in order. home:
+ *  expands ~/ (null: those are left out). */
+export function pathsIn(md, home) {
+  const out = [];
+  linkify(md, { home, paths: true, pathHref: (abs) => { if (!out.includes(abs)) out.push(abs); return "#"; } });
+  return out;
+}
 
 /** A clicked link's target: { kind: "url", url } or { kind: "path", path } (absolute, its line suffix gone), or null.
  *  href: a link's URL (an http(s) or file:// URL, or an absolute or ~/ path an agent wrote as a link). */
@@ -275,9 +288,8 @@ export function label(kind, os) {
   return os === "macos" ? "Show in Finder" : "Show in folder";
 }
 
-/** sh: $1 "browser" or "reveal", $2 the path (~/ expanded here), $3 "guard": only paths in the home folder or /tmp.
- *  Exits 3 when the path isn't there, 4 when nothing can open it, 5 when the guard refuses it. The guard checks where
- *  the path really leads (links and .. resolved) and opens that.
+/** sh: $1 "browser" or "reveal", $2 the path (~/ expanded here). Exits 3 when the path isn't there, 4 when nothing can
+ *  open it.
  *  macOS: the default browser's app for http URLs (LaunchServices) opens the file, since plain `open` would pick the
  *  file type's app; a folder opens in Finder, anything else is revealed there. A folder with an extension (an app or
  *  another bundle, which `open` would run) is only revealed. Linux: the browser, xdg-open, or the file manager's
@@ -285,16 +297,6 @@ export function label(kind, os) {
 export const OPEN = `p=$2
 case $p in "~") p=$HOME ;; "~/"*) p="$HOME/\${p#"~/"}" ;; esac
 [ -e "$p" ] || exit 3
-if [ "$3" = guard ]; then
-  if [ -d "$p" ]; then r=$(cd "$p" 2>/dev/null && pwd -P) || exit 3
-  elif command -v realpath >/dev/null 2>&1; then r=$(realpath "$p" 2>/dev/null) || exit 3
-  else [ -L "$p" ] && exit 5; r="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || exit 3; fi
-  h=$(cd "$HOME" 2>/dev/null && pwd -P) || h=
-  t=$(cd /tmp 2>/dev/null && pwd -P) || t=/tmp
-  case "$r/" in "$t"/*) ;; *) [ -n "$h" ] && [ "$h" != / ] || exit 5; case "$r/" in "$h"/*) ;; *) exit 5 ;; esac ;; esac
-  p=$r
-  case $(printf %s "$p" | tr '[:upper:]' '[:lower:]') in *.html|*.htm|*.svg|*.pdf|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.txt|*.json) set -- browser "$2" "$3" ;; *) set -- reveal "$2" "$3" ;; esac
-fi
 # macOS: its programs by absolute path, so a PATH cannot put another open in their place (SHEP-104)
 if [ "$(uname)" = Darwin ]; then
   if [ -d "$p" ]; then
@@ -318,12 +320,12 @@ dbus-send --session --print-reply --dest=org.freedesktop.FileManager1 /org/freed
 command -v xdg-open >/dev/null 2>&1 || exit 4
 exec xdg-open "$(dirname "$p")"`;
 
-/** The command opening a path: [program, args]. action: actionOf(); os: window().platform; guard: the service's. */
-export function command(action, os, path, guard = false) {
+/** The command opening a path: [program, args]. action: actionOf(); os: window().platform. */
+export function command(action, os, path) {
   // Windows: explorer opens the file with its own app (a .html one in the browser), or selects it in its folder. Never
   // cmd's start: cmd would read & and ^ in the path as its own.
   if (os === "windows") return ["explorer", [action === "browser" ? path : `/select,${path}`]];
-  return ["sh", ["-c", OPEN, "open-path", action, path, ...(guard ? ["guard"] : [])]];
+  return ["sh", ["-c", OPEN, "open-path", action, path]];
 }
 
 /** What a click says when it didn't work: { title, body }, or null when it worked. r: the exec result (null: it
@@ -335,6 +337,5 @@ export function problem(action, os, path, r) {
   if (!r) return { title, body: "The command it needs couldn't start." };
   if (r.code === 3) return { title, body: `${path} isn't there.` };
   if (r.code === 4) return { title, body: "Nothing here can open it." };
-  if (r.code === 5) return { title, body: "Only paths in your home folder or /tmp open from here." };
   return { title, body: String(r.stderr ?? "").trim().split("\n").pop() || `It exited with ${r.code}.` };
 }
