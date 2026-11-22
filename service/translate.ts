@@ -26,9 +26,7 @@ const defsOf = (md: string) => T.linkDefs(marked.lexer(md));
 type Config = { on: boolean; base_url: string; model: string; key: string; agreed: number };
 type Key = { key: string } | { error: string };
 /** parts: the window's parts (core/translate.js windowParts): the window has no marked to split the message itself */
-/** atEnd: the blocks are the agent's own words' (pictures were taken out of what its chat shows): every translation
- *  goes under the whole message, in order */
-export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[]; parts: unknown[]; atEnd?: boolean } | { ok: false; error: string };
+export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[]; parts: unknown[] } | { ok: false; error: string };
 /** mdParts: each markdown field's window parts, by its place ("4.md") */
 export type ArtifactResult = { ok: true; target: string; units: Record<string, string>; failed: string[]; mdParts: Record<string, unknown[]> } | { ok: false; error: string };
 
@@ -126,16 +124,18 @@ export class Translator {
   /** Translations with every key this translation's requests used taken out (as decoded: an answer can carry one
    *  escaped, or wrapped in words the parser looked past): never returned nor kept. */
   private scrub(got: (string | null)[], used: Set<string>) {
-    // only letters and digits, as any page could render the words (entities, escapes, emphasis or spaces between the
-    // key's parts): a translation that holds a key that way is dropped whole (that block shows as not translated)
+    // the words as a page renders them (marked: links' addresses gone, emphasis and escapes resolved, entities
+    // decoded), letters and digits only: a translation whose rendered words hold a key that way is dropped whole (that
+    // block shows as not translated)
     const bare = (s: string) => decoded(s).replace(/[^\p{L}\p{N}]+/gu, "");
-    const keys = [...used].map(bare).filter((k) => k.length >= 8);
+    const rendered = (s: string) => bare(String(marked.parseInline(s, { async: false })).replace(/<[^>]*>/g, ""));
+    const keys = [...used].map(bare).filter((k) => k.length >= 4);
     return got.map((t) => {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      const b = bare(x);
-      return keys.some((k) => b.includes(k)) ? null : x;
+      const r = rendered(x), b = bare(x);
+      return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
     });
   }
 
@@ -156,21 +156,15 @@ export class Translator {
     if (why) return { ok: false, error: why };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: "There's nothing to translate." };
     if (text.length > MOST) return { ok: false, error: "This message is too long to translate." };
-    // pictures taken out of the agent's words (its chat shows them under the words) can change what is code: such a
-    // message is split as the agent wrote it, so code is exactly marked's code there, and its translations go under the
-    // whole message (atEnd) rather than under blocks the page draws differently
-    const atEnd = raw !== text;
-    // (its pictures' markdown isn't sent: only the words around them)
-    const blocks = atEnd ? split(raw).map((b: any) => {
-      if (b.skip) return b;
-      const words = String(b.text).replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, "").replace(/\s+/g, " ").trim();
-      return { ...b, text: words, skip: !T.hasWords(words) };
-    }) : split(text);
+    // a reply whose pictures or clips its chat takes out to show under its words isn't translated (yet): taking them
+    // out can change what is code, and its blocks would differ from the agent's own words
+    if (raw !== text) return { ok: false, error: T.WORDS.media };
+    const blocks = split(text);
     const target = T.blocksDirection(blocks);
-    // the cache's name says its layout and which blocks are sent (an older layout's, or another eligibility's, is
-    // never read; two at once share one only when both match)
-    const mask = blocks.map((b: any) => (b.skip ? "0" : "1")).join("");
-    const f = this.file("message:marked2", `${atEnd ? raw : text}\0${mask}`, target);
+    // the cache's name says its layout and the very words sent (an older layout's, or other inputs', is never read;
+    // two at once share one only when both match)
+    const sent = JSON.stringify(blocks.map((b: any) => (b.skip ? null : b.text)));
+    const f = this.file("message:marked3", `${text}\0${sent}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -187,7 +181,7 @@ export class Translator {
         this.write(f, { target, at: this.now(), blocks: out });
       }
       const failed = at.filter((i: number) => !out[i]);
-      return { ok: true, target, blocks: out, failed, atEnd, parts: atEnd ? [] : T.windowParts(blocks, out, failed, defsOf(text)) } as MessageResult;
+      return { ok: true, target, blocks: out, failed, parts: T.windowParts(blocks, out, failed, defsOf(text)) } as MessageResult;
     });
   }
 
@@ -203,7 +197,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked2", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked3", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};

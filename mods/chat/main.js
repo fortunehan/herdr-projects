@@ -2372,7 +2372,7 @@ export default class Chat extends View {
         if (!res.ok || !r) throw new Error(`the service answered ${res.status}`);
       } catch (e) { r = { ok: false, error: TR.WORDS.failed(plainError(e)) }; }
       const shown = this.tr.get(id)?.shown ?? true;
-      this.tr.set(id, r.ok ? { shown, state: "done", blocks: r.blocks, failed: r.failed ?? [], parts: r.parts, atEnd: Boolean(r.atEnd) } : { ...was, shown, state: "error", error: r.error });
+      this.tr.set(id, r.ok ? { shown, state: "done", blocks: r.blocks, failed: r.failed ?? [], parts: r.parts } : { ...was, shown, state: "error", error: r.error });
       cx.notify();
     });
   }
@@ -3179,12 +3179,7 @@ export default class Chat extends View {
         const trd = this.tr.get(x.id);
         const src = md.text || x.text;
         const trTail = [];
-        if (trd?.shown && src && trd.state === "done" && trd.atEnd) {
-          // pictures were taken out of what it shows: the reply as it is, every translation under it in order
-          const segs = (trd.blocks ?? []).filter(Boolean).map((t) => ({ type: "tr", text: t, depth: 0 }));
-          if (segs.length) trTail.push({ kind: "agenttr", id: `${x.id}:tre:${segs.length}`, of: x.id, text: src, tr: trd, segs, find: segs.map((g) => g.text).join("\n") });
-          if (trd.failed?.length) trTail.push({ kind: "trfail", id: `${x.id}:trf:${trd.failed.length}`, of: x.id, text: src, words: TR.WORDS.blockFailed, depth: 0 });
-        } else if (trd?.shown && src && trd.state === "done" && Array.isArray(trd.parts)) {
+        if (trd?.shown && src && trd.state === "done" && Array.isArray(trd.parts)) {
           const tag = `${(trd.failed ?? []).length}`;
           let group = [], n = 0;
           const flush = () => {

@@ -20,6 +20,7 @@ export const WORDS = {
   notSet: "Translation isn't set up: add the endpoint, model and key in Settings › Translation.",
   noService: "Shepherdr's service isn't running on this machine.",
   writing: "This reply is still being written: translate it once it's complete.",
+  media: "A reply with pictures or clips can't be translated yet.",
 };
 
 // ---- blocks ------------------------------------------------------------------------------------------------------

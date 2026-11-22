@@ -14,8 +14,6 @@ export type Shown = {
   units?: Record<string, string>
   /** the blocks (or places) that couldn't be translated: a line with Retry under each */
   failed?: (number | string)[]
-  /** the message's translations go under it as a whole (pictures were taken out of what it shows) */
-  atEnd?: boolean
   error?: string
 }
 
@@ -37,9 +35,9 @@ async function ask(key: string, body: Ask) {
   const was = all.get(key)
   put(key, { ...was, shown: true, state: 'loading', error: undefined })
   try {
-    const r = (await act({ type: 'translate', ...body } as never)) as { ok: boolean; error?: string; blocks?: (string | null)[]; units?: Record<string, string>; failed?: (number | string)[]; atEnd?: boolean }
+    const r = (await act({ type: 'translate', ...body } as never)) as { ok: boolean; error?: string; blocks?: (string | null)[]; units?: Record<string, string>; failed?: (number | string)[] }
     if (!r?.ok) return put(key, { ...was, shown: all.get(key)?.shown ?? true, state: 'error', error: r?.error ?? "Couldn't translate" })
-    put(key, { shown: all.get(key)?.shown ?? true, state: 'done', blocks: r.blocks, units: r.units, failed: r.failed ?? [], atEnd: !!r.atEnd })
+    put(key, { shown: all.get(key)?.shown ?? true, state: 'done', blocks: r.blocks, units: r.units, failed: r.failed ?? [] })
   } catch (e) {
     put(key, { ...was, shown: all.get(key)?.shown ?? true, state: 'error', error: `Couldn't translate: ${e instanceof Error ? e.message.slice(0, 160) : 'try again'}` })
   }

@@ -178,22 +178,19 @@ describe("a message", () => {
     expect(seen.length).toBe(1);
   });
 
-  test("a line that was code in the agent's own words is never sent, even joined to words by a picture taken out", async () => {
+  test("a reply whose pictures its chat takes out isn't translated, and nothing is sent", async () => {
     reset();
-    const r: any = await chatT().handle({ chat: "sp1", id: "a3" });
-    // split as the agent wrote it: its code is marked's code there; the pictures' markdown isn't sent
-    expect(r).toMatchObject({ ok: true, atEnd: true });
-    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Intro.", "Before:", "Ready now."]);
-    reset();
-    await chatT().handle({ chat: "sp1", id: "a4" });
-    expect(JSON.parse(seen[0].body.messages[1].content)).toEqual(["Intro.", "Ready now."]);
+    for (const id of ["a3", "a4"]) expect(await chatT().handle({ chat: "sp1", id })).toMatchObject({ ok: false, error: expect.stringContaining("pictures or clips") });
+    expect(seen.length).toBe(0);
   });
 
   test("a translation holding the key as any page could render it is dropped whole", () => {
     const t: any = make().t;
     const used = new Set(["sk-stub-secret"]);
-    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "split sk-**stub**-secret", "plain words", "bad &#1114112; entity"], used))
-      .toEqual([null, null, null, "plain words", "bad &#1114112; entity"]);
+    expect(t.scrub(["see &#115;k-stub-secret now", "and &#x73;k\\-stub-secret", "split sk-**stub**-secret", "linked sk-[stub](https://example.com)-secret", "plain words", "bad &#1114112; entity"], used))
+      .toEqual([null, null, null, null, "plain words", "bad &#1114112; entity"]);
+    // a short key too
+    expect(t.scrub(["x ab-*cd*-ef y", "fine"], new Set(["ab-cd-ef"]))).toEqual([null, "fine"]);
     // the key itself, written plainly: taken out, the rest kept
     expect(t.scrub(["key sk-stub-secret here"], used)).toEqual(["key … here"]);
   });
