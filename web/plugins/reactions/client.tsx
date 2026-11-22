@@ -403,7 +403,7 @@ function Lifted({ msg, chat }: { msg: Message; chat: string }) {
                     Fork
                   </MenuItem>
                   {translateOn ? (
-                    <MenuItem icon={<TranslateIcon className={ic} />} onClick={() => leave(() => toggleTranslate(tkey, { text }))}>
+                    <MenuItem icon={<TranslateIcon className={ic} />} onClick={() => leave(() => toggleTranslate(tkey, { text, chat }))}>
                       {trShown ? 'Hide translation' : 'Translate'}
                     </MenuItem>
                   ) : null}

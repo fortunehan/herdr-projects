@@ -72,7 +72,7 @@ export function toHtml(text: string, mention?: (a: HTMLAnchorElement, name: stri
 }
 
 /** A message's translation as the Markdown under it shows it (web/plugins/chat/translate.ts): source, the words the
- *  service split (core/translate.js mdBlocks); blocks, each block's translation (null: none); failed, the blocks that
+ *  service split (core/translate.js blocksFromTokens, on marked's own parse: the same as this page draws); blocks, each block's translation (null: none); failed, the blocks that
  *  couldn't be; loading, asked and not back yet; error, why it failed as a whole; retry, asks again. */
 export type Tr = { source: string; blocks?: (string | null)[]; failed?: number[]; loading?: boolean; error?: string; retry?: () => void }
 
@@ -104,7 +104,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
  *  blocks are found in reading order and must match core's (kinds and count); where they don't, the translations go
  *  under the whole message in order instead. */
 function addTranslations(root: HTMLElement, tr: Tr) {
-  const blocks = (TR as any).mdBlocks(tr.source) as { kind: string }[]
+  const blocks = (TR as any).blocksFromTokens(marked.lexer(tr.source)) as { kind: string }[]
   const els = [...root.querySelectorAll(BLOCKS)].filter((el) => !(el.tagName === 'P' && el.closest('li, td, th')) && !el.closest('pre'))
   const pairs: [number, Element][] = []
   let j = 0, ok = true

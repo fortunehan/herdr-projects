@@ -316,6 +316,17 @@ const translator = new Translator({
       return r.code === 0 ? Buffer.from(r.stdout ?? "", "base64").toString("utf8") : null;
     },
   }, name),
+  // a reply its agent may still be writing: the agent works, and these are the words of its newest reply, with nothing
+  // the person said after it
+  writing: (w, text) => {
+    const addr = w.addr ?? (w.chat ? compat.addrOf(w.chat) : null);
+    if (!addr || (hub.terminals.get(addr) as any)?.status?.state !== "working") return false;
+    const items = ((compat.reader?.(addr) as any)?.conv?.items ?? []) as any[];
+    const at = items.findLastIndex((i) => i.kind === "agent" && typeof i.text === "string" && i.text.trim());
+    if (at < 0 || items.slice(at + 1).some((i) => i.kind === "user" && !i.from)) return false;
+    const said = String(items[at].text).trim(), asked = text.trim();
+    return !!asked && (said.includes(asked) || asked.includes(said));
+  },
   recipe: async (id, v, on) => (await artifacts.recipe(id, v, on)) as { blocks: unknown[] } | null,
   dir: translationsDir(DATA),
 });

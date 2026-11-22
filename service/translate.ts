@@ -7,13 +7,19 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { marked } from "marked";
 import * as TR from "../core/translate.js";
 
 const T = TR as any;
+/** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
+const split = (md: string) => T.blocksFromTokens(marked.lexer(md));
+const defsOf = (md: string) => T.linkDefs(marked.lexer(md));
 type Config = { on: boolean; base_url: string; model: string; key: string; agreed: number };
 type Key = { key: string } | { error: string };
-export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[] } | { ok: false; error: string };
-export type ArtifactResult = { ok: true; target: string; units: Record<string, string>; failed: string[] } | { ok: false; error: string };
+/** parts: the window's parts (core/translate.js windowParts): the window has no marked to split the message itself */
+export type MessageResult = { ok: true; target: string; blocks: (string | null)[]; failed: number[]; parts: unknown[] } | { ok: false; error: string };
+/** mdParts: each markdown field's window parts, by its place ("4.md") */
+export type ArtifactResult = { ok: true; target: string; units: Record<string, string>; failed: string[]; mdParts: Record<string, unknown[]> } | { ok: false; error: string };
 
 /** The most a message may be: longer ones are refused rather than sent in pieces nobody asked for. */
 const MOST = 60_000;
@@ -28,6 +34,8 @@ export type TranslatorIO = {
   key: (name: string) => Promise<Key>;
   /** a recipe artifact's recipe (service/artifacts.ts) */
   recipe: (id: string, v: number, on: string | null) => Promise<{ blocks: unknown[] } | null>;
+  /** whether a chat's reply with these words is still being written (no translation until it is complete) */
+  writing?: (where: { chat?: string; addr?: string }, text: string) => boolean;
   /** where translations are kept */
   dir: string;
   fetchFn?: typeof fetch;
@@ -81,13 +89,14 @@ export class Translator {
     try { d = JSON.parse(body); } catch {}
     const text = T.answerText(d);
     if (typeof text !== "string") throw new Error("the endpoint's answer had no message in it");
-    return text;
-  }
-
-  /** The translations with the key taken out, as decoded (an answer can carry it escaped): never returned nor kept. */
-  private async scrub(cfg: Config, got: (string | null)[]) {
-    const k = await this.keyOf(cfg.key);
-    return "key" in k && k.key ? got.map((t) => (t ? t.split(k.key).join("…") : t)) : got;
+    // the key this request used, taken out of the answer as it decodes (it can come escaped, twice over)
+    const out = text.split(k.key).join("…");
+    try {
+      const arr = JSON.parse(out.trim().replace(/^```[\w-]*\s*\n?/, "").replace(/\n?```\s*$/, ""));
+      const clean = (v: unknown): unknown => (typeof v === "string" ? v.split(k.key).join("…") : Array.isArray(v) ? v.map(clean)
+        : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([a, b]) => [a, clean(b)])) : v);
+      return JSON.stringify(clean(arr));
+    } catch { return out; }
   }
 
   private file(kind: string, id: string, target: string) {
@@ -109,30 +118,31 @@ export class Translator {
     return p;
   }
 
-  /** A message's translation, block by block (core/translate.js mdBlocks: null where a block has none). Kept by its
-   *  text and the target; asked again, only the blocks that failed are sent. */
+  /** A message's translation, block by block (core/translate.js blocksFromTokens: null where a block has none). Kept by
+   *  its text and the target; asked again, only the blocks that failed are sent. */
   async message(text: string): Promise<MessageResult> {
     const cfg = this.io.config();
     const why = T.notReady(cfg);
     if (why) return { ok: false, error: why };
     if (typeof text !== "string" || !text.trim()) return { ok: false, error: "There's nothing to translate." };
     if (text.length > MOST) return { ok: false, error: "This message is too long to translate." };
-    const target = T.direction(text);
+    const blocks = split(text);
+    const target = T.blocksDirection(blocks);
     const f = this.file("message", text, target);
     return this.once(f, async () => {
-      const { blocks, at, texts } = T.messageTexts(text);
+      const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
       const out: (string | null)[] = Array.isArray(kept?.blocks) && kept.blocks.length === blocks.length ? kept.blocks : blocks.map(() => null);
       const need = at.map((i: number, k: number) => ({ i, text: texts[k] })).filter((x: { i: number }) => !out[x.i]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); got = await this.scrub(cfg, got); }
+        try { got = await T.translateTexts(need.map((x: { text: string }) => x.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as MessageResult; }
         need.forEach((x: { i: number }, k: number) => { if (got[k]) out[x.i] = got[k]; });
         this.write(f, { target, at: this.now(), blocks: out });
       }
       const failed = at.filter((i: number) => !out[i]);
-      return { ok: true, target, blocks: out, failed } as MessageResult;
+      return { ok: true, target, blocks: out, failed, parts: T.windowParts(blocks, out, failed, defsOf(text)) } as MessageResult;
     });
   }
 
@@ -143,9 +153,9 @@ export class Translator {
     if (why) return { ok: false, error: why };
     const recipe = await this.io.recipe(id, v, on).catch(() => null);
     if (!recipe) return { ok: false, error: "Only a recipe artifact can be translated." };
-    const units: { key: string; text: string }[] = T.recipeUnits(recipe);
+    const units: { key: string; text: string }[] = T.recipeUnits(recipe, split);
     if (!units.length) return { ok: false, error: "There's nothing to translate." };
-    const target = T.recipeDirection(recipe);
+    const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
     const f = this.file("artifact", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
@@ -155,12 +165,13 @@ export class Translator {
       const need = units.filter((u) => !out[u.key]);
       if (need.length) {
         let got: (string | null)[];
-        try { got = await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); got = await this.scrub(cfg, got); }
+        try { got = await T.translateTexts(need.map((u) => u.text), target, (t: string[], to: string) => this.ask(cfg, t, to)); }
         catch (e) { return { ok: false, error: T.WORDS.failed((e as Error).message) } as ArtifactResult; }
         need.forEach((u, k) => { if (got[k]) out[u.key] = got[k]!; });
         this.write(f, { target, at: this.now(), units: out });
       }
-      return { ok: true, target, units: out, failed: units.filter((u) => !out[u.key]).map((u) => u.key) } as ArtifactResult;
+      const failed = units.filter((u) => !out[u.key]).map((u) => u.key);
+      return { ok: true, target, units: out, failed, mdParts: T.recipeParts(recipe, split, defsOf, out, failed) } as ArtifactResult;
     });
   }
 
@@ -182,7 +193,11 @@ export class Translator {
   /** The web app's and the window's translate action: { text } or { artifact, v, on }. */
   handle(body: any): Promise<MessageResult | ArtifactResult> {
     if (typeof body?.artifact === "string") return this.artifact(body.artifact, Number(body.v) || 1, typeof body.on === "string" && body.on ? body.on : null);
-    return this.message(String(body?.text ?? ""));
+    const text = String(body?.text ?? "");
+    // a reply still being written is never sent (the buttons wait too; this is the last word on it)
+    const where = { chat: typeof body?.chat === "string" ? body.chat : undefined, addr: typeof body?.addr === "string" ? body.addr : undefined };
+    if ((where.chat || where.addr) && this.io.writing?.(where, text)) return Promise.resolve({ ok: false, error: T.WORDS.writing });
+    return this.message(text);
   }
 }
 

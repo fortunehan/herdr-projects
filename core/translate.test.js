@@ -2,6 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { marked } from "marked";
 import * as T from "./translate.js";
 
+// the blocks as the service and the web app make them: marked's own parse
+const mdBlocks = (md) => T.blocksFromTokens(marked.lexer(md));
+const texts = (md) => T.messageTexts(mdBlocks(md)).texts;
+const parts = (md, tr = [], failed = []) => T.windowParts(mdBlocks(md), tr, failed, T.linkDefs(marked.lexer(md)));
+
 const MSG = [
   "# Plan",
   "",
@@ -34,7 +39,7 @@ const MSG = [
 
 describe("mdBlocks", () => {
   test("splits headings, paragraphs, items, quotes, cells and code in reading order", () => {
-    const b = T.mdBlocks(MSG);
+    const b = mdBlocks(MSG);
     expect(b.map((x) => x.kind)).toEqual(["heading", "para", "item", "item", "item", "item", "item", "quote", "code",
       "cell", "cell", "cell", "cell", "cell", "cell", "rule", "para", "para"]);
     expect(b[0].text).toBe("Plan");
@@ -47,13 +52,13 @@ describe("mdBlocks", () => {
   });
 
   test("code, commands, links, paths and ids get no translation", () => {
-    const b = T.mdBlocks(MSG);
+    const b = mdBlocks(MSG);
     const skipped = b.filter((x) => x.skip).map((x) => x.kind + ":" + x.text);
     expect(skipped).toEqual(["code:", "cell:`lint`", "cell:SHEP-96", "rule:", "para:`bin/sync-shared --check`"]);
   });
 
   test("Chinese with lists and a table", () => {
-    const b = T.mdBlocks("## 结果\n\n修好了合并步骤。\n\n* 第一项\n* 第二项\n\n|列|值|\n|-|-|\n|状态|通过|");
+    const b = mdBlocks("## 结果\n\n修好了合并步骤。\n\n* 第一项\n* 第二项\n\n|列|值|\n|-|-|\n|状态|通过|");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "结果"], ["para", "修好了合并步骤。"], ["item", "第一项"], ["item", "第二项"],
       ["cell", "列"], ["cell", "值"], ["cell", "状态"], ["cell", "通过"]]);
     expect(b.every((x) => !x.skip)).toBe(true);
@@ -61,33 +66,40 @@ describe("mdBlocks", () => {
 
   test("a list item's indented code isn't sent; a third-level item is an item; a link's reference is no block", () => {
     const md = "- Run this:\n\n      echo KeepThisPrivate\n\n- alpha\n  - beta\n    - gamma\n\nRead [the guide][help].\n\n[help]: https://example.invalid/guide";
-    const b = T.mdBlocks(md);
-    expect(T.messageTexts(md).texts).toEqual(["Run this:", "alpha", "beta", "gamma", "Read [the guide][help]."]);
-    expect(b.map((x) => x.kind)).toEqual(["item", "item", "item", "item", "para", "def"]);
+    const b = mdBlocks(md);
+    expect(texts(md)).toEqual(["Run this:", "alpha", "beta", "gamma", "Read [the guide][help]."]);
+    expect(b.map((x) => x.kind)).toEqual(["item", "code", "item", "item", "item", "para", "def"]);
     // the window draws each part on its own: the reference goes with each, so the link still links
-    expect(T.windowParts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]: https://example.invalid/guide");
+    expect(parts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]: https://example.invalid/guide");
   });
 
   test("a nested item's fenced code isn't sent; a short table row is as wide as its header; numbers and references kept", () => {
     const md = "- First\n  - Second\n    ```sh\n    echo KeepThisPrivate\n    ```\n- Third\n\n1. a one\n1. b two\n1. c three\n\n| A | B |\n|---|---|\n| only |\n\nRead [the guide][help].\n\n[help]:\n  https://example.invalid/guide";
-    expect(T.messageTexts(md).texts).toEqual(["First", "Second", "Third", "a one", "b two", "c three", "only", "Read [the guide][help]."]);
-    expect(T.mdBlocks(md).filter((b) => b.kind === "cell").length).toBe(4);
-    const parts = T.windowParts(md).filter((x) => x.type === "md").map((x) => x.text.split("\n")[0]);
-    expect(parts).toContain("2. b two");
-    expect(parts).toContain("3. c three");
-    expect(T.windowParts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]:\n  https://example.invalid/guide");
-    expect(T.direction("Build ready.\n\n- Steps\n  - Run\n    ```\n    // 这是一段很长的中文注释，写在代码里面\n    ```")).toBe("zh");
+    expect(texts(md)).toEqual(["First", "Second", "Third", "a one", "b two", "c three", "only", "Read [the guide][help]."]);
+    expect(mdBlocks(md).filter((b) => b.kind === "cell").length).toBe(4);
+    const shown = parts(md).filter((x) => x.type === "md").map((x) => x.text.split("\n")[0]);
+    expect(shown).toContain("2. b two");
+    expect(shown).toContain("3. c three");
+    expect(parts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]: https://example.invalid/guide");
+    expect(T.blocksDirection(mdBlocks("Build ready.\n\n- Steps\n  - Run\n    ```\n    // 这是一段很长的中文注释，写在代码里面\n    ```"))).toBe("zh");
+  });
+
+  test("round 4: code right after a list marker, a restarted ordered list, a one-cell row", () => {
+    expect(texts("-     echo KeepThisPrivate\n- ```sh\n  echo AlsoPrivate\n  ```\n- words here")).toEqual(["words here"]);
+    const shown = parts("1. First\n\n- Bullet\n\n1. Restarted").filter((x) => x.type === "md").map((x) => x.text);
+    expect(shown).toEqual(["1. First", "- Bullet", "1. Restarted"]);
+    expect(mdBlocks("| A | B |\n|---|---|\n| Ready |").filter((b) => b.kind === "cell").map((b) => b.text)).toEqual(["A", "B", "Ready", ""]);
   });
 
   test("a heading or a list in a quote, and an indented code block", () => {
-    const b = T.mdBlocks("> ## Quoted heading\n> words under it\n\nText.\n\n    const sample = \"hello world\";\n    more();\n\nAfter.");
+    const b = mdBlocks("> ## Quoted heading\n> words under it\n\nText.\n\n    const sample = \"hello world\";\n    more();\n\nAfter.");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Quoted heading"], ["quote", "words under it"], ["para", "Text."], ["code", ""], ["para", "After."]]);
     expect(b[3]).toMatchObject({ skip: true, code: 'const sample = "hello world";\nmore();' });
-    expect(T.messageTexts("    const sample = \"hello world\";").texts).toEqual([]);
+    expect(texts("    const sample = \"hello world\";")).toEqual([]);
   });
 
   test("a setext heading, a task list and a loose list item", () => {
-    const b = T.mdBlocks("Title\n=====\n\n- [x] done thing\n- loose item\n\n  its second paragraph\n- last");
+    const b = mdBlocks("Title\n=====\n\n- [x] done thing\n- loose item\n\n  its second paragraph\n- last");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Title"], ["item", "done thing"], ["item", "loose item its second paragraph"], ["item", "last"]]);
   });
 
@@ -112,8 +124,9 @@ describe("mdBlocks", () => {
       "Text\n- list right after\n- two\n\nEnd.", "> one\n>\n> two\n\nafter", "1. a\n   1. b\n2. c",
       "> ## Quoted heading\n> words\n\n    indented code\n\nEnd.", "> - quoted item\n> - another",
       "- First\n  - Second\n    ```sh\n    echo KeepThisPrivate\n    ```\n- Third", "| A | B |\n|---|---|\n| only |",
+      "-     echo KeepThisPrivate\n- ```sh\n  echo AlsoPrivate\n  ```\n- words here", "1. First\n\n- Bullet\n\n1. Restarted", "| A | B |\n|---|---|\n| Ready |",
       "- Run this:\n\n      echo KeepThisPrivate\n\n- alpha\n  - beta\n    - gamma\n\nRead [the guide][help].\n\n[help]: https://example.invalid/guide"];
-    for (const md of samples) expect(T.mdBlocks(md).map(T.domKind).filter(Boolean)).toEqual(domKinds(md));
+    for (const md of samples) expect(mdBlocks(md).map(T.domKind).filter(Boolean)).toEqual(domKinds(md));
   });
 });
 
@@ -124,7 +137,7 @@ describe("direction", () => {
     expect(T.direction("我修好了 SHEP-96 的 merge 步骤，运行 `bun test service core web --timeout 60000` 都通过了")).toBe("en"));
   test("English with a little Chinese goes to Chinese", () => expect(T.direction("The button now says 翻译 when the person writes in English all day long.")).toBe("zh"));
   test("code and links don't count", () => expect(T.direction("我改了这个：\n\n```\nconst a = 'very long english code here and more words'\n```\n\n见 [link text in English](https://x.y)")).toBe("en"));
-  test("an indented code block doesn't count either", () => expect(T.direction("Build ready.\n\n    // 这是一段很长的中文注释，写在代码里面\n    构建();")).toBe("zh"));
+  test("an indented code block doesn't count either", () => expect(T.blocksDirection(mdBlocks("Build ready.\n\n    // 这是一段很长的中文注释，写在代码里面\n    构建();"))).toBe("zh"));
 });
 
 describe("the request and its answer", () => {
@@ -213,22 +226,22 @@ describe("translateTexts", () => {
 describe("windowParts", () => {
   test("each block, then its translation; code as it is; a table then its translated table", () => {
     const md = "Hello world.\n\n```\nls\n```\n\n| Name | Value |\n|---|---|\n| one | `x` |";
-    const { at, texts } = T.messageTexts(md);
-    expect(texts).toEqual(["Hello world.", "Name", "Value", "one"]);
+    const { at, texts: sent } = T.messageTexts(mdBlocks(md));
+    expect(sent).toEqual(["Hello world.", "Name", "Value", "one"]);
     const tr = [];
     at.forEach((i, k) => (tr[i] = ["你好世界。", "甲", "乙", "一"][k]));
-    expect(T.windowParts(md, tr)).toEqual([
+    expect(parts(md, tr)).toEqual([
       { type: "md", text: "Hello world.", depth: 0 }, { type: "tr", text: "你好世界。", depth: 0 },
       { type: "code", lang: "", code: "ls" },
       { type: "table", rows: [[{ text: "Name", tr: "甲", fail: false }, { text: "Value", tr: "乙", fail: false }], [{ text: "one", tr: "一", fail: false }, { text: "`x`", tr: null, fail: false }]] },
     ]);
   });
   test("a failed block says so under it", () => {
-    expect(T.windowParts("One.\n\nTwo.", ["一。", null], [1])).toEqual([{ type: "md", text: "One.", depth: 0 }, { type: "tr", text: "一。", depth: 0 }, { type: "md", text: "Two.", depth: 0 }, { type: "fail", depth: 0 }]);
+    expect(parts("One.\n\nTwo.", ["一。", null], [1])).toEqual([{ type: "md", text: "One.", depth: 0 }, { type: "tr", text: "一。", depth: 0 }, { type: "md", text: "Two.", depth: 0 }, { type: "fail", depth: 0 }]);
   });
   test("a nested list item keeps its depth", () => {
-    const parts = T.windowParts("- One\n  - Two", ["一", "二"]);
-    expect(parts.filter((x) => x.type === "md").map((x) => [x.text, x.depth])).toEqual([["- One", 0], ["- Two", 1]]);
+    const got = parts("- One\n  - Two", ["一", "二"]);
+    expect(got.filter((x) => x.type === "md").map((x) => [x.text, x.depth])).toEqual([["- One", 0], ["- Two", 1]]);
   });
 });
 
@@ -247,7 +260,7 @@ describe("recipes", () => {
     { type: "button", label: "Send" },
   ] };
   test("every text block's place and words; code, buttons and bare code skipped", () => {
-    expect(T.recipeUnits(recipe)).toEqual([
+    expect(T.recipeUnits(recipe, mdBlocks)).toEqual([
       { key: "0.text", text: "Proof" },
       { key: "1.md.0", text: "First paragraph." }, { key: "1.md.1", text: "an item" },
       { key: "2.col.0", text: "Name" }, { key: "2.col.1", text: "Result" }, { key: "2.cell.0.0", text: "Build" }, { key: "2.cell.0.1", text: "passed" },
@@ -261,7 +274,7 @@ describe("recipes", () => {
     ]);
   });
   test("a Chinese artifact goes to English", () => {
-    expect(T.recipeDirection({ blocks: [{ type: "heading", text: "证明" }, { type: "text", md: "合并步骤修好了，所有测试都通过。" }] })).toBe("en");
+    expect(T.recipeDirection({ blocks: [{ type: "heading", text: "证明" }, { type: "text", md: "合并步骤修好了，所有测试都通过。" }] }, mdBlocks)).toBe("en");
   });
 });
 
@@ -286,6 +299,21 @@ describe("settings and the key", () => {
     expect(await T.findKey(io, "TR_KEY")).toEqual({ key: "sk-there" });
     expect(asked).toEqual(["mini"]);
     expect((await T.findKey({ ...io, ask: async () => null }, "TR_KEY")).error).toContain("couldn't reach mini");
+  });
+  test("the script that reads the key on the machine that keeps the secrets runs, and finds it", () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = require("node:fs");
+    const { join } = require("node:path");
+    const home = mkdtempSync(join(require("node:os").tmpdir(), "shep-key-"));
+    mkdirSync(join(home, "data", "secrets"), { recursive: true });
+    writeFileSync(join(home, "data", "secrets", "vault.json"), vault);
+    writeFileSync(join(home, "data", "LAYOUT"), "99\n");
+    const run = (name) => {
+      const r = Bun.spawnSync(["python3", "-I", "-B", "-c", T.keyScript(name)], { env: { HOME: home, SHEPHERDR_HOME: home, PATH: process.env.PATH } });
+      expect(r.exitCode).toBe(0);
+      return JSON.parse(r.stdout.toString().trim().split("\n").pop());
+    };
+    expect(run("TR_KEY")).toEqual({ key: "sk-here" });
+    expect(run("OTHER")).toEqual({ key: "" });
   });
   test("a name that isn't one never reaches a script", async () => {
     expect(() => T.keyScript('X"; import os')).toThrow();

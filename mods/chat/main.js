@@ -2201,7 +2201,7 @@ export default class Chat extends View {
   // (the light fades natively: one flip of its target, no timer driving frames).
   goTo(to, before, rows) {
     const i = rows.findIndex((r) => r.id === before);
-    const target = [...rows.slice(0, i < 0 ? rows.length : i)].reverse().find((r) => (r.kind === "user" || r.kind === "agent" || r.kind === "agenttr") && (r.find ?? r.text) && names(r.find ?? r.text, String(to).slice(0, 60)));
+    const target = [...rows.slice(0, i < 0 ? rows.length : i)].reverse().find((r) => (r.kind === "user" || r.kind === "agent" || r.kind === "agenttr") && r.text && names(r.text, String(to).slice(0, 60)));
     if (!target) return;
     this.pinned = false;
     // A jump into a folded reply opens it.
@@ -2367,12 +2367,12 @@ export default class Chat extends View {
         const svc = await localService(cx), token = await localToken();
         if (!svc || !token) throw new Error(TR.WORDS.noService);
         const res = await fetch(`${svc.base}/api/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ type: "translate", text }) });
+          body: JSON.stringify({ type: "translate", text, addr: this.addr }) });
         r = await res.json().catch(() => null);
         if (!res.ok || !r) throw new Error(`the service answered ${res.status}`);
       } catch (e) { r = { ok: false, error: TR.WORDS.failed(plainError(e)) }; }
       const shown = this.tr.get(id)?.shown ?? true;
-      this.tr.set(id, r.ok ? { shown, state: "done", blocks: r.blocks, failed: r.failed ?? [] } : { ...was, shown, state: "error", error: r.error });
+      this.tr.set(id, r.ok ? { shown, state: "done", blocks: r.blocks, failed: r.failed ?? [], parts: r.parts } : { ...was, shown, state: "error", error: r.error });
       cx.notify();
     });
   }
@@ -3073,6 +3073,10 @@ export default class Chat extends View {
     else if (this.start) out.push({ kind: "loading", id: "loading" });
     const items = this.conv?.items ?? [];
     const working = this.status() === "working";
+    // SHEP-102: the reply the agent may still be writing (its newest words, nothing the person said after them): no
+    // Translate on it until it is complete, whatever quiet rows come after it
+    const newest = items.findLastIndex((x) => x.kind === "agent" && String(x.text ?? "").trim());
+    const unfinished = working && newest >= 0 && !items.slice(newest + 1).some((x) => x.kind === "user" && !x.from) ? newest : -1;
     const arts = this.resolveArts(items);
     // The space's tasks' news lines (newsLines()): Herdr's in place, the rest each before the
     // first thing said after its moment.
@@ -3169,36 +3173,35 @@ export default class Chat extends View {
         const ps = md.text || !md.media.length ? parts(md.text || x.text) : [];
         const first = out.length;
         // Translated (SHEP-102): each block with its translation under it, the words between code blocks in a bubble as
-        // before, the code blocks as the chat draws them (no translation); the words sent are the words drawn (src), so
-        // each translation lands under its own block
+        // before, the code blocks as the chat draws them (no translation). The parts come from the service (marked's own
+        // parse there: the window has none); the words sent are the words drawn (src). Until it is back (or when it
+        // failed) the reply shows as it is, with one line under it.
         const trd = this.tr.get(x.id);
         const src = md.text || x.text;
-        if (trd?.shown && src) {
-          const tag = `${trd.state}:${(trd.failed ?? []).length}`;
-          let group = [], n = 0, lastTr = null;
+        const trTail = [];
+        if (trd?.shown && src && trd.state === "done" && Array.isArray(trd.parts)) {
+          const tag = `${(trd.failed ?? []).length}`;
+          let group = [], n = 0;
           const flush = () => {
-            if (group.length) out.push(lastTr = { kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group,
-              // what Find and a reply's jump read: this row's own words and their translations
+            if (group.length) out.push({ kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group,
+              // what Find reads: this row's own words and their translations
               find: group.flatMap((g) => (g.type === "table" ? g.rows.flat().flatMap((c) => [c.text, c.tr ?? ""]) : [g.text ?? ""])).join("\n") });
             group = [];
           };
           // a failure is a line of its own under its block (a row: a press on it, and only on it, asks again)
-          const fail = (k, words, depth = 0) => { flush(); lastTr = null; out.push({ kind: "trfail", id: `${x.id}:trf${k}:${tag}`, of: x.id, text: src, words, depth }); };
-          TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []).forEach((g, k) => {
+          const fail = (k, words, depth = 0) => { flush(); out.push({ kind: "trfail", id: `${x.id}:trf${k}:${tag}`, of: x.id, text: src, words, depth }); };
+          trd.parts.forEach((g, k) => {
             if (g.type === "fail") return void fail(k, TR.WORDS.blockFailed, g.depth);
             if (g.type === "table" && g.rows.some((r) => r.some((c) => c.fail))) { group.push(g); return void fail(k, TR.WORDS.blockFailed); }
             if (g.type !== "code") return void group.push(g);
             flush();
-            lastTr = null;
             out.push({ kind: "codehead", id: `${x.id}:trh${k}`, lang: g.lang, code: g.code });
             out.push({ kind: "code", id: `${x.id}:trc${k}`, lang: g.lang, code: g.code });
           });
           flush();
-          // why it failed, a line of its own; Translating… under the last words (a bubble of its own after a code block)
-          if (trd.state === "error") fail("e", trd.error || TR.WORDS.failed(""));
-          else if (trd.state !== "done") { if (lastTr) lastTr.tail = true; else out.push({ kind: "agenttr", id: `${x.id}:trt:${tag}`, of: x.id, text: src, tr: trd, segs: [], tail: true }); }
           ps.length = 0;
-        }
+        } else if (trd?.shown && src && trd.state === "loading") trTail.push({ kind: "trnote", id: `${x.id}:trl`, words: TR.WORDS.translating });
+        else if (trd?.shown && src && trd.state === "error") trTail.push({ kind: "trfail", id: `${x.id}:tre`, of: x.id, text: src, words: trd.error || TR.WORDS.failed(""), depth: 0 });
         // A long reply: its first lines (the part where they end cut off there), then Show more.
         const fold = ps.length ? this.foldOf(x, ps) : null;
         const clip = (n) => (fold && !fold.open ? fold.clips.get(n) : undefined);
@@ -3212,6 +3215,7 @@ export default class Chat extends View {
           }
         });
         if (fold) out.push({ kind: "fold", id: `fold:${x.id}`, of: x.id, open: fold.open });
+        out.push(...trTail);
         const pics = md.media.filter((m) => m.kind === "image").map((m) => m.path);
         // (another machine's pictures aren't here to draw: a line saying how many, as a person's the chat can't show)
         if (pics.length && !this.machine) out.push({ kind: "imgs", id: `i:${x.id}`, paths: pics, left: true });
@@ -3222,7 +3226,7 @@ export default class Chat extends View {
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, trText: src, side: "agent", at: x.at, pills: this.pills(x.id),
-            acts: bandActs("agent", x.text, { fork: Boolean(this.kind), translate: this.trOn }) };
+            acts: bandActs("agent", x.text, { fork: Boolean(this.kind), translate: this.trOn && i !== unfinished }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }
@@ -3397,9 +3401,9 @@ export default class Chat extends View {
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * BUBBLE - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
       case "agent": return 30 + (x.clip ?? lines(x.text, w * BUBBLE - 24) * 21);
-      case "trfail": return 26;
+      case "trfail": case "trnote": return 26;
       case "agenttr": return 30 + x.segs.reduce((n, s) => n + (s.type === "table" ? 10 + s.rows.reduce((m, r) => m + (r.some((c) => c.tr || c.fail) ? 48 : 28), 0)
-        : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36 - (s.depth ?? 0) * 18) * 21), 0) + (x.tail ? 22 : 0);
+        : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36 - (s.depth ?? 0) * 18) * 21), 0) + 0;
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62 + (x.peek?.paths?.some((p) => this.views[p]) ? fitThumbs(x.peek.paths.filter((p) => this.views[p]).map((p) => this.views[p]), PEEK_W - 22).h + 8 : 0) + (x.peek?.text ? 8 + Math.ceil((x.peek.text.length * 7) / (PEEK_W - 22)) * 18 : 0);
       case "tasknews": return x.accept ? 26 : 20;
@@ -3569,10 +3573,13 @@ export default class Chat extends View {
           : g.type === "tr" ? deep(g, line(TextView.markdown(`${pre}chat-tr-${x.id}-${n}`, g.text || " ").selectable(true), t.muted))
           : g.type === "fail" ? deep(g, failLine())
           : table(g, n));
-        const tail = x.tail && x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)] : [];
+        const tail = [];
         return pad(h_flex().w_full().justify_start().child(div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
           .child(v_flex().w_full().children([...segs, ...tail]))));
       }
+      case "trnote":
+        return col(h_flex().w_full().h(22).pl(12).items_center().text_size(12.5).text_color(t.dim)
+          .child(div().pl(8).border_l(2).border_color(t.border).min_w(0).truncate().child(x.words)), 18, 2);
       case "trfail":
         // SHEP-102: one short line under the block (or the message) that couldn't be translated; a press asks again
         return col(h_flex().w_full().h(22).pl(12 + (x.depth ?? 0) * 18).gap(6).items_center().cursor_pointer().text_size(12.5).text_color(t.blocked)

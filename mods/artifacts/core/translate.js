@@ -19,165 +19,69 @@ export const WORDS = {
   off: "Translation is off: turn it on in Settings › Translation.",
   notSet: "Translation isn't set up: add the endpoint, model and key in Settings › Translation.",
   noService: "Shepherdr's service isn't running on this machine.",
+  writing: "This reply is still being written: translate it once it's complete.",
 };
 
 // ---- blocks ------------------------------------------------------------------------------------------------------
+// The blocks come from marked's own parse of the message (its lexer's tokens: plain objects, passed in by the service and
+// the web app, which both have marked), so they are exactly the blocks the page draws: a list item's code, a table's
+// cells and a quote's heading are what marked says they are. The window has no marked: the service sends it the parts.
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
-const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
-const QUOTE = /^ {0,3}>[ \t]?/;
-const ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)(.*)$/;
-const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
-const LINK_DEF = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S+/;
-const LINK_DEF_OPEN = /^ {0,3}\[[^\]\n]+\]:[ \t]*$/;
-const TABLE_SEP = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+const TASK = /^\[[ xX]\][ \t]+/;
+const quoted = (src) => String(src ?? "").replace(/\n+$/, "").split("\n").map((x) => `> ${x}`).join("\n");
 
-const indentOf = (s) => s.replace(/\t/g, "    ").match(/^ */)[0].length;
-const blank = (s) => !s.trim();
-
-/** A table row's cells: split on | outside inline code and not escaped. */
-export function cellsOf(line) {
-  let s = line.trim();
-  if (s.startsWith("|")) s = s.slice(1);
-  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+/**
+ * A message's blocks, in reading order, from marked's tokens (marked.lexer(md)): { kind, text, src, skip, ... }. kind:
+ * "heading", "para", "quote" (a paragraph in a quote), "item" (a list item's own words; depth: how deep it is nested;
+ * its marker as it shows: "3." in an ordered list), "cell" (table, row, col, cols), "code" (lang, code), "rule", "html"
+ * or "def" (a link's reference). text: what is translated (inline markdown); src: the block's own markdown (the
+ * window draws each block on its own). skip: nothing to translate (code, a rule, HTML, or only code, links, paths or
+ * ids). The web app finds the same blocks in its page, rendered from the same tokens: h1-h6, p (not in a list item or
+ * a cell), li, th/td, in this order.
+ */
+export function blocksFromTokens(tokens) {
   const out = [];
-  let cur = "", code = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (c === "\\" && s[i + 1] === "|") { cur += "|"; i++; continue; }
-    if (c === "`") code = !code;
-    if (c === "|" && !code) { out.push(cur.trim()); cur = ""; continue; }
-    cur += c;
-  }
-  out.push(cur.trim());
+  let tables = 0;
+  const put = (x) => out.push({ ...x, skip: !["heading", "para", "quote", "item", "cell"].includes(x.kind) || !hasWords(x.text ?? "") });
+  const walk = (list, quote, depth) => {
+    for (const t of list ?? []) {
+      const q = (src) => (quote ? quoted(src) : String(src ?? "").replace(/\n+$/, ""));
+      switch (t.type) {
+        case "heading": put({ kind: "heading", text: String(t.text ?? "").trim(), src: q(t.raw), level: t.depth }); break;
+        case "paragraph": put({ kind: quote ? "quote" : "para", text: String(t.text ?? "").replace(/\s*\n\s*/g, " ").trim(), src: q(t.raw) }); break;
+        case "text": put({ kind: quote ? "quote" : "para", text: String(t.text ?? "").replace(/\s*\n\s*/g, " ").trim(), src: q(t.raw) }); break;
+        case "blockquote": walk(t.tokens, true, depth); break;
+        case "code": put({ kind: "code", text: "", src: q(t.raw), lang: String(t.lang ?? "").split(/\s+/)[0], code: String(t.text ?? "") }); break;
+        case "hr": put({ kind: "rule", text: "", src: q(t.raw) }); break;
+        case "html": put({ kind: "html", text: "", src: q(t.raw) }); break;
+        case "def": put({ kind: "def", text: "", src: String(t.raw ?? "").replace(/\n+$/, "") }); break;
+        case "table": {
+          const tb = tables++, cols = (t.header ?? []).length;
+          const rows = [t.header ?? [], ...(t.rows ?? [])];
+          rows.forEach((r, ri) => Array.from({ length: cols }, (_, ci) => r[ci]).forEach((c, ci) =>
+            put({ kind: "cell", text: String(c?.text ?? "").trim(), src: q(t.raw), table: tb, row: ri, col: ci, cols })));
+          break;
+        }
+        case "list":
+          (t.items ?? []).forEach((it, k) => {
+            const marker = t.ordered ? `${(Number(t.start) || 1) + k}.` : "-";
+            // its own words (a loose item's paragraphs together); its nested lists and code are blocks of their own
+            const own = (it.tokens ?? []).filter((x) => x.type === "text" || x.type === "paragraph").map((x) => String(x.text ?? "").trim()).join(" ")
+              .replace(/\s*\n\s*/g, " ").replace(TASK, "").trim();
+            put({ kind: "item", text: own, src: q(`${marker} ${own}`), depth, ordered: !!t.ordered, marker });
+            walk((it.tokens ?? []).filter((x) => x.type !== "text" && x.type !== "paragraph"), quote, depth + 1);
+          });
+          break;
+      }
+    }
+  };
+  walk(tokens, false, 0);
   return out;
 }
 
-/** Whether a line starts a block other than a paragraph's next line (it ends the paragraph above it). */
-const starts = (l) => FENCE.test(l) || HEADING.test(l) || QUOTE.test(l) || RULE.test(l) || /^[ \t]*(?:[-*+]|1[.)])[ \t]+\S/.test(l);
-
-/**
- * A message's markdown as its blocks, in reading order: { kind, text, src, skip, ... }. kind: "heading", "para",
- * "quote", "item" (a list item; depth: how deep it is nested), "cell" (a table cell: table, row and col say where),
- * "code" (a fenced block: lang, code) or "rule". text: what is translated (the block's own words, its markers off);
- * src: its markdown as written (for the window, which draws each block on its own). skip: nothing to translate (code,
- * a rule, or words that are only code, links, paths or ids). The web app finds the same blocks in the rendered page in
- * this order (h1-h6, p, li, th/td).
- */
-export function mdBlocks(md) {
-  const lines = String(md ?? "").replace(/\r\n?/g, "\n").split("\n");
-  const out = [];
-  let tables = 0;
-  const put = (b) => out.push({ ...b, skip: b.kind === "code" || b.kind === "rule" || !hasWords(b.text ?? "") });
-  for (let i = 0; i < lines.length;) {
-    const l = lines[i];
-    if (blank(l)) { i++; continue; }
-    // a link's reference ([help]: https://…): no words of its own, and no element in the page
-    if (LINK_DEF.test(l)) { out.push({ kind: "def", text: "", src: l, skip: true }); i++; continue; }
-    if (LINK_DEF_OPEN.test(l) && i + 1 < lines.length && /^\s*\S+/.test(lines[i + 1]) && !blank(lines[i + 1])) {
-      out.push({ kind: "def", text: "", src: `${l}\n${lines[i + 1]}`, skip: true });
-      i += 2;
-      continue;
-    }
-    // an indented code block (four spaces in, not a paragraph's next line, nor in a list: a list's deeper item or its
-    // indented lines are the list's)
-    if (indentOf(l) >= 4 && !(out.length && out[out.length - 1].kind === "item")) {
-      const start = i;
-      while (i < lines.length && (blank(lines[i]) || indentOf(lines[i]) >= 4)) i++;
-      while (i > start && blank(lines[i - 1])) i--;
-      const body = lines.slice(start, i);
-      put({ kind: "code", text: "", src: body.join("\n"), lang: "", code: body.map((x) => x.replace(/^(?: {4}|\t)/, "")).join("\n") });
-      continue;
-    }
-    const fence = FENCE.exec(l);
-    if (fence) {
-      const mark = fence[1], start = i;
-      const lang = l.trim().slice(mark.length).trim().split(/\s+/)[0] ?? "";
-      i++;
-      const body = [];
-      while (i < lines.length && !new RegExp(`^ {0,3}${mark[0]}{${mark.length},}[ \\t]*$`).test(lines[i])) body.push(lines[i++]);
-      if (i < lines.length) i++;
-      put({ kind: "code", text: "", src: lines.slice(start, i).join("\n"), lang, code: body.join("\n") });
-      continue;
-    }
-    const h = HEADING.exec(l);
-    if (h) { put({ kind: "heading", text: (h[2] ?? "").trim(), src: l, level: h[1].length }); i++; continue; }
-    if (RULE.test(l)) { put({ kind: "rule", text: "", src: l }); i++; continue; }
-    if (l.includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]) && lines[i + 1].includes("-")) {
-      const start = i, t = tables++;
-      const rows = [cellsOf(l)];
-      i += 2;
-      while (i < lines.length && !blank(lines[i]) && lines[i].includes("|")) rows.push(cellsOf(lines[i++]));
-      for (const r of rows) { r.length = Math.min(r.length, rows[0].length); while (r.length < rows[0].length) r.push(""); }
-      const src = lines.slice(start, i).join("\n");
-      rows.forEach((r, ri) => r.forEach((c, ci) => put({ kind: "cell", text: c, src, table: t, row: ri, col: ci, cols: rows[0].length })));
-      continue;
-    }
-    if (QUOTE.test(l)) {
-      const inner = [];
-      while (i < lines.length && !blank(lines[i]) && (QUOTE.test(lines[i]) || !starts(lines[i]))) inner.push(lines[i++].replace(QUOTE, ""));
-      // a quote holds markdown of its own (paragraphs, a heading, a list, a table), each block its own; a paragraph
-      // in it is a "quote"
-      const own = mdBlocks(inner.join("\n"));
-      const base = tables;
-      for (const b of own) {
-        put({ ...b, kind: b.kind === "para" ? "quote" : b.kind, src: b.src.split("\n").map((x) => `> ${x}`).join("\n"), ...(b.kind === "cell" ? { table: base + b.table } : {}) });
-        if (b.kind === "cell") tables = Math.max(tables, base + b.table + 1);
-      }
-      continue;
-    }
-    const item = ITEM.exec(l);
-    if (item && (item[4].trim() || item[3])) {
-      const start = i, ind = indentOf(item[1]);
-      // where its words start: past the marker and its space (a line four further in after a blank line is code)
-      const content = ind + item[2].length + Math.max(1, Math.min(4, (item[3] ?? " ").replace(/\t/g, "    ").length));
-      const own = [item[4]];
-      let afterBlank = false;
-      i++;
-      // its lines: lazy or indented continuations, and a paragraph after a blank line indented under it (a loose
-      // list's); a nested list item starts a block of its own
-      for (;;) {
-        if (i >= lines.length) break;
-        const n = lines[i];
-        if (blank(n)) {
-          const next = lines.slice(i + 1).find((x) => !blank(x));
-          if (next !== undefined && indentOf(next) > ind + 1 && !ITEM.test(next)) { i++; afterBlank = true; continue; }
-          break;
-        }
-        // a fence deeper than the item's marker is the item's own code block: kept in its markdown, never in its words
-        const deepFence = /^\s*(`{3,}|~{3,})/.exec(n);
-        if (deepFence && indentOf(n) > ind) {
-          const mark = deepFence[1];
-          i++;
-          while (i < lines.length && !new RegExp(`^\\s*${mark[0]}{${mark.length},}[ \\t]*$`).test(lines[i])) i++;
-          if (i < lines.length) i++;
-          continue;
-        }
-        if (ITEM.test(n) || HEADING.test(n) || FENCE.test(n) || QUOTE.test(n) || (RULE.test(n) && indentOf(n) <= ind)) break;
-        // its indented code: kept in its markdown, never in its words
-        if (!(afterBlank && indentOf(n) >= content + 4)) own.push(n.trim());
-        i++;
-      }
-      const words = own.join(" ").trim().replace(/^\[[ xX]\][ \t]+/, "");
-      const depth = Math.floor(ind / 2);
-      put({ kind: "item", text: words, src: lines.slice(start, i).map((x) => x.slice(Math.min(ind, indentOf(x)))).join("\n").trimEnd(), ordered: /\d/.test(item[2]), depth });
-      continue;
-    }
-    const start = i, para = [];
-    while (i < lines.length && !blank(lines[i]) && (i === start || !starts(lines[i]))) {
-      if (i > start && SETEXT.test(lines[i])) break;
-      para.push(lines[i++]);
-    }
-    if (i < lines.length && para.length && SETEXT.test(lines[i]) && !blank(lines[i])) {
-      const level = lines[i].trim().startsWith("=") ? 1 : 2;
-      i++;
-      put({ kind: "heading", text: para.join(" ").trim(), src: lines.slice(start, i).join("\n"), level });
-      continue;
-    }
-    put({ kind: "para", text: para.map((x) => x.trim()).join(" "), src: lines.slice(start, i).join("\n") });
-  }
-  return out;
+/** The message's link references as markdown lines (marked keeps them in tokens.links), for the window's parts. */
+export function linkDefs(tokens) {
+  return Object.entries(tokens?.links ?? {}).map(([k, v]) => `[${k}]: ${v?.href ?? ""}${v?.title ? ` "${v.title}"` : ""}`).join("\n");
 }
 
 /** The element a block is in the rendered page ("h", "p", "li", "td"), or null (code and rules: never translated). */
@@ -209,13 +113,17 @@ export function hasWords(text) {
 const CJK =/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
 
 /** The language to translate into: "en" when CJK characters are over ~30% of the text's letters (code and links
- *  aside), else "zh". Decided locally, with no model call. */
+ *  aside), else "zh". Decided locally, with no model call. text: the words to translate (the blocks' texts: code is
+ *  already out), see blocksDirection. */
 export function direction(text) {
-  const plain = plainWords(mdBlocks(text).filter((b) => b.kind !== "code" && b.kind !== "def").map((b) => b.text).join("\n"));
+  const plain = plainWords(text);
   const cjk = (plain.match(CJK) ?? []).length;
   const letters = (plain.match(/\p{L}/gu) ?? []).length;
   return letters && cjk / letters > 0.3 ? "en" : "zh";
 }
+
+/** The direction for a message's blocks: from the words it sends (no code block of any kind counts). */
+export const blocksDirection = (blocks) => direction(blocks.filter((b) => !b.skip).map((b) => b.text).join("\n\n"));
 
 export const TARGETS = { zh: "Simplified Chinese", en: "English" };
 
@@ -316,29 +224,25 @@ export async function translateTexts(texts, target, ask, { parallel = 4 } = {}) 
 // ---- a message's translation, block by block ------------------------------------------------------------------------
 
 /** What a message sends: the texts of its blocks that have words, with where each goes (its block's index). */
-export function messageTexts(md) {
-  const blocks = mdBlocks(md);
+export function messageTexts(blocks) {
   const at = [], texts = [];
   blocks.forEach((b, i) => { if (!b.skip) { at.push(i); texts.push(b.text); } });
   return { blocks, at, texts };
 }
 
 /**
- * The window's parts of a translated message, in order: { type: "md", text, depth } (a block's own markdown; a list
- * item's depth: how deep it is nested), { type: "tr", text, depth } (its translation, under it), { type: "fail", depth }
- * (a block that couldn't be translated), { type: "code", lang, code } (drawn as the chat draws code: no translation),
- * { type: "table", rows: [[{ text, tr, fail }]] } (each cell's translation inside the cell, under its words; the first
- * row the header). tr: the translations by block index (null where there is none); failed: the indexes that failed.
+ * The window's parts of a translated message (the service makes them: the window has no marked), in order: { type:
+ * "md", text, depth } (a block's own markdown; a list item's depth and its number as it shows), { type: "tr", text,
+ * depth } (its translation, under it), { type: "fail", depth } (a block that couldn't be translated), { type: "code",
+ * lang, code } (drawn as the chat draws code: no translation), { type: "table", rows: [[{ text, tr, fail }]] } (each
+ * cell's translation inside the cell; the first row the header). blocks: blocksFromTokens; tr: the translations by
+ * block index (null where there is none); failed: the indexes that failed; defs: linkDefs (each part is drawn on its
+ * own, so its reference links need them).
  */
-export function windowParts(md, tr = [], failed = []) {
-  const blocks = mdBlocks(md);
+export function windowParts(blocks, tr = [], failed = [], defs = "") {
   const bad = new Set(failed);
   const out = [];
-  // the message's link references ([help]: https://…), under each part drawn on its own, so its links still link
-  const defs = blocks.filter((b) => b.kind === "def").map((b) => b.src).join("\n");
   const own = (src) => (defs ? `${src}\n\n${defs}` : src);
-  // each depth's last ordered number, while a list goes on
-  const numbers = {};
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (b.kind === "def") continue;
@@ -354,17 +258,7 @@ export function windowParts(md, tr = [], failed = []) {
       continue;
     }
     const depth = b.kind === "item" ? b.depth ?? 0 : 0;
-    // an ordered item drawn on its own keeps its place in its list ("1." "1." "1." is 1, 2, 3)
-    let src = b.src;
-    if (b.kind === "item" && b.ordered) {
-      const start = Number(/^\s*(\d+)/.exec(src)?.[1] ?? 1);
-      const prev = numbers[depth];
-      const n = prev && blocks[i - 1] && (blocks[i - 1].kind === "item") ? prev + 1 : start;
-      for (const d of Object.keys(numbers)) if (Number(d) > depth) delete numbers[d];
-      numbers[depth] = n;
-      src = src.replace(/^(\s*)\d+([.)])/, `$1${n}$2`);
-    } else if (b.kind !== "item") for (const d of Object.keys(numbers)) delete numbers[d];
-    out.push({ type: "md", text: own(src), depth });
+    out.push({ type: "md", text: own(b.src), depth });
     if (tr[i]) out.push({ type: "tr", text: b.kind === "heading" ? `**${tr[i]}**` : tr[i], depth });
     else if (bad.has(i)) out.push({ type: "fail", depth });
   }
@@ -394,10 +288,10 @@ export function blockPaths(recipe) {
  * a stat's label and note, a check's summary, a question, a tab's label, a chart's legend and labels). Code, commands,
  * buttons, a question's options and form fields aren't translated, nor a text that is only code, links, paths or ids.
  */
-export function recipeUnits(recipe) {
+export function recipeUnits(recipe, split) {
   const out = [];
   const put = (key, text) => { if (typeof text === "string" && hasWords(text)) out.push({ key, text }); };
-  const md = (key, text) => mdBlocks(text).forEach((b, i) => { if (!b.skip) out.push({ key: `${key}.${i}`, text: b.text }); });
+  const md = (key, text) => split(String(text ?? "")).forEach((b, i) => { if (!b.skip) out.push({ key: `${key}.${i}`, text: b.text }); });
   for (const [b, p] of blockPaths(recipe)) {
     switch (b.type) {
       case "heading": put(`${p}.text`, b.text); break;
@@ -426,7 +320,19 @@ export function recipeUnits(recipe) {
 }
 
 /** The direction for a whole recipe: from all its texts together. */
-export const recipeDirection = (recipe) => direction(recipeUnits(recipe).map((u) => u.text).join("\n\n"));
+export const recipeDirection = (recipe, split) => direction(recipeUnits(recipe, split).map((u) => u.text).join("\n\n"));
+
+/** A recipe's markdown fields' window parts, by their place ("4.md"): the window draws each with its translations. */
+export function recipeParts(recipe, split, defsOf, units = {}, failed = []) {
+  const out = {};
+  const bad = new Set(failed);
+  for (const [b, p] of blockPaths(recipe)) {
+    if (!(b.type === "text" || b.type === "callout") || typeof b.md !== "string") continue;
+    const blocks = split(b.md), key = `${p}.md`;
+    out[key] = windowParts(blocks, blocks.map((_, i) => units[`${key}.${i}`] ?? null), blocks.map((_, i) => i).filter((i) => bad.has(`${key}.${i}`)), defsOf(b.md));
+  }
+  return out;
+}
 
 // ---- settings ---------------------------------------------------------------------------------------------------
 
@@ -487,7 +393,7 @@ export function vaultValue(text, name) {
 export const keyScript = (name) => {
   if (!NAME.test(name)) throw new Error("Not a secret's name.");
   return `
-import json
+import json, os
 ${PY}
 key = ""
 try:

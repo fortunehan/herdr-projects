@@ -13,6 +13,7 @@ import { Markdown, TrLine } from '@plugins/chat/markdown.tsx'
 import { Primary } from '../ui.tsx'
 import * as R from '@core/recipe.js'
 import * as TRc from '@core/translate.js'
+import { marked } from 'marked'
 
 type Block = any
 export type Answer = { value: unknown; at: number; by?: string }
@@ -327,7 +328,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
   /** a markdown block's paragraphs, each with its translation under it (as a chat message's) */
   const md = (b: Block, field: string, text: string) => {
     if (!tr) return <Markdown text={text} />
-    const blocks = ((TRc as any).mdBlocks(text) as unknown[]).map((_, i) => tr.units?.[`${paths.get(b)}.${field}.${i}`] ?? null)
+    const blocks = ((TRc as any).blocksFromTokens(marked.lexer(text)) as unknown[]).map((_, i) => tr.units?.[`${paths.get(b)}.${field}.${i}`] ?? null)
     const bad = blocks.map((_, i) => i).filter((i) => failed.has(`${paths.get(b)}.${field}.${i}`))
     return <Markdown text={text} tr={{ source: text, blocks, failed: bad, retry: tr.retry }} />
   }

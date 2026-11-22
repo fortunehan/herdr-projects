@@ -12,7 +12,7 @@ import { image } from "gpui-kit";
 import { theme, shared, setShared, props, openOverlay, appHome, exec, settings } from "herdr";
 import * as fs from "fs/promises";
 import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_M } from "./artifact.js";
-import { blockPaths, windowParts, WORDS as TW } from "./translate.js";
+import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
 import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, imageSize, isDiff, isLink, mdParts, mediaKind, pictures, withIds } from "./recipe.js";
 
@@ -133,14 +133,11 @@ export default class RecipeView extends View {
   // Markdown words; each fenced code block in them gets its own code box with a Copy button (core/recipe.js mdParts).
   md(id, text, t, b = null, field = "md") {
     const words = (key, w) => div().w_full().min_w(0).text_size(13).text_color(t.foreground).child(TextView.markdown(key, w).selectable(true));
-    // translated: each paragraph, then its translation under it (as the chat's)
-    const tr = b ? translation() : null;
-    if (tr) {
-      const at = `${this.paths.get(b)}.${field}.`;
-      const blocks = [], failed = [];
-      for (const [k, v] of Object.entries(tr.units ?? {})) if (k.startsWith(at)) blocks[Number(k.slice(at.length))] = v;
-      for (const k of tr.failed ?? []) if (k.startsWith(at)) failed.push(Number(k.slice(at.length)));
-      return v_flex().w_full().min_w(0).gap(2).children(windowParts(text, blocks, failed).map((x, i) => x.type === "code" ? this.code(`${id}-tc${i}`, x.code, t)
+    // translated: each paragraph, then its translation under it (as the chat's), in the parts the service made from
+    // marked's own parse (this window has none)
+    const parts0 = b ? translation()?.mdParts?.[`${this.paths.get(b)}.${field}`] : null;
+    if (Array.isArray(parts0)) {
+      return v_flex().w_full().min_w(0).gap(2).children(parts0.map((x, i) => x.type === "code" ? this.code(`${id}-tc${i}`, x.code, t)
         : x.type === "table" ? this.trTable(`${id}-tt${i}`, x, t)
         : x.type === "tr" ? this.trLine(`${id}-t${i}`, x.text, t) : x.type === "fail" ? this.trLine(`${id}-t${i}`, null, t) : words(`md-${id}-tm${i}`, x.text)));
     }

@@ -77,7 +77,7 @@ export function Band({ msg, chat, cli }: { msg: Message; chat: string; cli?: boo
       const look = react ? hover : 'opacity-0 pointer-coarse:opacity-100 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 group-focus-within/msg:opacity-100'
       return (
         <button key={a} type="button" aria-label={on ? TW.hide : TW.translate} aria-pressed={on} className={clsx(btn, look, on && 'text-fg opacity-100')}
-          onClick={() => toggleTranslate(tkey, { text: msg.text ?? '' })}>
+          onClick={() => toggleTranslate(tkey, { text: msg.text ?? '', chat })}>
           <TranslateIcon className="size-3.5" />
         </button>
       )

@@ -47,7 +47,10 @@ describe("a message", () => {
     reset();
     const { t } = make();
     const r: any = await t.message(MSG);
-    expect(r).toEqual({ ok: true, target: "zh", blocks: ["[zh]Plan", "[zh]I fixed the merge step.", "[zh]Ran `bun test`", "[zh]All green", null, null], failed: [] });
+    expect(r).toMatchObject({ ok: true, target: "zh", blocks: ["[zh]Plan", "[zh]I fixed the merge step.", "[zh]Ran `bun test`", "[zh]All green", null, null], failed: [] });
+    // the window's parts, made here from marked's parse: each block, its translation under it, code as it is
+    expect(r.parts.map((p: any) => p.type)).toEqual(["md", "tr", "md", "tr", "md", "tr", "md", "tr", "code", "md"]);
+    expect(r.parts[8]).toEqual({ type: "code", lang: "", code: "herdr-task ready SHEP-1" });
     expect(seen.length).toBe(1);
     expect(seen[0].auth).toBe("Bearer sk-stub-secret");
     expect(seen[0].body.model).toBe("stub-model");
@@ -140,6 +143,15 @@ describe("a message", () => {
     expect(seen.length).toBe(0);
   });
 
+  test("a reply still being written is refused, and nothing is sent", async () => {
+    reset();
+    const t = new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret" }),
+      recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), writing: (w, text) => w.chat === "sp1" && text === "Half a reply" });
+    expect(await t.handle({ text: "Half a reply", chat: "sp1" })).toMatchObject({ ok: false, error: expect.stringContaining("still being written") });
+    expect(seen.length).toBe(0);
+    expect(await t.handle({ text: "A whole reply here.", chat: "sp1" })).toMatchObject({ ok: true });
+  });
+
   test("an answer that is never the translation fails, and nothing is kept", async () => {
     reset();
     mode = "garbage";
@@ -171,7 +183,9 @@ describe("an artifact", () => {
   test("each text block's translation by its place, into English", async () => {
     reset();
     const r: any = await make({}, recipe).t.artifact("art1", 2, null);
-    expect(r).toEqual({ ok: true, target: "en", units: { "0.text": "[en]证明", "1.md.0": "[en]合并步骤修好了。", "1.md.1": "[en]测试通过", "3.caption": "[en]改动之后" }, failed: [] });
+    expect(r).toMatchObject({ ok: true, target: "en", units: { "0.text": "[en]证明", "1.md.0": "[en]合并步骤修好了。", "1.md.1": "[en]测试通过", "3.caption": "[en]改动之后" }, failed: [] });
+    expect(r.mdParts["1.md"]).toEqual([{ type: "md", text: "合并步骤修好了。", depth: 0 }, { type: "tr", text: "[en]合并步骤修好了。", depth: 0 },
+      { type: "md", text: "- 测试通过", depth: 0 }, { type: "tr", text: "[en]测试通过", depth: 0 }]);
     expect(seen.length).toBe(1);
   });
   test("not a recipe", async () => {

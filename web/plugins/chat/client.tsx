@@ -70,7 +70,7 @@ function Bubble({ msg, chat, from, out, last, pics, images, writing }: { msg: Me
   // a reply still being written gets no Translate (its band waits; a phone's hold menu asks isWriting)
   useEffect(() => { setWriting(tkey, !!writing); return () => setWriting(tkey, false) }, [tkey, writing])
   const tr: Tr | undefined = !you && msg.text && shownTr?.shown
-    ? { source: msg.text, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text! }) }
+    ? { source: msg.text, blocks: shownTr.blocks, failed: shownTr.failed as number[] | undefined, loading: shownTr.state === 'loading', error: shownTr.state === 'error' ? shownTr.error : undefined, retry: () => retryTranslate(tkey, { text: msg.text!, chat: chat.key }) }
     : undefined
   // one on its way isn't a message yet: a hold (or ⋯ with a mouse) offers only to take it out
   const [menu, setMenu] = useState(false)
@@ -1267,8 +1267,8 @@ const Messages = memo(function Messages({ chat, from }: { chat: Chat; from: stri
   // the agent's newest reply while it works: it may still be writing it, so its band waits
   // (the agent's newest words, whatever quiet rows, files or queued prompts the service put after them: the reply is
   // done only once the person's own delivered message comes after it, or the agent stops working)
-  const tail = chat.messages.findLast((m) => m.who === 'agent' && !!m.text && !m.question && !m.secret && !m.brief && !m.news)
-  const answered = !!tail && chat.messages.slice(chat.messages.indexOf(tail) + 1).some((m) => m.who === 'you' && !m.waiting)
+  const tail = chat.messages.findLast((m) => m.who === 'agent' && !!m.text && !m.question && !m.secret && !m.brief && !m.news && !m.card && !m.answered)
+  const answered = !!tail && chat.messages.slice(chat.messages.indexOf(tail) + 1).some((m) => m.who === 'you' && !m.waiting && !m.brief && !m.news && !m.card)
   const writing = chat.working && tail && !answered ? tail.id : null
   const newAt = useContext(NewAt)
   // a message just sent, or just in, rises into place

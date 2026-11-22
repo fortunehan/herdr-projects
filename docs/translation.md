@@ -36,7 +36,10 @@ Only the endpoint set here is ever called. There is no built-in public service.
   An artifact is read by the service itself (`{ artifact, v, on }`).
 - The key is found as a voice call finds its own: the vault here when this machine keeps the secrets, else read from
   the machine that does over herdr-core's link, into memory only (kept there 10 minutes).
-- The message is split into blocks (`mdBlocks`), and every block with words goes in ONE request asking for a JSON array
+- The message is split into blocks from marked's own parse (`blocksFromTokens(marked.lexer(text))`: the same parse the
+  web page renders, so a list item's code, a table's cells and a quote's heading are exactly what the page shows). The
+  window has no marked: the service sends it the parts to draw (`windowParts`, and `recipeParts` for an artifact's
+  markdown). Every block with words goes in ONE request asking for a JSON array
   of the same length and order (`requestBody`, `parseTranslations`). An answer of another length or shape is asked
   again block by block (a one-block message once more); a refused key or a missing model fails at once. Each answer is
   made inert (`inert`): no pictures or HTML, and a link only to an address the original names.
@@ -52,6 +55,8 @@ Only the endpoint set here is ever called. There is no built-in public service.
   artifact version and its words) and target language, shared by the window, the web app and the phone. Pressed
   again, only the blocks that failed are sent.
 - A failure is one short line under the message (or the block) with Retry; no pop-up.
+- A reply the agent may still be writing gets no Translate (the band, the phone's hold menu and the window all wait),
+  and the service refuses it too: the chat's agent works and these are its newest words.
 - Manual only: there is no switch to translate a whole chat by itself.
 
 ## Tests

@@ -49,7 +49,9 @@ describe("an artifact's translation in the window's recipe view (SHEP-102)", () 
 
   test("each text's translation under it; code as it is", () => {
     store["artifacts.translate"] = { "|art1|2": { shown: true, state: "done", failed: [],
-      units: { "0.text": "Merging now waits for the checks", "1.md.0": "It merges only after you accept.", "2.col.0": "Step", "2.cell.0.0": "Checks pass" } } };
+      units: { "0.text": "Merging now waits for the checks", "1.md.0": "It merges only after you accept.", "2.col.0": "Step", "2.cell.0.0": "Checks pass" },
+      // the markdown block's parts, as the service makes them from marked's parse
+      mdParts: { "1.md": [{ type: "md", text: "接受任务后才合并。", depth: 0 }, { type: "tr", text: "It merges only after you accept.", depth: 0 }, { type: "code", lang: "", code: "herdr-task ready" }] } } };
     draw(v);
     expect(words()).toEqual(expect.arrayContaining(["Merging now waits for the checks", "接受任务后才合并。", "It merges only after you accept.", "Step", "Checks pass"]));
     // the original stays, before its translation

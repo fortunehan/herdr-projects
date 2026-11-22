@@ -8,7 +8,7 @@ import { act, useSnap } from '@client/kernel.ts'
 export type Shown = {
   shown: boolean
   state: 'loading' | 'done' | 'error'
-  /** a message's translations by block (core/translate.js mdBlocks), null where a block has none */
+  /** a message's translations by block (core/translate.js blocksFromTokens), null where a block has none */
   blocks?: (string | null)[]
   /** an artifact's, by its texts' places (core/translate.js recipeUnits) */
   units?: Record<string, string>
@@ -28,17 +28,18 @@ export const useShown = (key: string) => useSyncExternalStore(subscribe, () => a
 export const messageKey = (chat: string, id: string) => `m:${chat}|${id}`
 export const artifactKey = (art: { id: string; machine?: string | null }, v: number) => `a:${art.machine ?? ''}|${art.id}|${v}`
 
-type Ask = { text: string } | { artifact: string; v: number; on: string | null }
+/** a message's words and its chat (the service checks the reply is complete), or an artifact's version */
+type Ask = { text: string; chat: string } | { artifact: string; v: number; on: string | null }
 
 async function ask(key: string, body: Ask) {
   const was = all.get(key)
   put(key, { ...was, shown: true, state: 'loading', error: undefined })
   try {
     const r = (await act({ type: 'translate', ...body } as never)) as { ok: boolean; error?: string; blocks?: (string | null)[]; units?: Record<string, string>; failed?: (number | string)[] }
-    if (!r?.ok) return put(key, { ...was, shown: true, state: 'error', error: r?.error ?? "Couldn't translate" })
+    if (!r?.ok) return put(key, { ...was, shown: all.get(key)?.shown ?? true, state: 'error', error: r?.error ?? "Couldn't translate" })
     put(key, { shown: all.get(key)?.shown ?? true, state: 'done', blocks: r.blocks, units: r.units, failed: r.failed ?? [] })
   } catch (e) {
-    put(key, { ...was, shown: true, state: 'error', error: `Couldn't translate: ${e instanceof Error ? e.message.slice(0, 160) : 'try again'}` })
+    put(key, { ...was, shown: all.get(key)?.shown ?? true, state: 'error', error: `Couldn't translate: ${e instanceof Error ? e.message.slice(0, 160) : 'try again'}` })
   }
 }
 
