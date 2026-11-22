@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import unicodedata
 
 from .base import Fail, git, HOME, MAX_RUNNING, WHERE, run
 
@@ -56,8 +57,48 @@ DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "
                       "start_notes": "", "finish_notes": "", "archive_after": 7, "proof": True, "base": "", "branch": "",
                       "slug_max": 40, "worktree_root": ""},
             "automations": {"enabled": True}, "worker": {}, "reviewer": {}, "coordinator": {}, "backup": {},
-            "agents": {"reactions": True, "suggestions": True, "feedback": True, "feedback_repo": "eliasstravik/shepherdr"}}
+            "agents": {"reactions": True, "suggestions": True, "feedback": True, "feedback_repo": "eliasstravik/shepherdr",
+                       "language": ""}}
 LEVELS = ["blocker", "major", "minor"]
+
+# SHEP-101: Settings › Agents › Output language (agents.language): "" follows the person, else the language every agent
+# writes to the person in. Per task: --set person_language=… is the language the person asked in (the Assistant records
+# it on each add while the setting follows the person); --set language=… is that task's own language, the person's
+# explicit wish ("follow": it follows the person even under a fixed setting).
+LANGUAGE_CODES = {"en": "English", "english": "English", "zh": "Chinese", "zh-cn": "Chinese", "zh-hans": "Chinese",
+                  "cn": "Chinese", "chinese": "Chinese", "中文": "Chinese", "简体中文": "Chinese", "汉语": "Chinese",
+                  "zh-tw": "Traditional Chinese", "zh-hk": "Traditional Chinese", "zh-hant": "Traditional Chinese",
+                  "繁體中文": "Traditional Chinese", "ja": "Japanese", "jp": "Japanese", "日本語": "Japanese",
+                  "ko": "Korean", "kr": "Korean", "한국어": "Korean", "es": "Spanish", "español": "Spanish",
+                  "fr": "French", "français": "French", "de": "German", "deutsch": "German", "pt": "Portuguese",
+                  "it": "Italian", "ru": "Russian", "nl": "Dutch", "sv": "Swedish", "pl": "Polish", "tr": "Turkish",
+                  "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "ar": "Arabic", "he": "Hebrew", "hi": "Hindi", "uk": "Ukrainian"}
+FOLLOW_WORDS = {"", "follow", "follow the person", "follows the person", "person", "auto", "the person's"}
+
+
+def _marks_as_letters(v):
+    """v with each combining mark (Unicode category M*) read as a letter, as the language check wants."""
+    return "".join("a" if unicodedata.category(c).startswith("M") else c for c in v)
+
+
+def language_name(value):
+    """A language as the Settings block names it ("zh", "中文" -> "Chinese"); "" for following the person; None when
+    it isn't one (digits, markup, or longer than a language's name)."""
+    v = " ".join(str(value or "").split()).strip("\"'").strip()
+    low = v.lower()
+    if low in FOLLOW_WORDS:
+        return ""
+    if low in LANGUAGE_CODES:
+        return LANGUAGE_CODES[low]
+    # letters and their combining marks (हिन्दी, ไทย), words split by a space or "-", a part in brackets
+    if len(v) > 30 or not re.fullmatch(r"[^\W\d_]+(?:[ \-]\(?[^\W\d_]+\)?)*", _marks_as_letters(v)):
+        return None
+    return v[0].upper() + v[1:]
+
+
+def output_language(s, space=None):
+    """Settings' Output language for a space ("" follows the person); a value that isn't a language follows."""
+    return language_name((settings_for(s, space).get("agents") or {}).get("language")) or ""
 
 
 # The machine layer's key for the computer whose Herdr window wrote the file. A copy the window
@@ -354,7 +395,11 @@ SET_KEYS = {"review": "review", "brief.review": "review", "merge": "merge", "bri
             "reviewer": "reviewer", "reviewer.agent": "reviewer", "reviewer.model": "reviewer_model", "reviewer.effort": "reviewer_effort",
             "reviewer_model": "reviewer_model", "reviewer-model": "reviewer_model",
             "reviewer_effort": "reviewer_effort", "reviewer-effort": "reviewer_effort",
-            "proof": "proof", "brief.proof": "proof"}
+            "proof": "proof", "brief.proof": "proof",
+            "language": "language", "lang": "language", "agents.language": "language", "output.language": "language",
+            "output_language": "language", "output-language": "language",
+            "person_language": "person_language", "person-language": "person_language", "person.language": "person_language",
+            "person": "person_language", "asked_in": "person_language", "asked-in": "person_language"}
 # The Proof line (as Shepherdr's skill asks of its task agents), on and off.
 PROOF_WORDS = {"on": "show verifiable proof in one recipe artifact: each proof with a one-line caption, real and from this work now, "
                      "plus a \"Not proven\" list; then say ready with --proof <its id>",
@@ -372,7 +417,7 @@ def set_task(t, key, value):
     """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'."""
     field = SET_KEYS.get(key.strip().lower())
     if not field:
-        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, agent, launcher, model, effort or reviewer settings, not {key!r}.")
+        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, language, person_language, agent, launcher, model, effort or reviewer settings, not {key!r}.")
     v = value.strip().strip("\"'").strip()
     sets = t.setdefault("set", {})
     if not v or v.lower() == "default":
@@ -404,6 +449,12 @@ def set_task(t, key, value):
         if low not in MERGE_VALUES:
             raise Fail('merge is "on its own", "after checks" or "ask me first".')
         sets[field] = MERGE_VALUES[low]
+    elif field in ("language", "person_language"):
+        name = language_name(v)
+        if name is None or (field == "person_language" and not name):
+            raise Fail(f"{field} is a language's name or code (Chinese, zh, English, en, 日本語...)"
+                       + (", follow" if field == "language" else "") + ", or default.")
+        sets[field] = name or "follow"
     else:
         # Agents, models and efforts are the task's own fields (worker_pick reads them).
         if field in ("effort", "reviewer_effort") and low not in EFFORTS:
@@ -648,6 +699,8 @@ def task_settings(s, t, space=None, argv=None, live=False):
     proof = sets["proof"] == "on" if "proof" in sets else k.get("proof") is not False
     add("Proof", PROOF_WORDS["on" if proof else "off"], proof,
         "task" if "proof" in sets else by_layer(s, space, "tasks", "proof", proof, True))
+    text, value, by = language_line(s, sets.get("language"), sets.get("person_language"), space)
+    add("Language", text, value, by)
     model, effort = argv_model(argv)
     text = agent + (f", model {model}" if model else "") + (f", effort {effort}" if effort else "")
     a_by = "task" if any(t.get(f) for f in ("agent", "model", "effort")) else \
@@ -658,6 +711,23 @@ def task_settings(s, t, space=None, argv=None, live=False):
     add("Suggested next message", "on (your reply ends with the message you'd likely send next, shown greyed out in the box)" if sug
         else "off (no suggested next message)", sug, by_layer(s, space, "agents", "suggestions", sug, True))
     return lines
+
+
+FOLLOW_NONE = ("the person's: write to them in the language of the last message they typed to you, the brief's until "
+               "they write (follows the person)")
+
+
+def language_line(s, own, person=None, space=None):
+    """The Settings block's Language line (SHEP-101) as (text, value, by): the task's own language (--set language),
+    else Settings' fixed one, else it follows the person: the language they asked in, as the Assistant recorded it
+    (--set person_language), else the one of their next message. own "follow" follows even under a fixed setting."""
+    fixed = output_language(s, space)
+    if own and own != "follow":
+        return own, own, "task" if own != fixed else by_layer(s, space, "agents", "language", fixed, "")
+    if fixed and own != "follow":
+        return fixed, fixed, by_layer(s, space, "agents", "language", fixed, "")
+    by = "task" if own == "follow" and fixed else None
+    return (f"{person} (follows the person)", person, by) if person else (FOLLOW_NONE, "", by)
 
 
 def settings_block(s, t, space=None, argv=None, live=False):

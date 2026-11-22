@@ -13,7 +13,7 @@ import os
 import sys
 
 from .base import addon_off, hc_json, MAX_RUNNING, now, run, STORE
-from .settings import DEFAULTS, LOCAL_MACHINE, MUST_WORDS, SETTINGS, agent_key, bare, merge_worker, read_settings, space_layer
+from .settings import DEFAULTS, LOCAL_MACHINE, MUST_WORDS, SETTINGS, agent_key, bare, language_name, merge_worker, read_settings, space_layer
 from .launch import coordinators, is_coordinator
 from . import reactions
 from . import local
@@ -30,6 +30,8 @@ MERGE_SHORT = {"ask": "ask the person first (they accept it in the Tasks panel, 
                "auto": "on its own (Herdr merges a ready task)"}
 BY = {"space": "set for this space", "machine": "this machine's setting", "everywhere": "your setting everywhere"}
 NOTICE_END = "Nothing to answer: reply only <hc no-reply/>."
+LANGUAGE_FOLLOWS = ("follow the person (reply in the language of the last message the person typed, never of news, hooks or "
+                    "notifications; give each task and automation you add that language with --set person_language=<it>)")
 
 
 def space_of(k):
@@ -108,6 +110,7 @@ def rows(space, d=None, auto=None):
         suggesting = (cfg.get("agents") or {}).get("suggestions") is not False
         from .feedback import feedback_repo
         repo = feedback_repo(d)
+        language = language_name((cfg.get("agents") or {}).get("language")) or ""
         return [
             ("review", "Review", review, "on" if rounds > 0 else "off",
              [("tasks", "review_rounds"), ("tasks", "must_fix"), ("reviewer", None)]),
@@ -134,6 +137,9 @@ def rows(space, d=None, auto=None):
             ("feedback", "Feedback offers", f"on (offer once to file a Shepherdr problem as an issue on {repo}, only on the person's yes)"
              if offering else "off (never offer feedback for Shepherdr; file nothing)", "on" if offering else "off",
              [("agents", "feedback"), ("agents", "feedback_repo")]),
+            ("language", "Output language",
+             f"{language} (write to the person in {language}, whatever they write in; every brief says it, so add no --set person_language)"
+             if language else LANGUAGE_FOLLOWS, language or "follow", [("agents", "language")]),
         ]
     have = lines(resolve(ls), (on, every, direction))
     default = {x[0]: x[2] for x in lines(resolve([]), (False, every, ""))}
