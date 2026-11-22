@@ -25,7 +25,7 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window-mod methods (e.g. chat's `refocus()`) can be tested by extracting the method text from `mods/chat/main.js`
   and running it in node with stubs (see `test/test_chat_refocus.py`).
 - `herdr-app check` never runs a v_virtual_list's rows: window-mod list rows must take no handlers (on_*) and no kept
-  cx (gpui-kit.d.ts 'no handlers and no retained state'); service/chat-rows.test.ts checks the chat's rows.
+  cx (gpui-kit.d.ts 'no handlers and no retained state'); service/chat-rows.test.ts runs the chat's list renderer as written.
 - Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
   the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.
 - Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and
