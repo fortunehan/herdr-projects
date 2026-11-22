@@ -844,7 +844,8 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
     herdr.space, which Herdr gives a pane), herdr.agent, herdr.coordinator (its coordinator's tab,
     which keeps it under a restarted coordinator) and herdr.role=reviewer for a reviewer, kept
     apart from the task's agents. Returns its record."""
-    space = bare(space) or default_space(s.loc["folder"], parent=parent)
+    from .rehome import live_space
+    space = live_space(bare(space), s.loc["folder"]) or default_space(s.loc["folder"], parent=parent)
     ensure_launcher(argv)
     key = s.key(task)
     cmd = list(resume or argv)

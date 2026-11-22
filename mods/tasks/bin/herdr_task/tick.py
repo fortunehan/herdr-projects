@@ -24,6 +24,7 @@ from .launch import default_space
 from .store import locate, read_list, Store, store_files
 from .queues import machine_hold, refresh_ext, running_count, set_hold, waiting_ext, waiting_for
 from .archive import archive_pass
+from .rehome import rehome_pass
 from .browsers import browser_pass
 from .shells import end_shells, shell_pass
 from .output import progress_clock, say
@@ -711,6 +712,10 @@ def cmd_tick(args):
         archive_pass(report, args.folder)
     except Exception as e:  # never stops the queue
         report["archive_error"] = str(e)
+    try:
+        rehome_pass(report, args.folder)
+    except Exception as e:  # never stops the queue
+        report["rehome_error"] = str(e)
     for p in store_files(args.folder):
         d = read_list(p)
         tasks = (d or {}).get("tasks") or []
