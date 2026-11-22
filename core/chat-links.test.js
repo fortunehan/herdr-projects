@@ -355,7 +355,7 @@ describe("the paths in a reply (Paths action)", () => {
     expect(L.pathsIn("~/a/b.ts and /tmp/a/b", null)).toEqual(["/tmp/a/b"]);
   });
   test("the cheap first look passes every reply with a path, and none with only URLs or slashes in words", () => {
-    for (const t of ["see /tmp/a/b", "`~/x`", "file:///tmp/a", "(/Users/me/x)", "/tmp/a/"]) expect(L.mayHavePath(t)).toBe(true);
+    for (const t of ["see /tmp/a/b", "`~/x`", "file:///tmp/a", "(/opt/app/x)", "/tmp/a/"]) expect(L.mayHavePath(t)).toBe(true);
     for (const t of ["https://x.y/a/b/c", "and/or/not", "/model", "1/2/3", "no paths"]) expect(L.mayHavePath(t)).toBe(false);
   });
 });

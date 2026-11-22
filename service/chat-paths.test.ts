@@ -59,8 +59,8 @@ function chat(machine: string | null = null, texts = [REPLY, URLS]) {
     results: new Map(), heights: new Map(), unfolded: new Set(), myReacts: new Map(), views: {}, arts: [], askEnds: [], pending: [],
     queue: [], replied: [], asks: [], cardW: new Map(), start: 0, kind: "claude", t: null, addr: "t1" });
   c.conv = { items: texts.map((text, i) => ({ kind: "agent", id: `a${i}`, text, at: Date.now() - 1000 * (texts.length - i) })), reactions: new Map() };
-  for (const [k, v] of Object.entries({ status: () => "idle", resolveArts: () => new Map(), newsLines: () => ({ extra: [], inline: new Map() }),
-    loadAskEnds: () => {}, workerTasks: () => new Map(), timelineCards: () => [] })) c[k] = v;
+  Object.assign(c, { status: (): string => "idle", resolveArts: () => new Map(), newsLines: () => ({ extra: [], inline: new Map() }),
+    loadAskEnds: () => {}, workerTasks: () => new Map(), timelineCards: () => [] });
   return c;
 }
 /** The press the list hands clickRow: on a band, at the named action's place (barLayout()). */
