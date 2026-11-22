@@ -31,20 +31,22 @@ export async function target(img, appHome, exists) {
   return { path: null, gone: true };
 }
 
-/** The command for an action ("copy", "open", "reveal") on a file: [program, args]. os: window().platform. */
+/** The command for an action ("copy", "open", "reveal") on a file: [program, args]. os: window().platform.
+ *  macOS programs are absolute (SHEP-104): exec resolves a bare name on the window's PATH, where another `open`
+ *  (cmux's wrapper on the dev Mac) can come first. */
 export function command(action, os, p) {
   if (action === "copy") {
-    if (os === "macos") return ["osascript", ["-l", "JavaScript", "-e", MAC_COPY, p]];
+    if (os === "macos") return ["/usr/bin/osascript", ["-l", "JavaScript", "-e", MAC_COPY, p]];
     if (os === "windows") return ["powershell", ["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetImage([Drawing.Image]::FromFile($args[0]))", p]];
     // wl-copy stays behind to serve the clipboard: its output must not hold exec open.
     return ["sh", ["-c", 'if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null; then wl-copy < "$1" >/dev/null 2>&1; else xclip -selection clipboard -t "$(file -b --mime-type "$1")" -i "$1" >/dev/null 2>&1; fi', "copy", p]];
   }
   if (action === "open") {
-    if (os === "macos") return ["open", [p]];
+    if (os === "macos") return ["/usr/bin/open", [p]];
     if (os === "windows") return ["cmd", ["/c", "start", "", p]];
     return ["xdg-open", [p]];
   }
-  if (os === "macos") return ["open", ["-R", p]];
+  if (os === "macos") return ["/usr/bin/open", ["-R", p]];
   // explorer's exit code is 1 even when it worked: never read as a failure (failed()).
   if (os === "windows") return ["explorer", [`/select,${p}`]];
   return ["sh", ["-c", 'dbus-send --session --print-reply --dest=org.freedesktop.FileManager1 /org/freedesktop/FileManager1 org.freedesktop.FileManager1.ShowItems array:string:"file://$1" string:"" >/dev/null 2>&1 || xdg-open "$(dirname "$1")"', "reveal", p]];
@@ -60,12 +62,17 @@ export function failed(action, os, r) {
 /** Each action's failure title. */
 export const TITLES = { copy: "Couldn't copy the image", open: "Couldn't open the image", reveal: "Couldn't show the image in its folder" };
 
+/** What each action does, for a failure with nothing on stderr ("open didn't open it (exit 1)"). */
+const DID = { copy: "copy", open: "open", reveal: "show" };
+
 /** What the viewer says when an action can't run or fails: { title, body } (body "" for none). t: target(); r: the
- *  exec result, null when it couldn't start, undefined when it never ran. */
-export function problem(action, t, r) {
+ *  exec result, null when it couldn't start, undefined when it never ran; cmd: the program that ran. */
+export function problem(action, t, r, cmd = "") {
   const title = TITLES[action];
   if (!t?.path) return { title, body: "The file is gone." };
   if (action === "reveal" && t.gone) return { title, body: "Its folder is gone (a finished task's worktree is removed)." };
   const line = String(r?.stderr ?? "").trim().split("\n").pop()?.replace(/^.*execution error: (Error: )*/, "").replace(/ \(-?\d+\)$/, "") ?? "";
-  return { title, body: r === null ? "The command it needs isn't installed." : line };
+  if (r === null) return { title, body: "The command it needs isn't installed." };
+  if (!line && r && cmd) return { title, body: `${cmd.split("/").pop()} didn't ${DID[action]} it (exit ${r.code})` };
+  return { title, body: line };
 }
