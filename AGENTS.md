@@ -181,6 +181,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - The web app's page-filling full screen in agent-browser: eval
   `Object.defineProperty(Document.prototype,'fullscreenEnabled',{get:()=>false,configurable:true})` before clicking
   Full screen. Tailwind's `@container` (container-type) traps `position:fixed` descendants.
+- Translation proofs: a stub OpenAI-compatible endpoint on 127.0.0.1 driving service/translate.ts Translator from a Bun
+  stub; translation keys need 16 ASCII letters and digits, so give the stub a long fake key.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
