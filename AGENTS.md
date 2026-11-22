@@ -24,6 +24,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   settings to other machines), nor for `tabs-tasks` (its init starts the service and bridge for real).
 - Window-mod methods (e.g. chat's `refocus()`) can be tested by extracting the method text from `mods/chat/main.js`
   and running it in node with stubs (see `test/test_chat_refocus.py`).
+- Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
+  the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.
 - Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and
   after (see core/chat-links.test.js 'code blocks read the same to marked').
 - Mark up (`mods/artifacts/markup.js`) imports must be listed in `MARKUP_HELPERS` in `mods/artifacts/bin/herdr-artifact`
@@ -171,6 +173,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   agent-browser `mouse move/down/up` drives clicks and drags on the layer. `herdr-artifact preview` takes no `--folder`.
 - `herdr-artifact preview` with a branch's viewer: copy mods/artifacts into a scratch folder with `web/dist/artifact-viewer.html`
   beside it as viewer.html, and run that copy with `HOME=<scratch>` so it uses a throwaway store.
+- The web app's page-filling full screen in agent-browser: eval
+  `Object.defineProperty(Document.prototype,'fullscreenEnabled',{get:()=>false,configurable:true})` before clicking
+  Full screen. Tailwind's `@container` (container-type) traps `position:fixed` descendants.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { WORDS, clock, bandActs, bandOrder, senderName, briefLabel, newsWords, newsTimeline, resolveArtifacts, fitThumbs, dayLabel, imagesLine, questionsBelow, notSent, unsigned, elapsed, reportMsg, doingWords, ownWords, outsideTerminal, fromName, sentTo, selfName, initialOf, literal, firstUser, firstKeys } from "./chat-view.js";
+import { WORDS, clock, bandActs, bandOrder, senderName, briefLabel, newsWords, newsTimeline, resolveArtifacts, fitThumbs, dayLabel, imagesLine, questionsBelow, notSent, unsigned, elapsed, reportMsg, doingWords, ownWords, outsideTerminal, fromName, sentTo, selfName, initialOf, literal, codeParts, firstUser, firstKeys } from "./chat-view.js";
 
 const ROOT = join(import.meta.dir, "..");
 const read = (p) => readFileSync(join(ROOT, p), "utf8");
@@ -225,6 +225,16 @@ describe("the person's words and the session's first message", () => {
     // an entity typed is its characters; a lone & needs nothing
     expect(literal("&lt; & ampersand")).toBe("\\&lt; & ampersand");
     expect(literal(null)).toBe("");
+  });
+  // SHEP-109: found with indexOf (the window's QuickJS runs a split pattern at every character), in one pass
+  test("codeParts splits as literal's old pattern did, in one pass", () => {
+    const RE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
+    for (const s of ["", "`", "``", "```", "````", "a `b` c", "a `b\nc` d", "```x", "``` a ``` `b` ```", "`a``b`", "x\n`y`\n```\nz\n```\n`"])
+      expect(codeParts(s)).toEqual(s.split(RE));
+    const line = "a `b` ".repeat(6666);
+    const at = performance.now();
+    expect(codeParts(line)).toEqual(line.split(RE));
+    expect(performance.now() - at).toBeLessThan(200);
   });
   test("the first message is the first user item, wherever news read out of it went (#589)", () => {
     expect(firstUser([{ kind: "news" }, { kind: "news" }, { kind: "user" }, { kind: "user" }])).toBe(2);
