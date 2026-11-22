@@ -52,6 +52,7 @@ import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
 import { SH } from "./core/paths.js";
+import * as links from "./core/chat-links.js";
 import { settle } from "./core/pending.js";
 import { dirs, dirsReady } from "./dirs.js";
 import { localService, localToken } from "./local.js";
@@ -63,6 +64,24 @@ import { Dictation, BUN_PATH, warmAudio } from "./dictate.js";
 
 // Writing down after Done this long says it's taking longer than usual (SHEP-63).
 const DICT_SLOW = 5000;
+/** Most time one frame spends linking replies' URLs and paths (SHEP-108, linked()). */
+const LINK_MS = 12;
+/** Longer words than this are never reworked (mentions, links, breaks) but shown as written (SHEP-109: one 280 KB
+ *  message took ~60 ms there, past the window's whole render limit). A 35 KB brief is still reworked. */
+const PREP_MAX = 40000;
+/** Text as one fenced code block, its fence longer than any run of backticks in it (shown as written, never parsed). */
+const asCode = (text) => {
+  const s = String(text);
+  let run = 0;
+  for (let i = s.indexOf("`"); i >= 0; i = s.indexOf("`", i + 1)) {
+    let n = 1;
+    while (s[i + n] === "`") n++;
+    if (n > run) run = n;
+    i += n - 1;
+  }
+  const fence = "`".repeat(Math.max(3, run + 1));
+  return `${fence}text\n${s}\n${fence}`;
+};
 import { PanelHost, inner, openTaskThread, backToTasks, requestWorkerTerminal, THREAD, STACK as TASKS_STACK, BODY as THREAD_BODY, CHAT as THREAD_CHAT, TERM as THREAD_TERM, PR as THREAD_PR, BROWSER as THREAD_BROWSER } from "./panel.js";
 import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
@@ -212,7 +231,24 @@ async function answerRemote(machine, id, text, how) {
 // The person's words keep the line breaks they typed: markdown joins single lines, so each one
 // becomes a hard break (outside code fences, which keep theirs). A "<word>" they typed shows as
 // typed, not read as HTML and dropped (core/chat-view.js literal(), #591).
-const typed = (text) => literal(String(text).split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?!\n)/g, "$1  \n"))).join(""));
+// SHEP-109: the fences found with indexOf, as split(/(```[\s\S]*?(?:```|$))/) found them: the window's QuickJS runs a
+// split pattern at every character (a 35 KB brief: ~10 ms a split). The chat keeps each text's result (prepared()).
+const typed = (text) => literal(fenced(String(text)).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?!\n)/g, "$1  \n"))).join(""));
+
+/** text split at its ``` fences: [words, fence, words, ...], a fence never closed running to the end. */
+function fenced(s) {
+  const out = [];
+  let at = 0;
+  for (;;) {
+    const a = s.indexOf("```", at);
+    if (a < 0) { out.push(s.slice(at)); return out; }
+    const b = s.indexOf("```", a + 3);
+    const end = b < 0 ? s.length : b + 3;
+    out.push(s.slice(at, a), s.slice(a, end));
+    at = end;
+    if (b < 0) { out.push(""); return out; }
+  }
+}
 
 // An agent message in parts: markdown, and fenced code blocks (drawn with a Copy bar).
 function parts(text) {
@@ -277,6 +313,9 @@ export default class Chat extends View {
     this.reviewId = P?.review ?? null;
     this.reviewReports = [];
     cx.timer.every(2500, (cx) => this.reviewWork(cx));
+    // Rows left plain past a frame's budget (prepared()), also those the list drew from inside layout after render()
+    // returned: a redraw makes them.
+    cx.timer.every(120, (cx) => { if (this.linkWaiting) { this.linkWaiting = false; cx.notify(); } });
     // No agent yet (a Coordinator tab): it may have started one already (this slot's label).
     this.role = P?.role ?? null;
     this.slot = P?.slot ?? null;
@@ -1513,8 +1552,11 @@ export default class Chat extends View {
     const list = this.suggestions();
     if (list.length) {
       const c = list[Math.min(this.slashSel, list.length - 1)];
-      if (c.task || c.space) { this.pick(c, cx); const v = this.box.value(); cx.timer.after(30, () => this.box.set_value(v)); return; }
-      if (this.box.value().trim() !== `/${c.name}`) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(`/${c.name} `)); return; }
+      if (c.task || c.space || this.caretText().before !== `/${c.name}`) {
+        const done = this.pick(c, cx);
+        cx.timer.after(30, () => this.dropEnterLine(done));
+        return;
+      }
     }
     this.send(cx, hold);
   }
@@ -1690,44 +1732,72 @@ export default class Chat extends View {
     // Enter's new line may already be in the box when the submit comes.
     const v = this.box.value().replace(/\n+$/, "");
     if (this.slashOff === v) return [];
-    // "#" at the end: the spaces this agent reaches (a pick names one for it).
-    const h = mentions.typing(v);
+    // What is typed before the caret (SHEP-105: the rest of the message may follow it).
+    const { before, after } = this.caretText();
+    if (after === null) return [];
+    // "#" just before the caret: the spaces this agent reaches (a pick names one for it).
+    const h = mentions.typing(before);
     if (h !== null) {
       const sp = mentions.match(this.reach?.spaces ?? [], h.toLowerCase()).map((x) => ({ space: x, name: `#${x.name}`, about: x.route ? x.machine : "This machine", key: `space-${x.id}` }));
       if (sp.length) return sp;
     }
-    // "@" at the end: the tasks on this agent's machine (herdr-task), by ID or title; a pick names
+    // "@" just before the caret: the tasks on this agent's machine (herdr-task), by ID or title; a pick names
     // the exact one (its folder when not this one's).
-    const at = mentions.typingTask(v);
+    const at = mentions.typingTask(before);
     if (at !== null) {
       const tk = mentions.matchTasks(this.mentionableTasks().map((x) => ({ ref: taskRef(x), title: x.title, status: SECTION_DOT[x.status ?? x.state] ?? x.state, at: x.ready_at ?? x.started ?? 0, x })), at, 8)
         .map(({ x }) => ({ task: x, name: `@${taskRef(x)}`, about: x.title, state: x.status_text ?? x.state, key: `task-${x.folder}-${taskRef(x)}` }));
       if (tk.length) return tk;
     }
-    const w = slash.typing(v);
+    const w = slash.typing(before);
     if (w === null || !this.cmds.length) return [];
     return slash.match(this.cmds, w);
   }
 
+  caretText() {
+    return slash.atCaret(this.box.value(), this.box.selected_range().end);
+  }
+
+  // A pick replaces what is typed before the caret and keeps the rest; returns the new text and caret.
   pick(c, cx) {
+    let { before, after } = this.caretText();
+    // a list drawn before the caret moved into a word: as before SHEP-105, the end of the text
+    if (after === null) ({ before, after } = slash.atCaret(this.box.value()));
+    let head;
     if (c.space) {
-      const next = mentions.pickInto(this.box.value(), c.space);
+      head = mentions.pickInto(before, c.space);
       this.picked = [...this.picked.filter((x) => x.name !== c.space.name), c.space];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else if (c.task) {
       const own = (this.t?.foreground?.cwd ?? this.t?.cwd) === c.task.folder;
       const t = { ref: taskRef(c.task), route: "", folder: own ? "" : c.task.folder ?? "" };
-      const next = mentions.pickTaskInto(this.box.value(), t);
+      head = mentions.pickTaskInto(before, t);
       this.pickedTasks = [...this.pickedTasks.filter((x) => x.ref !== t.ref), t];
-      this.box.set_value(next);
-      this.slashOff = next.replace(/\n+$/, "");
     } else {
-      this.box.set_value(`/${c.name} `);
-      this.slashOff = `/${c.name} `;
+      head = `/${c.name} `;
     }
+    const done = slash.joinAtCaret(head, after);
+    this.put(done.text, done.caret);
+    this.slashOff = done.text.replace(/\n+$/, "");
     this.box.focus();
     cx.notify();
+    return done;
+  }
+
+  /** Text in the box and the caret in it (SHEP-105: set_value alone leaves the caret at the start). */
+  put(text, caret = text.length) {
+    this.box.set_value(text);
+    this.box.set_selected_range({ start: caret, end: caret });
+  }
+
+  /**
+   * Enter's own new line can land in the box just after its pick: only that line goes, never what was typed since
+   * (SHEP-105; it used to set the whole text again, dropping a quick first letter).
+   */
+  dropEnterLine({ text, caret }) {
+    const v = this.box.value(), head = text.slice(0, caret), tail = text.slice(caret);
+    if (v.length <= text.length || !v.startsWith(`${head}\n`) || !v.endsWith(tail)) return;
+    const end = this.box.selected_range().end;
+    this.put(head + v.slice(caret + 1), end > caret ? end - 1 : end);
   }
 
   // ---- a chat with no agent yet (Coordinator tab) --------------------------------------------
@@ -1998,7 +2068,79 @@ export default class Chat extends View {
     const q = this.findQuery();
     if (!q || /[*_`\[\]\\]/.test(q)) return text;
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    return String(text).split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => (i % 2 ? part : part.replace(re, (m) => `**${m}**`))).join("");
+    // a link's target stays as it is (linked()): only its words are marked
+    return String(text).split(/(```[\s\S]*?```|`[^`\n]*`|\]\([^)\s]*\))/).map((part, i) => (i % 2 ? part : part.replace(re, (m) => `**${m}**`))).join("");
+  }
+
+  // An agent's URLs as links (SHEP-99, core/chat-links.js). SHEP-109: URLs only, never paths. The rows are drawn by
+  // the virtual list, which takes no handler (one there left every chat blank), so a link opens with TextView's own
+  // opener, whatever it leads to: a path is words (the Terminal view's Cmd-click opens it), and a path the agent
+  // linked itself shows its words only. Opening paths from the window chat is a task of its own.
+  // null: not ready yet (past this frame's budget) or too long to rework: the row shows the words as plain text.
+  linked(text) {
+    if (String(text).length > PREP_MAX) return null;
+    return this.prepared(`l\0${text}`, null, () => links.linkify(text, { home: null, paths: false }));
+  }
+
+  /**
+   * A row's words made ready to draw (fn(): linked, mentions spelled out, typed's breaks), kept per key. SHEP-108/109:
+   * it runs for every row drawn and measured on every frame, and a render past the window's ~50 ms limit draws nothing:
+   * so each is made once, a frame spends at most LINK_MS making them (the rest get `raw` for now and set linkWaiting,
+   * which the init() timer turns into a redraw), and one fn throws on gets `raw`. Never a cx here: rows are drawn from
+   * inside layout, where none may be kept or used.
+   */
+  prepared(key, raw, fn) {
+    const kept = this.preps?.get(key);
+    if (kept !== undefined) return kept;
+    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return raw; }
+    const at = Date.now();
+    let v = raw;
+    try { v = fn(); } catch {}
+    this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
+    this.preps ??= new Map();
+    if (this.preps.size >= 800) this.preps.delete(this.preps.keys().next().value);
+    this.preps.set(key, v);
+    return v;
+  }
+
+  /** The person's words as typed() shows them, kept per text (prepared()); null as linked(). */
+  typedOnce(text) {
+    const s = String(text);
+    if (s.length > PREP_MAX) return null;
+    return this.prepared(`t\0${s}`, null, () => typed(s));
+  }
+
+  /** A message's words: its markdown, or (md null: not ready, too long) the words as written in one code block: one
+   *  element, selectable, every line and "<" kept, no link in it (SHEP-109). */
+  words(id, md, text) {
+    return TextView.markdown(id, md !== null ? this.findMark(md) || " " : this.codeOf(text)).selectable(true);
+  }
+
+  /** asCode(text), kept per text and made within the frame's budget (prepared()'s): past it, its first 2000 characters
+   *  for now (a 240 KB message's scan took ~13 ms, and the measurer draws up to 60 rows a frame). */
+  codeOf(text) {
+    const s = String(text);
+    const kept = this.codes?.get(s);
+    if (kept !== undefined) return kept;
+    if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return asCode(s.length > 2000 ? `${s.slice(0, 2000)}\n…` : s); }
+    const at = Date.now();
+    const v = asCode(s);
+    this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
+    this.codes ??= new Map();
+    if (this.codes.size >= 200) this.codes.delete(this.codes.keys().next().value);
+    this.codes.set(s, v);
+    return v;
+  }
+
+  /** Mentions spelled out (mentionsIn()) and kept until what they name (the reach, the tasks) changes. */
+  spelled(text) {
+    const stamp = [this.reach, this.tasks, this.spaceTasks];
+    if (!this.mentionStamp || stamp.some((v, i) => v !== this.mentionStamp[i])) {
+      this.mentionStamp = stamp;
+      this.mentionGen = (this.mentionGen ?? 0) + 1;
+    }
+    if (String(text).length > PREP_MAX) return text;
+    return this.prepared(`m${this.mentionGen}\0${text}`, text, () => this.mentionsIn(text));
   }
 
   // The find bar: the box, how many, up and down, earlier messages, close.
@@ -3423,6 +3565,13 @@ export default class Chat extends View {
   // a band below it, in a layer over the whole row that shows while the pointer is on the row:
   // the row's own hover, so it is always the message under the pointer (the list redraws as
   // the pointer moves, so the hover follows it), and its room is always kept, so nothing moves.
+  /** A row, or its words plain when drawing it throws: one bad message never takes the whole list with it (SHEP-109). */
+  safeRow(x, t, pre) {
+    try { return this.row(x, t, pre); } catch {
+      return div().w_full().px(18).py(6).text_size(12.5).text_color(t.muted).child(String(x.text ?? x.code ?? "").slice(0, 2000) || " ");
+    }
+  }
+
   row(x, t, pre = "") {
     const keep = this.keepIcons === x.bar?.of;
     // The band row: its pills always; the rest while the pointer is on it.
@@ -3472,12 +3621,15 @@ export default class Chat extends View {
       // accent's own text color on the full accent was too faint on light accents).
       div().max_w(most).px(12).py(8).rounded(12).bg(t.accent + "33").border_1().border_color(t.accent + "4d")
         .text_color(t.foreground).when(faded, (el) => el.opacity(0.55))
-        .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(typed(this.mentionsIn(text))) || " ").selectable(true)));
+        .child(this.words(`${pre}chat-md-${x.id}`, this.typedOnce(this.spelled(text)), text)));
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
         // Folded: only the lines that show (shownLines()), as their own view
-        .child(x.clip ? this.clipped(t.raised, x.clip, TextView.markdown(`${pre}chat-md-fold-${x.id}`, this.findMark(this.mentionsIn(shownLines(text, x.clip, laidMost - 24))) || " ").selectable(true))
-          : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.mentionsIn(text)) || " ").selectable(true)));
+        // No on_link_click (SHEP-109): rows are drawn by the virtual list, whose rows take no handlers, and one
+        // there left every chat's list blank. TextView opens a link itself: a URL in the browser, a file:// path
+        // with the system's opener.
+        .child(x.clip ? this.clipped(t.raised, x.clip, ((s) => this.words(`${pre}chat-md-fold-${x.id}`, this.linked(this.spelled(s)), s))(shownLines(text, x.clip, laidMost - 24)))
+          : this.words(`${pre}chat-md-${x.id}`, this.linked(this.spelled(text)), text)));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
     switch (x.kind) {
@@ -4206,7 +4358,7 @@ export default class Chat extends View {
   openVideo(path) {
     if (this.machine || !path) { toast({ title: "It's on another machine", body: "Open this chat in the web app to see it.", level: "info" }); return; }
     const os = window()?.platform;
-    (os === "macos" ? exec("open", [path]) : os === "windows" ? exec("cmd", ["/c", "start", "", path]) : exec("xdg-open", [path])).catch(() => {});
+    (os === "macos" ? exec("/usr/bin/open", [path]) : os === "windows" ? exec("cmd", ["/c", "start", "", path]) : exec("xdg-open", [path])).catch(() => {});
   }
 
   // What an artifact's card shows of it: its key pictures (linked for image(): needViews) and its first lines, from its
@@ -4663,6 +4815,7 @@ export default class Chat extends View {
 
   draw(cx) {
     if (this.host) return this.host.render(cx);
+    this.linkSpent = 0;
     // The pane getting focus (opened, clicked, gone to) puts the keyboard in the message box.
     const mine = this.myPane();
     const paneFocused = Boolean(mine && focused()?.pane === mine);
@@ -4882,7 +5035,7 @@ export default class Chat extends View {
               // Ids carry the width's generation, as the measurer's do: a reply's words keep the
               // width they were first laid out at, so after a resize (a restart's first narrow
               // frames) they'd stay narrow and tall, spilling under the next row.
-              .child(this.row(x, t, `v${this.measureGen}-`))
+              .child(this.safeRow(x, t, `v${this.measureGen}-`))
               .when(Boolean(flash), (el) => el.child(div().id(`flash-${x.id}`).absolute().inset_0().rounded(10).bg(t.accent + "26")
                 .opacity(this.flash.on ? 1 : 0).transition("opacity", { duration: 1100, easing: "ease-out" })));
           });
@@ -4979,6 +5132,6 @@ export default class Chat extends View {
         })
         // Its words' ids carry the width's generation too, as the list's rows do: kept from an older width, a
         // reply measured at the wrap it first had there (shorter or taller than drawn: the next row over it, #775).
-        .child(this.row(rows[i], t, `m${this.measureGen}-`)))));
+        .child(this.safeRow(rows[i], t, `m${this.measureGen}-`)))));
   }
 }

@@ -101,7 +101,8 @@ class Repo(unittest.TestCase):
     TITLE_OK = {"Dialog", "CardShell", "TitleWhere", "Line", "iframe"}
 
     def test_no_hover_tooltips(self):
-        """No hover popups (SHEP-25), except the pane header's explicitly requested action tooltips (SHEP-49).
+        """No hover popups (SHEP-25), except the pane header's explicitly requested action tooltips (SHEP-49) and what a
+        click on a link in an agent's reply does (SHEP-99: "Open in browser" / "Show in Finder", chat-links.js label()).
         Other icon-only controls say their words with `aria-label` instead."""
         found = []
         for top in ("web/src", "web/plugins"):
@@ -125,6 +126,9 @@ class Repo(unittest.TestCase):
                         if tag not in self.TITLE_OK:
                             found.append(f"{rel}:{src.count(chr(10), 0, m.start()) + 1}: title= on <{tag}>")
                     for m in re.finditer(r"setAttribute\(\s*['\"]title['\"]|\.title\s*=(?!=)", src):
+                        line = src[src.rfind("\n", 0, m.start()) + 1:src.find("\n", m.start())]
+                        if rel == "web/plugins/chat/markdown.tsx" and "CL.label(" in line:
+                            continue
                         if not src[max(0, m.start() - 8):m.start()].endswith("document"):
                             found.append(f"{rel}:{src.count(chr(10), 0, m.start()) + 1}: sets a title")
         for top in ("mods", "lib", "core"):

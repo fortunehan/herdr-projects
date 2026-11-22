@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { dependencies, place, taskKey } from "./tasks.js";
+import { dependencies, place, taskKey, relationState, linkedToNext, ownRelations } from "./tasks.js";
 
 const list = (tasks, extra = {}) => ({ prefix: "SHEP", folder: "/work/shepherdr", machine: null, tasks, ...extra });
 const placed = (...lists) => lists.flatMap((l) => l.tasks.map((t) => place(l, t, { live: t.state === "running" ? [{ address: "t1", status: "working" }] : [] })));
@@ -67,5 +67,73 @@ describe("task dependencies", () => {
     expect(get(1).waitsFor[1].key).toBeUndefined();
     expect(get(2).unblocks).toHaveLength(1);
     expect(JSON.stringify([l, a, b])).toBe(before);
+  });
+});
+
+// SHEP-103: B of SHEP-100's mock-up, the same data (SHEP-12 = BB working, SHEP-13 = CC after BB, SHEP-14 = DD after CC,
+// SHEP-15 = EE after BB and CC, SHEP-16 after WEB-2, SHEP-17 after vm-b:HAT-12).
+describe("task dependencies as variant B shows them", () => {
+  const mock = (bb = "running") => list([
+    task(12, bb, bb === "running" ? { progress: { text: "Writing tests for after_ext", done: 40 } } : {}),
+    task(13, "queued", { after: [12] }), task(14, "queued", { after: [13] }), task(15, "queued", { after: [12, 13] }),
+    task(16, "queued", { after_ext: [{ ref: "WEB-2", machine: null, state: "running" }] }),
+    task(17, "queued", { after_ext: [{ ref: "vm-b:HAT-12", machine: "vm-b", state: "ready" }] }),
+  ]);
+  const web = list([task(2, "running", { progress: { text: "Routes", done: 60 } })], { prefix: "WEB", folder: "/work/web" });
+
+  test("a chain: BB then CC, CC after BB then DD and EE, DD after CC", () => {
+    const get = relations(mock(), web);
+    expect(get(12).unblocks.map((d) => d.ref)).toEqual(["SHEP-13", "SHEP-15"]);
+    expect(get(13).waitsFor.map((d) => d.ref)).toEqual(["SHEP-12"]);
+    expect(get(13).unblocks.map((d) => d.ref)).toEqual(["SHEP-14", "SHEP-15"]);
+    expect(get(14).waitsFor.map((d) => d.ref)).toEqual(["SHEP-13"]);
+  });
+
+  test("a task waiting on two names both, each with its status for when its row is out of sight", () => {
+    const ds = relations(mock(), web)(15).waitsFor;
+    expect(ds.map((d) => d.ref)).toEqual(["SHEP-12", "SHEP-13"]);
+    expect(ds[0]).toMatchObject({ section: "working", pct: 40 });
+    expect(ds.map(relationState)).toEqual(["Working 40%", "Queued"]);
+  });
+
+  test("another folder's task says its folder and status; another machine's its scheduler state", () => {
+    const get = relations(mock(), web);
+    expect(get(16).waitsFor[0]).toMatchObject({ ref: "WEB-2", where: "web", section: "working", pct: 60, external: true });
+    expect(relationState(get(16).waitsFor[0])).toBe("Working 60%");
+    expect(get(17).waitsFor[0]).toEqual({ ref: "vm-b:HAT-12", title: null, state: "ready", section: "ready", external: true });
+    expect(relationState(get(17).waitsFor[0])).toBe("Ready");
+    expect(relationState({ ref: "vm-c:X-1", state: "unreachable", section: null })).toBe("unreachable");
+  });
+
+  test("once BB is done: CC no longer waits, DD and EE wait for CC only", () => {
+    const get = relations(mock("done"), web);
+    expect(get(12).unblocks).toEqual([]);
+    expect(get(13).waitsFor).toEqual([]);
+    expect(get(15).waitsFor.map((d) => d.ref)).toEqual(["SHEP-13"]);
+    expect(get(13).unblocks.map((d) => d.ref)).toEqual(["SHEP-14", "SHEP-15"]);
+  });
+
+  test("a short line joins only a row and the very next row waiting for it", () => {
+    const l = mock();
+    const result = dependencies(placed(l, web));
+    const rows = (ids) => ids.map((id) => ({ key: taskKey(l, { id }), waits: result.get(taskKey(l, { id })).waitsFor.map((d) => d.key).filter(Boolean) }));
+    // Queued, as the mock-up's list: CC, DD, EE, ...; BB is in Working, away from CC
+    expect([...linkedToNext(rows([13, 14, 15, 16, 17]))]).toEqual([taskKey(l, { id: 13 })]);
+    // filtered to Queued, BB isn't a row at all; a chain BB, CC, DD in a row joins both pairs
+    expect([...linkedToNext(rows([12, 13, 14]))]).toEqual([taskKey(l, { id: 12 }), taskKey(l, { id: 13 })]);
+    expect([...linkedToNext(rows([14, 13]))]).toEqual([]);
+  });
+
+  test("a task's own header reads its after and then from its list alone", () => {
+    const doc = { prefix: "SHEP", tasks: mock().tasks };
+    expect(ownRelations(doc, 13)).toEqual({
+      after: [{ id: 12, ref: "SHEP-12", title: "Task 12", state: "running", section: "working", pct: 40 }],
+      then: [{ id: 14, ref: "SHEP-14", title: "Task 14" }, { id: 15, ref: "SHEP-15", title: "Task 15" }],
+    });
+    expect(ownRelations(doc, 17).after).toEqual([{ ref: "vm-b:HAT-12", title: null, state: "ready", section: "ready", external: true }]);
+    expect(ownRelations({ prefix: "SHEP", tasks: mock("done").tasks }, 13).after).toEqual([]);
+    // a started task waits for nothing; a missing one has nothing
+    expect(ownRelations({ prefix: "SHEP", tasks: [task(1, "ready"), task(2, "running", { after: [1] })] }, 2)).toEqual({ after: [], then: [] });
+    expect(ownRelations(doc, 99)).toEqual({ after: [], then: [] });
   });
 });

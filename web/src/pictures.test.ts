@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { clampZoom, percent, toggledZoom } from './pictures.ts'
 import { canCopyPicture, copyPicture, copyProblem, type ClipEnv } from './copy.ts'
-import { fullscreenWay } from './fullscreen.ts'
+import { fullscreenWay, liftToTop, overHost } from './fullscreen.ts'
 
 class Item {
   constructor(public parts: Record<string, Promise<Blob> | Blob>) {}
@@ -87,5 +87,45 @@ describe('full screen', () => {
     expect(fullscreenWay({ fullscreenEnabled: false }, {} as never)).toBe('page')
     expect(fullscreenWay({ fullscreenEnabled: false }, el)).toBe('page')
     expect(fullscreenWay(undefined, undefined)).toBe('page')
+  })
+})
+
+describe("the page's full screen on the top layer (SHEP-107)", () => {
+  const fake = (pop: boolean, fails = false) => {
+    const attrs = new Map<string, string>()
+    const log: string[] = []
+    const el = {
+      setAttribute: (k: string, v: string) => void attrs.set(k, v),
+      removeAttribute: (k: string) => void attrs.delete(k),
+      ...(pop ? {
+        showPopover: () => { if (fails) throw new Error('not connected'); log.push(`show ${attrs.get('popover')}`) },
+        hidePopover: () => void log.push('hide'),
+      } : {}),
+    }
+    return { el, attrs, log }
+  }
+  test('lifted as a manual popover (Esc stays the app\'s), and put back as it was', () => {
+    const { el, attrs, log } = fake(true)
+    const back = liftToTop(el)
+    expect(log).toEqual(['show manual'])
+    expect(attrs.has('data-full-page')).toBe(true)
+    back!()
+    expect(log).toEqual(['show manual', 'hide'])
+    expect([...attrs.keys()]).toEqual([])
+  })
+  test('a browser without popovers, or one that refuses: left as it was, only its classes fill the page', () => {
+    const none = fake(false)
+    expect(liftToTop(none.el)).toBeNull()
+    expect([...none.attrs.keys()]).toEqual([])
+    const refused = fake(true, true)
+    expect(liftToTop(refused.el)).toBeNull()
+    expect([...refused.attrs.keys()]).toEqual([])
+  })
+  test('the picture viewer opens inside the full-screen artifact, of either kind, else in the body', () => {
+    const body = { b: 1 } as never, full = { f: 1 } as never, lifted = { l: 1 } as never
+    const doc = (fs: unknown, page: unknown) => ({ fullscreenElement: fs as never, querySelector: (s: string) => (s === '[data-full-page]' ? page : null) as never, body })
+    expect(overHost(doc(full, null))).toBe(full)
+    expect(overHost(doc(null, lifted))).toBe(lifted)
+    expect(overHost(doc(null, null))).toBe(body)
   })
 })

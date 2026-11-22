@@ -29,8 +29,8 @@ import { h_flex, v_flex } from "gpui-base";
 import { shared, setShared, run, theme, exec, appHome, home, readTextFile, writeTextFile, notify, layout, openOverlay, spaces, machines, window } from "herdr";
 import { terminals, agents } from "./live.js";
 import { taskDot, ownProgress, estimated } from "./dot.js";
-import { place, acceptAgain, machineOf, nothingToMerge, RANK } from "./core/tasks.js";
-import { button, segmented, TEXT, RADIUS, toast, plainError } from "./ui.js";
+import { place, acceptAgain, machineOf, nothingToMerge, RANK, ownRelations, relationState, queueReason, capital } from "./core/tasks.js";
+import { button, segmented, TEXT, RADIUS, toast, plainError, amber } from "./ui.js";
 import { on as addonOn } from "./addons.js";
 import { artifactCli } from "./artview.js";
 import { GREP, publishedIds, taskArtifacts } from "./core/task-artifacts.js";
@@ -51,6 +51,8 @@ export const BROWSER = "tasks-thread-browser";
 export const SHELL = "tasks-thread-shell";
 // The task's Artifacts (mods/task-artifacts, SHEP-60): what its agent and its helpers made.
 export const ARTIFACTS = "tasks-thread-artifacts";
+// The header's block, and its height in layouts/shepherdr.json; a task with "↑ after" or "↓ then" makes it taller.
+const HEAD = "tasks-thread-head", HEAD_PX = 127;
 // How often its artifacts are looked for again while it shows (a python start and a grep of its logs).
 const ARTS_EVERY = 15000;
 
@@ -138,7 +140,7 @@ export class PanelHost {
     const cur = this.cur;
     // A terminal gone from the core has no labels left: the task's key, as the list sent it.
     const k = (addr && this.taskOf(addr)) || cur?.key || null;
-    let rec = null;
+    let rec = null, doc = null;
     if (k) {
       const text = k.machine
         ? (await exec("sh", ["-c", SH + 'cat "$SHEP_TASKS/$1.json"', "sh", k.slug], { on: k.machine }).catch(() => null))?.stdout
@@ -146,10 +148,14 @@ export class PanelHost {
       try {
         const d = JSON.parse(text || "null");
         const t = d?.tasks?.find((x) => x.id === k.id);
-        rec = t ? { ...t, slug: k.slug, folder: d.folder, machine: k.machine, ref: d.prefix ? `${d.prefix}-${t.id}` : String(t.id) } : null;
+        // its "↑ after" and "↓ then" (SHEP-103), from its own list
+        rec = t ? { ...t, slug: k.slug, folder: d.folder, machine: k.machine, ref: d.prefix ? `${d.prefix}-${t.id}` : String(t.id), deps: ownRelations(d, t.id) } : null;
+        doc = t ? d : null;
       } catch {}
     }
     if (this.cur !== cur) return;
+    // its list with it, only for the task still shown (a link opens another of its tasks from it)
+    this.listDoc = doc;
     // Where the task's side views look (taskwhere.js): its worktree, else its list's folder.
     if (this.head) {
       const w = rec ? { terminal: addr, ref: rec.ref, folder: rec.worktree || rec.folder || null, machine: rec.machine ?? null,
@@ -480,12 +486,102 @@ export class PanelHost {
     // Three rows on one left edge (EDGE): a slim bar (‹ Tasks; base, Accept), the task (its
     // dot, id and title, and under them what its agent is doing), then the switcher.
     // Their height is the "tasks-thread-head" block's size in layouts/shepherdr.json (127): keep them in step.
+    const deps = this.depsOf(this.rec);
+    const depRows = deps ? (deps.after.length ? 1 : 0) + (deps.then.length ? 1 : 0) : 0;
+    this.fitHead(depRows, cx);
     return v_flex().id("thread-head-rows").size_full().pt(8).pb(12).gap(12).bg(t.background).border_b(1).border_color(t.border)
       .child(v_flex().flex_none().gap(8)
         .child(this.barRow(t, st, addr))
-        .child(this.taskBlock(t, { want, st, addr })))
+        .child(this.taskBlock(t, { want, st, addr }))
+        .when(depRows > 0, (el) => el.child(this.depsBlock(t, deps))))
       .child(h_flex().id("thread-views").flex_none().px(EDGE).overflow_x_scroll()
         .child(this.switcher(t, segs)));
+  }
+
+  // The header's block as tall as its rows: 127, and with "↑ after" / "↓ then" 8 apart, a line and 8 over 24 each. Herdr
+  // keeps a block's size across restarts, so it is compared with the layout's, not only with the last one asked for.
+  fitHead(rows, cx) {
+    if (!this.head) return;
+    const node = find(layout(), HEAD);
+    if (!node) return;
+    const px = HEAD_PX + (rows ? 17 + 24 * rows : 0);
+    if (px === (node.size?.px ?? HEAD_PX) || px === this.headPx) { this.headPx = px; return; }
+    this.headPx = px;
+    cx.timer.after(0, () => { try { run("layout.resize", { id: HEAD, px }); } catch {} });
+  }
+
+  // Its "↑ after" and "↓ then". Its own list, read again every few seconds (core ownRelations), says which hold now and
+  // their state; what the Tasks panel worked out from every list it reads (shared "tasks.deps", mods/tasks publishDeps)
+  // may be older, so it only adds how each one opens, another folder's name, and other lists' tasks waiting for it.
+  // Tasks are matched by machine, folder and id, never by their ids' words: another machine's task says its machine
+  // ("vm-b:SHEP-13"), so two machines' SHEP-13 never read as one.
+  depsOf(rec) {
+    if (!rec) return null;
+    const own = rec.deps ?? { after: [], then: [] };
+    const all = shared("tasks.deps")?.[`${rec.machine ?? ""}:${rec.folder}#${rec.id}`] ?? { after: [], then: [] };
+    const m = rec.machine ?? null;
+    const label = (ref, machine) => { const bare = String(ref).split(":").pop(); return machine ? `${machine}:${bare}` : bare; };
+    const inList = (d) => Boolean(d.open?.key) && (d.open.key.machine ?? null) === m && d.open.key.folder === rec.folder;
+    const local = (x) => (x.id != null ? (d) => inList(d) && d.open.key.id === x.id : (d) => !inList(d) && d.ref === x.ref);
+    const extra = (d) => (d ? { ...(d.open ? { open: d.open } : {}), ...(d.where ? { where: d.where } : {}) } : {});
+    const after = own.after.map((x) => {
+      const d = (all.after ?? []).find(local(x));
+      return { ...x, ...extra(d), ...(x.id != null ? { ref: label(x.ref, m) } : {}), title: x.title ?? d?.title ?? null };
+    });
+    const then = rec.state === "done" ? [] : [
+      ...own.then.map((x) => ({ ...x, ...extra((all.then ?? []).find(local(x))), ref: label(x.ref, m) })),
+      ...(all.then ?? []).filter((d) => d.open?.key ? !inList(d) : String(d.ref).includes(":"))
+        .map((d) => ({ ...d, ref: d.open?.key ? label(d.ref, d.open.key.machine ?? null) : d.ref })),
+    ];
+    return { after, then };
+  }
+
+  // B of SHEP-100's mock-up (SHEP-103): what the task waits for, "↑ after" with each one's dot, id, title and % done,
+  // and what waits for it, "↓ then" with their ids; another folder's or machine's says its status. This list's open.
+  depsBlock(t, deps) {
+    // whole pills in a line that scrolls sideways: every id and status stays readable, a title is cut at 220
+    const pill = (id, kids, go) => h_flex().id(id).h(22).px(7).gap(5).flex_none().items_center()
+      .rounded(RADIUS.control).bg(t.selected)
+      .when(Boolean(go), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); go(); cx.notify(); }))
+      .children(kids);
+    const ref = (d) => div().flex_none().font_family(ID_FONT).text_size(TEXT.id).text_color(t.foreground).child(d.ref);
+    const go = (d) => (d.open ? () => this.openThreadOf(d.open) : d.id != null && !d.external ? () => this.openDep(d.id) : null);
+    // pills that don't fit scroll sideways (long machine names); the header keeps its height
+    const line = (key, label, pills) => h_flex().id(`thread-${key}`).h(24).min_w(0).gap(6).items_center().overflow_x_scroll().whitespace_nowrap()
+      .text_size(TEXT.label).child(div().flex_none().text_color(t.dim).child(label)).children(pills);
+    return v_flex().id("thread-deps").flex_none().mx(EDGE).pt(8).border_t(1).border_color(t.border)
+      .when(deps.after.length > 0, (el) => el.child(line("after", "↑ after", deps.after.map((d, i) => pill(`thread-after-${i}`, [
+        taskDot(d.section, { pct: d.pct, size: 12 }), ref(d),
+        ...(d.where ? [div().flex_none().text_color(t.dim).child(`· ${d.where}`)] : []),
+        ...(d.title ? [div().max_w(220).truncate().text_color(t.muted).child(d.title)] : []),
+        ...(d.section === "working" && Number.isFinite(d.pct) ? [div().flex_none().text_color(amber()).child(`${Math.round(d.pct)}%`)]
+          : d.external ? [div().flex_none().text_color(t.dim).child(`· ${relationState(d)}`)] : []),
+      ], go(d))))))
+      .when(deps.then.length > 0, (el) => el.child(line("then", "↓ then", deps.then.map((d, i) => pill(`thread-then-${i}`, [ref(d)], go(d))))));
+  }
+
+  // Opens a task in the header's place, as a click on its Tasks row does (mods/tasks openThread).
+  openThreadOf(args) {
+    setShared("tasks.thread", { ...args, at: Date.now() });
+    if (find(layout(), BODY)) run("layout.select", { stack: BODY, child: CHAT });
+  }
+
+  // Another task of this list, when the Tasks panel hasn't said (mods/tasks target()): its worker on this list's
+  // machine while one runs, else its last agent's chat, else why it waits.
+  openDep(id) {
+    const rec = this.rec, doc = this.listDoc;
+    const x = doc?.tasks?.find((y) => y.id === id);
+    if (!rec || !x) return;
+    const m = rec.machine ?? null;
+    // as the Tasks row picks (mods/tasks live()): never a shell or a worker's own helper or reviewer; the worker first
+    const live = terminals().filter((k) => k.labels?.["herdr.task"] === `${rec.slug}#${id}` && k.state === "live" && machineOf(k.address) === m
+      && !k.program?.shell && k.program?.key !== "shell" && !(["reviewer", "helper"].includes(k.labels?.["herdr.role"]) && !!k.parent));
+    const worker = live.find((k) => k.labels?.["herdr.role"] !== "reviewer") ?? live[0];
+    const last = x.agents?.[x.agents.length - 1];
+    const terminal = worker?.address ?? (last?.address ? (m ? `${m}/${last.address}` : last.address) : null);
+    const note = terminal ? null : x.state === "queued" ? capital(queueReason(doc, x, 0)) : "This task hasn't started.";
+    this.openThreadOf({ terminal, task: doc.prefix ? `${doc.prefix}-${id}` : String(id), title: x.title ?? null,
+      key: { machine: m, folder: rec.folder, slug: rec.slug, id }, log: !worker && last?.log ? { path: last.log, kind: last.agent ?? null } : null, note });
   }
 
   // "Artifacts", with how many once the shown task has some ("Artifacts 3").

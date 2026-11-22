@@ -169,7 +169,8 @@ def main(argv):
         # A copy made by hand in a mod lib/COPIES doesn't list (same name, same start).
         head = lib.split(b"\n", 1)[0]
         for mod in sorted(os.listdir(MODS)):
-            if mod.startswith(GENERATED_PREFIX):
+            # only mod folders: Finder leaves a .DS_Store file in mods/ (SHEP-108)
+            if mod.startswith(GENERATED_PREFIX) or not os.path.isdir(os.path.join(MODS, mod)):
                 continue
             path = os.path.join(MODS, mod, name)
             if mod not in mods and (read(path) or b"").split(b"\n", 1)[0] == head:

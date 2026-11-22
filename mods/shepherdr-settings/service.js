@@ -20,7 +20,7 @@ async function check(cx) {
   // Not answering: start it (its systemd user unit or launchd agent), at most once a minute.
   if (!r && Date.now() - startedAt > 60000) {
     startedAt = Date.now();
-    exec("sh", ["-c", 'systemctl --user start shepherdr.service 2>/dev/null || launchctl kickstart "gui/$(id -u)/dev.shepherdr.service" 2>/dev/null; true']).catch(() => {});
+    exec("sh", ["-c", 'systemctl --user start shepherdr.service 2>/dev/null || /bin/launchctl kickstart "gui/$(id -u)/dev.shepherdr.service" 2>/dev/null; true']).catch(() => {});
   }
 }
 
