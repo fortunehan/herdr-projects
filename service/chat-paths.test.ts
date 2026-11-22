@@ -156,4 +156,16 @@ describe("the window chat's Paths action (SHEP-110)", () => {
     expect(c.pathy).toEqual(kept);
     expect([...kept.values()]).toEqual([true, false]);
   });
+
+  test("past the frame's budget a reply waits for its first look: no Paths yet, a redraw asked, Paths on it", () => {
+    const c = chat();
+    c.linkSpent = 1e9;
+    let rows = built(c);
+    expect(rows.find((r: any) => r.id === "ab:a0").bar.acts).toEqual(["reply", "copy", "fork"]);
+    expect(c.linkWaiting).toBe(true);
+    expect(c.pathy.size).toBe(0);
+    c.linkSpent = 0;
+    rows = built(c);
+    expect(rows.find((r: any) => r.id === "ab:a0").bar.acts).toEqual(["reply", "copy", "paths", "fork"]);
+  });
 });

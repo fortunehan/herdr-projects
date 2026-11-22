@@ -2549,15 +2549,21 @@ export default class Chat extends View {
   }
 
   /**
-   * Whether a reply's band gets the Paths action (SHEP-110): links.mayHavePath(), kept per message and length, since the
-   * rows are built on every frame and the window's QuickJS has no regexp JIT (SHEP-108).
+   * Whether a reply's band gets the Paths action (SHEP-110): links.mayHavePath(), kept per message and length. The rows
+   * are built for every message on every frame and the window's QuickJS has no regexp JIT: a look took ~4 ms per 100
+   * replies there, so they share prepared()'s frame budget (past it: no Paths yet, and a redraw), and a look reads at
+   * most PREP_MAX characters.
    */
   mayHavePaths(x) {
-    const key = `${x.id}|${String(x.text ?? "").length}`;
+    const s = String(x.text ?? "");
+    const key = `${x.id}|${s.length}`;
     this.pathy ??= new Map();
     let v = this.pathy.get(key);
     if (v === undefined) {
-      v = links.mayHavePath(x.text);
+      if ((this.linkSpent ?? 0) >= LINK_MS) { this.linkWaiting = true; return false; }
+      const at = Date.now();
+      v = links.mayHavePath(s.length > PREP_MAX ? s.slice(0, PREP_MAX) : s);
+      this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
       if (this.pathy.size >= 2000) this.pathy.delete(this.pathy.keys().next().value);
       this.pathy.set(key, v);
     }
