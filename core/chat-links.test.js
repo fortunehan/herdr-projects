@@ -325,3 +325,42 @@ describe("the opener script", () => {
     expect(run("browser", `${home}/link.html`, true)).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${real}/index.html` });
   });
 });
+
+// SHEP-108: the window's QuickJS compiles a pattern copy on every matchAll; linking a reply that way took 5-20 ms, and
+// a frame of rows passed the window's ~50 ms render limit, blanking every chat. The shape that broke it: a Chinese
+// report with many inline code spans and a table (the Assistant's SHEP-86 reply).
+describe("linking stays cheap where regexps aren't cached (SHEP-108)", () => {
+  const REPORT = [
+    "SHEP-86 的调研报告已经发布（artifact `shep-86-eta-artifacts-sh-04cc`，第 3 版）。要点如下：",
+    "",
+    "**结论**",
+    "- eta 的 artifact 本身**不如**我们的 recipe：放在沙箱 iframe 里显示。",
+    "  - 命令显示成\"终端 + 退出码\"，改动显示成着色的 diff。",
+    "",
+    "| # | 做什么 | 为什么 | 大小 |",
+    "|---|---|---|---|",
+    "| 1 | herdr-task 加一个 `send-back` 命令 | 见 `/tmp/a/b.html` | M |",
+    "| 2 | 每个版本一个 `answers.json` | 换设备看不到 | M |",
+    "| 3 | 新增 `check` 块，`code` 块支持 `diff` 着色 | https://example.com/x | S |",
+    "",
+    "<hc suggest=\"三个都开\"/>",
+  ].join("\n");
+
+  test("no matchAll, and at most one pattern compiled per reply", () => {
+    const realMatchAll = String.prototype.matchAll, RealRegExp = globalThis.RegExp;
+    let built = 0;
+    String.prototype.matchAll = () => { throw new Error("matchAll compiles a copy of the pattern on each call"); };
+    globalThis.RegExp = new Proxy(RealRegExp, { construct(T, args) { built++; return new T(...args); } });
+    let out;
+    try { out = md(REPORT); } finally { String.prototype.matchAll = realMatchAll; globalThis.RegExp = RealRegExp; }
+    expect(built).toBeLessThanOrEqual(1);
+    expect(out).toContain("[`/tmp/a/b.html`](file:///tmp/a/b.html)");
+    expect(out).toContain("[https://example.com/x](https://example.com/x)");
+    expect(out).toContain("`send-back`");
+  });
+
+  test("the shared patterns are reused safely: the same reply links the same way twice", () => {
+    expect(md(REPORT)).toBe(md(REPORT));
+    expect(L.find("a /tmp/x/y b /tmp/z/w").map((x) => x.path)).toEqual(["/tmp/x/y", "/tmp/z/w"]);
+  });
+});
