@@ -346,8 +346,8 @@ export function blockPaths(recipe) {
 /**
  * A recipe's texts to translate: [{ key, text }], key "<block's place>.<field>" (heading "3.text", a markdown block's
  * paragraphs "4.md.0", a list's items "5.items.2", a table's "6.col.1" and "6.cell.0.2", captions, a callout's title,
- * a stat's label and note, a check's summary, a question and its options' descriptions). Code, commands, buttons and
- * form fields aren't translated, nor a text that is only code, links, paths or ids.
+ * a stat's label and note, a check's summary, a question). Code, commands, buttons, a question's options and form fields
+ * aren't translated, nor a text that is only code, links, paths or ids.
  */
 export function recipeUnits(recipe) {
   const out = [];
@@ -368,7 +368,7 @@ export function recipeUnits(recipe) {
       case "pair": put(`${p}.before`, b.before?.caption); put(`${p}.after`, b.after?.caption); break;
       case "check": put(`${p}.summary`, b.summary); put(`${p}.caption`, b.caption); break;
       case "details": put(`${p}.summary`, b.summary); break;
-      case "choice": put(`${p}.question`, b.question); (b.options ?? []).forEach((o, i) => put(`${p}.desc.${i}`, o?.description)); break;
+      case "choice": put(`${p}.question`, b.question); break;
     }
   }
   return out;

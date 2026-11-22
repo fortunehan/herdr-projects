@@ -62,6 +62,7 @@ import {
   Tabs,
   TasksIcon,
   TextBox,
+  TranslateIcon,
   UpDownIcon,
   Who,
   XIcon,
@@ -477,6 +478,7 @@ const ICONS: Record<string, ComponentType<{ className?: string }>> = {
   Appearance: AppearanceIcon,
   Plugins: PluginIcon,
   Machines: MachineIcon,
+  Translation: TranslateIcon,
   // 3.0's icons for these: the window's layout, and a globe
   Window: SplitIcon,
   Web: GlobeIcon,
@@ -656,7 +658,8 @@ function Control({ row, phone, set, edit, level }: { row: SettingRow; phone: boo
   // on or off: the window's switch (its words On/Off or on/off), greyed where it can't flip now (an add-on another needs)
   if (onOff) {
     const [yes, no] = /^on$/i.test(options[0]) ? options : [options[1], options[0]]
-    const sw = <Switch label={row.label} on={row.value === yes} disabled={row.disabled} onChange={(on) => set(on ? yes : no)} />
+    // Translation's, the first time: where the words go, asked before it turns on
+    const sw = <Switch label={row.label} on={row.value === yes} disabled={row.disabled} onChange={(on) => { if (on && row.confirm && !window.confirm(row.confirm)) return; set(on ? yes : no) }} />
     // Home Assistant's Make home space, beside its switch
     return row.extra ? <span className="flex items-center gap-2.5"><Ghost onClick={() => setExtra(row.extra!.key)}>{row.extra.label}</Ghost>{sw}</span> : sw
   }

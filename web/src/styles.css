@@ -422,9 +422,33 @@
 }
 
 /* Rendered agent replies (markdown): paragraphs, lists, inline code, code blocks that scroll sideways */
+/* SHEP-102: a block's translation right under it, as Immersive Translate does: a step dimmer, a thin rule on its left */
+@utility tr-line {
+  margin: 2px 0 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line2);
+  color: var(--fg2);
+  &:is(.tr-fail) {
+    color: var(--need-fg);
+  }
+  &:is(.tr-note) {
+    color: var(--fg3);
+  }
+  & button[data-retry] {
+    color: var(--accent);
+    font-weight: 500;
+  }
+}
+
 @utility prose-reply {
   /* a long link or path breaks rather than pushing the bubble wider */
   overflow-wrap: break-word;
+  & .tr {
+    @apply tr-line;
+  }
+  & :is(li, td, th) > .tr {
+    margin-bottom: 2px;
+  }
   & p {
     margin: 0 0 6px;
   }

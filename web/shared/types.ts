@@ -1286,6 +1286,8 @@ export type Action =
   | { type: 'plugin'; plugin: string; method: string; input?: unknown; cid: string }
   /** read every machine's plan limits again, unless they were read a moment ago */
   | { type: 'limits-check' }
+  /** SHEP-102: a message's words (text) or an artifact's version translated by Settings › Translation's endpoint */
+  | { type: 'translate'; text?: string; artifact?: string; v?: number; on?: string | null }
   /** cid: the screen's own id for what it sent, which comes back on the message (Message.cid); reply: the id of the
       message it answers; human: said in the app itself, the only kind of message that can take back a merge yes. Scripts
       leave it off */

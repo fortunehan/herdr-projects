@@ -9,16 +9,20 @@ import clsx from 'clsx'
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { PictureViewer } from './Pictures.tsx'
 import { ArrowUpRightIcon, CheckIcon } from '@heroicons/react/16/solid'
-import { Markdown } from '@plugins/chat/markdown.tsx'
+import { Markdown, TrLine } from '@plugins/chat/markdown.tsx'
 import { Primary } from '../ui.tsx'
 import * as R from '@core/recipe.js'
+import * as TRc from '@core/translate.js'
 
 type Block = any
 export type Answer = { value: unknown; at: number; by?: string }
 export type Answers = Record<string, Answer>
 /** the person's answer to the agent: its words, and what to keep (the block's key and its value) */
 export type Reply = (text: string, keep?: { key: string; value: unknown }) => Promise<unknown>
-type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; reply?: Reply; answers?: Answers }
+/** SHEP-102: an artifact's translation (web/plugins/chat/translate.ts): each text's by its place (core/translate.js
+ *  recipeUnits), the places that failed, loading or why it failed as a whole, and Retry */
+export type RecipeTr = { units?: Record<string, string>; failed?: string[]; loading?: boolean; error?: string; retry?: () => void }
+type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; reply?: Reply; answers?: Answers; tr?: RecipeTr }
 
 /** the window's words when a recipe can't be read */
 export const UNREADABLE = "This artifact's recipe can't be read."
@@ -294,7 +298,25 @@ function Check({ b }: { b: Block }) {
   )
 }
 
-export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
+export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props) {
+  // each block's place, as the translation names its texts
+  const paths = useMemo(() => (TRc as any).blockPaths(recipe) as Map<Block, string>, [recipe])
+  const failed = new Set(tr?.failed ?? [])
+  /** the translation of a block's text (field: its place in the block), under it */
+  const T = (b: Block, field: string) => {
+    if (!tr) return null
+    const key = `${paths.get(b)}.${field}`
+    const t = tr.units?.[key]
+    if (t) return <TrLine text={t} />
+    return failed.has(key) ? <TrLine text={(TRc as any).WORDS.blockFailed} fail retry={tr.retry} /> : null
+  }
+  /** a markdown block's paragraphs, each with its translation under it (as a chat message's) */
+  const md = (b: Block, field: string, text: string) => {
+    if (!tr) return <Markdown text={text} />
+    const blocks = ((TRc as any).mdBlocks(text) as unknown[]).map((_, i) => tr.units?.[`${paths.get(b)}.${field}.${i}`] ?? null)
+    const bad = blocks.map((_, i) => i).filter((i) => failed.has(`${paths.get(b)}.${field}.${i}`))
+    return <Markdown text={text} tr={{ source: text, blocks, failed: bad, retry: tr.retry }} />
+  }
   // what was answered here since it opened, over what was kept before (answers.json)
   const [mine, setMine] = useState<Answers>({})
   const answers: Answers = { ...(given ?? {}), ...mine }
@@ -310,32 +332,32 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   })
   const one = (b: Block): ReactNode => {
     switch (b.type) {
-      case 'heading': { const H = (`h${Math.min(3, Math.max(1, b.level ?? 2)) + 1}`) as 'h2'; return <H className={clsx('font-semibold text-balance', (b.level ?? 2) <= 1 ? 'text-xl' : 'text-base')}>{b.text}</H> }
-      case 'text': return <Markdown text={b.md} />
-      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} /></li>)}</L> }
+      case 'heading': { const H = (`h${Math.min(3, Math.max(1, b.level ?? 2)) + 1}`) as 'h2'; return <><H className={clsx('font-semibold text-balance', (b.level ?? 2) <= 1 ? 'text-xl' : 'text-base')}>{b.text}</H>{T(b, 'text')}</> }
+      case 'text': return md(b, 'md', b.md)
+      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} />{T(b, `items.${i}`)}</li>)}</L> }
       case 'table': return (
         <div className="overflow-x-auto rounded-box shadow-box">
           <table className="w-full border-collapse">
-            <thead><tr>{b.columns.map((c: any, i: number) => <th key={i} className={clsx('border-b border-line px-3 py-2 text-left font-medium text-fg2', (c.align ?? '') === 'right' && 'text-right')}>{c.label ?? c}</th>)}</tr></thead>
-            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}>{String(c ?? '')}</td>)}</tr>)}</tbody>
+            <thead><tr>{b.columns.map((c: any, i: number) => <th key={i} className={clsx('border-b border-line px-3 py-2 text-left font-medium text-fg2', (c.align ?? '') === 'right' && 'text-right')}>{c.label ?? c}{T(b, `col.${i}`)}</th>)}</tr></thead>
+            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}>{String(c ?? '')}{T(b, `cell.${i}.${j}`)}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )
       case 'chart': return <Chart b={b} />
-      case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}</dd> : null}</div>)}</dl>
-      case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}</figcaption> : null}</figure>
-      case 'video': return <Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />
-      case 'audio': return <Sound src={b.src} caption={b.caption} asset={asset} />
-      case 'pdf': return <Pdf src={b.src} caption={b.caption} asset={asset} />
-      case 'pair': return <Pair b={b} asset={asset} />
+      case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
+      case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
+      case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
+      case 'audio': return <><Sound src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
+      case 'pdf': return <><Pdf src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
+      case 'pair': return <><Pair b={b} asset={asset} />{T(b, 'before')}{T(b, 'after')}</>
       case 'code': return <Code b={b} />
-      case 'check': return <Check b={b} />
-      case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{b.md ? <Markdown text={b.md} /> : null}</div>
+      case 'check': return <><Check b={b} />{T(b, 'summary')}{T(b, 'caption')}</>
+      case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{T(b, 'title')}{b.md ? md(b, 'md', b.md) : null}</div>
       case 'columns': return <div className="grid gap-4 @2xl:grid-flow-col @2xl:auto-cols-fr">{b.columns.map((c: Block[], i: number) => <div key={i} className="flex min-w-0 flex-col gap-4">{c.map(wrap)}</div>)}</div>
       case 'tabs': return <Tabs b={b} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} />
-      case 'details': return <details className="group rounded-box shadow-box"><summary className="cursor-pointer px-3.5 py-2.5 font-medium">{b.summary}</summary><div className="flex flex-col gap-4 px-3.5 pb-3.5">{b.blocks.map(wrap)}</div></details>
+      case 'details': return <details className="group rounded-box shadow-box"><summary className="cursor-pointer px-3.5 py-2.5 font-medium">{b.summary}{T(b, 'summary')}</summary><div className="flex flex-col gap-4 px-3.5 pb-3.5">{b.blocks.map(wrap)}</div></details>
       case 'divider': return <hr className="border-line" />
-      case 'choice': return <Choice b={b} reply={reply} answer={answerOf(answers, b.id)} />
+      case 'choice': return <>{T(b, 'question')}<Choice b={b} reply={reply} answer={answerOf(answers, b.id)} /></>
       case 'form': return <Form b={b} reply={reply} answer={answerOf(answers, b.id)} />
       case 'button': return <div className="flex flex-col items-start gap-1.5"><Button b={b} k={b.id} reply={reply} answers={answers} /><Answered kind="button" a={answerOf(answers, b.id)} /></div>
       case 'buttons': {
@@ -358,7 +380,11 @@ export function Recipe({ recipe, asset, reply: send, answers: given }: Props) {
   )
   return (
     <OpenPicture.Provider value={(src) => setShown(Math.max(0, pics.findIndex((x) => x.src === src)))}>
-      <div ref={root} className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">{recipe.blocks.map(wrap)}</div>
+      <div ref={root} className="@container flex flex-col gap-4 text-base/7 text-fg sm:text-sm/6">
+        {tr?.loading ? <TrLine text={(TRc as any).WORDS.translating} note /> : null}
+        {tr?.error ? <TrLine text={tr.error} fail retry={tr.retry} /> : null}
+        {recipe.blocks.map(wrap)}
+      </div>
       {shown !== null && pics.length ? <PictureViewer pics={pics} at={shown} device={root.current?.closest('[data-device]')?.getAttribute('data-device') ?? undefined} onClose={() => setShown(null)} /> : null}
     </OpenPicture.Provider>
   )

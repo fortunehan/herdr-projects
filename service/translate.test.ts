@@ -156,8 +156,9 @@ const file = join(mkdtempSync(join(tmpdir(), "shep-settings-")), "shepherdr.json
 writeFileSync(file, JSON.stringify({ everywhere: { agents: { reactions: false } } }));
 describe("Settings › Translation", () => {
   test("its rows, one page for every space; a change keeps the rest of the file", async () => {
+    const was = process.env.HERDR_TASK_SETTINGS;
     process.env.HERDR_TASK_SETTINGS = file;
-    const { Settings } = await import("./settings.ts?translation");
+    const { Settings } = await import("./settings.ts");
     const s = new Settings();
     s.start();
     s.secretNames = () => ["TR_KEY", "OTHER"];
@@ -183,5 +184,6 @@ describe("Settings › Translation", () => {
     expect(() => s.set("translation.on", "on", "sp1", { id: "sp1", name: "x", machine: null })).toThrow();
     s.set("translation.on", "off");
     expect(JSON.parse(readFileSync(file, "utf8")).everywhere.translation.on).toBeUndefined();
+    process.env.HERDR_TASK_SETTINGS = was;
   });
 });

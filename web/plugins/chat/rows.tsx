@@ -8,13 +8,15 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRightIcon, ChatBubbleLeftEllipsisIcon, CheckIcon as TickIcon, ChevronDownIcon, ChevronRightIcon, PaperClipIcon } from '@heroicons/react/16/solid'
 import { useCopy } from '@client/copy.ts'
 import { act, has, openTask, registry } from '@client/kernel.ts'
-import { AutopilotIcon, CheckIcon, CopyIcon, PageIcon, ReplyIcon, SmileIcon, TermIcon } from '@client/ui.tsx'
+import { AutopilotIcon, CheckIcon, CopyIcon, PageIcon, ReplyIcon, SmileIcon, TermIcon, TranslateIcon } from '@client/ui.tsx'
 import * as CV from '@core/chat-view.js'
+import * as TRc from '@core/translate.js'
 import type { Chat, Message, ReplyQuote } from '@shared/types.ts'
 import { openAccept, useAccepting } from '@client/screens/Accept.tsx'
 import { ForkIcon, openPicker, RewindIcon } from '@plugins/reactions/client.tsx'
 import { Markdown } from './markdown.tsx'
 import { forkChat } from './fork.ts'
+import { messageKey, toggle as toggleTranslate, useShown, useTranslateOn } from './translate.ts'
 import { jumpTo, startReply } from './reply.ts'
 
 const { WORDS, clock, initialOf, bandActs, bandOrder, imagesLine, fitThumbs, THUMB_GAP, questionsBelow, literal } = CV as unknown as {
@@ -23,13 +25,14 @@ const { WORDS, clock, initialOf, bandActs, bandOrder, imagesLine, fitThumbs, THU
   questionsBelow: (n: number) => string
   clock: (at?: number) => string
   initialOf: (name: string) => string
-  bandActs: (side: 'user' | 'agent', text?: string, o?: { from?: string | null; fork?: boolean }) => string[]
+  bandActs: (side: 'user' | 'agent', text?: string, o?: { from?: string | null; fork?: boolean; translate?: boolean }) => string[]
   bandOrder: (side: 'user' | 'agent', acts: string[], o?: { time?: boolean; react?: boolean }) => string[]
   imagesLine: (n: number) => string
   fitThumbs: (sizes: ({ w: number; h: number } | null)[], width?: number) => { boxes: { w: number; h: number }[]; h: number }
   THUMB_GAP: number
 }
 export { WORDS, questionsBelow }
+const TW = (TRc as any).WORDS as Record<string, string>
 
 /** the small words of a quiet row: 12px, dim, as the window's */
 const quiet = 'text-[0.75rem]/5 text-fg3 phone:text-[0.8125rem]/5'
@@ -49,7 +52,11 @@ export const onTerminal = (fn: (chat: string) => void) => void (showTerminal = f
 export function Band({ msg, chat, cli }: { msg: Message; chat: string; cli?: boolean }) {
   const you = msg.who === 'you'
   const { copied, copy } = useCopy()
-  const acts = bandActs(you ? 'user' : 'agent', msg.text, { fork: cli !== false })
+  // SHEP-102: Translate on the agent's words, while Settings › Translation is on; pressed while it shows
+  const translating = useTranslateOn()
+  const tkey = messageKey(chat, msg.id)
+  const shownTr = useShown(tkey)
+  const acts = bandActs(you ? 'user' : 'agent', msg.text, { fork: cli !== false, translate: translating })
   const react = has('reactions')
   const pills = msg.reactions?.length ? registry.messageEdge.map(({ View }, i) => <View key={i} msg={msg} chat={{ key: chat } as Chat} />) : null
   const time = clock(msg.at)
@@ -64,6 +71,15 @@ export function Band({ msg, chat, cli }: { msg: Message; chat: string; cli?: boo
           {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
         </button>
       )
+    if (a === 'translate') {
+      const on = !!shownTr?.shown
+      return (
+        <button key={a} type="button" aria-label={on ? TW.hide : TW.translate} aria-pressed={on} className={clsx(btn, hover, on && 'text-fg opacity-100')}
+          onClick={() => toggleTranslate(tkey, { text: msg.text ?? '' })}>
+          <TranslateIcon className="size-3.5" />
+        </button>
+      )
+    }
     if (a === 'rewind')
       return <button key={a} type="button" aria-label="Rewind" className={clsx(btn, hover)} onClick={() => void act({ type: 'rewind', chat, message: msg.id } as never).then(() => showTerminal(chat), (e: Error) => alert(e.message))}><RewindIcon className="size-3.5" /></button>
     return <button key={a} type="button" aria-label="Fork" className={clsx(btn, hover)} onClick={() => void forkChat(chat).catch((e: Error) => alert(e.message))}><ForkIcon className="size-3.5" /></button>
