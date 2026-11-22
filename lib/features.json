@@ -750,7 +750,7 @@
         ]
       },
       "forms": {
-        "herdr": "URLs and this machine's paths in an agent's reply are links: a URL opens in the default browser; pages, pictures, PDFs and text files open with the system's opener, other paths stay words",
+        "herdr": "URLs in an agent's reply are links, opened in the default browser; paths are words (the Terminal view's Cmd-click opens them)",
         "desktop": "Same, opened on the agent's machine; hover says what a click does",
         "tablet": "Same as desktop",
         "phone": "URLs only"

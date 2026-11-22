@@ -91,7 +91,7 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     const c = chat();
     const shown = (x: any) => words(c.safeRow(x, theme, "v0-"));
     expect(shown(ROWS[5])).toContain("SHEP-99 is ready.");
-    expect(shown(ROWS[5])).toContain("[`/tmp/shep99/index.html`](file:///tmp/shep99/index.html)");
+    expect(shown(ROWS[5])).toContain("`/tmp/shep99/index.html`, the code in ~/dev/shop/src/app.ts:12, docs [https://x.y/z](https://x.y/z)");
     expect(shown(ROWS[3])).toContain("看看 /tmp/a.png");
     // the brief is longer than one frame's budget: the first frame may show it as written, never empty
     const brief = shown(ROWS[2]);
@@ -99,32 +99,28 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     expect(brief).toContain("You are the coordinator of one space in Herdr.");
   });
 
-  test("past a frame's budget the rest show as written with no link in them, ask for a redraw, and get links on it", () => {
+  test("past a frame's budget the rest show as written, ask for a redraw, and get their links on it", () => {
     const c = chat();
     const shown = (x: any) => words(c.safeRow(x, theme, "v0-"));
     c.linkSpent = 1e9;
-    const x = { kind: "agent", id: "a9", text: "See https://example.com/late and [the app](file:///Applications/Preview.app)" };
+    const x = { kind: "agent", id: "a9", text: "See https://example.com/late" };
     expect(shown(x)).toContain("See https://example.com/late");
-    expect(shown(x)).not.toMatch(/[^\\]\]\(/);
-    expect(shown(x)).toContain("\\[the app\\](file:///Applications/Preview.app)");
+    expect(shown(x)).not.toContain("](https://example.com/late)");
     expect(c.linkWaiting).toBe(true);
     c.linkSpent = 0;
-    expect(shown(x)).toContain("[https://example.com/late](https://example.com/late) and the app");
+    expect(shown(x)).toContain("[https://example.com/late](https://example.com/late)");
   });
 
-  test("a message too long to rework shows as words with no link, at once", () => {
+  test("a message too long to rework shows as written, at once, and is never reworked", () => {
     const c = chat();
-    const huge = "[app](file:///Applications/Preview.app) " + "x".repeat(300000);
-    const out = words(c.safeRow({ kind: "agent", id: "h", text: huge }, theme, "v0-"));
-    expect(out.length).toBeGreaterThan(300000);
-    expect(out.startsWith("\\[app\\](file:///Applications/Preview.app)")).toBe(true);
-    expect(c.linkWaiting).toBeFalsy();
-  });
-
-  test("the person's own words: a file link in them never reaches the system's opener", () => {
-    const out = words(chat().safeRow({ kind: "user", id: "u9", text: "open [this](file:///Applications/Preview.app) and [docs](https://x.y)" }, theme, "v0-"));
-    expect(out).toContain("[this]\\(file:///Applications/Preview.app)");
-    expect(out).toContain("[docs](https://x.y)");
+    const huge = "See https://example.com " + "x".repeat(300000);
+    for (const kind of ["agent", "user"]) {
+      c.linkSpent = 0;
+      const out = words(c.safeRow({ kind, id: "h", text: huge }, theme, "v0-"));
+      expect(out).toContain(huge);
+      expect(c.linkWaiting).toBeFalsy();
+      expect(c.linkSpent).toBe(0);
+    }
   });
 
   test("the list's renderer, as main.js has it: every row's words, a throwing row plain, the row after it whole", () => {

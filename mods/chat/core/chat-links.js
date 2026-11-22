@@ -112,13 +112,7 @@ function linkText(text, opts) {
   return out + text.slice(at);
 }
 
-function hrefOf(l, opts) {
-  const href = hrefOf_(l, opts);
-  if (href && opts.emitted) opts.emitted.add(href);
-  return href;
-}
-
-function hrefOf_(l, { home, paths = true, pathHref = fileHref }) {
+function hrefOf(l, { home, paths = true, pathHref = fileHref }) {
   if (l.kind === "url") return escHref(l.url);
   if (!paths) return null;
   const abs = absolute(l.path, home);
@@ -164,20 +158,8 @@ function linkAuthored(m, opts) {
   return href ? `[${words}](${href})` : words;
 }
 
-/** An autolink or an HTML tag under opts.strict: <file://…> or <a href="file:…"> follows pathHref, else shows as
- *  words; anything else as written. */
-function strictTag(tag, opts) {
-  const auto = /^<(file:[^>\s]*)>$/i.exec(tag);
-  if (auto) {
-    const p = pathOf(auto[1], "");
-    const href = p ? hrefOf({ kind: "path", path: p.path }, opts) : null;
-    return href ? `[${escText(auto[1])}](${href})` : escText(tag);
-  }
-  return /^<a\s/i.test(tag) && /href\s*=\s*["']?\s*(file:|\/|~\/)/i.test(tag) ? escText(tag) : tag;
-}
-
 // Within a line run outside fences: code spans, links and pictures, autolinks and HTML tags are left whole.
-const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+(?:\"[^\"\\n]*\"|'[^'\\n]*'|\\([^)\\n]*\\)))?\\)|<[^>\\n]*>";
+const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+\"[^\"\\n]*\")?\\)|<[^>\\n]*>";
 const refName = (t) => t.trim().replace(/\s+/g, " ").toLowerCase();
 const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -196,38 +178,20 @@ function linkInline(text, opts) {
     out += linkText(text.slice(at, m.index), opts);
     if (m[1]) out += linkCode(m[0], m[2], opts) ?? m[0];
     else if (m[4] !== undefined) out += linkAuthored([m[0], m[3], m[4], m[5]], opts);
-    else out += opts.strict ? strictTag(m[0], opts) : m[0];
+    else out += m[0];
     at = m.index + m[0].length;
   }
   return out + linkText(text.slice(at), opts);
 }
 
-/** A reference definition's destination (kind "def": `[name]: dest`, "dest": the destination alone on the line after
- *  `[name]:`) under opts.strict: a path's as one of ours, a path ours won't link made plain, anything else as written. */
-function strictRef(line, kind, opts) {
-  const m = (kind === "def" ? /^([\s>]*\[[^\]]+\]:[ \t]*)(<[^>\n]*>|\S+)([\s\S]*)$/ : /^([\s>]*)(<[^>\n]*>|\S+)([\s\S]*)$/).exec(line);
-  if (!m) return line;
-  const dest = m[2].replace(/^<([\s\S]*)>$/, "$1");
-  const suffix = (LINE.exec(dest) ?? [""])[0];
-  let t = dest.slice(0, dest.length - suffix.length);
-  if (!/^file:/i.test(t)) try { t = decodeURIComponent(t); } catch {}
-  const p = /^(\/(?!\/)|~\/|file:)/i.test(t) ? pathOf(t, suffix) : null;
-  if (!p && !/^file:/i.test(dest)) return line;
-  const href = p ? hrefOf({ kind: "path", path: p.path }, opts) : null;
-  if (href) return m[1] + href + m[3];
-  return kind === "def" ? line.replace("[", "\\[") : `${m[1]}<>${m[3]}`;
-}
-
 /** Markdown with its URLs and paths as links, code blocks left as they are: fenced ones (also in a quote or a list)
  *  and indented ones after a blank line.
  *  opts: home (expands ~/; null: no home paths), paths (false: URLs only, as on a phone or for another machine's
- *  agent), pathHref(abs) (a path's link target, null: no link; the window's file:// URL by default), strict (the
- *  window, SHEP-109: its links open with the system's opener, no check of ours on the way, so a path the agent linked
- *  itself through a reference definition, an autolink or an HTML tag follows pathHref too, or stays plain). */
+ *  agent), pathHref(abs) (a path's link target; the window's file:// URL by default). */
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   // the names the reply defines ([name]: …), so [name] alone stays its link
-  opts = { ...opts, inline: inlineRe(new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName))), emitted: opts.strict ? new Set() : null };
+  opts = { ...opts, inline: inlineRe(new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName))) };
   const out = [];
   let run = [], fence = null, blank = true, indented = false, ref = false, title = false, para = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
@@ -252,18 +216,16 @@ export function linkify(md, opts = {}) {
       // only a list item's fence ends by indentation; a top-level one indented 1-3 spaces runs to its closing fence
       fence = { mark: f[1], depth: depth(line), indent: /[-*+]|\d+[.)]/.test(PREFIX.exec(line)[0]) ? flat(line).indexOf(f[1]) : 0 };
       out.push(line);
-    } else if (!(/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) && (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line))) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
+    } else if (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
       // a reference definition (never right under a paragraph's line: there it is words; after a heading, a rule, a
       // code block or another definition it is one), the line its destination is on
       // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
       // of a title still open in quotes
       flush();
-      const kind = title ? null : !para && /^[\s>]*\[[^\]]+\]:/.test(line) ? "def" : "dest";
-      const shown = opts.strict && kind ? strictRef(line, kind, opts) : line;
       const quotes = (inner(line).match(/"/g) ?? []).length % 2 === 1;
       ref = !title && /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       title = title ? !quotes : quotes;
-      out.push(shown);
+      out.push(line);
       blank = false;
       para = false;
       continue;
@@ -281,52 +243,7 @@ export function linkify(md, opts = {}) {
     para = run.length > 0 && run[run.length - 1] === line && !blank && !/^[\s>]*(#{1,6}(\s|$)|([-*_])(\s*\3){2,}\s*$|=+\s*$|-+\s*$)/.test(line);
   }
   flush();
-  return opts.strict ? guard(out.join("\n"), opts.emitted) : out.join("\n");
-}
-
-/** A link target that leads to a file here: file:, an absolute path or ~/ (decoded once). */
-function local(dest) {
-  let d = String(dest ?? "");
-  try { d = decodeURIComponent(d); } catch {}
-  d = d.trim().toLowerCase();
-  return d.startsWith("file:") || /^(\/(?!\/)|~\/)/.test(d);
-}
-
-const GUARD = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|\]\(\s*<?([^)\s>]*)|^( {0,3}(?:>[ \t]?)*)\[[^\]\n]+\]:[ \t]*<?([^\s>]*)|<([a-z][\w+.-]*:[^>\s]*)>|<a\s[^>]*>/gi;
-
-/**
- * Markdown whose every clickable target that leads to a file here is one in `emitted` (ours, already checked); any
- * other is made plain words: a link's ( escaped, a reference definition's [, an autolink's or an <a> tag's <. Code
- * (fences, indented blocks, code spans) is left as written. SHEP-109: the window's links open with the system's
- * opener, whatever the target, so this is the last check before it; also for the person's own words (emitted empty).
- */
-export function guard(md, emitted = new Set()) {
-  const lines = String(md ?? "").split("\n");
-  let fence = null, blank = true, indented = false;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    const f = /^[ \t>]*(`{3,}|~{3,})/.exec(l);
-    if (fence) {
-      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && /^[ \t>]*(`{3,}|~{3,})\s*$/.test(l)) fence = null;
-      continue;
-    }
-    if (f) { fence = f[1]; continue; }
-    if (/^( {4}|\t)/.test(l) && (blank || indented) && l.trim()) { indented = true; continue; }
-    if (l.trim()) indented = false;
-    blank = !l.replace(/^[\s>]*/, "").trim();
-    if (!/[\](<]/.test(l)) continue;
-    GUARD.lastIndex = 0;
-    lines[i] = l.replace(GUARD, (m, tick, inl, pre, def, auto, at) => {
-      if (tick || l[at - 1] === "\\") return m;
-      const bad = (d) => local(d) && !emitted.has(d);
-      if (inl !== undefined) return bad(inl) ? m.replace("](", "]\\(") : m;
-      if (def !== undefined) return bad(def) ? m.replace("[", "\\[") : m;
-      if (auto !== undefined) return bad(auto) ? escText(m) : m;
-      const href = /href\s*=\s*["']?([^"'\s>]*)/i.exec(m)?.[1];
-      return href !== undefined && bad(href) ? escText(m) : m;
-    });
-  }
-  return lines.join("\n");
+  return out.join("\n");
 }
 
 

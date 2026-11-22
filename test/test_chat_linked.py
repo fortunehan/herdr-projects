@@ -17,7 +17,7 @@ SRC = open(os.path.join(ROOT, "mods", "chat", "main.js"), encoding="utf-8").read
 MATCH = re.search(r"\n  linked\(text\) \{\n.*?\n  \}\n", SRC, re.S)
 PREPARED = re.search(r"\n  prepared\(key, raw, fn\) \{\n.*?\n  \}\n", SRC, re.S)
 LIMIT = re.search(r"\nconst LINK_MS = (\d+);", SRC)
-CONSTS = [re.search(r"\nconst PREP_MAX = .*?;\n", SRC), re.search(r"\nconst unlinked = .*?;\n", SRC)]
+CONSTS = [re.search(r"\nconst PREP_MAX = .*?;\n", SRC)]
 
 HARNESS = r"""
 const LINK_MS = %(limit)s;

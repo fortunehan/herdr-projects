@@ -251,7 +251,8 @@ export function literal(text) {
  *  (SHEP-109: the window's QuickJS runs a split pattern at every character, ~13 ms for a 35 KB message). */
 export function codeParts(s) {
   const out = [];
-  let from = 0, i = 0;
+  // nl: the first newline after i (it only moves forward: one pass, never a scan back per span)
+  let from = 0, i = 0, nl = -1;
   for (;;) {
     i = s.indexOf("`", i);
     if (i < 0) break;
@@ -261,7 +262,8 @@ export function codeParts(s) {
       end = close < 0 ? s.length : close + 3;
     } else {
       const close = s.indexOf("`", i + 1);
-      if (close >= 0 && s.lastIndexOf("\n", close) < i) end = close + 1;
+      if (nl !== Infinity && nl <= i) { const n = s.indexOf("\n", i + 1); nl = n < 0 ? Infinity : n; }
+      if (close >= 0 && close < nl) end = close + 1;
     }
     if (end < 0) { i++; continue; }
     out.push(s.slice(from, i), s.slice(i, end));

@@ -1,7 +1,7 @@
-// SHEP-99: the window's chat draws an agent's paths and URLs as links (core/chat-links.js). The agent row is built as
-// the window builds it, with gpui and herdr as stand-ins that keep the markdown it was given. SHEP-109: the row carries
-// no link handler (rows are drawn by the virtual list, which takes none: one there blanked every chat); TextView
-// opens a link itself, a URL in the browser and a file:// path with the system's opener.
+// SHEP-99/109: the window's chat draws an agent's URLs as links (core/chat-links.js), never its paths. The agent row is
+// built as the window builds it, with gpui and herdr as stand-ins that keep the markdown it was given. The row carries
+// no link handler (rows are drawn by the virtual list, which takes none: one there blanked every chat); TextView opens
+// a link itself, whatever it leads to, so no path is made a link (the Terminal view's Cmd-click opens paths).
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { fakeHerdr } from "./fake-herdr";
 import { fakeGpuiBase, fakeGpuiKit } from "./fake-gpui";
@@ -61,58 +61,47 @@ function drawn(c: any, text: string) {
   return views[0];
 }
 
-describe("the window's chat: paths and links in an agent's reply (SHEP-99)", () => {
+describe("the window's chat: URLs in an agent's reply are links, paths are words (SHEP-99, SHEP-109)", () => {
   beforeEach(() => { ran = []; });
 
-  test("the person's example: the path in inline code is a link, the sentence around it as it was", () => {
-    const v = drawn(chat(), EXAMPLE);
-    expect(v.text).toBe("三个方案的 HTML 预览做好了，在 [`/tmp/sds18-mock/index.html`](file:///tmp/sds18-mock/index.html)，可以直接在浏览器打开。");
+  test("the person's example: the path stays as written, no link", () => {
+    expect(drawn(chat(), EXAMPLE).text).toBe(EXAMPLE);
   });
 
-  test("the row carries no link handler: TextView opens the link itself (SHEP-109)", () => {
+  test("the row carries no link handler: TextView opens a URL itself (SHEP-109)", () => {
     expect(drawn(chat(), EXAMPLE).click).toBeUndefined();
     expect(drawn(chat(), "See https://example.com/docs").click).toBeUndefined();
     expect(ran).toEqual([]);
   });
 
-  test("a URL, and a path a viewer opens, are links; ~/ is this machine's home", () => {
+  test("a URL is a link", () => {
     expect(drawn(chat(), "See https://example.com/docs。").text).toBe("See [https://example.com/docs](https://example.com/docs)。");
-    expect(drawn(chat(), "Proof at ~/proof/shot.png and `/tmp/r.pdf`").text)
-      .toBe("Proof at [\\~/proof/shot.png](file:///h/me/proof/shot.png) and [`/tmp/r.pdf`](file:///tmp/r.pdf)");
   });
 
-  // SHEP-109 review: the system's opener runs what it's given, so nothing a click could launch or run is a link
-  test("a folder, a source file, an app or a script stays words, also when the agent linked it", () => {
-    expect(drawn(chat(), "Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/ in /Applications/Preview.app").text)
-      .toBe("Changed ~/dev/shop/src/app.ts:12 and /h/me/dev/shop/ in /Applications/Preview.app");
-    expect(drawn(chat(), "[run it](file:///tmp/go.command) and [the page](/tmp/a.html)").text)
-      .toBe("run it and [the page](file:///tmp/a.html)");
-    expect(drawn(chat(), "[app][a]\n\n[a]: /Applications/Preview.app").text).toBe("[app][a]\n\n\\[a]: /Applications/Preview.app");
-    expect(drawn(chat(), "<file:///tmp/go.sh>").text).toBe("\\<file:///tmp/go.sh\\>");
+  test("no path becomes a link: files, folders, apps, ~/", () => {
+    const words = "Changed ~/dev/shop/src/app.ts:12, /h/me/dev/shop/, /tmp/r.pdf and /Applications/Preview.app";
+    expect(drawn(chat(), words).text).toBe(words);
+  });
+
+  test("a path link the agent wrote shows its words only; a URL link it wrote stays", () => {
+    expect(drawn(chat(), "[run it](file:///tmp/go.command), [the page](/tmp/a.html), [docs](https://x.y/d)").text)
+      .toBe("run it, the page, [docs](https://x.y/d)");
   });
 
   test("a fenced code block isn't linked", () => {
-    const v = drawn(chat(), "Run:\n\n```\nopen /tmp/a/b.html\n```");
-    expect(views.map((x) => x.text).join("")).not.toContain("file://");
+    const v = drawn(chat(), "Run:\n\n```\nopen https://x.y/a\n```");
+    expect(views.map((x) => x.text).join("")).not.toContain("](https://x.y/a)");
     expect(v).toBeDefined();
   });
 
-  test("another machine's agent: URLs are links, its paths stay plain", () => {
-    const v = drawn(chat("mini"), "At `/tmp/a/index.html`, docs https://x.y/z");
-    expect(v.text).toBe("At `/tmp/a/index.html`, docs [https://x.y/z](https://x.y/z)");
-  });
-
-  test("another machine's agent: a file link it wrote never opens this machine's file of that name (SHEP-109)", () => {
-    const c = chat("mini");
-    expect(drawn(c, "[report][r]\n\n[r]: file:///tmp/report.txt").text).toBe("[report][r]\n\n\\[r]: file:///tmp/report.txt");
-    expect(drawn(c, "[report](file:///tmp/report.txt) <file:///tmp/report.txt>").text).toBe("report \\<file:///tmp/report.txt\\>");
+  test("another machine's agent: the same", () => {
+    expect(drawn(chat("mini"), "At `/tmp/a/index.html`, docs https://x.y/z").text).toBe("At `/tmp/a/index.html`, docs [https://x.y/z](https://x.y/z)");
   });
 
   test("find's bold marks words, never a link's target", () => {
     const c = chat();
     c.finding = true;
-    c.findBox = { value: () => "tmp" };
-    const v = drawn(c, "at /tmp/a/b.html");
-    expect(v.text).toBe("at [/**tmp**/a/b.html](file:///tmp/a/b.html)");
+    c.findBox = { value: () => "example" };
+    expect(drawn(c, "at https://example.com/a").text).toBe("at [https://**example**.com/a](https://example.com/a)");
   });
 });
