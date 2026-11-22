@@ -14,6 +14,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VIEW = os.path.join(ROOT, "mods", "artifacts", "recipe-view.js")
 RECIPE = os.path.join(ROOT, "core", "recipe.js")
+# its Translate lines (SHEP-102): installed beside recipe.js, as herdr-artifact does
+TRANSLATE = [os.path.join(ROOT, "core", n) for n in ("translate.js", "paths.js")]
 
 # The window's modules, enough to build the element tree: every element method returns the element.
 STUB = r"""
@@ -35,6 +37,7 @@ export const shared = () => null, setShared = () => {}, props = () => ({});
 // a picture opens the picture viewer (SHEP-90): openOverlay, appHome, exec and settings from herdr
 export const openOverlay = () => "o", appHome = () => "/tmp", exec = async () => ({ code: 1, stdout: "" }), settings = () => ({});
 export const asset = (x) => x, reply = async () => true, answer = async () => true, answers = async () => ({});
+export const id = "x", version = 1, machine = null;
 """
 
 HARNESS = r"""
@@ -59,6 +62,8 @@ def run(recipe):
         with open(os.path.join(d, "recipe-view.js"), "w") as f:
             f.write(src)
         shutil.copy(RECIPE, os.path.join(d, "recipe.js"))
+        for f in TRANSLATE:
+            shutil.copy(f, os.path.join(d, os.path.basename(f)))
         with open(os.path.join(d, "stub.js"), "w") as f:
             f.write(STUB)
         with open(os.path.join(d, "recipe-data.js"), "w") as f:

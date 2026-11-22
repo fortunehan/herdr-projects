@@ -52,6 +52,7 @@ export {
   ClipboardDocumentListIcon as PlanIcon,
   Cog6ToothIcon as CogIcon,
   CommandLineIcon as TermIcon,
+  LanguageIcon as TranslateIcon,
   CpuChipIcon as ModelIcon,
   CursorArrowRaysIcon as MarkUpIcon,
   DocumentDuplicateIcon as CopyIcon,

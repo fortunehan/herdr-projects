@@ -75,3 +75,8 @@ test("a cover must be a picture beside it", () => {
   expect(problems({ ...r, cover: "../c.png" }, ["c.png"]).length).toBe(1);
   expect(problems(r, ["d.png"]).length).toBe(1);
 });
+
+test("SHEP-102: a picture taken out leaves an indented code block under it indented (still code, never sent to translate)", () => {
+  const r = mediaIn("- ![proof](/tmp/shots/proof.png)\n\n      echo KeepThisPrivate\n\nThe build is ready.");
+  expect(r.text).toBe("      echo KeepThisPrivate\n\nThe build is ready.");
+});
