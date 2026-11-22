@@ -261,11 +261,21 @@ describe("the opener script", () => {
   writeFileSync(join(home, "site", "main.ts"), "");
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   fake("uname", "echo Darwin");
+  test("macOS's programs run by absolute path", () => {
+    expect(L.OPEN).toContain("exec /usr/bin/open -R");
+    expect(L.OPEN).toContain("$(/usr/bin/osascript ");
+    expect(L.OPEN).not.toMatch(/exec open |\$\(osascript /);
+  });
   fake("open", `printf 'open %s\\n' "$*" >> "${log}"`);
   fake("osascript", "echo '/Applications/Firefox.app'");
+  // the script runs macOS's programs by absolute path (SHEP-104): here they are the stand-ins
+  const cmd = (action, p, guard) => {
+    const [prog, args] = L.command(action, "macos", p, guard);
+    return [prog, args.map((a) => a.replaceAll("/usr/bin/open", join(bin, "open")).replaceAll("/usr/bin/osascript", join(bin, "osascript")))];
+  };
   const run = (action, p, guard = false) => {
     writeFileSync(log, "");
-    const [prog, args] = L.command(action, "macos", p, guard);
+    const [prog, args] = cmd(action, p, guard);
     const r = spawnSync(prog, args, { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home } });
     return { code: r.status, ran: readFileSync(log, "utf8").trim() };
   };
@@ -287,13 +297,13 @@ describe("the opener script", () => {
   test("the service's guard: the home folder and /tmp only, after .. and links are resolved", () => {
     expect(run("reveal", `${home}/site/main.ts`, true).code).toBe(0);
     expect(run("reveal", "/etc/hosts", true)).toEqual({ code: 5, ran: "" });
-    expect(run("reveal", `${home}/..`, true)).toEqual({ code: 5, ran: "" });
+    expect(run("reveal", "/tmp/../etc", true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp/..", true)).toEqual({ code: 5, ran: "" });
     expect(run("reveal", "/tmp", true).code).toBe(0);
   });
   test("the guard refuses everything outside /tmp when the home folder can't be found", () => {
     writeFileSync(log, "");
-    const [prog, args] = L.command("reveal", "macos", "/etc/hosts", true);
+    const [prog, args] = cmd("reveal", "/etc/hosts", true);
     expect(spawnSync(prog, args, { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: join(root, "no-such-home") } }).status).toBe(5);
   });
   test("a link that looks like a page but leads to a source file is shown in Finder", () => {

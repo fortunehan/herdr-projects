@@ -283,17 +283,18 @@ if [ "$3" = guard ]; then
   p=$r
   case $(printf %s "$p" | tr '[:upper:]' '[:lower:]') in *.html|*.htm|*.svg|*.pdf|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.txt|*.json) set -- browser "$2" "$3" ;; *) set -- reveal "$2" "$3" ;; esac
 fi
+# macOS: its programs by absolute path, so a PATH cannot put another open in their place (SHEP-104)
 if [ "$(uname)" = Darwin ]; then
   if [ -d "$p" ]; then
-    case $(basename "$p") in ?*.*) exec open -R "$p" ;; esac
-    exec open "$p"
+    case $(basename "$p") in ?*.*) exec /usr/bin/open -R "$p" ;; esac
+    exec /usr/bin/open "$p"
   fi
   if [ "$1" = browser ]; then
-    app=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); const u = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("https://example.com")); u.isNil() ? "" : u.path.js' 2>/dev/null)
-    [ -n "$app" ] && exec open -a "$app" "$p"
-    exec open "$p"
+    app=$(/usr/bin/osascript -l JavaScript -e 'ObjC.import("AppKit"); const u = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("https://example.com")); u.isNil() ? "" : u.path.js' 2>/dev/null)
+    [ -n "$app" ] && exec /usr/bin/open -a "$app" "$p"
+    exec /usr/bin/open "$p"
   fi
-  exec open -R "$p"
+  exec /usr/bin/open -R "$p"
 fi
 # xdg-open hands the file on and returns, so its exit says whether it worked; a browser itself keeps running
 if [ -d "$p" ]; then command -v xdg-open >/dev/null 2>&1 || exit 4; exec xdg-open "$p"; fi
