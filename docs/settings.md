@@ -39,6 +39,7 @@ drops the space's own, and it inherits again. A few settings are one for every s
 | Notify | All / Needs me / Off | Everywhere, space | A busy space can be quiet |
 | Secrets | A secret | Everywhere, machine, space | A key for one repo, or one machine's own |
 | Secrets | Kept on | All machines | One vault every machine's agents and voice calls use; follows Serve from unless picked |
+| Translation | On, endpoint, model, key, Test connection ([how](translation.md); off) | Everywhere only | One translation endpoint for every space; only it is ever called |
 | Machines | When new tasks wait (memory, CPU, disk), low priority, memory cap per worker | All machines, machine | About a machine's hardware, not a space's work |
 | Machines | Home Assistant | Machine only | One per machine |
 | Machines | Update after a Shepherdr task merges ([how](self-update.md); off) | Machine only | Only that machine's Shepherdr checkout updates itself |
