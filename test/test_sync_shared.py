@@ -64,6 +64,15 @@ class ArtifactModsAreNotCopies(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("mods/partly/dirs.js looks like a copy of lib/dirs.js", p.stderr)
 
+    def test_a_file_in_mods_is_skipped(self):
+        """Finder's .DS_Store in mods/ once crashed the install's sync-shared (SHEP-108)."""
+        with open(os.path.join(self.mods, ".DS_Store"), "wb") as f:
+            f.write(b"\0Bud1")
+        for args in (("--check",), ()):
+            p = self.run_sync(*args)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertNotIn("Traceback", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

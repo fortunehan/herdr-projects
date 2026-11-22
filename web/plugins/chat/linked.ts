@@ -30,6 +30,11 @@ function kept(md: string) {
     not lead elsewhere. A path link the agent wrote may become ours. ~/ stays as written ("~" as the home): the agent's
     machine expands it */
 export function linked(text: string, paths: boolean) {
+  // a reply linking can't handle shows as written, never a blank chat (SHEP-108)
+  try { return linkedOrThrow(text, paths) } catch { return text }
+}
+
+function linkedOrThrow(text: string, paths: boolean) {
   const md = CL.linkify(text, { home: '~', paths, pathHref })
   if (md === text) return md
   const was = kept(text), now = kept(md)

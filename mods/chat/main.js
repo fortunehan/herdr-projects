@@ -62,6 +62,8 @@ import { Dictation, BUN_PATH, warmAudio } from "./dictate.js";
 
 // Writing down after Done this long says it's taking longer than usual (SHEP-63).
 const DICT_SLOW = 5000;
+/** Most time one frame spends linking replies' URLs and paths (SHEP-108, linked()). */
+const LINK_MS = 12;
 import { PanelHost, inner, openTaskThread, backToTasks, requestWorkerTerminal, THREAD, STACK as TASKS_STACK, BODY as THREAD_BODY, CHAT as THREAD_CHAT, TERM as THREAD_TERM, PR as THREAD_PR, BROWSER as THREAD_BROWSER } from "./panel.js";
 import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
@@ -2027,8 +2029,28 @@ export default class Chat extends View {
 
   // An agent's words with their URLs and paths as links (SHEP-99, core/chat-links.js): paths only for this machine's
   // agent (another machine's aren't here to open), ~/ against this machine's home.
+  // SHEP-108: it runs for every row drawn and measured on every frame, and a render that passes the window's time
+  // limit (~50 ms) draws nothing at all: so each reply is linked once (kept), at most LINK_MS of linking per frame
+  // (the rest show plain and get their links a frame later), and a reply linking can't handle shows plain.
   linked(text) {
-    return links.linkify(text, { home: this.machine ? null : home(), paths: !this.machine });
+    const key = `${this.machine ? "r" : "l"}\0${text}`;
+    const kept = this.links?.get(key);
+    if (kept !== undefined) return kept;
+    if ((this.linkSpent ?? 0) >= LINK_MS) {
+      if (!this.linkTick && this.linkCx) {
+        this.linkTick = true;
+        this.linkCx.timer.after(30, (cx) => { this.linkTick = false; cx.notify(); });
+      }
+      return text;
+    }
+    const at = Date.now();
+    let md = text;
+    try { md = links.linkify(text, { home: this.machine ? null : home(), paths: !this.machine }); } catch {}
+    this.linkSpent = (this.linkSpent ?? 0) + Date.now() - at;
+    this.links ??= new Map();
+    if (this.links.size >= 600) this.links.delete(this.links.keys().next().value);
+    this.links.set(key, md);
+    return md;
   }
 
   // A link clicked in an agent's words: a URL in the default browser; a path as core/chat-links.js says (a page or a
@@ -4608,6 +4630,8 @@ export default class Chat extends View {
 
   draw(cx) {
     if (this.host) return this.host.render(cx);
+    this.linkSpent = 0;
+    this.linkCx = cx;
     // The pane getting focus (opened, clicked, gone to) puts the keyboard in the message box.
     const mine = this.myPane();
     const paneFocused = Boolean(mine && focused()?.pane === mine);

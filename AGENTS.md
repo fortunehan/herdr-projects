@@ -24,6 +24,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   settings to other machines), nor for `tabs-tasks` (its init starts the service and bridge for real).
 - Window-mod methods (e.g. chat's `refocus()`) can be tested by extracting the method text from `mods/chat/main.js`
   and running it in node with stubs (see `test/test_chat_refocus.py`).
+- Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and
+  after (see core/chat-links.test.js 'code blocks read the same to marked').
 - Mark up (`mods/artifacts/markup.js`) imports must be listed in `MARKUP_HELPERS` in `mods/artifacts/bin/herdr-artifact`
   so each published artifact carries them; `test_every_installed_import_resolves` checks the imports.
 - Header layout checks: the web app keeps its pinned-lists and sidebar state across page loads, so a stub page can
@@ -63,6 +65,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
   file's source with stubs via `new Function` instead.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
+- A bare remote for herdr-task git tests: `init --bare` in the tempdir, `remote add origin`, push main; see
+  `test_herdr_task.StackedTasks`.
 - `docs/**` is in the dev Mac's global gitignore: a new docs/ page needs `git add -f`.
 - The dev Mac's command guard (dcg) also blocks heredoc-fed edits (`python3 - <<EOF`, `cat > f <<EOF`): write the script
   to /tmp with your editor tool and run `python3 /tmp/x.py`.

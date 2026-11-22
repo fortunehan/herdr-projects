@@ -21,6 +21,18 @@ const URL_RE = new RegExp(`https?://[^${END}{}|]+`, "g");
 const NOT = `${END}${CJK}\\[\\]{}|(),;:`;
 const P = `[^${NOT}]`, PART = `[^${NOT}/]`;
 const PATH_RE = new RegExp(`(?<![\\w.~/:@%+=#?&-])(file://(?:localhost)?/${P}*|~/${P}*|/${PART}+/${P}*)(:\\d+(?::\\d+)?)?`, "g");
+const CJK_START = new RegExp(`^[${CJK}]`);
+
+/** Every match of a global pattern, reusing it. Never matchAll on these: it compiles a copy of the pattern per call, and
+ *  the window's QuickJS (no regexp cache, no JIT) took 5-20 ms per reply doing that, which ran a chat's render past
+ *  the window's time limit and left the whole message list blank (SHEP-108). */
+function* matches(re, s) {
+  re.lastIndex = 0;
+  for (let m; (m = re.exec(s));) {
+    if (m[0] === "") re.lastIndex++;
+    yield m;
+  }
+}
 
 /** A URL's end without the sentence's punctuation, and a closing ) or ] only when the URL opened one. */
 function trimUrl(u) {
@@ -51,19 +63,19 @@ function pathOf(body, suffix) {
 export function find(text) {
   const s = String(text ?? "");
   const out = [];
-  for (const m of s.matchAll(URL_RE)) {
+  for (const m of matches(URL_RE, s)) {
     const url = trimUrl(m[0]);
     if (/^https?:\/\/[^/?#]+/.test(url)) out.push({ start: m.index, end: m.index + url.length, text: url, kind: "url", url });
   }
   const inUrl = (i) => out.some((x) => i >= x.start && i < x.end);
-  for (const m of s.matchAll(PATH_RE)) {
+  for (const m of matches(PATH_RE, s)) {
     if (inUrl(m.index)) continue;
     const suffix = m[2] ?? "";
     const body = suffix ? m[1] : m[1].replace(/[.!?*_~]+$/, "");
     const p = pathOf(body, suffix);
     if (!p) continue;
     const len = body.length + suffix.length;
-    if (new RegExp(`^[${CJK}]`).test(s.slice(m.index + len))) continue;
+    if (CJK_START.test(s.slice(m.index + len))) continue;
     out.push({ start: m.index, end: m.index + len, text: s.slice(m.index, m.index + len), kind: "path", ...p });
   }
   return out.sort((a, b) => a.start - b.start);
@@ -162,7 +174,7 @@ function inlineRe(refs) {
 
 function linkInline(text, opts) {
   let out = "", at = 0;
-  for (const m of text.matchAll(opts.inline)) {
+  for (const m of matches(opts.inline, text)) {
     out += linkText(text.slice(at, m.index), opts);
     if (m[1]) out += linkCode(m[0], m[2], opts) ?? m[0];
     else if (m[4] !== undefined) out += linkAuthored([m[0], m[3], m[4], m[5]], opts);
