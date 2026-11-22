@@ -3176,7 +3176,11 @@ export default class Chat extends View {
           const tag = `${trd.state}:${(trd.failed ?? []).length}`;
           let group = [], n = 0, lastTr = null;
           const flush = () => { if (group.length) out.push(lastTr = { kind: "agenttr", id: `${x.id}:tr${n++}:${tag}`, of: x.id, text: src, tr: trd, segs: group }); group = []; };
+          // a failure is a line of its own under its block (a row: a press on it, and only on it, asks again)
+          const fail = (k, words, depth = 0) => { flush(); lastTr = null; out.push({ kind: "trfail", id: `${x.id}:trf${k}:${tag}`, of: x.id, text: src, words, depth }); };
           TR.windowParts(src, trd.blocks ?? [], trd.state === "done" ? trd.failed ?? [] : []).forEach((g, k) => {
+            if (g.type === "fail") return void fail(k, TR.WORDS.blockFailed, g.depth);
+            if (g.type === "table" && g.rows.some((r) => r.some((c) => c.fail))) { group.push(g); return void fail(k, TR.WORDS.blockFailed); }
             if (g.type !== "code") return void group.push(g);
             flush();
             lastTr = null;
@@ -3184,8 +3188,9 @@ export default class Chat extends View {
             out.push({ kind: "code", id: `${x.id}:trc${k}`, lang: g.lang, code: g.code });
           });
           flush();
-          // Translating…, or why it failed, under the last words (a bubble of its own after a code block)
-          if (trd.state !== "done") { if (lastTr) lastTr.tail = true; else out.push({ kind: "agenttr", id: `${x.id}:trt:${tag}`, of: x.id, text: src, tr: trd, segs: [], tail: true }); }
+          // why it failed, a line of its own; Translating… under the last words (a bubble of its own after a code block)
+          if (trd.state === "error") fail("e", trd.error || TR.WORDS.failed(""));
+          else if (trd.state !== "done") { if (lastTr) lastTr.tail = true; else out.push({ kind: "agenttr", id: `${x.id}:trt:${tag}`, of: x.id, text: src, tr: trd, segs: [], tail: true }); }
           ps.length = 0;
         }
         // A long reply: its first lines (the part where they end cut off there), then Show more.
@@ -3386,6 +3391,7 @@ export default class Chat extends View {
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * BUBBLE - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
       case "agent": return 30 + (x.clip ?? lines(x.text, w * BUBBLE - 24) * 21);
+      case "trfail": return 26;
       case "agenttr": return 30 + x.segs.reduce((n, s) => n + (s.type === "table" ? 10 + s.rows.reduce((m, r) => m + (r.some((c) => c.tr || c.fail) ? 48 : 28), 0)
         : s.type === "fail" ? 20 : 4 + lines(s.text, w * BUBBLE - 36 - (s.depth ?? 0) * 18) * 21), 0) + (x.tail ? 22 : 0);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
@@ -3542,7 +3548,8 @@ export default class Chat extends View {
         // SHEP-102, as Immersive Translate: each block, then its translation a step dimmer with a thin rule on its left;
         // code as it is, with no translation; a failure one short line with Retry (a press on the message asks again)
         const line = (text, color) => div().w_full().mt(2).mb(4).pl(8).border_l(2).border_color(t.border).text_color(color).child(text);
-        const failLine = () => line(`${TR.WORDS.blockFailed} \u00b7 ${TR.WORDS.retry}`, t.blocked);
+        // a failed cell is marked in place; its Retry is the line under the table (a trfail row)
+        const failLine = () => line(TR.WORDS.blockFailed, t.blocked);
         // a nested list item as deep as it was
         const deep = (g, el) => (g.depth ? div().w_full().pl(g.depth * 18).child(el) : el);
         // a table as cells, each cell's translation inside it under its words
@@ -3556,11 +3563,15 @@ export default class Chat extends View {
           : g.type === "tr" ? deep(g, line(TextView.markdown(`${pre}chat-tr-${x.id}-${n}`, g.text || " ").selectable(true), t.muted))
           : g.type === "fail" ? deep(g, failLine())
           : table(g, n));
-        const tail = !x.tail ? [] : x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)]
-          : x.tr.state === "error" ? [line(`${x.tr.error || TR.WORDS.failed("")} \u00b7 ${TR.WORDS.retry}`, t.blocked)] : [];
+        const tail = x.tail && x.tr.state === "loading" ? [line(TR.WORDS.translating, t.dim)] : [];
         return pad(h_flex().w_full().justify_start().child(div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
           .child(v_flex().w_full().children([...segs, ...tail]))));
       }
+      case "trfail":
+        // SHEP-102: one short line under the block (or the message) that couldn't be translated; a press asks again
+        return col(h_flex().w_full().h(22).pl(12 + (x.depth ?? 0) * 18).gap(6).items_center().cursor_pointer().text_size(12.5).text_color(t.blocked)
+          .hover((s) => s.text_color(t.foreground))
+          .child(div().pl(8).border_l(2).border_color(t.border).min_w(0).truncate().child(`${x.words} \u00b7 ${TR.WORDS.retry}`)), 18, 2);
       case "codehead": {
         const done = this.copied === x.id;
         return col(h_flex().w_full().h(28).pl(12).pr(4).items_center().rounded_t(8).bg(t.surface).border_1().border_b(0).border_color(t.border)
@@ -3696,7 +3707,7 @@ export default class Chat extends View {
       if (this.opened.has(key)) this.opened.delete(key);
       else { this.opened.add(key); this.loadResults(row, cx); }
     } else if (row.kind === "codehead") this.copy(row.code, row.id, cx);
-    else if (row.kind === "agenttr" && (row.tr.state === "error" || (row.tr.state === "done" && row.tr.failed?.length))) this.askTranslation(row.of, row.text, cx);
+    else if (row.kind === "trfail") this.askTranslation(row.of, row.text, cx);
     else if (row.kind === "queued" && this.kind === "claude" && !this.steering) this.sendQueuedNow(cx);
     else if (row.kind === "pending" && row.failed) { const p = this.pending.find((x) => x.id === row.id); if (p?.msg) this.retry(p, cx); }
     else if (row.kind === "artifact" && row.art) this.openArtifact(row);

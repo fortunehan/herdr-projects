@@ -29,6 +29,7 @@ const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const QUOTE = /^ {0,3}>[ \t]?/;
 const ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)(.*)$/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
+const LINK_DEF = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S+/;
 const TABLE_SEP = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
 
 const indentOf = (s) => s.replace(/\t/g, "    ").match(/^ */)[0].length;
@@ -71,8 +72,11 @@ export function mdBlocks(md) {
   for (let i = 0; i < lines.length;) {
     const l = lines[i];
     if (blank(l)) { i++; continue; }
-    // an indented code block (four spaces in, not a paragraph's next line nor a list item's: those are read there)
-    if (indentOf(l) >= 4) {
+    // a link's reference ([help]: https://…): no words of its own, and no element in the page
+    if (LINK_DEF.test(l)) { out.push({ kind: "def", text: "", src: l, skip: true }); i++; continue; }
+    // an indented code block (four spaces in, not a paragraph's next line, nor in a list: a list's deeper item or its
+    // indented lines are the list's)
+    if (indentOf(l) >= 4 && !(out.length && out[out.length - 1].kind === "item")) {
       const start = i;
       while (i < lines.length && (blank(lines[i]) || indentOf(lines[i]) >= 4)) i++;
       while (i > start && blank(lines[i - 1])) i--;
@@ -119,7 +123,10 @@ export function mdBlocks(md) {
     const item = ITEM.exec(l);
     if (item && (item[4].trim() || item[3])) {
       const start = i, ind = indentOf(item[1]);
+      // where its words start: past the marker and its space (a line four further in after a blank line is code)
+      const content = ind + item[2].length + Math.max(1, Math.min(4, (item[3] ?? " ").replace(/\t/g, "    ").length));
       const own = [item[4]];
+      let afterBlank = false;
       i++;
       // its lines: lazy or indented continuations, and a paragraph after a blank line indented under it (a loose
       // list's); a nested list item starts a block of its own
@@ -128,11 +135,12 @@ export function mdBlocks(md) {
         const n = lines[i];
         if (blank(n)) {
           const next = lines.slice(i + 1).find((x) => !blank(x));
-          if (next !== undefined && indentOf(next) > ind + 1 && !ITEM.test(next)) { i++; continue; }
+          if (next !== undefined && indentOf(next) > ind + 1 && !ITEM.test(next)) { i++; afterBlank = true; continue; }
           break;
         }
         if (ITEM.test(n) || HEADING.test(n) || FENCE.test(n) || QUOTE.test(n) || (RULE.test(n) && indentOf(n) <= ind)) break;
-        own.push(n.trim());
+        // its indented code: kept in its markdown, never in its words
+        if (!(afterBlank && indentOf(n) >= content + 4)) own.push(n.trim());
         i++;
       }
       const words = own.join(" ").trim().replace(/^\[[ xX]\][ \t]+/, "");
@@ -187,7 +195,7 @@ const CJK =/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
 /** The language to translate into: "en" when CJK characters are over ~30% of the text's letters (code and links
  *  aside), else "zh". Decided locally, with no model call. */
 export function direction(text) {
-  const plain = plainWords(text);
+  const plain = plainWords(mdBlocks(text).filter((b) => b.kind !== "code" && b.kind !== "def").map((b) => b.text).join("\n"));
   const cjk = (plain.match(CJK) ?? []).length;
   const letters = (plain.match(/\p{L}/gu) ?? []).length;
   return letters && cjk / letters > 0.3 ? "en" : "zh";
@@ -235,16 +243,13 @@ export function parseTranslations(content, n) {
 /** The text of an OpenAI-compatible chat completion's answer. */
 export const answerText = (body) => body?.choices?.[0]?.message?.content ?? null;
 
-/** An endpoint's refusal in a few plain words: its status and its own message, never the request. */
-export function apiError(status, body) {
-  let msg = "";
-  try { const d = JSON.parse(body); msg = d?.error?.message ?? d?.message ?? (typeof d?.error === "string" ? d.error : ""); } catch { msg = String(body ?? "").slice(0, 160); }
-  msg = String(msg).replace(/\s+/g, " ").trim().slice(0, 160);
-  // a refusal of the key can quote the key: its own words never show
+/** An endpoint's failure in a few plain words by its status: never its own words, which could quote the key. */
+export function apiError(status) {
   if (status === 401 || status === 403) return `the endpoint refused the key (${status})`;
-  if (status === 404) return `the endpoint or model wasn't found (404)${msg ? `: ${msg}` : ""}`;
-  if (status === 429) return `the endpoint is busy or out of quota (429)${msg ? `: ${msg}` : ""}`;
-  return `the endpoint answered ${status}${msg ? `: ${msg}` : ""}`;
+  if (status === 404) return "the endpoint or model wasn't found (404): check the base URL and the model";
+  if (status === 429) return "the endpoint is busy or out of quota (429)";
+  if (status === 400) return "the endpoint refused the request (400): check the model";
+  return `the endpoint answered ${status}`;
 }
 
 /** A model's translation made inert against its original: no pictures or raw HTML (nothing that loads on its own),
@@ -274,24 +279,23 @@ export async function translateTexts(texts, target, ask, { parallel = 4 } = {}) 
     return true;
   };
   const all = texts.map((_, i) => i);
-  let ok = false;
-  try { ok = await one(all); } catch (e) { last = e; if (!retryable(e)) throw e; }
-  if (!ok) {
-    // the count or the shape didn't match: each text on its own
+  // an endpoint's error (refused, busy, unreachable, settings changed) ends it at once: only an answer of the wrong
+  // count or shape is asked again, each text on its own
+  if (!(await one(all))) {
     const left = [...all];
+    let stop = null;
     await Promise.all(Array.from({ length: Math.min(parallel, left.length) }, async () => {
-      while (left.length) {
+      while (left.length && !stop) {
         const i = left.shift();
-        try { if (!(await one([i]))) last ??= new Error("the model's answer wasn't the translation asked for"); } catch (e) { last = e; if (!retryable(e)) left.length = 0; }
+        try { if (!(await one([i]))) last ??= new Error("the model's answer wasn't the translation asked for"); } catch (e) { stop = e; }
       }
     }));
+    if (stop) { if (!any) throw stop; last = stop; }
   }
   if (!any) throw last ?? new Error("the model's answer wasn't the translation asked for");
   return out;
 }
 
-/** An error worth asking again block by block (a bad answer), not one every request would get (a refused key). */
-const retryable = (e) => !/refused the key|wasn't found|isn't set up|is off|couldn't reach/i.test(String(e?.message ?? e));
 
 // ---- a message's translation, block by block ------------------------------------------------------------------------
 
@@ -314,21 +318,25 @@ export function windowParts(md, tr = [], failed = []) {
   const blocks = mdBlocks(md);
   const bad = new Set(failed);
   const out = [];
+  // the message's link references ([help]: https://…), under each part drawn on its own, so its links still link
+  const defs = blocks.filter((b) => b.kind === "def").map((b) => b.src).join("\n");
+  const own = (src) => (defs ? `${src}\n\n${defs}` : src);
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
+    if (b.kind === "def") continue;
     if (b.kind === "code") { out.push({ type: "code", lang: b.lang, code: b.code }); continue; }
     if (b.kind === "cell") {
       const t = b.table, rows = [];
       for (; i < blocks.length && blocks[i].kind === "cell" && blocks[i].table === t; i++) {
         const c = blocks[i];
-        (rows[c.row] ??= [])[c.col] = { text: c.text, tr: tr[i] ?? null, fail: bad.has(i) };
+        (rows[c.row] ??= [])[c.col] = { text: own(c.text), tr: tr[i] ?? null, fail: bad.has(i) };
       }
       i--;
       out.push({ type: "table", rows: rows.map((r) => Array.from({ length: b.cols }, (_, k) => r?.[k] ?? { text: "", tr: null, fail: false })) });
       continue;
     }
     const depth = b.kind === "item" ? b.depth ?? 0 : 0;
-    out.push({ type: "md", text: b.src, depth });
+    out.push({ type: "md", text: own(b.src), depth });
     if (tr[i]) out.push({ type: "tr", text: b.kind === "heading" ? `**${tr[i]}**` : tr[i], depth });
     else if (bad.has(i)) out.push({ type: "fail", depth });
   }
@@ -355,8 +363,8 @@ export function blockPaths(recipe) {
 /**
  * A recipe's texts to translate: [{ key, text }], key "<block's place>.<field>" (heading "3.text", a markdown block's
  * paragraphs "4.md.0", a list's items "5.items.2", a table's "6.col.1" and "6.cell.0.2", captions, a callout's title,
- * a stat's label and note, a check's summary, a question, a tab's label, a chart's legend). Code, commands, buttons, a
- * question's options, form fields and a bar or line chart's axis labels aren't translated, nor a text that is only code, links, paths or ids.
+ * a stat's label and note, a check's summary, a question, a tab's label, a chart's legend and labels). Code, commands,
+ * buttons, a question's options and form fields aren't translated, nor a text that is only code, links, paths or ids.
  */
 export function recipeUnits(recipe) {
   const out = [];
@@ -378,10 +386,10 @@ export function recipeUnits(recipe) {
       case "check": put(`${p}.summary`, b.summary); put(`${p}.caption`, b.caption); break;
       case "details": put(`${p}.summary`, b.summary); break;
       case "tabs": (b.tabs ?? []).forEach((x, i) => put(`${p}.tab.${i}`, x?.label)); break;
-      // a chart's legend: its series' names, and a pie's slices (a bar or line chart's axis labels stay in the chart)
+      // a chart's legend (its series' names) and its labels (a pie's slices, a bar or line chart's axis)
       case "chart":
         (b.series ?? []).forEach((x, i) => put(`${p}.series.${i}`, x?.name));
-        if (b.kind === "pie") (b.labels ?? []).forEach((x, i) => put(`${p}.label.${i}`, typeof x === "string" ? x : null));
+        (b.labels ?? []).forEach((x, i) => put(`${p}.label.${i}`, typeof x === "string" ? x : null));
         break;
       case "choice": put(`${p}.question`, b.question); break;
     }
@@ -390,7 +398,7 @@ export function recipeUnits(recipe) {
 }
 
 /** The direction for a whole recipe: from all its texts together. */
-export const recipeDirection = (recipe) => direction(recipeUnits(recipe).map((u) => u.text).join("\n"));
+export const recipeDirection = (recipe) => direction(recipeUnits(recipe).map((u) => u.text).join("\n\n"));
 
 // ---- settings ---------------------------------------------------------------------------------------------------
 

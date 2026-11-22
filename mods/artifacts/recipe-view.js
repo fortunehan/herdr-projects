@@ -141,6 +141,7 @@ export default class RecipeView extends View {
       for (const [k, v] of Object.entries(tr.units ?? {})) if (k.startsWith(at)) blocks[Number(k.slice(at.length))] = v;
       for (const k of tr.failed ?? []) if (k.startsWith(at)) failed.push(Number(k.slice(at.length)));
       return v_flex().w_full().min_w(0).gap(2).children(windowParts(text, blocks, failed).map((x, i) => x.type === "code" ? this.code(`${id}-tc${i}`, x.code, t)
+        : x.type === "table" ? this.trTable(`${id}-tt${i}`, x, t)
         : x.type === "tr" ? this.trLine(`${id}-t${i}`, x.text, t) : x.type === "fail" ? this.trLine(`${id}-t${i}`, null, t) : words(`md-${id}-tm${i}`, x.text)));
     }
     const parts = mdParts(text);
@@ -153,6 +154,23 @@ export default class RecipeView extends View {
     const el = div().id(`tr-${key}`).w_full().min_w(0).mt(2).pl(8).border_l(2).border_color(t.border).text_size(13);
     if (text === null) return el.cursor_pointer().text_color(t.blocked).on_click((_e, cx) => { retryTranslation(); cx.notify(); }).child(`${TW.blockFailed} \u00b7 ${TW.retry}`);
     return el.text_color(t.muted).child(TextView.markdown(`trmd-${key}`, text || " ").selectable(true));
+  }
+
+  // A markdown table translated (core/translate.js windowParts): its cells as they were, each one's translation under
+  // its words inside the cell.
+  trTable(key, g, t) {
+    return v_flex().w_full().rounded(8).border_1().border_color(t.border).overflow_hidden()
+      .children(g.rows.map((r, ri) => h_flex().w_full().px(10).py(6).gap(10).items_start().when(ri > 0, (e) => e.border_t_1().border_color(t.border)).when(ri === 0, (e) => e.bg(t.surface))
+        .children(r.map((c, ci) => v_flex().flex_1().min_w(0).text_size(ri === 0 ? 12 : 13).when(ri === 0, (e) => e.font_medium().text_color(t.muted))
+          .child(TextView.markdown(`trc-${key}-${ri}-${ci}`, c.text || " ").selectable(true))
+          .when(Boolean(c.tr), (e) => e.child(this.trLine(`${key}-${ri}-${ci}`, c.tr, t)))
+          .when(!c.tr && c.fail, (e) => e.child(this.trLine(`${key}-${ri}-${ci}`, null, t)))))));
+  }
+
+  // A chart's or tabs' labels that couldn't be translated: one line with Retry under them, or el as it is.
+  withFail(el, b, t) {
+    const s = translation(), at = ["tab.", "label.", "series."].map((f) => `${this.paths.get(b)}.${f}`);
+    return s && (s.failed ?? []).some((k) => at.some((a) => k.startsWith(a))) ? v_flex().w_full().min_w(0).child(el).child(this.trLine(`${b.id}-fail`, null, t)) : el;
   }
 
   // A block's text's translation (field: its place in the block, as recipeUnits names it), or null.
@@ -279,7 +297,11 @@ export default class RecipeView extends View {
         .children(Array.from({ length: groups }, (_, gi) => h_flex().flex_1().h_full().items_end().justify_center().gap(2)
           .children(series.map((x, si) => div().flex_1().max_w(28).h(`${Math.max(1, (Math.max(0, x.values[gi] ?? 0) / s.max) * 100)}%`)
             .rounded_t(2).bg(colors[si % colors.length]))))))
-      .child(h_flex().w_full().children((b.labels ?? []).map((l) => div().flex_1().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))))
+      .child(h_flex().w_full().children((b.labels ?? []).map((l, i) => v_flex().flex_1().min_w(0).items_center()
+        .child(div().w_full().text_size(11).text_color(t.muted).text_center().truncate().child(String(l)))
+        // its translation under it (SHEP-102)
+        .when(Boolean(translation()?.units?.[`${this.paths.get(b)}.label.${i}`]), (e) => e.child(div().w_full().text_size(11).text_color(t.foreground).text_center().truncate()
+          .child(String(translation()?.units?.[`${this.paths.get(b)}.label.${i}`] ?? "")))))))
       .when(series.length > 1, (e) => e.child(h_flex().flex_wrap().gap(10).children(series.map((x, si) => h_flex().gap(6).items_center()
         .child(div().size(10).rounded(5).bg(colors[si % colors.length])).child(div().text_size(12).child(tw(`series.${si}`, String(x.name ?? ""))))))));
   }
@@ -308,7 +330,7 @@ export default class RecipeView extends View {
         .children(b.rows.map((r, ri) => h_flex().w_full().px(10).py(6).border_t_1().border_color(t.border)
           .children(r.map((c, i) => div().flex_1().min_w(0).text_size(13).whitespace_normal().when(b.columns[i]?.align === "right", (e) => e.text_right()).child(String(c ?? ""))
             .when(Boolean(this.tr(b, `cell.${ri}.${i}`, t)), (e) => e.child(this.tr(b, `cell.${ri}.${i}`, t)))))));
-      case "chart": return this.chart(b, t);
+      case "chart": return this.withFail(this.chart(b, t), b, t);
       case "stats": return h_flex().flex_wrap().gap(8).children(b.items.map((x, i) => v_flex().min_w(120).flex_1().p(10).gap(2).rounded(8).bg(t.surface)
         .child(this.withTr(div().text_size(12).text_color(t.muted).child(String(x.label)), b, `label.${i}`, t))
         .child(div().text_size(17).font_semibold().child(String(x.value)))
@@ -332,12 +354,12 @@ export default class RecipeView extends View {
       case "columns": return h_flex().flex_wrap().gap(16).items_start().children(b.columns.map((c) => v_flex().flex_1().min_w(240).gap(14).children(c.map((x) => this.block(x, t, cx)))));
       case "tabs": {
         const on = this.tab.get(b.id) ?? 0;
-        return v_flex().gap(12)
+        return this.withFail(v_flex().gap(12)
           .child(h_flex().gap(4).flex_wrap().children(b.tabs.map((x, i) => div().id(`tab-${b.id}-${i}`).h(26).px(10).flex().items_center().rounded(6).cursor_pointer()
             .bg(i === on ? t.surface : t.background).border_1().border_color(i === on ? t.border : t.background)
             .on_click((_e, cx) => { this.tab.set(b.id, i); cx.notify(); })
             .child(div().text_size(13).text_color(i === on ? t.foreground : t.muted).child((() => { const w = translation()?.units?.[`${this.paths.get(b)}.tab.${i}`]; return w ? `${x.label} \u00b7 ${w}` : x.label; })())))))
-          .child(v_flex().gap(14).children((b.tabs[on]?.blocks ?? []).map((x) => this.block(x, t, cx))));
+          .child(v_flex().gap(14).children((b.tabs[on]?.blocks ?? []).map((x) => this.block(x, t, cx)))), b, t);
       }
       case "details": {
         const open = this.open.has(b.id);

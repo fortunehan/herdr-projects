@@ -107,6 +107,18 @@ describe("a message", () => {
     for (let n = 4; n <= "sk-stub-secret".length; n++) expect(b.error).not.toContain("sk-stub-secret".slice(0, n));
   });
 
+  test("turned off or pointed elsewhere while it translates: nothing more is sent, to the old endpoint or the new", async () => {
+    reset();
+    mode = "short";
+    let cfg = { on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 };
+    // the whole request comes back with the wrong count, and meanwhile the person turns it off and changes the URL
+    const t2 = new Translator({ config: () => cfg, key: async () => ({ key: "sk-stub-secret" }), recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"),
+      fetchFn: (async (u: any, i: any) => { const res = await fetch(u, i); cfg = { ...cfg, on: false, base_url: "http://old.invalid/v1" }; return res; }) as typeof fetch });
+    const r2: any = await t2.message("One paragraph here.\n\nAnother paragraph here.");
+    expect(r2).toMatchObject({ ok: false, error: expect.stringContaining("changed while it translated") });
+    expect(seen.length).toBe(1);
+  });
+
   test("an answer that is never the translation fails, and nothing is kept", async () => {
     reset();
     mode = "garbage";

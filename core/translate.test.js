@@ -59,6 +59,15 @@ describe("mdBlocks", () => {
     expect(b.every((x) => !x.skip)).toBe(true);
   });
 
+  test("a list item's indented code isn't sent; a third-level item is an item; a link's reference is no block", () => {
+    const md = "- Run this:\n\n      echo KeepThisPrivate\n\n- alpha\n  - beta\n    - gamma\n\nRead [the guide][help].\n\n[help]: https://example.invalid/guide";
+    const b = T.mdBlocks(md);
+    expect(T.messageTexts(md).texts).toEqual(["Run this:", "alpha", "beta", "gamma", "Read [the guide][help]."]);
+    expect(b.map((x) => x.kind)).toEqual(["item", "item", "item", "item", "para", "def"]);
+    // the window draws each part on its own: the reference goes with each, so the link still links
+    expect(T.windowParts(md).find((x) => x.type === "md" && x.text.startsWith("Read")).text).toContain("[help]: https://example.invalid/guide");
+  });
+
   test("a heading or a list in a quote, and an indented code block", () => {
     const b = T.mdBlocks("> ## Quoted heading\n> words under it\n\nText.\n\n    const sample = \"hello world\";\n    more();\n\nAfter.");
     expect(b.map((x) => [x.kind, x.text])).toEqual([["heading", "Quoted heading"], ["quote", "words under it"], ["para", "Text."], ["code", ""], ["para", "After."]]);
@@ -90,7 +99,8 @@ describe("mdBlocks", () => {
     };
     const samples = [MSG, "## 结果\n\n修好了。\n\n* 一\n* 二\n\n|列|值|\n|-|-|\n|a|b|", "Title\n=====\n\n- [x] done\n- loose\n\n  more\n- last",
       "Text\n- list right after\n- two\n\nEnd.", "> one\n>\n> two\n\nafter", "1. a\n   1. b\n2. c",
-      "> ## Quoted heading\n> words\n\n    indented code\n\nEnd.", "> - quoted item\n> - another"];
+      "> ## Quoted heading\n> words\n\n    indented code\n\nEnd.", "> - quoted item\n> - another",
+      "- Run this:\n\n      echo KeepThisPrivate\n\n- alpha\n  - beta\n    - gamma\n\nRead [the guide][help].\n\n[help]: https://example.invalid/guide"];
     for (const md of samples) expect(T.mdBlocks(md).map(T.domKind).filter(Boolean)).toEqual(domKinds(md));
   });
 });
@@ -101,7 +111,8 @@ describe("direction", () => {
   test("Chinese with English terms and code still goes to English", () =>
     expect(T.direction("我修好了 SHEP-96 的 merge 步骤，运行 `bun test service core web --timeout 60000` 都通过了")).toBe("en"));
   test("English with a little Chinese goes to Chinese", () => expect(T.direction("The button now says 翻译 when the person writes in English all day long.")).toBe("zh"));
-  test("code and links don't count", () => expect(T.direction("我改了这个: ```\nconst a = 'very long english code here and more words'\n``` 见 [link text in English](https://x.y)")).toBe("en"));
+  test("code and links don't count", () => expect(T.direction("我改了这个：\n\n```\nconst a = 'very long english code here and more words'\n```\n\n见 [link text in English](https://x.y)")).toBe("en"));
+  test("an indented code block doesn't count either", () => expect(T.direction("Build ready.\n\n    // 这是一段很长的中文注释，写在代码里面\n    构建();")).toBe("zh"));
 });
 
 describe("the request and its answer", () => {
@@ -165,6 +176,16 @@ describe("translateTexts", () => {
     const ask = async (texts) => { calls.push(texts); return calls.length === 1 ? "[]" : JSON.stringify([`[zh]${texts[0]}`]); };
     expect(await T.translateTexts(["only"], "zh", ask)).toEqual(["[zh]only"]);
     expect(calls.length).toBe(2);
+  });
+  test("an endpoint's error (busy, out of quota) is never asked again block by block", async () => {
+    const calls = [];
+    const ask = async (texts) => { calls.push(texts.length); throw new Error("the endpoint is busy or out of quota (429)"); };
+    await expect(T.translateTexts(["a", "b", "c"], "zh", ask)).rejects.toThrow("429");
+    expect(calls).toEqual([3]);
+  });
+  test("an endpoint's own words never show", () => {
+    expect(T.apiError(500, '{"error":{"message":"bad key sk-123"}}')).toBe("the endpoint answered 500");
+    expect(T.apiError(429)).not.toContain(":  ");
   });
   test("a refused key fails at once, not block by block", async () => {
     let n = 0;

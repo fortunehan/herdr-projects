@@ -19,6 +19,7 @@ export type ArtifactResult = { ok: true; target: string; units: Record<string, s
 const MOST = 60_000;
 /** How long a found key is kept in memory (a key changed in Settings › Secrets is used after at most this long). */
 const KEY_KEEP = 10 * 60_000;
+const CHANGED = "Settings › Translation changed while it translated: try again";
 
 export type TranslatorIO = {
   /** Settings › Translation as the settings file has it now (core/translate.js configOf). */
@@ -52,8 +53,11 @@ export class Translator {
     return mine.key;
   }
 
-  /** One request to the endpoint: the model's answer text. */
-  private async ask(cfg: Config, texts: string[], target: string): Promise<string> {
+  /** One request to the endpoint: the model's answer text. Settings › Translation as it is now first: turned off or
+   *  pointed elsewhere since this translation started, nothing more is sent (not to the old endpoint, nor the new). */
+  private async ask(cfg: Config, texts: string[], target: string, testing = false): Promise<string> {
+    const now = this.io.config();
+    if ((!testing && !now.on) || now.base_url !== cfg.base_url || now.model !== cfg.model || now.key !== cfg.key) throw new Error(CHANGED);
     const url = T.endpointOf(cfg.base_url);
     if (!url) throw new Error(T.WORDS.notSet);
     const k = await this.keyOf(cfg.key);
@@ -162,7 +166,7 @@ export class Translator {
     this.keys.delete(cfg.key);
     const t0 = this.now();
     try {
-      const got = T.parseTranslations(await this.ask(cfg, ["Hello"], "zh"), 1);
+      const got = T.parseTranslations(await this.ask(cfg, ["Hello"], "zh", true), 1);
       if (!got) return done(false, "The endpoint answered, but not with the translation asked for: try another model.");
       return done(true, T.SETTINGS.tested(cfg.model, this.now() - t0));
     } catch (e) { return done(false, T.WORDS.failed((e as Error).message)); }

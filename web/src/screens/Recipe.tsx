@@ -37,6 +37,8 @@ const TONE: Record<string, string> = { info: 'bg-well shadow-soft', good: 'bg-re
 function Chart({ b, T }: { b: Block; T?: (field: string) => string | undefined }) {
   const s = chartShapes(b)
   const W = 320, H = 160
+  // an axis label's translation goes under it (SHEP-102): room for a second line
+  const tall = (b.labels ?? []).some((_: string, i: number) => !!T?.(`label.${i}`))
   if (b.kind === 'pie') {
     const arc = (a0: number, a1: number) => {
       const r = 70, cx = 80, cy = 80, p = (a: number) => [cx + r * Math.sin(a), cy - r * Math.cos(a)]
@@ -58,13 +60,16 @@ function Chart({ b, T }: { b: Block; T?: (field: string) => string | undefined }
   }
   return (
     <figure className="flex flex-col gap-2">
-      <svg viewBox={`0 0 ${W} ${H + 18}`} className="w-full max-w-[560px]" role="img" aria-label={b.title ?? `${b.kind} chart`}>
+      <svg viewBox={`0 0 ${W} ${H + (tall ? 32 : 18)}`} className="w-full max-w-[560px]" role="img" aria-label={b.title ?? `${b.kind} chart`}>
         <line x1="0" x2={W} y1={H} y2={H} stroke="var(--line2)" />
         {b.kind === 'line'
           ? s.lines.map((l: any, i: number) => <polyline key={i} fill="none" stroke={PALETTE[i % PALETTE.length]} strokeWidth="2" points={l.points.map((p: any) => `${p.x * (W - 8) + 4},${H - p.y * (H - 8)}`).join(' ')} />)
           : s.bars.map((x: any, i: number) => <rect key={i} x={x.x * W} y={H - x.h * (H - 4)} width={x.w * W} height={x.h * (H - 4)} rx="2" fill={PALETTE[x.series % PALETTE.length]} />)}
         {(b.labels ?? []).map((l: string, i: number, all: string[]) => (
-          <text key={i} x={((i + 0.5) / all.length) * W} y={H + 14} textAnchor="middle" fontSize="10" fill="var(--fg3)">{l}</text>
+          <g key={i}>
+            <text x={((i + 0.5) / all.length) * W} y={H + 14} textAnchor="middle" fontSize="10" fill="var(--fg3)">{l}</text>
+            {T?.(`label.${i}`) ? <text data-tr x={((i + 0.5) / all.length) * W} y={H + 28} textAnchor="middle" fontSize="10" fill="var(--fg2)">{T(`label.${i}`)}</text> : null}
+          </g>
         ))}
       </svg>
       {(b.series ?? []).length > 1 ? (
@@ -310,6 +315,8 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
     if (t) return <TrLine text={t} />
     return failed.has(key) ? <TrLine text={(TRc as any).WORDS.blockFailed} fail retry={tr.retry} /> : null
   }
+  /** a chart's or tabs' labels that couldn't be translated: one line with Retry under it */
+  const failedIn = (b: Block) => (tr?.failed?.some((k) => ['tab.', 'label.', 'series.'].some((f) => k.startsWith(`${paths.get(b)}.${f}`))) ? <TrLine text={(TRc as any).WORDS.blockFailed} fail retry={tr.retry} /> : null)
   /** a short label's translation (a tab's, a chart legend's), as words beside it */
   const words = (b: Block) => (field: string) => (tr ? tr.units?.[`${paths.get(b)}.${field}`] : undefined)
   /** a markdown block's paragraphs, each with its translation under it (as a chat message's) */
@@ -345,7 +352,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
           </table>
         </div>
       )
-      case 'chart': return <Chart b={b} T={words(b)} />
+      case 'chart': return <><Chart b={b} T={words(b)} />{failedIn(b)}</>
       case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
       case 'image': return <figure className="flex flex-col gap-1.5"><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className="text-fg2">{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
       case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
@@ -356,7 +363,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr }: Props
       case 'check': return <><Check b={b} />{T(b, 'summary')}{T(b, 'caption')}</>
       case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{T(b, 'title')}{b.md ? md(b, 'md', b.md) : null}</div>
       case 'columns': return <div className="grid gap-4 @2xl:grid-flow-col @2xl:auto-cols-fr">{b.columns.map((c: Block[], i: number) => <div key={i} className="flex min-w-0 flex-col gap-4">{c.map(wrap)}</div>)}</div>
-      case 'tabs': return <Tabs b={b} T={words(b)} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} />
+      case 'tabs': return <>{failedIn(b)}<Tabs b={b} T={words(b)} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} /></>
       case 'details': return <details className="group rounded-box shadow-box"><summary className="cursor-pointer px-3.5 py-2.5 font-medium">{b.summary}{T(b, 'summary')}</summary><div className="flex flex-col gap-4 px-3.5 pb-3.5">{b.blocks.map(wrap)}</div></details>
       case 'divider': return <hr className="border-line" />
       case 'choice': return <>{T(b, 'question')}<Choice b={b} reply={reply} answer={answerOf(answers, b.id)} /></>
