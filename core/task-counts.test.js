@@ -78,17 +78,36 @@ describe("space and bottom bar status totals (SHEP-79)", () => {
       running: [work, work, { ...work, machine: "vm" }, { ...work, ref: "T-4", space: "gone" },
         { ...work, ref: "ready", status: "ready" }, { ...work, ref: "archived", archived: true }],
     });
+    // T-4's space "gone" closed: it counts in /demo's first space (SHEP-112)
     expect([...result.bySpace]).toEqual([
-      ["sp1", { need: 1, ready: 0, working: 1 }],
+      ["sp1", { need: 1, ready: 0, working: 2 }],
       ["vm/sp1", { need: 0, ready: 1, working: 1 }],
       ["sp2", { need: 0, ready: 0, working: 0 }],
     ]);
-    expect(result.total).toEqual({ need: 1, ready: 1, working: 2 });
-    expect(result.elsewhere).toEqual({ need: 2, ready: 1, working: 1, count: 4, reasons: [
+    expect(result.total).toEqual({ need: 1, ready: 1, working: 3 });
+    expect(result.elsewhere).toEqual({ need: 2, ready: 1, working: 0, count: 3, reasons: [
       { reason: "No tab in a space", count: 1 }, { reason: "Tab is no longer in a space", count: 1 },
-      { reason: "Space is unavailable", count: 2 },
+      { reason: "Space is unavailable", count: 1 },
     ] });
     expect(spaceTaskCounts().total).toEqual({ need: 0, ready: 0, working: 0 });
+  });
+
+  test("SHEP-112: a task whose space closed counts in its folder's live space, and never moves while its space is there", () => {
+    const nitro = { id: "spd46", folder: "/code/nitro", tabs: [{ id: "tb-new" }] };
+    const other = { id: "spOther", folder: "/code/other", tabs: [{ id: "tb-other" }] };
+    const remote = { id: "vm/sp9", machine: "vm", folder: "/code/nitro", tabs: [] };
+    const orphan = { folder: "/code/nitro", ref: "SNUW-9", space: "speb7", status: "working" };
+    const result = spaceTaskCounts({ spaces: [nitro, other, remote],
+      ready: [{ folder: "/code/nitro", ref: "SNUW-10", space: "speb7", tab: null }],
+      needs: [{ key: "SNUW-11", folder: "/code/nitro", space: "speb7" }],
+      running: [orphan, { ...orphan, ref: "SNUW-14", space: "spd46" }, { ...orphan, ref: "X-1", space: "spOther" },
+        { ...orphan, ref: "VM-1", machine: "vm", space: "vm/spGone" }, { ...orphan, ref: "OFF-1", space: "off/sp1", machine: "off" }],
+    });
+    expect(result.bySpace.get("spd46")).toEqual({ need: 1, ready: 1, working: 2 });
+    expect(result.bySpace.get("spOther")).toEqual({ need: 0, ready: 0, working: 1 });
+    expect(result.bySpace.get("vm/sp9")).toEqual({ need: 0, ready: 0, working: 1 });
+    // a machine not listed now (offline) may still have its space: not counted anywhere else
+    expect(result.elsewhere.working).toBe(1);
   });
 
   test("inbox refresh moves the same task from Working to Ready to Needs you to zero", async () => {

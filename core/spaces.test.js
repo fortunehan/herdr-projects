@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { spacesFromDoc, spaceName, tilde, sharedNames, gitTail, inOrder, withOrder, keptOrder, machinesInOrder, byMachineOrder, withMachineOrder, machineOrderOf, assistantOf, isThinking, statusOf, taskInSpace, isWorkingTask, workingIn } from "./spaces.js";
+import { spacesFromDoc, spaceName, tilde, sharedNames, gitTail, inOrder, withOrder, keptOrder, machinesInOrder, byMachineOrder, withMachineOrder, machineOrderOf, assistantOf, isThinking, statusOf, taskInSpace, isWorkingTask, workingIn, homeSpace } from "./spaces.js";
 
 test("two spaces with one name on a machine each show their folder, from ~ (the sidebar's rows, both sides)", () => {
   // built, so the repo's no-home-paths rule has nothing to find
@@ -114,4 +114,20 @@ test("another machine's tab keeps one machine on its terminals, as written or no
   expect(s.tabs[0].terminals).toEqual(["box/t6", "box/t7"]);
   // this machine's own: as written
   expect(spacesFromDoc(doc, null)[0].tabs[0].terminals).toEqual(["box/t6", "t7"]);
+});
+
+test("SHEP-112: a task kept for a closed space counts in its folder's live space; one whose space is there stays", () => {
+  const live = { id: "spd46", machine: null, folder: "/code/nitro" };
+  const spaces = [{ id: "spX", machine: null, folder: "/code/other" }, live, { id: "spd47", machine: null, folder: "/code/nitro/" }];
+  expect(homeSpace({ space: "speb7", folder: "/code/nitro" }, spaces)).toBe("spd46");
+  expect(homeSpace({ space: "spX", folder: "/code/nitro" }, spaces)).toBe("spX");
+  expect(homeSpace({ space: "speb7", folder: "/code/gone" }, spaces)).toBe(null);
+  expect(homeSpace({ space: "vm/sp1", machine: "vm", folder: "/code/nitro" }, spaces)).toBe(null);
+  expect(homeSpace({ folder: "/code/nitro/" }, spaces)).toBe("spd46");
+  expect(taskInSpace({ space: "speb7", folder: "/code/nitro" }, live, spaces)).toBe(true);
+  expect(taskInSpace({ space: "speb7", folder: "/code/nitro" }, live)).toBe(false);
+  const tasks = [{ space: "speb7", folder: "/code/nitro", status: "working" }, { space: "spd46", folder: "/code/nitro", status: "working" },
+    { space: "spX", folder: "/code/nitro", status: "working" }];
+  expect(workingIn(live, tasks, spaces)).toBe(2);
+  expect(workingIn(spaces[2], tasks, spaces)).toBe(0);
 });
