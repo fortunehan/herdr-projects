@@ -71,6 +71,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Logic in `lib/*.js` can be bun-tested from `core/*.test.js` (CI runs `bun test service core web`, not `lib`). Never
   `mock.module('herdr')` there: Bun keeps it for the whole run and breaks later files importing herdr; load the lib
   file's source with stubs via `new Function` instead.
+- herdr-task code that launches agents is tested with SimpleNamespace stores lacking `.loc` (test_review_launch,
+  CleanEnv): don't read `s.loc` unconditionally in launch().
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 - A bare remote for herdr-task git tests: `init --bare` in the tempdir, `remote add origin`, push main; see
   `test_herdr_task.StackedTasks`.
