@@ -133,7 +133,7 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
       expect(body).toHaveLength(1);
       expect(codeOnly(body[0])).toEqual([huge]);
       expect(c.linkWaiting).toBeFalsy();
-      expect(c.linkSpent).toBe(0);
+      expect(c.preps?.size ?? 0).toBe(0); // never reworked: no mentions, links or breaks made for it
     }
   });
 
