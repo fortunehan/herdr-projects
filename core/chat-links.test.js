@@ -1,6 +1,6 @@
-// SHEP-99: paths and links in an agent's reply are clickable (core/chat-links.js).
+// SHEP-99/110: links and paths in an agent's reply (core/chat-links.js): URLs as links, paths for the Paths action.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -245,7 +245,6 @@ describe("what a click does", () => {
 
   test("failures in plain words", () => {
     expect(L.problem("browser", "macos", "/tmp/x.html", { code: 3 })).toEqual({ title: "Couldn't open it in the browser", body: "/tmp/x.html isn't there." });
-    expect(L.problem("reveal", "macos", "/x", { code: 5 }).body).toBe("Only paths in your home folder or /tmp open from here.");
     expect(L.problem("reveal", "linux", "/x", null).title).toBe("Couldn't show it in its folder");
     expect(L.problem("reveal", "macos", "/x", { code: 0 })).toBe(null);
   });
@@ -269,13 +268,13 @@ describe("the opener script", () => {
   fake("open", `printf 'open %s\\n' "$*" >> "${log}"`);
   fake("osascript", "echo '/Applications/Firefox.app'");
   // the script runs macOS's programs by absolute path (SHEP-104): here they are the stand-ins
-  const cmd = (action, p, guard) => {
-    const [prog, args] = L.command(action, "macos", p, guard);
+  const cmd = (action, p) => {
+    const [prog, args] = L.command(action, "macos", p);
     return [prog, args.map((a) => a.replaceAll("/usr/bin/open", join(bin, "open")).replaceAll("/usr/bin/osascript", join(bin, "osascript")))];
   };
-  const run = (action, p, guard = false) => {
+  const run = (action, p) => {
     writeFileSync(log, "");
-    const [prog, args] = cmd(action, p, guard);
+    const [prog, args] = cmd(action, p);
     const r = spawnSync(prog, args, { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home } });
     return { code: r.status, ran: readFileSync(log, "utf8").trim() };
   };
@@ -294,35 +293,9 @@ describe("the opener script", () => {
   test("a missing path runs nothing and exits 3", () => {
     expect(run("browser", `${home}/site/gone.html`)).toEqual({ code: 3, ran: "" });
   });
-  test("the service's guard: the home folder and /tmp only, after .. and links are resolved", () => {
-    expect(run("reveal", `${home}/site/main.ts`, true).code).toBe(0);
-    expect(run("reveal", "/etc/hosts", true)).toEqual({ code: 5, ran: "" });
-    expect(run("reveal", "/tmp/../etc", true)).toEqual({ code: 5, ran: "" });
-    expect(run("reveal", "/tmp/..", true)).toEqual({ code: 5, ran: "" });
-    expect(run("reveal", "/tmp", true).code).toBe(0);
-  });
-  test("the guard refuses everything outside /tmp when the home folder can't be found", () => {
-    writeFileSync(log, "");
-    const [prog, args] = cmd("reveal", "/etc/hosts", true);
-    expect(spawnSync(prog, args, { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: join(root, "no-such-home") } }).status).toBe(5);
-  });
-  test("a link that looks like a page but leads to a source file is shown in Finder", () => {
-    writeFileSync(join(home, "site", "notes.md"), "");
-    symlinkSync(join(home, "site", "notes.md"), join(home, "preview.html"));
-    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
-    expect(run("browser", `${home}/preview.html`, true)).toEqual({ code: 0, ran: `open -R ${real}/notes.md` });
-  });
-  test("a link without an extension that leads to a page opens in the browser", () => {
-    symlinkSync(join(home, "site", "index.html"), join(home, "preview"));
-    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
-    expect(run("reveal", `${home}/preview`, true)).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${real}/index.html` });
-  });
-  test("the guard follows a link to where it leads, and opens that", () => {
-    symlinkSync("/etc/hosts", join(home, "site", "hosts.txt"));
-    expect(run("browser", `${home}/site/hosts.txt`, true)).toEqual({ code: 5, ran: "" });
-    symlinkSync(join(home, "site", "index.html"), join(home, "link.html"));
-    const real = spawnSync("/bin/sh", ["-c", 'cd "$1" && pwd -P', "x", join(home, "site")]).stdout.toString().trim();
-    expect(run("browser", `${home}/link.html`, true)).toEqual({ code: 0, ran: `open -a /Applications/Firefox.app ${real}/index.html` });
+  test("no guard is left: the window opens this machine's paths wherever they are (SHEP-110)", () => {
+    expect(L.OPEN).not.toContain("guard");
+    expect(L.command("reveal", "macos", "/etc/hosts")[1].slice(2)).toEqual(["open-path", "reveal", "/etc/hosts"]);
   });
 });
 
@@ -362,5 +335,27 @@ describe("linking stays cheap where regexps aren't cached (SHEP-108)", () => {
   test("the shared patterns are reused safely: the same reply links the same way twice", () => {
     expect(md(REPORT)).toBe(md(REPORT));
     expect(L.find("a /tmp/x/y b /tmp/z/w").map((x) => x.path)).toEqual(["/tmp/x/y", "/tmp/z/w"]);
+  });
+});
+
+// SHEP-110: the window chat's Paths action lists the paths a reply names: what linkify() would link, never code blocks.
+describe("the paths in a reply (Paths action)", () => {
+  test("plain text, inline code, ~/ and file:// paths and links the agent wrote, absolute, once each, in order", () => {
+    const reply = "Proof at `/tmp/shep99/index.html`, code in ~/dev/shop/src/app.ts:12, again /tmp/shep99/index.html, "
+      + "[the report](file:///tmp/My%20Report/r.pdf) and https://x.y/z/a/b";
+    expect(L.pathsIn(reply, HOME)).toEqual(["/tmp/shep99/index.html", "/h/me/dev/shop/src/app.ts", "/tmp/My Report/r.pdf"]);
+  });
+  test("never in a fenced or indented code block", () => {
+    expect(L.pathsIn("Run:\n\n```sh\nopen /tmp/a/b.html\n```\n\n    cat /tmp/c/d.txt\n", HOME)).toEqual([]);
+  });
+  test("the person's example, in a Chinese sentence", () => {
+    expect(L.pathsIn("三个方案的 HTML 预览做好了，在 `/tmp/sds18-mock/index.html`，可以直接在浏览器打开。", HOME)).toEqual(["/tmp/sds18-mock/index.html"]);
+  });
+  test("without a home (another machine's agent) ~/ paths are left out", () => {
+    expect(L.pathsIn("~/a/b.ts and /tmp/a/b", null)).toEqual(["/tmp/a/b"]);
+  });
+  test("the cheap first look passes every reply with a path, and none with only URLs or slashes in words", () => {
+    for (const t of ["see /tmp/a/b", "`~/x`", "file:///tmp/a", "(/Users/me/x)", "/tmp/a/"]) expect(L.mayHavePath(t)).toBe(true);
+    for (const t of ["https://x.y/a/b/c", "and/or/not", "/model", "1/2/3", "no paths"]) expect(L.mayHavePath(t)).toBe(false);
   });
 });
