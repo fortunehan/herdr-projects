@@ -251,6 +251,16 @@
     /* a tap shows itself the app's way, not as Safari's grey flash */
     -webkit-tap-highlight-color: transparent;
   }
+  /* an artifact filling the page, lifted onto the top layer as a popover (fullscreen.ts liftToTop): the popover's own
+     box (fit-content, centred, scrolling, system colours) undone; its classes place it over the whole page */
+  [data-full-page]:popover-open {
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    overflow: hidden;
+    color: inherit;
+  }
   /* the device's own picker (a menu setting with many choices) in the app's colours: Chrome on Linux draws its list
      white whatever the theme, so its rows' light text would all but vanish */
   option {
