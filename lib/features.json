@@ -750,7 +750,7 @@
         ]
       },
       "forms": {
-        "herdr": "URLs and this machine's paths in an agent's reply are links: pages and pictures open in the default browser, the rest in Finder",
+        "herdr": "URLs and this machine's paths in an agent's reply are links: a URL opens in the default browser, a path with the system's opener",
         "desktop": "Same, opened on the agent's machine; hover says what a click does",
         "tablet": "Same as desktop",
         "phone": "URLs only"
