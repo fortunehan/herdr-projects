@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Translator } from "./translate.ts";
+import { Translator, hasMedia } from "./translate.ts";
 
 // a stub translation endpoint on 127.0.0.1, never a real API: [zh]/[en] in front of each string; `mode` breaks it
 let mode: "ok" | "short" | "401" | "500key" | "garbage" | "keyecho" | "keyprose" = "ok";
@@ -155,11 +155,11 @@ describe("a message", () => {
   });
 
   // a chat's conversation as the service reads it: a1 complete, a2 the newest reply its agent still writes
-  const convo: Record<string, { text: string; raw: string; writing: boolean }> = {
+  const convo: Record<string, { text: string; raw: string; writing: boolean; media?: boolean }> = {
     a1: { text: "A whole reply here.", raw: "A whole reply here.", writing: false },
     a2: { text: "Unfinished reply.", raw: "Unfinished reply.", writing: true },
-    a3: { text: "- Intro. echo KeepThisPrivate\n\nReady now.", raw: "- Intro.\n  # Before: ![proof](/tmp/proof.png)\n      echo KeepThisPrivate\n\nReady now.", writing: false },
-    a4: { text: "- Intro. pwd\n\nReady now.", raw: "- Intro.\n  # ![proof](/tmp/proof.png)\n      pwd\n\nReady now.", writing: false },
+    a3: { text: "- Intro. echo KeepThisPrivate\n\nReady now.", raw: "- Intro.\n  # Before: ![proof](/tmp/proof.png)\n      echo KeepThisPrivate\n\nReady now.", writing: false, media: true },
+    a4: { text: "- Intro. pwd\n\nReady now.", raw: "- Intro.\n  # ![proof](/tmp/proof.png)\n      pwd\n\nReady now.", writing: false, media: true },
   };
   const chatT = () => new Translator({ config: () => ({ on: true, base_url: base, model: "stub-model", key: "TR_KEY", agreed: 1 }), key: async () => ({ key: "sk-stub-secret-0123456789" }),
     recipe: async () => null, dir: join(mkdtempSync(join(tmpdir(), "shep-tr-")), "t"), messageOf: async (w, id) => (w.chat === "sp1" ? convo[id] ?? null : null) });
@@ -176,6 +176,15 @@ describe("a message", () => {
     expect(await t.handle({ text: "Half a reply" })).toMatchObject({ ok: false });
     expect(await t.handle({ text: "x", chat: "other", id: "a1" })).toMatchObject({ ok: false });
     expect(seen.length).toBe(1);
+  });
+
+  test("pictures as marked parses them: reference images count, examples in code don't", () => {
+    expect(hasMedia("See ![shot][img].\n\n[img]: https://example.test/shot.png")).toBe(true);
+    expect(hasMedia("Look ![a](/tmp/a.png) here")).toBe(true);
+    expect(hasMedia("<video src=\"x.mp4\"></video>")).toBe(true);
+    expect(hasMedia("Example:\n\n    ![shot](https://example.test/shot.png)\n\nDone.")).toBe(false);
+    expect(hasMedia("Inline `![x](y.png)` and\n\n```\n![x](y.png)\n```")).toBe(false);
+    expect(hasMedia("| a | b |\n|---|---|\n| ![p](q.png) | x |")).toBe(true);
   });
 
   test("a key too short to watch for in answers isn't used", async () => {
@@ -206,9 +215,11 @@ describe("a message", () => {
     const t: any = make().t;
     const used = new Set(["sk-stub-secret-0123456789"]);
     expect(t.scrub(["see &#115;k-stub-secret-0123456789 now", "and &#x73;k\\-stub-secret-0123456789", "named &sfr;k-stub-secret-0123456789", "split sk-**stub**-secret-0123456789", "linked sk-[stub](https://example.com)-secret-0123456789", "plain words", "bad &#1114112; entity"], used))
-      .toEqual([null, null, null, null, null, "plain words", "bad &#1114112; entity"]);
-    // a named reference without its semicolon too
-    expect(t.scrub(["legacy &AElig bar"], used)).toEqual([null]);
+      .toEqual([null, null, null, null, null, "plain words", null]);
+    // a named reference without its semicolon, and numeric ones, too; a plain ampersand isn't one
+    // (a name with no semicolon marked escapes: the page shows "&AElig" as typed)
+    expect(t.scrub(["named &copy; here", "Use &#169; here", "Use &#xA9; here", "Research at AT&T", "See R&D", "legacy &AElig bar"], used))
+      .toEqual([null, null, null, "Research at AT&T", "See R&D", "legacy &AElig bar"]);
     // an ordinary sentence is kept whole
     expect(t.scrub(["Update state.", "Restart the service &amp; check"], used)).toEqual(["Update state.", "Restart the service &amp; check"]);
     // the key itself, written plainly: taken out, the rest kept

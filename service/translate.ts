@@ -20,6 +20,16 @@ export const decoded = (s: string) => s
   .replace(/&#x([0-9a-f]+);?/gi, (_, n) => point(parseInt(n, 16)))
   .replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
   .replace(/\\([!-\/:-@[-`{-~])/g, "$1");
+/** Whether marked's parse of the words holds a picture or clip: an image (a reference one too) or an HTML image or
+ *  video, outside code (code blocks and code spans are code, examples included). */
+export function hasMedia(raw: string) {
+  const html = /<(?:img|video|audio|picture|source|iframe)\b/i;
+  const walk = (ts: any[]): boolean => (ts ?? []).some((t) => t && t.type !== "code" && t.type !== "codespan" &&
+    (t.type === "image" || (t.type === "html" && html.test(String(t.raw ?? t.text ?? ""))) || walk(t.tokens) || (t.items ?? []).some((it: any) => walk(it.tokens))
+      || (t.header ?? []).some((c: any) => walk(c.tokens)) || (t.rows ?? []).some((r: any[]) => r.some((c) => walk(c.tokens)))));
+  return walk(marked.lexer(String(raw ?? "")) as any);
+}
+
 /** A message's blocks as the page draws them: marked's own parse (core/translate.js blocksFromTokens). */
 const split = (md: string) => T.blocksFromTokens(marked.lexer(md));
 const defsOf = (md: string) => T.linkDefs(marked.lexer(md));
@@ -82,7 +92,7 @@ export class Translator {
     const k = await this.keyOf(cfg.key);
     if ("error" in k) throw new Error(k.error);
     // a key short enough to turn up in ordinary words can't be watched for in answers: it isn't used
-    if (k.key.replace(/[^\p{L}\p{N}]+/gu, "").length < KEY_MIN) throw new Error(T.WORDS.shortKey);
+    if ([...k.key.replace(/[^\p{L}\p{N}]+/gu, "")].length < KEY_MIN) throw new Error(T.WORDS.shortKey);
     used?.add(k.key);
     // right before it goes (after the key's lookup, which can take a while)
     const now = this.io.config();
@@ -138,9 +148,12 @@ export class Translator {
       if (!t) return t;
       let x = t;
       for (const k of used) if (k) x = x.split(k).join("…");
-      // an HTML entity this check can't read could spell anything: such a translation goes too
-      // (with or without its semicolon: a page reads some named ones either way)
-      if (/&(?!(?:amp|lt|gt|quot|apos|nbsp);)[a-z][a-z0-9]*/i.test(x)) return null;
+      // a character reference other than the few marked writes itself could spell anything: such a translation goes
+      // too. Numeric ones as written (marked decodes them); named ones as marked passes them on (a plain "&", as in
+      // R&D, or a name with no semicolon, it escapes as &amp;: the page shows them as typed)
+      if (/&#(?:\d+|x[0-9a-f]+);?/i.test(x)) return null;
+      const refs = String(marked.parseInline(x, { async: false })).match(/&[a-z][a-z0-9]*;/gi) ?? [];
+      if (refs.some((r) => !/^&(?:amp|lt|gt|quot|apos|nbsp);$/i.test(r))) return null;
       const r = rendered(x), b = bare(x);
       return keys.some((k) => r.includes(k) || b.includes(k)) ? null : x;
     });
@@ -171,7 +184,7 @@ export class Translator {
     // the cache's name says its layout and the very words sent (an older layout's, or other inputs', is never read;
     // two at once share one only when both match)
     const sent = JSON.stringify(blocks.map((b: any) => (b.skip ? null : b.text)));
-    const f = this.file("message:marked3", `${text}\0${sent}`, target);
+    const f = this.file("message:marked4", `${text}\0${sent}`, target);
     return this.once(f, async () => {
       const { at, texts } = T.messageTexts(blocks);
       const kept = this.read(f);
@@ -204,7 +217,7 @@ export class Translator {
     const target = T.recipeDirection(recipe, split);
     // the version's own words: a version changed in place (same number) is translated again
     const sum = createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 16);
-    const f = this.file("artifact:marked3", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
+    const f = this.file("artifact:marked4", `${on ?? ""}\0${id}\0${v}\0${sum}`, target);
     return this.once(f, async () => {
       const kept = this.read(f);
       const out: Record<string, string> = kept?.units && typeof kept.units === "object" ? kept.units : {};
@@ -249,7 +262,8 @@ export class Translator {
       if (!m) return { ok: false, error: "That message isn't in its chat any more." } as MessageResult;
       if (m.writing) return { ok: false, error: T.WORDS.writing } as MessageResult;
       if (m.media) return { ok: false, error: T.WORDS.media } as MessageResult;
-      return this.message(m.text, m.raw);
+      // no picture or clip in it: its own words, as written (what its chat shows is the same)
+      return this.message(m.raw);
     });
   }
 }

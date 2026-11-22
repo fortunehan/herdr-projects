@@ -42,7 +42,7 @@ import { voiceCall, callToResume, callsOn, handOff, pageWhere, type ChatView } f
 import { hearing, type HearIO, type Hearing } from "./voice-hear.ts";
 import { voiceTool, type VoiceIO, type Where } from "./voice-tools.ts";
 import { Artifacts } from "./artifacts.ts";
-import { Translator, translationsDir } from "./translate.ts";
+import { Translator, translationsDir, hasMedia } from "./translate.ts";
 import * as TRc from "../core/translate.js";
 import * as CVm from "../core/chat-view.js";
 import { TaskLogs } from "./task-logs.ts";
@@ -338,10 +338,9 @@ const translator = new Translator({
       // the words its chat shows (pictures and clips out), as compat.ts makes them
       const md = (CVm as any).mediaIn(x.text, { cwd: t?.foreground?.cwd ?? t?.cwd ?? null, home: addr.includes("/") ? null : HOME });
       const shown = md.text || x.text;
-      // any picture or clip in it (one its chat takes out, an inline image, an HTML image or video): not translated
-      // (an example in code, fenced or inline, isn't one)
-      const prose = x.text.replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n {0,3}\1[^\n]*|$)/gm, " ").replace(/(`+)[\s\S]*?\1/g, " ");
-      const media = md.media.length > 0 || /!\[[^\]\n]*\]\(|<(?:img|video|audio|picture|source)\b/i.test(prose);
+      // any picture or clip in it, as marked parses it (an image, a reference one too, an HTML image or video; an
+      // example in code isn't one): not translated
+      const media = hasMedia(x.text);
       // its agent works and this is its newest reply, with nothing the person said after it: it may still be writing it
       const newest = items.findLastIndex((i) => i.kind === "agent" && typeof i.text === "string" && i.text.trim());
       const writing = t?.status?.state === "working" && at === newest && !items.slice(at + 1).some((i) => i.kind === "user" && !i.from);
