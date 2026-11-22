@@ -67,6 +67,19 @@ const LINK_MS = 12;
 /** Longer words than this are never reworked (mentions, links, breaks) but shown as written (SHEP-109: one 280 KB
  *  message took ~60 ms there, past the window's whole render limit). A 35 KB brief is still reworked. */
 const PREP_MAX = 40000;
+/** Text as one fenced code block, its fence longer than any run of backticks in it (shown as written, never parsed). */
+const asCode = (text) => {
+  const s = String(text);
+  let run = 0;
+  for (let i = s.indexOf("`"); i >= 0; i = s.indexOf("`", i + 1)) {
+    let n = 1;
+    while (s[i + n] === "`") n++;
+    if (n > run) run = n;
+    i += n - 1;
+  }
+  const fence = "`".repeat(Math.max(3, run + 1));
+  return `${fence}text\n${s}\n${fence}`;
+};
 import { PanelHost, inner, openTaskThread, backToTasks, requestWorkerTerminal, THREAD, STACK as TASKS_STACK, BODY as THREAD_BODY, CHAT as THREAD_CHAT, TERM as THREAD_TERM, PR as THREAD_PR, BROWSER as THREAD_BROWSER } from "./panel.js";
 import { markRead, onScreen, unread } from "./unread.js";
 import { notifies } from "./notify.js";
@@ -2088,11 +2101,10 @@ export default class Chat extends View {
     return this.prepared(`t\0${s}`, null, () => typed(s));
   }
 
-  /** A message's words: its markdown, or (md null: not ready, too long) the words as plain text, no link in them,
-   *  each line kept (SHEP-109). */
+  /** A message's words: its markdown, or (md null: not ready, too long) the words as written in one code block: one
+   *  element, selectable, every line and "<" kept, no link in it (SHEP-109). */
   words(id, md, text) {
-    if (md !== null) return TextView.markdown(id, this.findMark(md) || " ").selectable(true);
-    return v_flex().w_full().children(String(text).split("\n").map((l) => div().w_full().child(l || " ")));
+    return TextView.markdown(id, md !== null ? this.findMark(md) || " " : asCode(text)).selectable(true);
   }
 
   /** Mentions spelled out (mentionsIn()) and kept until what they name (the reach, the tasks) changes. */
@@ -3512,7 +3524,7 @@ export default class Chat extends View {
         // No on_link_click (SHEP-109): rows are drawn by the virtual list, whose rows take no handlers, and one
         // there left every chat's list blank. TextView opens a link itself: a URL in the browser, a file:// path
         // with the system's opener.
-        .child(x.clip ? this.clipped(t.raised, x.clip, this.words(`${pre}chat-md-fold-${x.id}`, this.linked(this.spelled(shownLines(text, x.clip, laidMost - 24))), shownLines(text, x.clip, laidMost - 24)))
+        .child(x.clip ? this.clipped(t.raised, x.clip, ((s) => this.words(`${pre}chat-md-fold-${x.id}`, this.linked(this.spelled(s)), s))(shownLines(text, x.clip, laidMost - 24)))
           : this.words(`${pre}chat-md-${x.id}`, this.linked(this.spelled(text)), text)));
     const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));

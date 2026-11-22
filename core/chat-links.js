@@ -184,17 +184,6 @@ function linkInline(text, opts) {
   return out + linkText(text.slice(at), opts);
 }
 
-/** A reference definition line (or, under one ending at its colon, its destination's line: dest) as words when its
- *  destination is a path or a file:// URL: its [ escaped, or the destination made empty (<>); else as it is. */
-function wordsRef(line, dest) {
-  const m = (dest ? /^([\s>]*)(<[^>\n]*>|\S+)([\s\S]*)$/ : /^([\s>]*\[[^\]]+\]:[ \t]*)(<[^>\n]*>|\S+)([\s\S]*)$/).exec(line);
-  if (!m) return line;
-  let d = m[2].replace(/^<([\s\S]*)>$/, "$1");
-  try { d = decodeURIComponent(d); } catch {}
-  if (!/^(file:|\/(?!\/)|~\/)/i.test(d.trim())) return line;
-  return dest ? `${m[1]}<>${m[3]}` : line.replace("[", "\\[");
-}
-
 /** Markdown with its URLs and paths as links, code blocks left as they are: fenced ones (also in a quote or a list)
  *  and indented ones after a blank line.
  *  opts: home (expands ~/; null: no home paths), paths (false: URLs only, as on a phone or for another machine's
@@ -227,19 +216,16 @@ export function linkify(md, opts = {}) {
       // only a list item's fence ends by indentation; a top-level one indented 1-3 spaces runs to its closing fence
       fence = { mark: f[1], depth: depth(line), indent: /[-*+]|\d+[.)]/.test(PREFIX.exec(line)[0]) ? flat(line).indexOf(f[1]) : 0 };
       out.push(line);
-    } else if (!(/^( {4}|\t)/.test(line) && (blank || indented) && line.trim()) && (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line))) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
+    } else if (title || (!para && /^[\s>]*\[[^\]]+\]:/.test(line)) || (ref && /^\S+(?:\s+(?:"[^"]*"?|'[^']*'?|\([^)]*\)?))?\s*$/.test(inner(line).trim()))) {
       // a reference definition (never right under a paragraph's line: there it is words; after a heading, a rule, a
       // code block or another definition it is one), the line its destination is on
       // when the definition ends at its colon (one word, maybe a title: "See /tmp/a" under it is words), and the lines
       // of a title still open in quotes
       flush();
       const quotes = (inner(line).match(/"/g) ?? []).length % 2 === 1;
-      // where paths aren't links (a phone, another machine's agent, the window: SHEP-109), a definition leading to a
-      // path is words too, as an inline path link the agent wrote is (linkAuthored)
-      const shown = opts.paths === false && !title ? wordsRef(line, ref) : line;
       ref = !title && /^[\s>]*\[[^\]]+\]:\s*$/.test(line);
       title = title ? !quotes : quotes;
-      out.push(shown);
+      out.push(line);
       blank = false;
       para = false;
       continue;

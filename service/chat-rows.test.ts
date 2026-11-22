@@ -7,6 +7,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fakeHerdr } from "./fake-herdr";
 import { fakeGpuiBase, fakeGpuiKit } from "./fake-gpui";
+import { marked } from "marked";
 
 const handlers: string[] = [];
 /** Every markdown a TextView was given (what could hold a link). */
@@ -113,38 +114,40 @@ describe("the window chat's list rows take no handlers (SHEP-109)", () => {
     expect(shown(x)).toContain("[https://example.com/late](https://example.com/late)");
   });
 
-  test("a message too long to rework shows as plain text, every line, no markdown, never reworked", () => {
+  /** The one code block a fallback row shows: its text, exactly as written, and no link in it (marked as TextView). */
+  const codeOnly = (md: string) => {
+    const toks: any[] = [];
+    marked.walkTokens(marked.lexer(md), (t: any) => { toks.push(t); });
+    expect(toks.filter((t) => t.type === "link" || t.type === "html")).toEqual([]);
+    return toks.filter((t) => t.type === "code").map((t) => t.text);
+  };
+
+  test("a message too long to rework shows as written, in one code block, never reworked", () => {
     const c = chat();
-    const huge = "B1 = <yours>\nsecond line [r](file:///tmp/r.pdf)\n" + "x".repeat(300000);
+    const huge = "B1 = <yours>\nsecond line [r](file:///tmp/r.pdf) ```x```\n" + "x\n".repeat(30000);
     for (const kind of ["agent", "user"]) {
       c.linkSpent = 0;
       mds.length = 0;
-      const out = words(c.safeRow({ kind, id: "h", text: huge }, theme, "v0-"));
-      expect(out.split("\n").slice(0, 2)).toEqual(["B1 = <yours>", "second line [r](file:///tmp/r.pdf)"]);
-      expect(mds.filter((m) => m.includes("B1"))).toEqual([]);
+      c.safeRow({ kind, id: "h", text: huge }, theme, "v0-");
+      const body = mds.filter((m) => m.includes("B1"));
+      expect(body).toHaveLength(1);
+      expect(codeOnly(body[0])).toEqual([huge]);
       expect(c.linkWaiting).toBeFalsy();
       expect(c.linkSpent).toBe(0);
     }
   });
 
-  test("while it waits on the budget a message is plain text too: no link in it, < as typed", () => {
+  test("while it waits on the budget a message shows as written too: no link in it, < as typed", () => {
     const c = chat();
     c.linkSpent = 1e9;
     for (const kind of ["agent", "user"]) {
       mds.length = 0;
-      const out = words(c.safeRow({ kind, id: `w-${kind}`, text: "B1 = <yours>\n[r](file:///tmp/r.pdf)" }, theme, "v0-"));
-      expect(out.split("\n")).toEqual(["B1 = <yours>", "[r](file:///tmp/r.pdf)"]);
-      expect(mds.filter((m) => m.includes("B1"))).toEqual([]);
+      const text = "B1 = <yours>\n[r](file:///tmp/r.pdf)";
+      c.safeRow({ kind, id: `w-${kind}`, text }, theme, "v0-");
+      const body = mds.filter((m) => m.includes("B1"));
+      expect(body).toHaveLength(1);
+      expect(codeOnly(body[0])).toEqual([text]);
     }
-  });
-
-  test("an agent's path link, inline or by reference, reaches no TextView as a link", () => {
-    const c = chat();
-    mds.length = 0;
-    c.safeRow({ kind: "agent", id: "p1", text: "[Report](file:///tmp/report.pdf) and [Again][r]\n\n[r]: file:///tmp/report.pdf" }, theme, "v0-");
-    const md = mds.join("\n");
-    expect(md).not.toMatch(/\]\(file:/);
-    expect(md).not.toMatch(/^\[r\]:/m);
   });
 
   test("the list's renderer, as main.js has it: every row's words, a throwing row plain, the row after it whole", () => {
