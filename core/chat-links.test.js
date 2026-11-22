@@ -198,6 +198,14 @@ test("round 9: a reference link the agent wrote keeps its words and where they l
   expect(md("[see /tmp/a/b.pdf]")).toBe("[see [/tmp/a/b.pdf](file:///tmp/a/b.pdf)]");
 });
 
+test("round 10: brackets that aren't a defined reference stay text (a URL's query, an index in code)", () => {
+  expect(md("See https://example.org/search?filter[status]=active.")).toBe("See [https://example.org/search?filter\\[status\\]=active](https://example.org/search?filter%5Bstatus%5D=active).");
+  expect(md('Example [run `cp "${files[0]}" /tmp/backup.txt`].')).toBe('Example [run `cp "${files[0]}" /tmp/backup.txt`].');
+  // a defined name is still a reference, also when its words wrap
+  const s = "Open [`/tmp/reports/preview.html`\n][preview].\n\n[preview]: /tmp/reports/final.html";
+  expect(md(s)).toBe(s);
+});
+
 describe("a clicked link's target", () => {
   test("URLs, file URLs and paths", () => {
     expect(L.fromHref("https://x.y/z?q=1", HOME)).toEqual({ kind: "url", url: "https://x.y/z?q=1" });

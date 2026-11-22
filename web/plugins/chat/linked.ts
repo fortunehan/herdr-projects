@@ -12,12 +12,12 @@ export const CL = CLs as any as {
 export const PATH_HREF = '#shepherdr-path='
 const pathHref = (p: string) => { try { return PATH_HREF + encodeURIComponent(p) } catch { return null } }
 
-/** what marked makes of some markdown that linking must not change: its code blocks as they read, and where each link
+/** what marked makes of some markdown that linking must not change: its code (blocks and inline) as it reads, and where each link
     it already has leads, with its words (a reference definition, a link the agent wrote) */
 function kept(md: string) {
   const code: string[] = [], hrefs: string[] = []
   marked.walkTokens(marked.lexer(md), (t) => {
-    if (t.type === 'code') code.push(t.text)
+    if (t.type === 'code' || t.type === 'codespan') code.push(`${t.type}:${t.text}`)
     // written as a link ([words](…), [words][ref]); a bare URL marked links itself is ours to link better
     if (t.type === 'link' && t.raw.startsWith('[')) hrefs.push(`${t.href}\0${t.text}`)
   })

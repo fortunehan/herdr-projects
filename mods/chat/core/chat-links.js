@@ -147,18 +147,25 @@ function linkAuthored(m, opts) {
 }
 
 // Within a line run outside fences: code spans, links and pictures, autolinks and HTML tags are left whole.
-// A reference link the agent wrote ([words][name], [words][]) is left whole too, and so is [words] alone when the reply
-// defines that name: its words lead where its definition says, never to one of our path links.
-const INLINE = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|(!?)\[([^\]\n]*)\]\(([^)\s]*)(?:\s+"[^"\n]*")?\)|!?\[[^\]\n]*\]\[[^\]\n]*\]|(!?)\[([^\]\n]+)\](?![(:])|<[^>\n]*>/g;
+const INLINE = "(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|(!?)\\[([^\\]\\n]*)\\]\\(([^)\\s]*)(?:\\s+\"[^\"\\n]*\")?\\)|<[^>\\n]*>";
 const refName = (t) => t.trim().replace(/\s+/g, " ").toLowerCase();
+const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The inline pattern for a reply. A reference link the agent wrote ([words][name], [name][], [name]) is left whole too,
+ *  but only for a name the reply defines: its words lead where its definition says, never to one of our path links,
+ *  and brackets that aren't one (a URL's ?filter[status]=, an index [0] in code) stay plain text. */
+function inlineRe(refs) {
+  if (!refs.size) return new RegExp(INLINE, "g");
+  const name = [...refs].map((r) => r.split(" ").map(escRe).join("\\s+")).join("|");
+  return new RegExp(`${INLINE}|!?\\[[^\\]]*\\]\\[(?:${name})\\]|!?\\[(?:${name})\\](?:\\[\\])?(?![(:])`, "gi");
+}
 
 function linkInline(text, opts) {
   let out = "", at = 0;
-  for (const m of text.matchAll(INLINE)) {
+  for (const m of text.matchAll(opts.inline)) {
     out += linkText(text.slice(at, m.index), opts);
     if (m[1]) out += linkCode(m[0], m[2], opts) ?? m[0];
     else if (m[4] !== undefined) out += linkAuthored([m[0], m[3], m[4], m[5]], opts);
-    else if (m[7] !== undefined) out += opts.refs?.has(refName(m[7])) ? m[0] : `${m[6]}[${linkInline(m[7], opts)}]`;
     else out += m[0];
     at = m.index + m[0].length;
   }
@@ -172,7 +179,7 @@ function linkInline(text, opts) {
 export function linkify(md, opts = {}) {
   const lines = String(md ?? "").split("\n");
   // the names the reply defines ([name]: …), so [name] alone stays its link
-  opts = { ...opts, refs: new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName)) };
+  opts = { ...opts, inline: inlineRe(new Set(lines.map((l) => /^[\s>]*\[([^\]]+)\]:/.exec(l)?.[1]).filter(Boolean).map(refName))) };
   const out = [];
   let run = [], fence = null, blank = true, indented = false, ref = false, title = false, para = false;
   const flush = () => { if (run.length) out.push(linkInline(run.join("\n"), opts)); run = []; };
