@@ -11,6 +11,9 @@
 // picture names the picture and the spot in it (SHEP-114, sawPicture). One note alone goes as the
 // single note it always was. The notes are kept per version on this computer until they went
 // (closing Mark up keeps them). Esc closes the note being written, then ends.
+// On a recipe a note stays on what it marked (SHEP-115): it keeps its spot as fractions of the content and of the tag
+// it is on (core/markup.js anchorOf), and the recipe view draws it there (marksOn), so it scrolls and reflows with it;
+// the notes that went stay drawn, faded, until the next version.
 // Its words, the spots in words and the drafts are core/markup.js (shared with the web app; copied
 // in beside it, MARKUP_HELPERS).
 // A custom panel (not a recipe) also leaves its picture for the web app each time it's shown (picture()).
@@ -20,7 +23,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, props, exec, appHome, agents, readTextFile, checking } from "herdr";
 import * as A from "./artifact.js";
 import { dirs } from "./dirs.js";
-import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, noteOn, seenBoxes, pictureUnder } from "./core/markup.js";
+import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, noteOn, seenBoxes, pictureUnder, anchorOf, contentFrac, contentView, placeNote, setMarksDrawer } from "./core/markup.js";
 
 const KEY = "artifacts.markup";
 const MOD = A.dir.slice("mods/".length);
@@ -84,8 +87,9 @@ function saveDraft(m) {
 // ---- the mod's hooks ---------------------------------------------------------------------------
 
 export function markupInit(cx) {
-  const m = { notes: [], sel: null, press: null, origin: null, size: null, snap: false, sending: false, said: "", failed: false,
+  const m = { notes: [], sent: [], over: null, sel: null, press: null, origin: null, size: null, snap: false, sending: false, said: "", failed: false,
     was: false, pictured: false, kept: undefined, saving: false };
+  setMarksDrawer(where(), (key) => contentMarks(m, key));
   m.input = InputState.new({ placeholder: MARKUP.placeholder });
   m.input.on("submit", (_e, cx) => send(m, cx));
   m.input.on("focus", (_e, cx) => { holdKeys(); if (m.sel !== null) { m.sel = null; cx.notify(); } });
@@ -114,6 +118,7 @@ export function markupWrap(m, inner, cx) {
   // closed: the notes stay (kept as a draft), only what was half done goes
   if (!on && m.was) { Object.assign(m, { press: null, sel: null, snap: false, said: "", failed: false }); cx.timer.after(0, () => { releaseKeys(); saveDraft(m); }); }
   m.was = on;
+  setMarksDrawer(where(), (key) => contentMarks(m, key));
   return v_flex().id("art-mark-root").relative().size_full()
     .on_size_change((size) => { m.size = size; })
     .when(Boolean(A.custom), (el) => el.on_mouse_move((e, cx) => {
@@ -146,6 +151,10 @@ function picture(m, cx) {
 // ---- the layer ---------------------------------------------------------------------------
 
 const at = (e) => e.local_position ?? { x: 0, y: 0 };
+// A recipe: its notes are drawn on what they mark (contentMarks); a custom panel's on the layer, as fractions of it.
+const onContent = () => !A.custom;
+// Where the content is from the layer's top left, as the pointer last saw it, for Send all's words in its px.
+const pageView = (m) => (onContent() && contentView(where(), m.origin)) || m.size;
 const clampTo = (v, max) => Math.max(0, Math.min(max ?? v, v));
 
 function layer(m, t) {
@@ -164,6 +173,8 @@ function layer(m, t) {
     .on_mouse_down("left", (e, cx) => {
       cx.stop_propagation();
       if (m.sending) return;
+      // a press on a note's number (drawn under the layer, on what it marks) picks that note
+      if (m.over && m.over.x === e.position.x && m.over.y === e.position.y && m.notes[m.over.i]) { select(m, m.over.i, cx); return; }
       if (m.notes.length >= NOTES_MAX) { m.said = `At most ${NOTES_MAX} notes at once: send these first.`; m.failed = true; cx.notify(); return; }
       const q = at(e);
       if (e.local_position) m.origin = { x: e.position.x - q.x, y: e.position.y - q.y };
@@ -173,7 +184,7 @@ function layer(m, t) {
       cx.notify();
     })
     .on_mouse_up("left", (_e, cx) => pick(m, cx))
-    .children(m.notes.map((n, i) => mark(m, fromFrac(n, m.size), i, t)))
+    .when(!onContent(), (el) => el.children(m.notes.map((n, i) => mark(m, fromFrac(n, m.size), i, t))))
     .when(Boolean(p), (el) => el.child(mark(m, p.moved ? box(p) : { x: p.x0, y: p.y0, w: 0, h: 0 }, m.notes.length, t)))
     // The card hides while you draw and while the picture for Send all is taken, so the picture shows the artifact.
     .when(!p && !m.snap, (el) => el.child(card(m, t)));
@@ -191,9 +202,17 @@ function pick(m, cx) {
   if (!p) return;
   m.press = null;
   const s = p.moved ? box(p) : { x: p.x0, y: p.y0, w: 0, h: 0 };
-  m.notes.push({ ...toFrac(s, m.size), text: "", ...blocksUnder(m, s, !p.moved) });
+  m.notes.push({ ...keptSpot(m, s), text: "", ...blocksUnder(m, s, !p.moved) });
   select(m, m.notes.length - 1, cx);
   saveSoon(m, cx);
+}
+
+// A spot of the layer as a note keeps it: on a recipe, fractions of the content and of the tag it is on.
+function keptSpot(m, s) {
+  const view = onContent() ? contentView(where(), m.origin) : null;
+  if (!view) return toFrac(s, m.size);
+  const anchor = anchorOf(seenBoxes(where(), m.origin, false).nodes, s);
+  return { ...contentFrac(s, view), ...(anchor ? { anchor } : {}) };
 }
 
 // On a picture (SHEP-114): the picture, and the spot in it; GPUI's TextView can't tell a script what words are
@@ -242,6 +261,33 @@ function mark(m, r, i, t) {
     .bg(tintOf(t, m.sel === i ? "33" : "1f"))).child(b);
 }
 
+// A recipe's notes on one of its tags (key; null: the whole content), as the recipe view draws them there: placed in
+// percent of it, so they move and reflow with it. The notes that went are faded, a tick for their number.
+const pc = (v) => `${Math.round(v * 10000) / 100}%`;
+function contentMarks(m, key) {
+  if (!onContent() || !isOn()) return [];
+  const t = theme();
+  const here = (n) => (key === null ? !n.anchor : n.anchor?.key === key);
+  const at = (n) => (key === null ? n : n.anchor);
+  const out = [];
+  m.sent.forEach((n, i) => { if (here(n)) out.push(contentMark(m, at(n), `s${i}`, null, t)); });
+  m.notes.forEach((n, i) => { if (here(n)) out.push(contentMark(m, at(n), String(i), i, t)); });
+  return out;
+}
+
+function contentMark(m, r, id, i, t) {
+  const sent = i === null;
+  const num = sent
+    ? div().id(`art-mark-sent-${id}`).size(18).rounded(9).flex().items_center().justify_center().bg(t.muted).text_color(t.background).text_size(11).child("✓")
+    : badge(t, i + 1, `art-mark-badge-${id}`, m.sel === i).cursor_pointer()
+      .on_mouse_move((e) => { m.over = { i, x: e.position.x, y: e.position.y }; });
+  const el = div().absolute().left(pc(r.x)).top(pc(r.y)).w(pc(r.w)).h(pc(r.h)).when(sent, (e) => e.opacity(0.6))
+    .child(div().absolute().left(-10).top(-10).child(num));
+  if (!r.w && !r.h) return el;
+  return el.rounded(4).border_2().border_color(sent ? t.muted : t.accent).when(sent, (e) => e.border_dashed())
+    .bg(tintOf(t, !sent && m.sel === i ? "33" : "1f"));
+}
+
 // Who gets it: the agent that made it, by its program's name.
 function keeperName(address) {
   const a = agents().find((x) => x.address === (address ?? A.agent));
@@ -249,7 +295,7 @@ function keeperName(address) {
 }
 
 function card(m, t) {
-  const out = outgoing(m.notes, m.input.value(), m.size);
+  const out = outgoing(m.notes, m.input.value(), pageView(m));
   const cur = m.sel !== null ? m.notes[m.sel] : null;
   const line = m.said || (cur ? (cur.picture ? MARKUP.picture : cur.w || cur.h ? MARKUP.area : MARKUP.spot) : m.notes.length ? MARKUP.more : markupHint(keeperName()));
   const n = m.notes.length;
@@ -308,7 +354,7 @@ function row(m, x, i, t) {
 // Send all: with marks on it, the card hides a moment so the window's picture shows the artifact with every numbered
 // mark, then it all goes as one message.
 function send(m, cx) {
-  const out = outgoing(m.notes, m.input.value(), m.size);
+  const out = outgoing(m.notes, m.input.value(), pageView(m));
   if (!out || m.sending) return;
   m.sending = true;
   m.said = MARKUP.sending;
@@ -329,6 +375,13 @@ function send(m, cx) {
   });
 }
 
+// A note's spot in px of the layer now: on a recipe from its tag's box as last seen, else from the content's.
+function spotNow(m, n) {
+  if (!onContent()) return fromFrac(n, m.size);
+  const nodes = seenBoxes(where(), m.origin, false).nodes;
+  return placeNote(n, (key) => nodes.find((b) => b.key === key) ?? null, contentView(where(), m.origin) ?? m.size);
+}
+
 function deliver(m, out, shot, cx) {
   const args = ["note", A.id, "--version", String(A.version), "--json"];
   if (out.kind === "notes") {
@@ -342,7 +395,7 @@ function deliver(m, out, shot, cx) {
     args.push("--shot", shot, "--panel", [o.x, o.y, m.size.width, m.size.height].join(","));
     // one note: its spot outlined, as before
     if (out.kind === "note") {
-      const s = fromFrac(m.notes[0], m.size);
+      const s = spotNow(m, m.notes[0]);
       args.push("--area", [o.x + s.x, o.y + s.y, s.w, s.h].join(","));
     }
   }
@@ -357,6 +410,7 @@ function deliver(m, out, shot, cx) {
     m.sending = false;
     if (err) { m.said = err; m.failed = true; }
     else {
+      if (onContent()) m.sent.push(...m.notes);
       m.notes = [];
       m.sel = null;
       m.input.set_value("");

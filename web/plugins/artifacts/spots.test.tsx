@@ -3,7 +3,7 @@
 import { afterAll, expect, mock, test } from 'bun:test'
 import { join } from 'node:path'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { blockOfNode, keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, tagBoxes, tagsUnder, type PicEl, type Tagged } from './spots.ts'
+import { blockOfNode, contentView, keptSpot, tagBox, keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, tagBoxes, tagsUnder, type PicEl, type Tagged } from './spots.ts'
 import * as M from '@core/markup.js'
 
 const recipeTarget = (M as any).recipeTarget as (r: unknown, k: string) => unknown
@@ -165,4 +165,37 @@ test('Send all asks for the quote and the picture with each note, as drafted on 
     ],
   })
   expect(noteAction({ kind: 'say', text: 'Hi' }, { place: 'p', artifact: 'abc', v: 2 })).toEqual({ type: 'artifact-say', place: 'p', artifact: 'abc', v: 2, text: 'Hi' })
+})
+
+// SHEP-115: the recipe scrolls under the still layer; a note keeps its spot on the content and on the tag it marks.
+test('a note made while the recipe is scrolled keeps its spot on the content and the row it marks', () => {
+  // the recipe's scrolling box fills the layer at (100, 50), 800×600, scrolled 400 down its 2000
+  const scroller = { getBoundingClientRect: () => ({ left: 100, top: 50, width: 800, height: 600 }), scrollTop: 400, scrollLeft: 0, scrollWidth: 800, scrollHeight: 2000 }
+  const layer = { left: 100, top: 50, width: 800, height: 600 }
+  const view = contentView(scroller, layer)
+  expect(view).toEqual({ x: 0, y: -400, width: 800, height: 2000, page: true })
+  // without a recipe (a page in a frame): the layer itself
+  expect(contentView(null, layer)).toEqual({ x: 0, y: 0, width: 800, height: 600 })
+  // a drag over the table's second row (the page's boxes as drawn now, scrolled)
+  const kept = keptSpot(root, layer, view, { x: 30, y: 125, w: 300, h: 20 })
+  expect(kept.anchor?.key).toBe('2/rows.1')
+  expect(kept.y).toBeCloseTo(525 / 2000)
+  // drawn again later: the row is wherever the page draws it now
+  const placeNote = (M as any).placeNote
+  const moved = [el('2/rows.1', { left: 116, top: 70, width: 600, height: 30 })]
+  const now = { querySelector: (sel: string) => moved.find((e) => sel === `[data-rp="${e.getAttribute('data-rp')}"]`) ?? null }
+  expect(tagBox(now, layer, '2/rows.1')).toEqual({ x: 16, y: 20, w: 600, h: 30 })
+  expect(tagBox(now, layer, '9')).toBeNull()
+  const at = placeNote(kept, (k: string) => tagBox(now, layer, k), view)
+  expect([at.x, at.y, at.w, at.h].map(Math.round)).toEqual([30, 25, 300, 20])
+  // selected words' boxes come along, on the content and on the tag
+  const q = keptSpot(root, layer, view, { x: 30, y: 125, w: 300, h: 20 }, [{ x: 30, y: 125, w: 300, h: 20 }])
+  expect(q.rects).toEqual([{ x: 30 / 800, y: 525 / 2000, w: 300 / 800, h: 20 / 2000 }])
+  expect(q.anchor?.rects?.length).toBe(1)
+})
+
+test('the recipe view scrolls in a box Mark up can find', () => {
+  const src = require('node:fs').readFileSync(join(import.meta.dir, 'client.tsx'), 'utf8') as string
+  expect(src).toContain('<div data-recipe-scroll=""')
+  expect(src).toContain("onWheel={(e) => scroller()?.scrollBy({ left: e.deltaX, top: e.deltaY })}")
 })
