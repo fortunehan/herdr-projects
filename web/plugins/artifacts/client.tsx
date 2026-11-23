@@ -11,7 +11,7 @@ import { keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteS
 import * as CV from '@core/chat-view.js'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { artifactKey, retry as retryTranslate, toggle as toggleTranslate, useShown as useTranslation, useTranslateOn } from '@plugins/chat/translate.ts'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import {
   act,
   closeArtifact,
@@ -179,7 +179,7 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
   }, [seed])
   const focusGeneral = () => !phone && setTimeout(() => generalRef.current?.focus(), 0)
   const focusNote = () => !phone && setTimeout(() => ref.current?.querySelector<HTMLTextAreaElement>('textarea[data-note]')?.focus(), 0)
-  useEffect(() => { focusGeneral() }, [])
+  useEffect(() => { if (!seed) focusGeneral() }, [])
   const at = (e: { clientX: number; clientY: number }) => {
     const r = ref.current!.getBoundingClientRect()
     return { x: Math.max(0, Math.min(r.width, e.clientX - r.left)), y: Math.max(0, Math.min(r.height, e.clientY - r.top)) }
@@ -434,13 +434,19 @@ function selectedIn(host: HTMLElement) {
   before.setEnd(r.startContainer, r.startOffset)
   after.selectNodeContents(end)
   after.setStart(r.endContainer, r.endOffset)
-  return { text: r.toString(), prefix: before.toString(), rest: after.toString(), rects: Array.from(r.getClientRects()), start, end, last: r.getBoundingClientRect() }
+  const rects = Array.from(r.getClientRects()).filter((b) => b.width > 0 && b.height > 0)
+  // the chip goes under the end of the last line
+  return { text: r.toString(), prefix: before.toString(), rest: after.toString(), rects, start, end, last: rects[rects.length - 1] ?? r.getBoundingClientRect() }
 }
 
 /** Comment: a small button next to selected words of a recipe (below them, out of the way of a phone's own menu), or
  *  on a picture the pointer is over; it starts a note on them in Mark up. */
 function CommentChip({ host, art, v, onSeed }: { host: React.RefObject<HTMLDivElement | null>; art: Artifact; v: number; onSeed: (s: Seed) => void }) {
+  // x: where its right edge goes (the selection's end, the picture's right); kept inside the host by its width
   const [chip, setChip] = useState<{ x: number; y: number; pic: PicEl | null } | null>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const [w, setW] = useState(0)
+  useLayoutEffect(() => { if (btn.current) setW(btn.current.offsetWidth) }, [chip?.pic, !!chip])
   const recipe = () => shownRecipe(recipeKey(art.id, v, art.machine))
   useEffect(() => {
     const el = host.current
@@ -449,7 +455,7 @@ function CommentChip({ host, art, v, onSeed }: { host: React.RefObject<HTMLDivEl
       const s = selectedIn(el)
       if (!s || !recipe() || !s.text.trim()) return setChip((c) => (c && !c.pic ? null : c))
       const o = el.getBoundingClientRect()
-      setChip({ x: Math.max(100, Math.min(o.width - 8, s.last.right - o.left)), y: Math.min(o.height - 40, s.last.bottom - o.top + 6), pic: null })
+      setChip({ x: Math.min(o.width - 8, s.last.right - o.left), y: Math.min(o.height - 48, s.last.bottom - o.top + 6), pic: null })
     }
     // a picture under a pointer that can hover (a touch screen comments on one in Mark up)
     const over = (e: PointerEvent) => {
@@ -487,14 +493,14 @@ function CommentChip({ host, art, v, onSeed }: { host: React.RefObject<HTMLDivEl
   return (
     <button
       type="button"
+      ref={btn}
       data-comment={chip.pic ? 'picture' : 'words'}
       // pressing it must not drop the selection it comments on
       onPointerDown={(e) => e.preventDefault()}
       onMouseDown={(e) => e.preventDefault()}
       onClick={go}
-      className={clsx('press-dim absolute z-10 flex h-7 items-center gap-1 rounded-full bg-fg pr-2.5 pl-2 text-[0.8125rem] font-medium whitespace-nowrap text-bg shadow-dialog phone:h-10 phone:pr-3.5 phone:pl-3 phone:text-[0.9375rem]',
-        '-translate-x-full')}
-      style={{ left: chip.x, top: chip.y }}
+      className={clsx('press-dim absolute z-10 flex h-7 items-center gap-1 rounded-full bg-focus pr-2.5 pl-2 text-[0.8125rem] font-medium whitespace-nowrap text-white shadow-dialog phone:h-10 phone:pr-3.5 phone:pl-3 phone:text-[0.9375rem]')}
+      style={{ left: Math.max(8, chip.x - w), top: chip.y }}
     >
       <ChatIcon className={ic} />
       {chip.pic ? MARKUP.commentPicture : MARKUP.comment}
