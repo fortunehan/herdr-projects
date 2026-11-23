@@ -29,6 +29,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Window chat `rows()` can be run in a bun test with stubs: status, resolveArts, newsLines, loadAskEnds, workerTasks,
   timelineCards plus conv/replied/pending/queue/tr fields (see service/chat-paths.test.ts); the chat's log page caps at
   ~258 items whatever record count the SHEP-109 render harness asks for.
+- Full Tasks-panel render in a bun test: `Object.create(Tasks.prototype)` with lists/query stubs, then `render(cx)`; its
+  Needs you reads mods/tasks/inbox.js items() from shared inbox.* (see service/tasks-needs-once.test.ts).
 - Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
   the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.
 - Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and

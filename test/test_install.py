@@ -1001,6 +1001,90 @@ class LayoutBrandRow(unittest.TestCase):
         self.assertNotIn("the voice call button beside Search", again)
 
 
+class LayoutLinkHandlers(unittest.TestCase):
+    """SHEP-117: the Shepherdr layout lists the open-paths mod in its root link_handlers (Herdr 0.1.17's Ctrl/Cmd-click
+    handlers). A layout the person changed (kept on update) gets it added once, after their own entries."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shepherdr-test-")
+        os.makedirs(os.path.join(self.root, APP))
+        self.src = tempfile.mkdtemp(prefix="shepherdr-src-")
+        self.mine = os.path.join(self.root, APP, "layouts", "shepherdr.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.src, ignore_errors=True)
+
+    def edit(self, change):
+        d = json.load(open(self.mine))
+        change(d)
+        with open(self.mine, "w") as f:
+            f.write(json.dumps(d, indent=2) + "\n")
+
+    def test_the_shipped_layout_lists_open_paths(self):
+        d = json.load(open(os.path.join(ROOT, "layouts", "shepherdr.json")))
+        self.assertEqual(d["link_handlers"], ["open-paths"])
+        mod = json.load(open(os.path.join(ROOT, "mods", "open-paths", "mod.json")))
+        self.assertEqual([r["kind"] for r in mod["link_handlers"]], ["file"])
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "mods", "open-paths", "link.js")))
+
+    def test_a_fresh_install_has_it_and_the_mod(self):
+        run("install", "--root", self.root, "--yes")
+        self.assertEqual(json.load(open(self.mine))["link_handlers"], ["open-paths"])
+        for f in ("link.js", "mod.json", "core/link-click.js", "core/chat-links.js"):
+            self.assertTrue(os.path.isfile(os.path.join(self.root, APP, "mods", "open-paths", f)), f)
+
+    def test_a_kept_layout_gets_it_added_after_the_persons_own_once(self):
+        old = os.path.join(self.src, "s")
+        shutil.copytree(ROOT, old, ignore=shutil.ignore_patterns(".git", "node_modules"))
+        lay = os.path.join(old, "layouts", "shepherdr.json")
+        d = json.load(open(lay))
+        d.pop("link_handlers")
+        with open(lay, "w") as f:
+            f.write(json.dumps(d, indent=2) + "\n")
+        run("install", "--root", self.root, "--yes", "--source", old)
+        self.assertNotIn("link_handlers", json.load(open(self.mine)))
+
+        def mine(d):
+            d["children"][0]["size"] = {"px": 312}
+            d["link_handlers"] = ["my-viewer"]
+        self.edit(mine)
+        up = run("update", "--root", self.root, "--source", ROOT).stdout
+        d = json.load(open(self.mine))
+        self.assertEqual(d["link_handlers"], ["my-viewer", "open-paths"], "the person's own handler stays, first")
+        self.assertEqual(d["children"][0]["size"], {"px": 312}, "the person's sidebar width stays")
+        self.assertIn("open-paths added to link_handlers", up)
+        self.assertTrue(os.path.exists(self.mine + ".new"))
+        # Taken out by the person: the next update leaves it out.
+        self.edit(lambda d: d.update(link_handlers=["my-viewer"]))
+        again = run("update", "--root", self.root, "--source", ROOT).stdout
+        self.assertNotIn("added to link_handlers", again)
+        self.assertEqual(json.load(open(self.mine))["link_handlers"], ["my-viewer"])
+
+    def test_a_layout_changed_after_a_fresh_install_is_not_touched(self):
+        """Installed with it already shipped: the person removing it later is their choice."""
+        run("install", "--root", self.root, "--yes")
+
+        def mine(d):
+            d["children"][0]["size"] = {"px": 300}
+            d["link_handlers"] = []
+        self.edit(mine)
+        up = run("update", "--root", self.root, "--source", ROOT).stdout
+        self.assertNotIn("added to link_handlers", up)
+        self.assertEqual(json.load(open(self.mine))["link_handlers"], [])
+
+    def test_the_layout_edit_itself(self):
+        from importlib.machinery import SourceFileLoader
+        sh = SourceFileLoader("shepherdr_cli_links", SHEPHERDR).load_module()
+        text, added = sh.add_link_handlers('{"id": "root", "link_handlers": ["a", "open-paths"]}', "shepherdr", [])
+        self.assertEqual((text, added), (None, []), "already listed: nothing to write")
+        text, added = sh.add_link_handlers('{"id": "root"}', "shepherdr", [])
+        self.assertEqual(json.loads(text)["link_handlers"], ["open-paths"])
+        self.assertEqual(sh.add_link_handlers('{"id": "root"}', "shepherdr", ["open-paths"]), (None, []))
+        self.assertEqual(sh.add_link_handlers('{"id": "root"}', "main", []), (None, []), "only Shepherdr's layout")
+        self.assertEqual(sh.add_link_handlers("not json", "shepherdr", []), (None, []))
+
+
 class AudioTools(unittest.TestCase):
     def test_doctor_names_the_mic_and_speaker_tools_per_platform(self):
         """Linux names pw-record and pw-play; a Mac names Apple's command line tools (swiftc) instead."""
