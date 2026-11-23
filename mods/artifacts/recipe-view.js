@@ -8,6 +8,8 @@
 // and next through every picture in the recipe, SHEP-90).
 // Mark up names the blocks a note is on (SHEP-113): each block and its parts (a list's items, a table's rows...) keep
 // their box as the pointer moves over them (core/markup.js sawBox), the only place GPUI tells a script where it is.
+// Its notes are drawn here, on the tag each one marked (or on the whole content), so they scroll and reflow with what
+// they mark instead of staying still on the screen (SHEP-115, core/markup.js marksOn).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
 import { image } from "gpui-kit";
@@ -16,7 +18,7 @@ import * as fs from "fs/promises";
 import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_M } from "./artifact.js";
 import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
-import { sawBox, sawPicture, layoutMoved, setLayoutRecipe } from "./core/markup.js";
+import { sawBox, sawPicture, sawContent, layoutMoved, setLayoutRecipe, marksOn } from "./core/markup.js";
 import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, FULL_TEXT, fullWide, imageSize, isDiff, isLink, mdParts, mediaKind, pictureMax, pictures, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
@@ -38,9 +40,10 @@ const PROSE = 760;
 const isFull = () => Boolean(props()?.full);
 
 // Where this copy shows (as Mark up's markup.js names it), and el keeping its box under its tag ("2", "2.c1.0",
-// "3/rows.1") for Mark up.
+// "3/rows.1") for Mark up, with the Mark up notes on it.
 const where = () => (props()?.overlay ? "viewer" : "panel");
-const tag = (el, key) => el.on_mouse_move((e) => sawBox(where(), key, e.bounds, e.position));
+const withMarks = (el, key) => { const marks = marksOn(where(), key); return marks.length ? el.relative().children(marks) : el; };
+const tag = (el, key) => withMarks(el.on_mouse_move((e) => sawBox(where(), key, e.bounds, e.position)), key);
 
 // Translate (SHEP-102): this version's translation as the bar asked for it (lib/artifact-translate.js), by its texts'
 // places (core/translate.js recipeUnits); a Retry sets it to "retry" and the bar asks again.
@@ -478,6 +481,7 @@ export default class RecipeView extends View {
     // scrolled or resized: the boxes Mark up kept are stale
     return v_flex().id("recipe").size_full().overflow_y_scrollbar().bg(t.background).text_color(t.foreground)
       .on_scroll_wheel(() => layoutMoved(where())).on_size_change(() => layoutMoved(where()))
-      .child(v_flex().id("recipe-body").w_full().p(16).gap(14).when(full, (e) => e.items_center()).children(body));
+      .child(withMarks(v_flex().id("recipe-body").w_full().p(16).gap(14).when(full, (e) => e.items_center())
+        .on_mouse_move((e) => sawContent(where(), e.bounds)), null).children(body));
   }
 }

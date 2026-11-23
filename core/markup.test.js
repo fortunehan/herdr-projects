@@ -281,3 +281,66 @@ test("the window's picture boxes: named from the recipe, with the size the view 
   layoutMoved("viewer");
   expect(seenBoxes("viewer", { x: 0, y: 0 }, false).pics).toEqual([]);
 });
+
+// SHEP-115: a note stays on what it marked while the recipe scrolls or reflows under the still layer.
+test("a note keeps its spot as fractions of the content, its top left above the layer once scrolled", async () => {
+  const { contentFrac, placeNote } = await import("./markup.js");
+  // the content 800×2400, scrolled 600: its top left at (0, -600) of the layer
+  const view = { x: 0, y: -600, width: 800, height: 2400, page: true };
+  const kept = contentFrac({ x: 100, y: 50, w: 200, h: 100 }, view);
+  expect(kept).toEqual({ x: 100 / 800, y: 650 / 2400, w: 200 / 800, h: 100 / 2400 });
+  // drawn where the content is now: scrolled 300 more, it is 300 higher on the layer
+  expect(placeNote(kept, null, { ...view, y: -900 })).toEqual({ x: 100, y: -250, w: 200, h: 100, rects: [] });
+  // back at the top, where it was marked on the content
+  expect(placeNote(kept, null, { ...view, y: 0 })).toEqual({ x: 100, y: 650, w: 200, h: 100, rects: [] });
+  // Send all names it in the content's px
+  expect(outgoing([{ ...kept, text: "Say Friday" }], "", view).spot).toBe("the 200×100 px area at x 100–300, y 650–750 of the 800×2400 page (near the top left)");
+});
+
+test("a note on a tag stays on it wherever the tag is drawn now: scrolled, or reflowed by a new width", async () => {
+  const { anchorOf, placeNote, relTo, fromRel } = await import("./markup.js");
+  const nodes = [
+    { key: "2", x: 16, y: 100, w: 600, h: 160 },
+    { key: "2/rows.1", x: 16, y: 180, w: 600, h: 40 },
+    { key: "3", x: 16, y: 280, w: 600, h: 60 },
+  ];
+  // a drag over most of the second row: on the row, the innermost tag under its middle
+  const s = { x: 46, y: 190, w: 300, h: 20 };
+  const a = anchorOf(nodes, s);
+  expect(a).toEqual({ key: "2/rows.1", x: 0.05, y: 0.25, w: 0.5, h: 0.5 });
+  expect(fromRel(relTo(s, nodes[1]), nodes[1])).toEqual(s);
+  const note = { x: 0, y: 0, w: 0, h: 0, anchor: a };
+  // scrolled 150: the row 150 higher, the note with it
+  expect(placeNote(note, (k) => (k === "2/rows.1" ? { x: 16, y: 30, w: 600, h: 40 } : null), null)).toEqual({ x: 46, y: 40, w: 300, h: 20, rects: [] });
+  // a narrower panel: the row 300 wide and 60 tall, the note on the same part of it
+  expect(placeNote(note, () => ({ x: 8, y: 400, w: 300, h: 60 }), null)).toEqual({ x: 23, y: 415, w: 150, h: 30, rects: [] });
+  // its tag isn't drawn (another tab): at its fractions of the content
+  expect(placeNote({ x: 0.5, y: 0.5, w: 0.1, h: 0.1, anchor: a }, () => null, { x: 0, y: -100, width: 400, height: 1000 })).toEqual({ x: 200, y: 400, w: 40, h: 100, rects: [] });
+  // a click past every tag: no anchor
+  expect(anchorOf(nodes, { x: 700, y: 10, w: 0, h: 0 })).toBeNull();
+  // the top left decides when the middle is on nothing
+  expect(anchorOf(nodes, { x: 20, y: 290, w: 1200, h: 400 })?.key).toBe("3");
+});
+
+test("selected words' boxes stay on their tag too, and a draft keeps the anchor", async () => {
+  const { anchorOf, placeNote, cleanAnchor } = await import("./markup.js");
+  const nodes = [{ key: "1", x: 16, y: 60, w: 600, h: 48 }];
+  const rects = [{ x: 316, y: 64, w: 300, h: 20 }, { x: 16, y: 88, w: 120, h: 20 }];
+  const a = anchorOf(nodes, { x: 16, y: 64, w: 600, h: 44 }, rects);
+  expect(a.rects).toEqual([{ x: 0.5, y: 4 / 48, w: 0.5, h: 20 / 48 }, { x: 0, y: 28 / 48, w: 0.2, h: 20 / 48 }]);
+  // scrolled 40: each box 40 higher
+  const at = placeNote({ x: 0, y: 0, w: 0, h: 0, anchor: a, quote: { text: "x", rects: [] } }, () => ({ x: 16, y: 20, w: 600, h: 48 }), null);
+  expect(at.rects.map((r) => Math.round(r.y))).toEqual([24, 48]);
+  // kept and read back as it was; a broken one is dropped
+  const kept = readDraft(draftText([{ x: 0.1, y: 0.2, w: 0.3, h: 0.1, text: "Hi", anchor: a }], ""));
+  expect(kept.notes[0].anchor).toEqual(a);
+  expect(readDraft(draftText([{ x: 0.1, y: 0.2, w: 0, h: 0, text: "", anchor: { key: "a b<", x: 1 } }], "")).notes[0].anchor).toBeUndefined();
+  expect(cleanAnchor({ key: "2/rows.1", x: Infinity, y: 1e9, w: -1e9, h: "a" })).toEqual({ key: "2/rows.1", x: 0, y: 100, w: -100, h: 0 });
+});
+
+test("the window's content box comes from the pointer, from the layer's top left", async () => {
+  const { sawContent, contentView } = await import("./markup.js");
+  expect(contentView("shep115", { x: 0, y: 0 })).toBeNull();
+  sawContent("shep115", { x: 216, y: -200, width: 600, height: 1500 });
+  expect(contentView("shep115", { x: 200, y: 100 })).toEqual({ x: 16, y: -300, width: 600, height: 1500, page: true });
+});

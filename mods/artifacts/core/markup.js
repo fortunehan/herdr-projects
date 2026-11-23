@@ -36,14 +36,14 @@ export const markupCount = (n) => (n === 1 ? "1 note" : `${n} notes`);
 const REGION_Y = ["top", "middle", "bottom"], REGION_X = ["left", "center", "right"];
 
 // The spot in words, for the agent: "the 180×80 px area at x 120–300, y 80–160 of the 720×540
-// panel (near the top left)".
+// panel (near the top left)"; on a recipe that scrolls, in px of its whole content: "… of the 720×2400 page" (SHEP-115).
 export function describe(s, size) {
   const W = Math.round(size?.width ?? 0), H = Math.round(size?.height ?? 0);
   const r = (v) => Math.round(v);
   const third = (v, n) => Math.min(2, Math.max(0, Math.floor((v / Math.max(1, n)) * 3)));
   const yx = [REGION_Y[third(s.y + s.h / 2, H)], REGION_X[third(s.x + s.w / 2, W)]];
   const near = yx[0] === "middle" && yx[1] === "center" ? "the middle" : yx[0] === "middle" ? `the middle ${yx[1]}` : yx[1] === "center" ? `the ${yx[0]} center` : `the ${yx[0]} ${yx[1]}`;
-  const of = W && H ? ` of the ${W}×${H} panel` : "";
+  const of = W && H ? ` of the ${W}×${H} ${size?.page ? "page" : "panel"}` : "";
   return s.w || s.h
     ? `the ${r(s.w)}×${r(s.h)} px area at x ${r(s.x)}–${r(s.x + s.w)}, y ${r(s.y)}–${r(s.y + s.h)}${of} (near ${near})`
     : `the point at x ${r(s.x)}, y ${r(s.y)}${of} (near ${near})`;
@@ -64,13 +64,66 @@ export function fromFrac(f, size) {
   return { x: f.x * W, y: f.y * H, w: f.w * W, h: f.h * H };
 }
 
+// ---- a note stays on what it marked (SHEP-115) ---------------------------------------------------------------------
+// The layer lies still over the artifact while its content scrolls under it, so a note isn't kept in the layer's px: its
+// {x, y, w, h} are fractions of the whole content (toFrac of the spot less the content's top left), and on a recipe
+// it also keeps an anchor, the spot as fractions of the tag it starts on ({ key, x, y, w, h, rects? }; not cut to 0..1:
+// a drag may run past its tag). Drawn, a note finds its tag where it is now (scrolled, or reflowed by a new width).
+
+const ANCHOR_MAX = 100;
+const rel = (v) => (Number.isFinite(v) ? Math.max(-ANCHOR_MAX, Math.min(ANCHOR_MAX, v)) : 0);
+
+/** A box as fractions of another (its tag's): { x, y, w, h }. */
+export function relTo(s, b) {
+  const W = Math.max(1, b.w), H = Math.max(1, b.h);
+  return { x: rel((s.x - b.x) / W), y: rel((s.y - b.y) / H), w: rel((s.w || 0) / W), h: rel((s.h || 0) / H) };
+}
+
+/** A box kept as fractions of its tag back in the px its tag's box is in. */
+export const fromRel = (r, b) => ({ x: b.x + r.x * b.w, y: b.y + r.y * b.h, w: r.w * b.w, h: r.h * b.h });
+
+/** What a spot stays on: the innermost tag under its middle (else under its top left), with the spot as fractions of
+ *  it, and the boxes of selected words the same way; null when it's on no tag. nodes: the tags' boxes in the spot's px. */
+export function anchorOf(nodes, s, rects) {
+  const list = nodes ?? [];
+  const key = keysUnder(list, { x: s.x + (s.w || 0) / 2, y: s.y + (s.h || 0) / 2, w: 0, h: 0 })[0] ?? keysUnder(list, { x: s.x, y: s.y, w: 0, h: 0 })[0];
+  const b = key && list.find((n) => n.key === key);
+  if (!b) return null;
+  return { key, ...relTo(s, b), ...(rects?.length ? { rects: rects.slice(0, RECTS_MAX).map((r) => relTo(r, b)) } : {}) };
+}
+
+/** An anchor as kept: a tag's key and finite fractions; null for anything else. */
+export function cleanAnchor(a) {
+  if (!a || typeof a !== "object" || typeof a.key !== "string" || !/^[\w./]{1,80}$/.test(a.key)) return null;
+  const box = (r) => ({ x: rel(r.x), y: rel(r.y), w: rel(r.w), h: rel(r.h) });
+  const rects = Array.isArray(a.rects) ? a.rects.filter(isBox).slice(0, RECTS_MAX).map(box) : [];
+  return { key: a.key, ...box(a), ...(rects.length ? { rects } : {}) };
+}
+
+/** Where a note is drawn now, in px of the layer: on its tag where that is now (boxOf(key): the tag's box in the
+ *  layer's px, or null when it isn't drawn), else at its fractions of the content, whose top left is at view.x, view.y
+ *  of the layer (scrolled: above it) and whose size is view.width × view.height. rects: selected words' boxes. */
+export function placeNote(n, boxOf, view) {
+  const b = n.anchor && boxOf ? boxOf(n.anchor.key) : null;
+  if (b && b.w > 0 && b.h > 0) {
+    const out = fromRel(n.anchor, b);
+    const rects = n.anchor.rects?.length ? n.anchor.rects.map((r) => fromRel(r, b)) : (n.quote?.rects ?? []).map((r) => shift(fromFrac(r, view), view));
+    return { ...out, rects };
+  }
+  return { ...shift(fromFrac(n, view), view), rects: (n.quote?.rects ?? []).map((r) => shift(fromFrac(r, view), view)) };
+}
+const shift = (s, o) => ({ ...s, x: s.x + (o?.x ?? 0), y: s.y + (o?.y ?? 0) });
+
+/** A spot in px of the layer as a note keeps it: fractions of the content (view, as for placeNote). */
+export const contentFrac = (s, view) => toFrac({ x: s.x - (view?.x ?? 0), y: s.y - (view?.y ?? 0), w: s.w, h: s.h }, view);
+
 /** Where a device keeps its draft for one version of an artifact (the web's localStorage key; the window's file name). */
 export const draftKey = (id, v) => `shepherdr.markup:${id}:v${v}`;
 
 /** A draft as text to keep: its notes ({x, y, w, h} fractions and words) and the general words; null when there's
  *  nothing to keep (the draft goes). */
 export function draftText(notes, general) {
-  const list = (notes ?? []).map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: String(n.text ?? ""), ...keptOn(n.on), ...keptKind(n) }));
+  const list = (notes ?? []).map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: String(n.text ?? ""), ...keptOn(n.on), ...keptKind(n), ...keptAnchor(n) }));
   const g = String(general ?? "");
   if (!list.length && !g.trim()) return null;
   return JSON.stringify({ notes: list.slice(0, NOTES_MAX), general: g });
@@ -86,7 +139,7 @@ export function readDraft(text) {
   const notes = (Array.isArray(d.notes) ? d.notes : [])
     .filter((n) => n && typeof n === "object" && [n.x, n.y, n.w, n.h].every((v) => typeof v === "number"))
     .slice(0, NOTES_MAX)
-    .map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: typeof n.text === "string" ? n.text : "", ...keptOn(n.on), ...keptKind(n) }));
+    .map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: typeof n.text === "string" ? n.text : "", ...keptOn(n.on), ...keptKind(n), ...keptAnchor(n) }));
   return { notes, general: typeof d.general === "string" ? d.general : "" };
 }
 
@@ -97,6 +150,7 @@ function keptKind(n) {
   if (p) return { picture: { ...p, ...(isBox(n.picture.spot) ? { spot: fracBox(n.picture.spot) } : {}) } };
   return {};
 }
+const keptAnchor = (n) => { const a = cleanAnchor(n?.anchor); return a ? { anchor: a } : {}; };
 const isBox = (b) => b && typeof b === "object" && [b.x, b.y, b.w, b.h].every((v) => typeof v === "number");
 const fracBox = (b) => ({ x: frac(b.x), y: frac(b.y), w: frac(b.w), h: frac(b.h) });
 
@@ -457,8 +511,31 @@ export function sawPicture(where, key, bounds, position, size) {
   L.pics.set(key, { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height, size: size?.w && size?.h ? size : null, epoch: L.epoch, seq: L.seq });
 }
 
+/** A pointer move over the recipe's whole content (SHEP-115): its box in window px, scrolled (its top above the view's)
+ *  and as tall as all of it, so a note keeps its spot as fractions of the content. */
+export function sawContent(where, bounds) {
+  if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return;
+  const L = layoutOf(where);
+  L.content = { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height };
+}
+
+/** The content's box as the pointer last saw it (a press always comes after a move over it), in px of a layer whose
+ *  top left is at origin (window px), as placeNote's view ({ x, y, width, height, page }); null before any. */
+export function contentView(where, origin) {
+  const c = layoutOf(where).content, o = origin ?? { x: 0, y: 0 };
+  return c ? { x: c.x - o.x, y: c.y - o.y, width: c.w, height: c.h, page: true } : null;
+}
+
 /** Scrolled or resized: the boxes kept so far are no longer where they were. */
 export function layoutMoved(where) { const L = layoutOf(where); L.epoch += 1; L.boxes.clear(); L.pics.clear(); }
+
+// The window draws a note inside what it marked (SHEP-115): the recipe view asks Mark up for the marks on each tag
+// (key) and on its whole content (null) as it draws them, so they scroll and reflow with it.
+const drawers = new Map();
+/** Mark up's marks for one place: fn(key) gives the elements drawn on that tag (null: on the whole content). */
+export function setMarksDrawer(where, fn) { drawers.set(where, fn); }
+/** The marks on a tag (or the whole content, null) as Mark up draws them there now: [] for none. */
+export function marksOn(where, key) { const f = drawers.get(where); return (f && f(key)) || []; }
 
 /** The recipe and its kept boxes in the px of a layer whose top left is at origin (window px): for a click only the
  *  boxes the pointer's last move was over (fresh), for a drag every box seen since the last scroll. pics: the
