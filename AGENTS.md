@@ -190,6 +190,9 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   for the full-screen layout.
 - Web tests that render screens/Recipe.tsx need kernel.ts page globals and mock.module of web/plugins/chat/markdown.tsx
   (DOMPurify needs a DOM): see web/plugins/artifacts/spots.test.tsx.
+- Mark up messages end to end: run service/actions.ts act() with a real Artifacts instance and HERDR_APP_HOME pointing
+  at a scratch mods/artifacts/bin/herdr-artifact wrapper that loads the branch CLI with STORE patched and run()
+  capturing hc send.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
