@@ -416,6 +416,9 @@ def recipe_parts(dst):
     """The shared recipe view in an installed (or checked) recipe artifact: main.js draws recipe.json natively."""
     shutil.copyfile(RECIPE_VIEW, os.path.join(dst, "recipe-view.js"))
     shutil.copyfile(RECIPE_CORE, os.path.join(dst, "recipe.js"))
+    # the boxes it keeps for Mark up's notes (SHEP-113), in the copy Mark up imports too
+    os.makedirs(os.path.join(dst, "core"), exist_ok=True)
+    shutil.copyfile(os.path.join(os.path.dirname(MARKUP), "core", "markup.js"), os.path.join(dst, "core", "markup.js"))
     for f in RECIPE_TRANSLATE:
         shutil.copyfile(f, os.path.join(dst, os.path.basename(f)))
     # the recipe as a module the view imports at once (a check then draws every block, not an empty panel)
@@ -1501,11 +1504,11 @@ def rect(s):
 
 
 NOTES_MAX = 30  # core/markup.js NOTES_MAX
+BLOCKS_MAX = 5  # core/markup.js BLOCKS_MAX
 
 
-def read_notes(v):
-    """--notes: a JSON list of {"text", "spot"} (spot: where on it, in words; may be left out), given as JSON, @file or
-    - (stdin). Numbered in its order, as marked on the artifact."""
+def json_arg(v, name):
+    """An option's JSON, given as JSON, @file or - (stdin)."""
     if v == "-":
         v = sys.stdin.read()
     elif v.startswith("@"):
@@ -1515,8 +1518,51 @@ def read_notes(v):
         except OSError as e:
             raise Fail(f"Can't read {v[1:]}: {e.strerror}")
     try:
-        d = json.loads(v)
+        return json.loads(v)
     except ValueError:
+        raise Fail(f"{name} isn't JSON.")
+
+
+def read_blocks(d):
+    """What a note on a recipe is on (SHEP-113): {"blocks": [{"path", "kind", "text", "file"}], "more": n} (or the
+    list alone), each block as Mark up named it (core/markup.js recipeTarget): at most BLOCKS_MAX, the rest counted."""
+    more = d.get("more") if isinstance(d, dict) else 0
+    blocks = d.get("blocks") if isinstance(d, dict) else d
+    out = []
+    for b in blocks if isinstance(blocks, list) else []:
+        if not isinstance(b, dict) or not isinstance(b.get("path"), str) or not isinstance(b.get("kind"), str):
+            continue
+        x = {"path": b["path"].strip()[:120], "kind": b["kind"].strip()[:40], "text": str(b.get("text") or "").strip()[:120]}
+        if isinstance(b.get("file"), str) and b["file"].strip():
+            x["file"] = b["file"].strip()[:120]
+        out.append(x)
+    more = (more if isinstance(more, int) and more > 0 else 0) + max(0, len(out) - BLOCKS_MAX)
+    return out[:BLOCKS_MAX], min(more, 999)
+
+
+def block_line(b):
+    """One block a note is on, in words: 'the heading at blocks[0]: “Release plan”', 'the image at blocks[4]:
+    “Sign-in” (login.png)'."""
+    return f"the {b['kind']} at {b['path']}" + (f": “{b['text']}”" if b["text"] else "") + (f" ({b['file']})" if b.get("file") else "")
+
+
+def where_lines(spot, blocks, more):
+    """Where a note is: the blocks it is on (each its path in recipe.json, its kind and a short excerpt), then its spot
+    in px as a fallback; only the spot on a custom panel."""
+    if not blocks:
+        return []
+    n = len(blocks) + more
+    lines = [f"On {block_line(blocks[0])}"] if n == 1 else [f"On {n} blocks:"] + [f"- {block_line(b)}" for b in blocks] + ([f"- and {more} more"] if more else [])
+    return lines + ([f"Spot: {spot}"] if spot else [])
+
+
+def read_notes(v):
+    """--notes: a JSON list of {"text", "spot", "blocks", "more"} (spot: where on it, in words; blocks: what on a
+    recipe it is on, as --blocks; each may be left out), given as JSON, @file or - (stdin). Numbered in its order, as
+    marked on the artifact."""
+    try:
+        d = json_arg(v, "--notes")
+    except Fail:
         raise Fail("--notes isn't JSON: give a list of {\"text\": …, \"spot\": …}.")
     if isinstance(d, dict) and isinstance(d.get("notes"), list):
         d = d["notes"]
@@ -1529,7 +1575,8 @@ def read_notes(v):
         n = {"text": n} if isinstance(n, str) else n
         text = str(n.get("text") or "").strip()[:4000]
         spot = str(n.get("spot") or "").strip()[:300]
-        out.append({"text": text, "spot": spot})
+        blocks, more = read_blocks(n)
+        out.append({"text": text, "spot": spot, **({"blocks": blocks, "more": more} if blocks else {})})
     return out
 
 
@@ -1538,8 +1585,13 @@ def note_lines(notes, general):
     the general words."""
     lines = [f"{len(notes)} notes, numbered as marked on it:"]
     for i, n in enumerate(notes, 1):
+        words = n["text"] or "(no words: just this spot)"
+        on = where_lines(n["spot"], n.get("blocks") or [], n.get("more") or 0)
+        if on:
+            lines.append(f"{i}. " + "\n".join(on) + f"\n{words}")
+            continue
         where = f"On {n['spot']}" if n["spot"] else "On it"
-        lines.append(f"{i}. {where}:\n{n['text'] or '(no words: just this spot)'}")
+        lines.append(f"{i}. {where}:\n{words}")
     if general:
         lines.append(f"About all of it:\n{general}")
     return lines
@@ -1550,8 +1602,12 @@ def cmd_note(o):
     (--notes) go as one message; one note without --text is sent as a single note, as before."""
     notes = read_notes(o.notes) if o.notes is not None else []
     text, spot = (o.text or "").strip(), o.spot
+    blocks, more = read_blocks(json_arg(o.blocks, "--blocks")) if o.blocks else ([], 0)
     if len(notes) == 1 and not text:
-        text, spot, notes = notes[0]["text"], notes[0]["spot"] or o.spot, []
+        one = notes[0]
+        text, spot, notes = one["text"], one["spot"] or o.spot, []
+        if one.get("blocks"):
+            blocks, more = one["blocks"], one["more"]
     if not text and not notes:
         raise Fail("Nothing to send: give --text or --notes.")
     image = o.image
@@ -1576,7 +1632,8 @@ def cmd_note(o):
                 pass
     if o.machine:
         args = ["note", o.id, "--json"] + (["--text", text] if text else []) + (["--version", str(o.version)] if o.version else []) \
-            + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else [])
+            + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else []) \
+            + (["--blocks", json.dumps({"blocks": blocks, "more": more}, ensure_ascii=False)] if blocks and not notes else [])
         if o.answer:
             args += ["--answer", o.answer, "--value", o.value or "null", "--by", o.by or "window"]
         if image:
@@ -1609,7 +1666,10 @@ def cmd_note(o):
         lines = note_lines(notes, text)
     else:
         on = f' on="{attr(spot)}"' if spot else ""
-        lines = [text]
+        # on a recipe: the blocks it is on, before the words (the spot stays in on=)
+        lines = (where_lines("", blocks, more) if blocks else []) + [text]
+        if lines[:-1]:
+            lines = ["\n".join(lines)]
     if v != a["version"]:
         lines.append(f"(Written on v{v}; the latest is v{a['version']}.)")
     if image:
@@ -2578,10 +2638,13 @@ def main():
     c = cmd("note", cmd_note, "send the person's note on an artifact to the agent that keeps it (the viewer's Mark up)")
     c.add_argument("id")
     c.add_argument("--text", help="what the person wrote (with --notes: their words about all of it, optional)")
-    c.add_argument("--notes", help='several numbered notes sent as one message: a JSON list of {"text": …, "spot": …} '
-                   "(spot: where on it, in words), as JSON, @file or - for stdin")
+    c.add_argument("--notes", help='several numbered notes sent as one message: a JSON list of {"text": …, "spot": …, '
+                   '"blocks": […], "more": n} (spot: where on it, in words; blocks and more: on a recipe, as --blocks), '
+                   "as JSON, @file or - for stdin")
     c.add_argument("--version", type=int, help="the version they were looking at (default: the latest)")
     c.add_argument("--spot", help="where on it, in words")
+    c.add_argument("--blocks", help='a single note on a recipe: what it is on, {"blocks": [{"path": "blocks[3].rows[1]", '
+                   '"kind": "table row 2", "text": "…", "file": "…"}], "more": 0} as JSON, @file or -')
     c.add_argument("--image", help="a picture of it, a path the agent can read")
     c.add_argument("--shot", help="a window shot (herdr-app shot) to cut the panel from; removed after")
     c.add_argument("--panel", help="the panel in the shot, logical px: x,y,w,h")

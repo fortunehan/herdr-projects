@@ -7,6 +7,7 @@ import { Recipe, UNREADABLE, type Answers } from '@client/screens/Recipe.tsx'
 import { enterHint, sendsNow } from '@client/enter.ts'
 import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
+import { keepRecipe, noteOnPage, recipeKey, shownRecipe, type On } from './spots.ts'
 import * as CV from '@core/chat-view.js'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { artifactKey, retry as retryTranslate, toggle as toggleTranslate, useShown as useTranslation, useTranslateOn } from '@plugins/chat/translate.ts'
@@ -112,8 +113,9 @@ function Stepper({ art, shown, onStep, bar }: { art: Artifact; shown: number; on
 }
 
 type Spot = { x: number; y: number; w: number; h: number }
-/** a numbered note: its spot as fractions of the layer (core/markup.js toFrac) and its words */
-type Note = Spot & { text: string }
+/** a numbered note: its spot as fractions of the layer (core/markup.js toFrac), its words and, on a recipe, the blocks
+ *  it is on (SHEP-113) */
+type Note = Spot & { text: string; on?: On }
 
 const loadDraft = (id: string, v: number): { notes: Note[]; general: string } => {
   try { return readDraft(localStorage.getItem(draftKey(id, v))) } catch { return { notes: [], general: '' } }
@@ -187,8 +189,8 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
     setSaid(MARKUP.sending)
     const base = { place: art.place, artifact: art.id, v }
     const msg: Action = out.kind === 'say' ? { type: 'artifact-say', ...base, text: out.text }
-      : out.kind === 'note' ? { type: 'artifact-note', ...base, note: out.text, target: out.spot }
-      : { type: 'artifact-note', ...base, notes: out.notes.map((n: { text: string; spot: string }) => ({ note: n.text, target: n.spot })), text: out.text }
+      : out.kind === 'note' ? { type: 'artifact-note', ...base, note: out.text, target: out.spot, ...(out.blocks ? { blocks: out.blocks, more: out.more ?? 0 } : {}) }
+      : { type: 'artifact-note', ...base, notes: out.notes.map((n: { text: string; spot: string; blocks?: unknown[]; more?: number }) => ({ note: n.text, target: n.spot, ...(n.blocks ? { blocks: n.blocks, more: n.more ?? 0 } : {}) })), text: out.text }
     const r = (await act(msg).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string }
     setSending(false)
     if (r.ok === false) {
@@ -242,7 +244,10 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
         if (!press) return
         const s = press.moved ? box(press) : { x: press.x0, y: press.y0, w: 0, h: 0 }
         setPress(null)
-        setNotes([...notes, { ...toFrac(s, size), text: '' }])
+        // on a recipe: the blocks under it, from the recipe drawn beneath the layer
+        const layer = ref.current!
+        const on = layer.parentElement ? noteOnPage(layer.parentElement, layer.getBoundingClientRect(), shownRecipe(recipeKey(art.id, v, art.machine)), s) : null
+        setNotes([...notes, { ...toFrac(s, size), text: '', ...(on ? { on } : {}) }])
         pick(notes.length)
       }}
     >
@@ -570,6 +575,12 @@ function RecipeFrame({ art, v, full, fullScreen }: Parameters<typeof PageFrame>[
       .then((a) => !gone && a && typeof a === 'object' && setAnswers(a as Answers), () => undefined)
     return () => { gone = true }
   }, [art.id, v, on])
+  // Mark up laid over it names the blocks a note is on from this recipe (SHEP-113)
+  useEffect(() => {
+    const k = recipeKey(art.id, v, art.machine)
+    keepRecipe(k, recipe)
+    return () => keepRecipe(k, null)
+  }, [art.id, v, art.machine, recipe])
   if (error) return <p className="p-4 text-fg3">{error}</p>
   if (!recipe) return <p className="p-4 text-fg3">Loading…</p>
   return (

@@ -41,6 +41,9 @@ copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(mod
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(mod, "recipe.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(mod, "translate.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(mod, "paths.js"));
+// what Mark up reads its boxes from (SHEP-113), as herdr-artifact installs it
+mkdirSync(join(mod, "core"), { recursive: true });
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/markup.js"), join(mod, "core", "markup.js"));
 writeFileSync(join(mod, "recipe-data.js"), `export default ${JSON.stringify(RECIPE)};\n`);
 writeFileSync(join(mod, "artifact.js"), "export const id = \"x\"; export const version = 1; export const machine = null; export const asset = (s) => `mods/art-x/${s}`; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n");
 const { default: RecipeView } = await import(join(mod, "recipe-view.js"));
