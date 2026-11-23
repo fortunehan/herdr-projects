@@ -196,9 +196,88 @@ test("the window's boxes: kept as the pointer crosses them, gone after a scroll"
   sawBox("panel", "0", { x: 100, y: 100, width: 600, height: 30 }, { x: 150, y: 110 });
   expect(seenBoxes("panel", { x: 100, y: 100 }, true).nodes.map((n) => n.key)).toEqual(["0"]);
   expect(seenBoxes("panel", { x: 100, y: 100 }, false).nodes.map((n) => n.key).sort()).toEqual(["0", "3", "3/rows.1"]);
-  expect(seenBoxes("viewer", { x: 0, y: 0 }, false)).toEqual({ recipe: null, nodes: [] });
+  expect(seenBoxes("viewer", { x: 0, y: 0 }, false)).toEqual({ recipe: null, nodes: [], pics: [] });
   layoutMoved("panel");
   expect(seenBoxes("panel", { x: 100, y: 100 }, false).nodes).toEqual([]);
   sawBox("panel", "x", undefined, { x: 1, y: 1 });
   expect(seenBoxes("panel", { x: 0, y: 0 }, false).nodes).toEqual([]);
+});
+
+// ---- SHEP-114: notes on selected words and on pictures ----
+import { quoteOf, cleanQuote, cleanPicture, describeInPicture, pictureSpot, pictureUnder, pictureAt, QUOTE_MAX, CONTEXT_MAX } from "./markup.js";
+
+test("selected words become a quote with a little of the block's text on each side", () => {
+  expect(quoteOf("ship on  Friday", "The plan is that we ", " after the review.")).toEqual({ text: "ship on Friday", before: "The plan is that we ", after: " after the review." });
+  expect(quoteOf("   ", "a", "b")).toBeNull();
+  // a long block: the context is cut at a word, with an ellipsis
+  const long = "word ".repeat(60);
+  const q = quoteOf("this", long, ` ${long}`);
+  expect(q.before.startsWith("…")).toBe(true);
+  expect(q.before.length).toBeLessThanOrEqual(CONTEXT_MAX + 2);
+  expect(q.before.endsWith("word ")).toBe(true);
+  expect(q.after.endsWith("word…")).toBe(true);
+  expect(quoteOf("x".repeat(QUOTE_MAX + 50)).text).toHaveLength(QUOTE_MAX);
+  expect(cleanQuote({ text: "" })).toBeNull();
+});
+
+test("a spot in a picture is described in the picture's own px, or in percent when its size isn't known", () => {
+  const pic = { file: "login.png", width: 1280, height: 800 };
+  expect(describeInPicture({ x: 0.5, y: 0, w: 0.5, h: 0.5 }, pic)).toBe("the 640×400 px area at x 640–1280, y 0–400 (the top right quarter)");
+  expect(describeInPicture({ x: 0.7, y: 0.15, w: 0, h: 0 }, pic)).toBe("the point at x 896, y 120 (near the top right)");
+  expect(describeInPicture({ x: 0, y: 0.6, w: 1, h: 0.3 }, pic)).toBe("the 1280×240 px area at x 0–1280, y 480–720 (the bottom half)");
+  expect(describeInPicture({ x: 0.3, y: 0.3, w: 0.4, h: 0.4 }, { file: "a.png" })).toBe("the area from 30% to 70% across, 30% to 70% down (the middle)");
+  expect(pictureSpot(pic, describeInPicture({ x: 0.5, y: 0, w: 0.5, h: 0.5 }, pic))).toBe("the 640×400 px area at x 640–1280, y 0–400 (the top right quarter) of picture “login.png” (1280×800)");
+  expect(pictureSpot({ file: "a.png" })).toBe("picture “a.png”");
+});
+
+test("a click or a drag on a picture in Mark up finds it, the spot clipped to it", () => {
+  const pics = [{ x: 100, y: 200, w: 400, h: 250, file: "login.png", path: "blocks[3]", caption: "Sign-in", width: 1280, height: 800 }];
+  expect(pictureUnder(pics, { x: 400, y: 225, w: 0, h: 0 })).toEqual({ picture: { file: "login.png", path: "blocks[3]", caption: "Sign-in", width: 1280, height: 800 }, spot: { x: 0.75, y: 0.1, w: 0, h: 0 } });
+  // a drag mostly inside: clipped to the picture
+  expect(pictureUnder(pics, { x: 300, y: 190, w: 220, h: 135 })?.spot).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 });
+  // a drag mostly outside, or a click beside it: none
+  expect(pictureUnder(pics, { x: 0, y: 0, w: 600, h: 600 })).toBeNull();
+  expect(pictureUnder(pics, { x: 50, y: 50, w: 0, h: 0 })).toBeNull();
+  expect(cleanPicture({ file: "", width: 3 })).toBeNull();
+  expect(cleanPicture({ file: "a.png", width: 10, height: -1, alt: " x " })).toEqual({ file: "a.png", alt: "x" });
+});
+
+test("a picture's details come from the recipe: an image block or a pair's side", () => {
+  const r = { blocks: [{ type: "text", md: "x" }, { type: "image", src: "shots/login.png", caption: "Sign-in", w: 1280, h: 800 }, { type: "pair", before: { src: "a.png" }, after: { src: "b.mp4" } }] };
+  expect(pictureAt(r, "1")).toEqual({ file: "login.png", path: "blocks[1]", caption: "Sign-in", width: 1280, height: 800 });
+  expect(pictureAt(r, "2/before")).toEqual({ file: "a.png", path: "blocks[2].before" });
+  expect(pictureAt(r, "2/after")).toBeNull();
+  expect(pictureAt(r, "0")).toBeNull();
+});
+
+test("Send all: a quote goes with its block and no px spot; a picture by its name, its spot in it", () => {
+  const on = { blocks: [{ path: "blocks[1]", kind: "text", text: "The plan is that we ship on Friday" }], more: 0 };
+  const quoted = { ...note({ x: 100, y: 100, w: 120, h: 20 }, "Say Monday"), on, quote: { text: "ship on Friday", before: "The plan is that we ", after: " after the review.", rects: [{ x: 0.1, y: 0.2, w: 0.2, h: 0.04 }] } };
+  const pic = { ...note({ x: 360, y: 300, w: 180, h: 100 }, "Too dark"), picture: { file: "login.png", path: "blocks[3]", caption: "Sign-in", width: 1280, height: 800, spot: { x: 0.5, y: 0, w: 0.5, h: 0.5 } } };
+  const whole = { ...note({ x: 0, y: 200, w: 400, h: 250 }, "Crop it"), picture: { file: "login.png", path: "blocks[3]" } };
+  expect(outgoing([quoted], "", size)).toEqual({ kind: "note", text: "Say Monday", spot: "", blocks: on.blocks, quote: { text: "ship on Friday", before: "The plan is that we ", after: " after the review." } });
+  const all = outgoing([quoted, pic, whole], "Thanks", size);
+  expect(all.notes[1]).toEqual({
+    text: "Too dark",
+    spot: "the 640×400 px area at x 640–1280, y 0–400 (the top right quarter) of picture “login.png” (1280×800)",
+    picture: { file: "login.png", path: "blocks[3]", caption: "Sign-in", width: 1280, height: 800, spot: "the 640×400 px area at x 640–1280, y 0–400 (the top right quarter)" },
+  });
+  expect(all.notes[2]).toEqual({ text: "Crop it", spot: "picture “login.png”", picture: { file: "login.png", path: "blocks[3]" } });
+  // drafts keep both kinds, the quote's highlight boxes too
+  expect(readDraft(draftText([quoted, pic, whole], "")).notes).toEqual([quoted, pic, whole]);
+});
+
+test("the window's picture boxes: named from the recipe, with the size the view read", async () => {
+  const { sawPicture } = await import("./markup.js");
+  const r = { blocks: [{ type: "image", src: "shots/login.png", caption: "Sign-in" }, { type: "text", md: "x" }] };
+  setLayoutRecipe("viewer", r);
+  layoutMoved("viewer");
+  sawPicture("viewer", "0", { x: 100, y: 100, width: 640, height: 400 }, { x: 120, y: 120 }, { w: 1280, h: 800 });
+  sawPicture("viewer", "1", { x: 100, y: 600, width: 10, height: 10 }, { x: 101, y: 601 });
+  // a drag sees every picture box since the last scroll; the text isn't a picture
+  expect(seenBoxes("viewer", { x: 100, y: 100 }, false).pics).toEqual([{ key: "0", x: 0, y: 0, w: 640, h: 400, file: "login.png", path: "blocks[0]", caption: "Sign-in", width: 1280, height: 800 }]);
+  // a click only the box under the pointer's last move
+  expect(seenBoxes("viewer", { x: 100, y: 100 }, true).pics).toEqual([]);
+  layoutMoved("viewer");
+  expect(seenBoxes("viewer", { x: 0, y: 0 }, false).pics).toEqual([]);
 });

@@ -28,8 +28,9 @@ const SHOWN = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; st
 
 /** an answer to keep: its block's key (an id, or "<id>-<n>" for a button among buttons) and its value */
 export type Keep = { key: string; value: unknown };
-/** what a Mark up note on a recipe is on (SHEP-113, core/markup.js recipeTarget) */
-export type On = { blocks?: unknown[]; more?: number };
+/** what a Mark up note on a recipe is on (SHEP-113, core/markup.js recipeTarget); selected words' quote or the
+ *  picture it is on (SHEP-114, core/markup.js cleanQuote, cleanPicture) */
+export type On = { blocks?: unknown[]; more?: number; quote?: unknown; picture?: unknown };
 const KEY = /^[\w.-]{1,120}$/;
 
 export type Art = { id: string; title: string; version: number; folder: string; publisher?: string; task?: string | null; at: number; files: string[]; versions: { v: number; at: number; publisher?: string; note?: string }[]; machine?: string; folderName?: string };
@@ -169,8 +170,9 @@ export class Artifacts {
     if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");
     // an answer (a choice, a form, a button): herdr-artifact keeps it with the version first, then sends the words
     const answer = keep && KEY.test(keep.key) ? ["--answer", keep.key, "--value", JSON.stringify(keep.value ?? null), "--by", "web"] : [];
-    // on a recipe: the blocks the note is on (SHEP-113)
-    const blocks = on.blocks?.length ? ["--blocks", JSON.stringify({ blocks: on.blocks, more: on.more ?? 0 })] : [];
+    // on a recipe: the blocks the note is on (SHEP-113), the selected words or the picture (SHEP-114)
+    const kind = { ...(on.quote ? { quote: on.quote } : {}), ...(on.picture ? { picture: on.picture } : {}) };
+    const blocks = on.blocks?.length || on.quote || on.picture ? ["--blocks", JSON.stringify({ blocks: on.blocks ?? [], more: on.more ?? 0, ...kind })] : [];
     const args = [...(machine ? ["--on", machine] : []), "note", id, "--text", text, "--version", String(v), "--json", ...(spot ? ["--spot", spot] : []), ...blocks, ...answer];
     const r = await run(args);
     if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
@@ -180,7 +182,10 @@ export class Artifacts {
   /** Mark up's Send all (SHEP-88): numbered notes ({text, spot}) and the words about all of it as one message
    *  (herdr-artifact note --notes); one note without general words goes as the single note it always was. */
   async notes(id: string, v: number, notes: ({ text: string; spot?: string } & On)[], general = "", machine: string | null = null) {
-    if (notes.length === 1 && !general && notes[0].text) return this.say(id, v, notes[0].text, notes[0].spot || undefined, undefined, { blocks: notes[0].blocks, more: notes[0].more }, machine);
+    if (notes.length === 1 && !general && notes[0].text) {
+      const { blocks, more, quote, picture } = notes[0];
+      return this.say(id, v, notes[0].text, notes[0].spot || undefined, undefined, { blocks, more, quote, picture }, machine);
+    }
     if (!/^\w[\w.-]{0,119}$/.test(id)) throw new Error("Not an artifact.");
     machine ??= this.machineOf(id);
     if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");

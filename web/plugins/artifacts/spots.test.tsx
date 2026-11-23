@@ -3,7 +3,7 @@
 import { afterAll, expect, mock, test } from 'bun:test'
 import { join } from 'node:path'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { blockOfNode, keepRecipe, noteOnPage, recipeKey, shownRecipe, tagBoxes, tagsUnder, type Tagged } from './spots.ts'
+import { blockOfNode, keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, tagBoxes, tagsUnder, type PicEl, type Tagged } from './spots.ts'
 import * as M from '@core/markup.js'
 
 const recipeTarget = (M as any).recipeTarget as (r: unknown, k: string) => unknown
@@ -96,4 +96,73 @@ test('the recipe shown is kept for Mark up while it shows', () => {
   expect(shownRecipe(recipeKey('abc', 2, 'mini'))).toBeNull()
   keepRecipe(k, null)
   expect(shownRecipe(k)).toBeNull()
+})
+
+// SHEP-114: Comment on selected words or on a picture
+const words = { blocks: [{ type: 'text', id: 't', md: 'The plan is that we ship on Friday after the review.' }, { type: 'list', id: 'l2', items: ['One', 'Two'] }, { type: 'image', id: 'p', src: 'shots/login.png', caption: 'Sign-in screen' }, { type: 'pair', id: 'pp', before: { src: 'a.png' }, after: { src: 'b.png' } }] }
+
+test('selected words become a note with the quote, its context, its block path and the boxes to highlight', () => {
+  const text = el('0', { left: 116, top: 66, width: 600, height: 48 })
+  // the words cross a line: two boxes, one of them given twice (text and element)
+  const rects = [{ left: 300, top: 70, width: 200, height: 20 }, { left: 300, top: 70, width: 200, height: 20 }, { left: 116, top: 92, width: 80, height: 20 }, { left: 0, top: 0, width: 0, height: 0 }]
+  const seed = quoteSeed({ text: 'ship on\nFriday', prefix: 'The plan is that we ', rest: ' after the review.', rects, start: text, end: text }, origin, words)
+  expect(seed).toEqual({
+    spot: { x: 16, y: 20, w: 384, h: 42 },
+    on: { blocks: [{ path: 'blocks[0]', kind: 'text', text: 'The plan is that we ship on Friday after the review.' }], more: 0 },
+    quote: { text: 'ship on Friday', before: 'The plan is that we ', after: ' after the review.', rects: [{ x: 200, y: 20, w: 200, h: 20 }, { x: 16, y: 42, w: 80, h: 20 }] },
+  })
+  // from a paragraph into a list item: both are named
+  const item = el('1/items.1', { left: 116, top: 130, width: 600, height: 24 })
+  expect(quoteSeed({ text: 'review. One Two', prefix: '', rest: '', rects: rects.slice(0, 1), start: text, end: item }, origin, words)?.on?.blocks.map((b) => b.path)).toEqual(['blocks[0]', 'blocks[1].items[1]'])
+  // nothing of the recipe selected, or only spaces: no note
+  expect(quoteSeed({ text: 'x', prefix: '', rest: '', rects, start: el(null, rects[0]), end: null }, origin, words)).toBeNull()
+  expect(quoteSeed({ text: '  ', prefix: '', rest: '', rects, start: text, end: text }, origin, words)).toBeNull()
+})
+
+// a stand-in <img data-pic> in its tagged block
+const img = (key: string, r: { left: number; top: number; width: number; height: number }, size: [number, number], alt = ''): PicEl => ({
+  getAttribute: () => null, getBoundingClientRect: () => r, alt, naturalWidth: size[0], naturalHeight: size[1],
+  closest: (sel) => (sel === '[data-rp]' ? el(key, r) : null),
+})
+
+test('a picture note names the picture: its file, place, caption and its own size', () => {
+  const login = img('2', { left: 116, top: 200, width: 640, height: 400 }, [1280, 800], 'Sign-in screen')
+  expect(pictureSeed(login, origin, words)).toEqual({ spot: { x: 16, y: 150, w: 640, h: 400 }, picture: { file: 'login.png', path: 'blocks[2]', caption: 'Sign-in screen', width: 1280, height: 800 } })
+  const before = img('3/before', { left: 116, top: 620, width: 300, height: 200 }, [600, 400], 'Before')
+  expect(pictureSeed(before, origin, words)?.picture).toEqual({ file: 'a.png', path: 'blocks[3].before', alt: 'Before', width: 600, height: 400 })
+  // not a recipe's picture: none
+  expect(pictureSeed(login, origin, null)).toBeNull()
+  const page = { querySelectorAll: (sel: string) => (sel === 'img[data-pic]' ? [login, before] : []) }
+  expect(picturesOnPage(page, origin, words).map((p) => [p.file, p.x, p.y, p.w, p.h])).toEqual([['login.png', 16, 150, 640, 400], ['a.png', 16, 570, 300, 200]])
+})
+
+test('the recipe view tags each picture with its file, for Comment on this picture', () => {
+  const html = renderToStaticMarkup(<Recipe recipe={words} asset={(s) => s} />)
+  expect([...html.matchAll(/data-pic="([^"]+)"/g)].map((m) => m[1])).toEqual(['shots/login.png', 'a.png', 'b.png'])
+})
+
+test('Send all asks for the quote and the picture with each note, as drafted on the layer', () => {
+  const { toFrac, outgoing, pictureUnder } = M as any
+  const size = { width: 800, height: 900 }
+  const text = el('0', { left: 116, top: 66, width: 600, height: 48 })
+  const q = quoteSeed({ text: 'ship on Friday', prefix: 'The plan is that we ', rest: ' after the review.', rects: [{ left: 300, top: 70, width: 120, height: 20 }], start: text, end: text }, origin, words)!
+  const login = img('2', { left: 116, top: 200, width: 640, height: 400 }, [1280, 800])
+  const page = { querySelectorAll: () => [login] }
+  // Mark up's drag over the picture's top right quarter
+  const drag = { x: 336, y: 150, w: 320, h: 200 }
+  const pic = pictureUnder(picturesOnPage(page, origin, words), drag)
+  const notes = [
+    { ...toFrac(q.spot, size), text: 'Say Monday', on: q.on, quote: { ...q.quote!, rects: q.quote!.rects.map((r) => toFrac(r, size)) } },
+    { ...toFrac(drag, size), text: 'Too dark', picture: { ...pic.picture, spot: pic.spot } },
+  ]
+  expect(noteAction(outgoing(notes, '', size), { place: 'p', artifact: 'abc', v: 2 })).toEqual({
+    type: 'artifact-note', place: 'p', artifact: 'abc', v: 2, text: '',
+    notes: [
+      { note: 'Say Monday', target: '', blocks: [{ path: 'blocks[0]', kind: 'text', text: 'The plan is that we ship on Friday after the review.' }], more: 0,
+        quote: { text: 'ship on Friday', before: 'The plan is that we ', after: ' after the review.' } },
+      { note: 'Too dark', target: 'the 640×400 px area at x 640–1280, y 0–400 (the top right quarter) of picture “login.png” (1280×800)',
+        picture: { file: 'login.png', path: 'blocks[2]', caption: 'Sign-in screen', width: 1280, height: 800, spot: 'the 640×400 px area at x 640–1280, y 0–400 (the top right quarter)' } },
+    ],
+  })
+  expect(noteAction({ kind: 'say', text: 'Hi' }, { place: 'p', artifact: 'abc', v: 2 })).toEqual({ type: 'artifact-say', place: 'p', artifact: 'abc', v: 2, text: 'Hi' })
 })
