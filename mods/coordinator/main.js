@@ -8,7 +8,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import { props, theme, settings, knownAgents, closeOverlay, home, exec, readTextFile, writeTextFile, watchFolder } from "herdr";
 import { terminals, inRender } from "./live.js";
-import { coordinatorIn, workersOf, entryFor, restartAgent, closeCoordinator, taskOf, switchTask } from "./coordinator.js";
+import { coordinatorIn, workersOf, entryFor, restartAgent, closeCoordinator, lastTabOf, taskOf, switchTask } from "./coordinator.js";
 import { TEXT, H, RADIUS, button as uiButton, heading, dialogFooter } from "./ui.js";
 // Switch agent's words: core/menus.js (the web app's Switch agent reads the same).
 import { SWITCH_AGENT } from "./core/menus.js";
@@ -197,7 +197,8 @@ export default class Coordinator extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(div().text_size(TEXT.title).font_semibold().text_color(t.foreground).child("Close the Assistant?"))
+      // Its space's only tab: the space closes with it, and opening the folder again makes a new space (SHEP-112).
+      .child(div().text_size(TEXT.title).font_semibold().text_color(t.foreground).child(lastTabOf(p.tab) ? "Close the Assistant and its space?" : "Close the Assistant?"))
       .child(div().text_size(TEXT.body).text_color(t.muted).child(n
         ? `It has ${n} worker${n > 1 ? "s" : ""} running. Their branches and worktrees stay either way.`
         : "It has no workers running."))

@@ -33,6 +33,7 @@ from .launch import (
 from .store import bare_by_mistake, is_task_list, locate, open_store, prefixes_in_use, read_list, Store, store_files
 from .queues import after_refs, parse_after, queue_reason, set_after
 from .archive import unarchive
+from .rehome import rehome, window_spaces
 from .output import line, minutes, say, view
 from .scheduler import ensure_scheduler
 from .proof import evidence, find_proof, here_mark
@@ -49,16 +50,28 @@ def cmd_where(args):
     say(args, {**loc, "slug": slug, "store": path, "prefix": st.prefix, "version": VERSION}, f"{loc['folder']}\n{path}")
 
 
+def rehome_here(s, spaces=None):
+    """SHEP-112: list and show say the space a task is in now (rehome.py), saved when they can save.
+    spaces: the window's, once looked at ([]: not yet). -> them, for the next list."""
+    if not any(not t.get("archived") and t.get("space") for t in s.data["tasks"]):
+        return spaces or []
+    if not spaces:
+        spaces = window_spaces() or [{}]
+    rehome(s, spaces)
+    return spaces
+
+
 def cmd_list(args):
     if args.all:
         folders = [d["folder"] for d in map(read_list, store_files()) if is_task_list(d)]
     else:
         folders = [locate(args.folder)["folder"]]
-    groups = []
+    groups, spaces = [], []
     for folder in folders:
         if not os.path.isdir(folder):
             continue
         with Store(locate(folder), write="try") as s:
+            spaces = rehome_here(s, spaces)
             out = []
             archived = sum(1 for t in s.data["tasks"] if t.get("archived"))
             for t in s.data["tasks"]:
@@ -297,6 +310,7 @@ def set_notes(t, args):
 def cmd_show(args):
     with open_store(args, write="try") as s:
         t = s.find(args.id)
+        rehome_here(s)
         live = [detail(k) for k in live_agents(s.key(t))]
         refresh_sessions(s, t, live)
         # Back at work since it said ready: saved at once, so the Accept card (which reads this)

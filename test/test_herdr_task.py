@@ -8364,3 +8364,123 @@ class AssistantOutputLanguage(unittest.TestCase):
         notice = self.aset.notice([{**rows["language"], "text": "Japanese", "value": "Japanese", "by": "everywhere"}])
         self.assertIn('name="language" value="Japanese"', notice)
         self.assertIn("Output language is now Japanese; your setting everywhere.", notice)
+
+
+class Rehome(unittest.TestCase):
+    """SHEP-112: a task kept for a space that closed (Herdr drops a closed space's id; its folder opened
+    again is a new space) goes to the live space at its folder, once; a task whose space is there never moves."""
+
+    def setUp(self):
+        from unittest import mock
+        sys.path.insert(0, BIN)
+        from herdr_task import launch, rehome, store, commands
+        self.r, self.l, self.st, self.c, self.mock = rehome, launch, store, commands, mock
+        self.tmp = tempfile.mkdtemp()
+        self.folder = os.path.join(self.tmp, "nitro")
+        os.makedirs(self.folder)
+        self.spaces = [{"id": "sp-new", "name": "nitro", "folder": self.folder},
+                       {"id": "sp-other", "name": "other", "folder": os.path.join(self.tmp, "other")},
+                       {"id": "vm/sp-old", "machine": "vm", "folder": self.folder}]
+        self.labels, self.assistants = [], set()
+        self.agents = {}
+        for target, name, value in ((store, "STORE", os.path.join(self.tmp, "tasks")),
+                                    (rehome, "window_spaces", lambda: self.spaces),
+                                    (commands, "window_spaces", lambda: self.spaces),
+                                    (rehome, "live_agents", lambda key: self.agents.get(key, [])),
+                                    (rehome, "run", lambda argv: self.labels.append(argv)),
+                                    (launch, "coordinator_in", lambda sp: "t1" if sp in self.assistants else None)):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def make(self, *spaces, archived=()):
+        loc = self.st.locate(self.folder)
+        with self.st.Store(loc) as s:
+            for i, sp in enumerate(spaces):
+                t = s.new(f"Task {i + 1}")
+                t.update(state="running", space=sp)
+                if i in archived:
+                    t["archived"] = 1
+            self.key = s.key(s.data["tasks"][0])
+            return s.path, s.prefix
+
+    def records(self, path):
+        with open(path) as f:
+            return [t.get("space") for t in json.load(f)["tasks"]]
+
+    def test_live_space(self):
+        live = self.r.live_space
+        self.assertEqual(live("sp-new", self.folder), "sp-new")
+        self.assertEqual(live("sp-old", self.folder), "sp-new")
+        self.assertEqual(live("sp-old", os.path.join(self.tmp, "nowhere")), "sp-old")
+        self.assertEqual(live("vm/sp-gone", self.folder), "vm/sp-gone")
+        self.assertIsNone(live(None, self.folder))
+        self.assertEqual(live("sp-old", self.folder, []), "sp-old")
+        self.spaces = None
+        self.assertEqual(live("sp-old", self.folder), "sp-old")
+
+    def test_a_space_whose_assistant_still_runs_stays(self):
+        self.assistants = {"sp-old"}
+        self.assertEqual(self.r.live_space("sp-old", self.folder), "sp-old")
+
+    def test_several_at_the_folder_take_the_one_with_its_assistant(self):
+        self.spaces.append({"id": "sp-newer", "folder": self.folder + "/"})
+        self.assertEqual(self.r.live_space("sp-old", self.folder), "sp-new")
+        self.assistants = {"sp-newer"}
+        self.assertEqual(self.r.live_space("sp-old", self.folder), "sp-newer")
+
+    def test_tick_rehomes_orphans_once_and_relabels_their_agents(self):
+        path, prefix = self.make("sp-old", "sp-new", "sp-old", "sp-other-gone", archived=(2,))
+        self.agents[self.key] = [{"address": "t15g", "labels": {"herdr.task.space": "sp-old"}}]
+        report = {}
+        self.r.rehome_pass(report)
+        self.assertEqual(self.records(path), ["sp-new", "sp-new", "sp-old", "sp-new"])
+        self.assertEqual([(x["ref"], x["from"], x["to"]) for x in report["rehomed"]],
+                         [(f"{prefix}-1", "sp-old", "sp-new"), (f"{prefix}-4", "sp-other-gone", "sp-new")])
+        self.assertEqual(self.labels, [["hc", "label", "t15g", "herdr.task.space=sp-new"]])
+        before = os.stat(path).st_mtime_ns
+        again = {}
+        self.r.rehome_pass(again)
+        self.assertNotIn("rehomed", again)
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+
+    def test_nothing_moves_when_the_window_cant_say(self):
+        path, _ = self.make("sp-old")
+        for spaces in (None, []):
+            self.spaces = spaces
+            self.r.rehome_pass({})
+            self.assertEqual(self.records(path), ["sp-old"])
+
+    def test_queued_start_goes_to_the_live_space(self):
+        loc = self.st.locate(self.folder)
+        with self.st.Store(loc) as s:
+            t = s.new("Queued")
+            t.update(state="queued", queue={"space": "sp-old"})
+            path = s.path
+        self.r.rehome_pass({})
+        with open(path) as f:
+            self.assertEqual(json.load(f)["tasks"][0]["queue"]["space"], "sp-new")
+
+    def test_show_and_list_say_the_live_space(self):
+        path, prefix = self.make("sp-old")
+        with self.st.Store(self.st.locate(self.folder), write="try") as s:
+            self.c.rehome_here(s)
+            self.assertEqual(s.find(f"{prefix}-1")["space"], "sp-new")
+        self.assertEqual(self.records(path), ["sp-new"])
+
+    def test_an_agent_started_for_a_closed_space_goes_to_the_live_one(self):
+        task = {"id": 9, "title": "Task", "agents": [], "space": "sp-old"}
+        st = Store([task])
+        st.loc = {"folder": self.folder, "kind": "repo", "name": "nitro"}
+        calls = []
+        m = self.mock.patch.object
+        with m(self.l, "ensure_launcher", lambda *a: None), m(self.l, "own_argv", lambda argv, folder: argv), \
+             m(self.l, "folder_for", lambda *a: self.folder), m(self.l, "coordinator_tab", lambda *a: None), \
+             m(self.l, "agent_name", lambda *a: "task-9"), m(self.l, "track", lambda *a: None), \
+             m(self.l, "low_priority", lambda argv, name: argv), m(self.l.local, "with_setup", lambda t, folder, argv: argv), \
+             m(self.l, "run", lambda argv: calls.append(argv) or subprocess.CompletedProcess(argv, 0, '{"address":"t2"}', "")):
+            self.l.launch(st, task, ["claude"], "sp-old")
+            self.assertEqual(task["space"], "sp-new")
+            self.assertIn("herdr.task.space=sp-new", calls[-1])
+            self.l.launch(st, task, ["claude"], "sp-other")
+            self.assertEqual(task["space"], "sp-other")

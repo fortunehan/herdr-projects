@@ -20,6 +20,7 @@ from .launch import default_space
 from .store import locate, open_store, read_list, Store, store_files
 from .queues import queue_reason
 from .archive import archive_pass
+from .rehome import rehome_pass
 from .output import say
 from .scheduler import ensure_scheduler, script_hash
 from .commands import begin
@@ -693,6 +694,10 @@ def one_pass(report):
             archive_pass(report)
         except Exception as e:  # never stops the scheduler
             print(f"{time.strftime('%H:%M:%S')} archive: {e}", flush=True)
+        try:
+            rehome_pass(report)
+        except Exception as e:  # never stops the scheduler
+            print(f"{time.strftime('%H:%M:%S')} rehome: {e}", flush=True)
         try:
             news_pass(report)
         except Exception as e:  # never stops the scheduler
