@@ -17,6 +17,10 @@ export const MARKUP = {
   area: "A note on the marked area.",
   more: "Click or drag again for another note.",
   noWords: "(no words: just this spot)",
+  quote: "A note on the selected words.",
+  picture: "A note on the picture.",
+  comment: "Comment",
+  commentPicture: "Comment on this picture",
 };
 
 /** At most this many notes in one message. */
@@ -66,7 +70,7 @@ export const draftKey = (id, v) => `shepherdr.markup:${id}:v${v}`;
 /** A draft as text to keep: its notes ({x, y, w, h} fractions and words) and the general words; null when there's
  *  nothing to keep (the draft goes). */
 export function draftText(notes, general) {
-  const list = (notes ?? []).map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: String(n.text ?? ""), ...keptOn(n.on) }));
+  const list = (notes ?? []).map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: String(n.text ?? ""), ...keptOn(n.on), ...keptKind(n) }));
   const g = String(general ?? "");
   if (!list.length && !g.trim()) return null;
   return JSON.stringify({ notes: list.slice(0, NOTES_MAX), general: g });
@@ -82,9 +86,19 @@ export function readDraft(text) {
   const notes = (Array.isArray(d.notes) ? d.notes : [])
     .filter((n) => n && typeof n === "object" && [n.x, n.y, n.w, n.h].every((v) => typeof v === "number"))
     .slice(0, NOTES_MAX)
-    .map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: typeof n.text === "string" ? n.text : "", ...keptOn(n.on) }));
+    .map((n) => ({ x: frac(n.x), y: frac(n.y), w: frac(n.w), h: frac(n.h), text: typeof n.text === "string" ? n.text : "", ...keptOn(n.on), ...keptKind(n) }));
   return { notes, general: typeof d.general === "string" ? d.general : "" };
 }
+
+// A note on selected words keeps its quote (and the boxes it was highlighted in), one on a picture the picture.
+function keptKind(n) {
+  const q = cleanQuote(n?.quote), p = cleanPicture(n?.picture);
+  if (q) return { quote: { ...q, rects: (Array.isArray(n.quote.rects) ? n.quote.rects : []).filter(isBox).slice(0, RECTS_MAX).map(fracBox) } };
+  if (p) return { picture: { ...p, ...(isBox(n.picture.spot) ? { spot: fracBox(n.picture.spot) } : {}) } };
+  return {};
+}
+const isBox = (b) => b && typeof b === "object" && [b.x, b.y, b.w, b.h].every((v) => typeof v === "number");
+const fracBox = (b) => ({ x: frac(b.x), y: frac(b.y), w: frac(b.w), h: frac(b.h) });
 
 /** What Send all sends, for the layer's size now (null: nothing to send yet):
  *  - no notes, general words: { kind: "say", text } (today's note about all of it);
@@ -94,7 +108,7 @@ export function readDraft(text) {
  *  On a recipe, a note's blocks (noteOn, SHEP-113) name what it is on; its spot stays, in px, beside them. */
 export function outgoing(notes, general, size) {
   const g = String(general ?? "").trim();
-  const list = (notes ?? []).slice(0, NOTES_MAX).map((n) => ({ text: String(n.text ?? "").trim(), spot: describe(fromFrac(n, size), size), ...sentOn(n.on) }));
+  const list = (notes ?? []).slice(0, NOTES_MAX).map((n) => ({ text: String(n.text ?? "").trim(), ...sentWhere(n, size) }));
   if (!list.length) return g ? { kind: "say", text: g } : null;
   if (list.length === 1 && !g) return list[0].text ? { kind: "note", ...list[0] } : null;
   if (!g && !list.some((n) => n.text)) return null;
@@ -109,6 +123,129 @@ function keptOn(on) {
 function sentOn(on) {
   const blocks = cleanBlocks(on?.blocks), more = cleanMore(on?.more);
   return blocks.length ? { blocks, ...(more ? { more } : {}) } : {};
+}
+// Where a note is, as sent (SHEP-114): selected words go as their quote and the block they are in (no px spot); a
+// picture by its name and size, its spot in it described in the picture's own px; any other note by its px spot.
+function sentWhere(n, size) {
+  const q = cleanQuote(n.quote), p = cleanPicture(n.picture);
+  if (q) return { spot: "", ...sentOn(n.on), quote: q };
+  if (p) {
+    const inside = isBox(n.picture.spot) ? describeInPicture(fracBox(n.picture.spot), p) : "";
+    return { spot: pictureSpot(p, inside), picture: { ...p, ...(inside ? { spot: inside } : {}) } };
+  }
+  return { spot: describe(fromFrac(n, size), size), ...sentOn(n.on) };
+}
+
+// ---- notes on selected words and on pictures (SHEP-114) --------------------------------------------------------------
+// The web's recipe view offers Comment next to selected words and on a picture; Mark up's click or drag on a picture
+// also makes a picture note. The window's TextView can't tell a script what is selected, so it has picture and block
+// notes only.
+
+/** At most this many characters of a quote, and of the context on each side of it. */
+export const QUOTE_MAX = 1000, CONTEXT_MAX = 80;
+/** At most this many highlight boxes per quote. */
+export const RECTS_MAX = 40;
+
+const squash = (s) => str(s).replace(/\s+/g, " ");
+
+/** Selected words and the block text around them as one quote: { text, before, after }, the words on each side cut
+ *  to CONTEXT_MAX at a word; null for nothing selected. prefix: the block's text before the selection, as the page
+ *  has it; rest: after it. */
+export function quoteOf(selected, prefix = "", rest = "") {
+  const text = squash(selected).trim();
+  if (!text) return null;
+  let before = squash(prefix).trimStart(), after = squash(rest).trimEnd();
+  if (/^\s/.test(str(selected)) && before && !before.endsWith(" ")) before += " ";
+  if (/\s$/.test(str(selected)) && after && !after.startsWith(" ")) after = ` ${after}`;
+  if (before.length > CONTEXT_MAX) before = `…${before.slice(-CONTEXT_MAX).replace(/^\S*\s/, "")}`;
+  if (after.length > CONTEXT_MAX) after = `${after.slice(0, CONTEXT_MAX).replace(/\s\S*$/, "")}…`;
+  return cleanQuote({ text: text.length > QUOTE_MAX ? `${text.slice(0, QUOTE_MAX - 1)}…` : text, before, after });
+}
+
+/** A quote as kept and sent: { text, before, after }, each cut short; null when it has no words. */
+export function cleanQuote(q) {
+  if (!q || typeof q !== "object" || typeof q.text !== "string" || !q.text.trim()) return null;
+  return { text: q.text.slice(0, QUOTE_MAX), before: str(q.before).slice(-(CONTEXT_MAX + 2)), after: str(q.after).slice(0, CONTEXT_MAX + 2) };
+}
+
+/** A picture as kept and sent: { file, path?, caption?, alt?, width?, height? } (width and height: its own px); null
+ *  without a file. */
+export function cleanPicture(p) {
+  if (!p || typeof p !== "object" || typeof p.file !== "string" || !p.file.trim()) return null;
+  const cut = (s, n) => str(s).trim().slice(0, n);
+  const px = (v) => (Number.isFinite(v) && v > 0 ? Math.round(Math.min(v, 100000)) : 0);
+  const out = { file: cut(p.file, 120) };
+  for (const k of ["path", "caption", "alt"]) if (cut(p[k], 120)) out[k] = cut(p[k], 120);
+  if (px(p.width) && px(p.height)) Object.assign(out, { width: px(p.width), height: px(p.height) });
+  return out;
+}
+
+const HALF_Y = ["top", "bottom"], HALF_X = ["left", "right"];
+// Which part of a picture a box (fractions of it) is in: "the top right quarter", "the left half", "the middle"...
+function partOf(b) {
+  const half = (a, len) => (a + len <= 0.5 ? 0 : a >= 0.5 ? 1 : -1);
+  if (!(b.w > 0 || b.h > 0)) {
+    const t = (v) => Math.min(2, Math.floor(v * 3));
+    const y = ["top", "middle", "bottom"][t(b.y)], x = ["left", "center", "right"][t(b.x)];
+    return y === "middle" && x === "center" ? "near the middle" : y === "middle" ? `near the middle ${x}` : x === "center" ? `near the ${y} center` : `near the ${y} ${x}`;
+  }
+  if (b.w >= 0.9 && b.h >= 0.9) return "most of it";
+  const y = half(b.y, b.h), x = half(b.x, b.w);
+  if (y >= 0 && x >= 0) return `the ${HALF_Y[y]} ${HALF_X[x]} quarter`;
+  if (y >= 0) return `the ${HALF_Y[y]} half`;
+  if (x >= 0) return `the ${HALF_X[x]} half`;
+  return "the middle";
+}
+
+/** A spot in a picture (fractions of it) in words, in the picture's own px when its size is known: "the 640×400 px
+ *  area at x 640–1280, y 0–400 (the top right quarter)", "the point at x 900, y 120 (near the top right)"; else in
+ *  percent of it. */
+export function describeInPicture(b, pic) {
+  const W = pic?.width ?? 0, H = pic?.height ?? 0, part = partOf(b);
+  const r = (v) => Math.round(v);
+  if (W && H) {
+    return b.w > 0 || b.h > 0
+      ? `the ${r(b.w * W)}×${r(b.h * H)} px area at x ${r(b.x * W)}–${r((b.x + b.w) * W)}, y ${r(b.y * H)}–${r((b.y + b.h) * H)} (${part})`
+      : `the point at x ${r(b.x * W)}, y ${r(b.y * H)} (${part})`;
+  }
+  const pc = (v) => `${r(v * 100)}%`;
+  return b.w > 0 || b.h > 0
+    ? `the area from ${pc(b.x)} to ${pc(b.x + b.w)} across, ${pc(b.y)} to ${pc(b.y + b.h)} down (${part})`
+    : `the point ${pc(b.x)} across, ${pc(b.y)} down (${part})`;
+}
+
+/** A picture note's spot as one line: "the top right quarter of picture “login.png” (1280×800)" (inside: its spot in
+ *  it, describeInPicture), "picture “login.png” (1280×800)" for the whole picture. */
+export function pictureSpot(pic, inside = "") {
+  const name = `picture “${pic.file}”${pic.width && pic.height ? ` (${pic.width}×${pic.height})` : ""}`;
+  return inside ? `${inside} of ${name}` : name;
+}
+
+/** The picture a spot of the layer is on, and the spot in it as fractions of the picture: a click inside one, or a
+ *  drag mostly (60%+) inside one, clipped to it. pics: [{ x, y, w, h, ...picture }] in the layer's px. null: none. */
+export function pictureUnder(pics, s) {
+  const area = (s.w || 0) * (s.h || 0);
+  for (const p of pics ?? []) {
+    if (!(p?.w > 0 && p?.h > 0)) continue;
+    const r = { x: p.x, y: p.y, w: p.w, h: p.h };
+    if (area > 0 ? overlap(r, s) < 0.6 * area : !holds(r, { x: s.x, y: s.y })) continue;
+    const x0 = Math.max(s.x, r.x), y0 = Math.max(s.y, r.y);
+    const x1 = Math.min(s.x + (s.w || 0), r.x + r.w), y1 = Math.min(s.y + (s.h || 0), r.y + r.h);
+    const spot = { x: frac((x0 - r.x) / r.w), y: frac((y0 - r.y) / r.h), w: area > 0 ? frac((x1 - x0) / r.w) : 0, h: area > 0 ? frac((y1 - y0) / r.h) : 0 };
+    const { x: _x, y: _y, w: _w, h: _h, ...rest } = p;
+    const picture = cleanPicture(rest);
+    return picture ? { picture, spot } : null;
+  }
+  return null;
+}
+
+/** A picture's details from the recipe at a tag (an image block, a pair's side): { file, path, caption } or null. */
+export function pictureAt(recipe, key) {
+  const [place, part] = String(key ?? "").split("/");
+  const b = blockAt(recipe, place);
+  const x = part === "before" || part === "after" ? b?.[part] : part ? null : b;
+  if (!x || typeof x.src !== "string" || mediaWord(x.src) !== "picture" || (!part && b.type !== "image")) return null;
+  return cleanPicture({ file: fileOf(x.src), path: recipePath(key), caption: x.caption, width: x.w, height: x.h });
 }
 
 // ---- what a note is on, in a recipe (SHEP-113) ---------------------------------------------------------------------

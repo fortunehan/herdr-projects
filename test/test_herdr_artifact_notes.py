@@ -230,3 +230,69 @@ class NotesOnBlocks(unittest.TestCase):
         r = subprocess.run([sys.executable, BIN, "note", "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                            env={**os.environ, "SHEPHERDR_HANDED_OVER": "1"})
         self.assertIn("--blocks", r.stdout)
+
+
+# SHEP-114: a note on selected words carries the quote and its context; one on a picture names it and the spot in it
+TEXT = {"path": "blocks[1]", "kind": "text", "text": "The plan is that we ship on Friday after the review."}
+QUOTE = {"text": "ship on Friday", "before": "The plan is that we ", "after": " after the review."}
+PICTURE = {"file": "login.png", "path": "blocks[4]", "caption": "Sign-in screen", "width": 1280, "height": 800,
+           "spot": "the 640×400 px area at x 640–1280, y 0–400 (the top right quarter)"}
+PICTURE_SPOT = "the 640×400 px area at x 640–1280, y 0–400 (the top right quarter) of picture “login.png” (1280×800)"
+
+
+class NotesOnWordsAndPictures(unittest.TestCase):
+    setUp, tearDown, note = Notes.setUp, Notes.tearDown, Notes.note
+
+    def test_quote_and_picture_notes_in_one_message(self):
+        notes = [{"text": "Say Monday", "spot": "", "blocks": [TEXT], "quote": QUOTE},
+                 {"text": "Too dark", "spot": PICTURE_SPOT, "picture": PICTURE},
+                 {"text": "Crop it", "spot": "picture “a.png”", "picture": {"file": "a.png", "path": "blocks[9].before"}}]
+        self.note(notes=json.dumps(notes, ensure_ascii=False), text="Thanks")
+        self.assertEqual(self.sent[0][1], (
+            f'<hc from="artifact" id="{self.aid}" version="1" title="Plan" notes="3">\n'
+            "3 notes, numbered as marked on it:\n\n"
+            "1. On the text at blocks[1]: “The plan is that we ship on Friday after the review.”\n"
+            "Selected: “ship on Friday”\n"
+            "In context: “The plan is that we «ship on Friday» after the review.”\n"
+            "Say Monday\n\n"
+            "2. On the picture “login.png” (1280×800) at blocks[4]: “Sign-in screen”\n"
+            f"Spot in it: {PICTURE['spot']}\nToo dark\n\n"
+            "3. On the picture “a.png” at blocks[9].before\nCrop it\n\n"
+            "About all of it:\nThanks\n"
+            "</hc>"))
+
+    def test_a_single_quote_note_reads_the_same_from_blocks_or_notes(self):
+        self.note(text="Say Monday", blocks=json.dumps({"blocks": [TEXT], "more": 0, "quote": QUOTE}))
+        self.note(notes=json.dumps([{"text": "Say Monday", "spot": "", "blocks": [TEXT], "quote": QUOTE}]))
+        self.assertEqual(self.sent[0], self.sent[1])
+        self.assertIn("Selected: “ship on Friday”\nIn context:", self.sent[0][1])
+        self.assertNotIn(" on=", self.sent[0][1])
+
+    def test_a_single_picture_note_keeps_its_spot_in_on(self):
+        self.note(text="Too dark", spot=PICTURE_SPOT, blocks=json.dumps({"blocks": [], "picture": PICTURE}, ensure_ascii=False))
+        body = self.sent[0][1]
+        self.assertIn(f'on="{PICTURE_SPOT}"', body)
+        self.assertIn(f"On the picture “login.png” (1280×800) at blocks[4]: “Sign-in screen”\nSpot in it: {PICTURE['spot']}\nToo dark", body)
+
+    def test_junk_quotes_and_pictures_are_dropped(self):
+        self.note(notes=json.dumps([{"text": "a", "quote": {"text": " "}, "picture": {"file": 3}}, {"text": "b"}]))
+        self.assertIn("1. On it:\na", self.sent[0][1])
+
+    def test_another_machine_gets_a_single_notes_quote(self):
+        calls = []
+
+        def run(argv, **_):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"to": "t3", "why": "made it", "version": 1, "image": None}) + "\n", "")
+        o = types.SimpleNamespace(id=self.aid, text=None, version=1, spot=None, image=None, shot=None, panel=None, area=None, machine="vm",
+                                  json=True, answer=None, value=None, by=None, notes=json.dumps([{"text": "x", "spot": "", "blocks": [TEXT], "quote": QUOTE}]), blocks=None)
+        with mock.patch.object(A, "run", side_effect=run), mock.patch("sys.stdout", io.StringIO()):
+            A.cmd_note(o)
+        argv = calls[0]
+        self.assertEqual(json.loads(argv[argv.index("--blocks") + 1]), {"blocks": [TEXT], "more": 0, "quote": QUOTE})
+
+    def test_the_guide_explains_words_and_pictures(self):
+        with open(A.GUIDE) as f:
+            guide = f.read()
+        self.assertIn("Selected: “", guide)
+        self.assertIn("Spot in it:", guide)
