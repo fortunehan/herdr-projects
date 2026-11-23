@@ -7,7 +7,8 @@
 // write about all of it if you like, and Send all gives everything to the agent that keeps the
 // artifact as one message (`herdr-artifact note --notes`, SHEP-88) with the version, each spot in
 // words and one picture of the panel with every numbered mark on it. On a recipe each note also names the blocks it is
-// on (SHEP-113: the recipe view keeps their boxes as the pointer crosses them, core/markup.js sawBox). One note alone goes as the
+// on (SHEP-113: the recipe view keeps their boxes as the pointer crosses them, core/markup.js sawBox), and one on a
+// picture names the picture and the spot in it (SHEP-114, sawPicture). One note alone goes as the
 // single note it always was. The notes are kept per version on this computer until they went
 // (closing Mark up keeps them). Esc closes the note being written, then ends.
 // Its words, the spots in words and the drafts are core/markup.js (shared with the web app; copied
@@ -19,7 +20,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, props, exec, appHome, agents, readTextFile, checking } from "herdr";
 import * as A from "./artifact.js";
 import { dirs } from "./dirs.js";
-import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, noteOn, seenBoxes } from "./core/markup.js";
+import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, noteOn, seenBoxes, pictureUnder } from "./core/markup.js";
 
 const KEY = "artifacts.markup";
 const MOD = A.dir.slice("mods/".length);
@@ -195,8 +196,12 @@ function pick(m, cx) {
   saveSoon(m, cx);
 }
 
+// On a picture (SHEP-114): the picture, and the spot in it; GPUI's TextView can't tell a script what words are
+// selected, so the window has no notes on selected words.
 function blocksUnder(m, s, click) {
   const seen = seenBoxes(where(), m.origin, click);
+  const pic = pictureUnder(seen.pics, s);
+  if (pic) return { picture: { ...pic.picture, spot: pic.spot } };
   const on = noteOn(seen.recipe, seen.nodes, s);
   return on ? { on } : {};
 }
@@ -246,7 +251,7 @@ function keeperName(address) {
 function card(m, t) {
   const out = outgoing(m.notes, m.input.value(), m.size);
   const cur = m.sel !== null ? m.notes[m.sel] : null;
-  const line = m.said || (cur ? (cur.w || cur.h ? MARKUP.area : MARKUP.spot) : m.notes.length ? MARKUP.more : markupHint(keeperName()));
+  const line = m.said || (cur ? (cur.picture ? MARKUP.picture : cur.w || cur.h ? MARKUP.area : MARKUP.spot) : m.notes.length ? MARKUP.more : markupHint(keeperName()));
   const n = m.notes.length;
   return v_flex().id("art-mark-card").absolute().left(10).right(10).bottom(10).p(8).gap(6).rounded(10)
     .bg(t.popover).border_1().border_color(t.border).shadow_lg().cursor_default().text_size(12)
@@ -331,7 +336,7 @@ function deliver(m, out, shot, cx) {
     if (out.text) args.push("--text", out.text);
   } else args.push("--text", out.text);
   if (out.kind === "note") args.push("--spot", out.spot);
-  if (out.kind === "note" && out.blocks) args.push("--blocks", JSON.stringify({ blocks: out.blocks, more: out.more ?? 0 }));
+  if (out.kind === "note" && (out.blocks || out.picture)) args.push("--blocks", JSON.stringify({ blocks: out.blocks ?? [], more: out.more ?? 0, ...(out.picture ? { picture: out.picture } : {}) }));
   if (shot && m.origin && m.size) {
     const o = m.origin;
     args.push("--shot", shot, "--panel", [o.x, o.y, m.size.width, m.size.height].join(","));

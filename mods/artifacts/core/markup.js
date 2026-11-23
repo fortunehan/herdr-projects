@@ -432,7 +432,7 @@ const cleanMore = (v) => (Number.isInteger(v) && v > 0 ? Math.min(v, 999) : 0);
 
 const layouts = new Map();
 const layoutOf = (where) => {
-  if (!layouts.has(where)) layouts.set(where, { recipe: null, boxes: new Map(), epoch: 0, seq: 0, at: null });
+  if (!layouts.has(where)) layouts.set(where, { recipe: null, boxes: new Map(), pics: new Map(), epoch: 0, seq: 0, at: null });
   return layouts.get(where);
 };
 
@@ -448,17 +448,29 @@ export function sawBox(where, key, bounds, position) {
   L.boxes.set(key, { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height, epoch: L.epoch, seq: L.seq });
 }
 
+/** A pointer move over a picture of the recipe (SHEP-114): its box under its tag ("4", "7/before"), and its own size
+ *  when the view knows it ({ w, h }), so a Mark up note on it names the picture and the spot in it. */
+export function sawPicture(where, key, bounds, position, size) {
+  if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return;
+  const L = layoutOf(where);
+  if (position && (!L.at || L.at.x !== position.x || L.at.y !== position.y)) { L.seq += 1; L.at = { x: position.x, y: position.y }; }
+  L.pics.set(key, { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height, size: size?.w && size?.h ? size : null, epoch: L.epoch, seq: L.seq });
+}
+
 /** Scrolled or resized: the boxes kept so far are no longer where they were. */
-export function layoutMoved(where) { const L = layoutOf(where); L.epoch += 1; L.boxes.clear(); }
+export function layoutMoved(where) { const L = layoutOf(where); L.epoch += 1; L.boxes.clear(); L.pics.clear(); }
 
 /** The recipe and its kept boxes in the px of a layer whose top left is at origin (window px): for a click only the
- *  boxes the pointer's last move was over (fresh), for a drag every box seen since the last scroll. */
+ *  boxes the pointer's last move was over (fresh), for a drag every box seen since the last scroll. pics: the
+ *  pictures' boxes the same way, each named from the recipe (pictureAt) with its own size when known. */
 export function seenBoxes(where, origin, click) {
   const L = layoutOf(where), o = origin ?? { x: 0, y: 0 };
-  const nodes = [];
-  for (const [key, b] of L.boxes) {
-    if (b.epoch !== L.epoch || (click && b.seq !== L.seq)) continue;
-    nodes.push({ key, x: b.x - o.x, y: b.y - o.y, w: b.w, h: b.h });
+  const fresh = (b) => b.epoch === L.epoch && !(click && b.seq !== L.seq);
+  const nodes = [], pics = [];
+  for (const [key, b] of L.boxes) if (fresh(b)) nodes.push({ key, x: b.x - o.x, y: b.y - o.y, w: b.w, h: b.h });
+  for (const [key, b] of L.pics) {
+    const p = fresh(b) && pictureAt(L.recipe, key);
+    if (p) pics.push({ key, x: b.x - o.x, y: b.y - o.y, w: b.w, h: b.h, ...p, ...(b.size && !p.width ? { width: b.size.w, height: b.size.h } : {}) });
   }
-  return { recipe: L.recipe, nodes };
+  return { recipe: L.recipe, nodes, pics };
 }

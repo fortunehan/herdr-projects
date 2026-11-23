@@ -7,7 +7,7 @@ import { Recipe, UNREADABLE, type Answers } from '@client/screens/Recipe.tsx'
 import { enterHint, sendsNow } from '@client/enter.ts'
 import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
-import { keepRecipe, noteOnPage, recipeKey, shownRecipe, type On } from './spots.ts'
+import { keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, type On, type PicEl, type Picture, type Seed } from './spots.ts'
 import * as CV from '@core/chat-view.js'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { artifactKey, retry as retryTranslate, toggle as toggleTranslate, useShown as useTranslation, useTranslateOn } from '@plugins/chat/translate.ts'
@@ -38,6 +38,7 @@ import { useMotion } from '@client/motion.ts'
 import { isDark, useDark } from '@client/theme.ts'
 import {
   BackIcon,
+  ChatIcon,
   CheckIcon,
   DownIcon,
   FitIcon,
@@ -64,7 +65,7 @@ import { titleInTask } from '@core/task-artifacts.js'
 
 const { withIds, preview } = R as any
 const { WORDS, artifactLine } = CV as any
-const { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing } = M as any
+const { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, pictureUnder } = M as any
 
 export type Pick = { text: string; selector: string; component?: string; x: number; y: number }
 
@@ -114,8 +115,12 @@ function Stepper({ art, shown, onStep, bar }: { art: Artifact; shown: number; on
 
 type Spot = { x: number; y: number; w: number; h: number }
 /** a numbered note: its spot as fractions of the layer (core/markup.js toFrac), its words and, on a recipe, the blocks
- *  it is on (SHEP-113) */
-type Note = Spot & { text: string; on?: On }
+ *  it is on (SHEP-113); on selected words their quote and the boxes they are highlighted in, on a picture the picture
+ *  and the spot in it (SHEP-114), as fractions too */
+type Note = Spot & { text: string; on?: On; quote?: { text: string; before: string; after: string; rects: Spot[] }; picture?: Picture & { spot?: Spot } }
+
+/** what a note is about, in the notes list: the quoted words or the picture's name; none for a spot */
+const aboutOf = (n: Note) => (n.quote ? `“${n.quote.text}”` : n.picture ? `Picture ${n.picture.file}` : '')
 
 const loadDraft = (id: string, v: number): { notes: Note[]; general: string } => {
   try { return readDraft(localStorage.getItem(draftKey(id, v))) } catch { return { notes: [], general: '' } }
@@ -133,7 +138,7 @@ const keepDraft = (id: string, v: number, notes: Note[], general: string) => {
  *  about all of it, and Send all gives them to the agent that keeps it as one message, each spot in words (SHEP-88).
  *  The notes are kept on this device per version until they went. Esc closes a note, then ends. Laid over the artifact
  *  in the viewer and in the sidebar. */
-function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () => void }) {
+function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: number; onEnd: () => void; seed?: Seed | null; onSeeded?: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const generalRef = useRef<HTMLTextAreaElement>(null)
   const device = useUI((u) => u.device)
@@ -158,6 +163,20 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
     return () => o.disconnect()
   }, [])
   useEffect(() => { keepDraft(art.id, v, notes, general) }, [art.id, v, notes, general])
+  // Comment on selected words or a picture (SHEP-114): Mark up opens with that note started
+  useEffect(() => {
+    const el = ref.current
+    if (!seed || !el) return
+    onSeeded?.()
+    const sz = { width: el.clientWidth, height: el.clientHeight }
+    if (notes.length >= NOTES_MAX) {
+      setFailed(true)
+      return setSaid(`At most ${NOTES_MAX} notes at once: send these first.`)
+    }
+    const quote = seed.quote ? { ...seed.quote, rects: seed.quote.rects.map((r) => toFrac(r, sz)) } : undefined
+    setNotes([...notes, { ...toFrac(seed.spot, sz), text: '', ...(seed.on ? { on: seed.on } : {}), ...(quote ? { quote } : {}), ...(seed.picture ? { picture: seed.picture } : {}) }])
+    pick(notes.length)
+  }, [seed])
   const focusGeneral = () => !phone && setTimeout(() => generalRef.current?.focus(), 0)
   const focusNote = () => !phone && setTimeout(() => ref.current?.querySelector<HTMLTextAreaElement>('textarea[data-note]')?.focus(), 0)
   useEffect(() => { focusGeneral() }, [])
@@ -188,9 +207,7 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
     setFailed(false)
     setSaid(MARKUP.sending)
     const base = { place: art.place, artifact: art.id, v }
-    const msg: Action = out.kind === 'say' ? { type: 'artifact-say', ...base, text: out.text }
-      : out.kind === 'note' ? { type: 'artifact-note', ...base, note: out.text, target: out.spot, ...(out.blocks ? { blocks: out.blocks, more: out.more ?? 0 } : {}) }
-      : { type: 'artifact-note', ...base, notes: out.notes.map((n: { text: string; spot: string; blocks?: unknown[]; more?: number }) => ({ note: n.text, target: n.spot, ...(n.blocks ? { blocks: n.blocks, more: n.more ?? 0 } : {}) })), text: out.text }
+    const msg: Action = noteAction(out, base)
     const r = (await act(msg).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string }
     setSending(false)
     if (r.ok === false) {
@@ -205,7 +222,7 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
   // a touch screen taps where the window clicks
   const hint = device === 'desktop' ? markupHint(keeper) : markupHint(keeper).replace(/^Click/, 'Tap')
   const cur = sel !== null ? notes[sel] : null
-  const line = said || (cur ? (cur.w || cur.h ? MARKUP.area : MARKUP.spot) : notes.length ? MARKUP.more.replace(/^Click/, device === 'desktop' ? 'Click' : 'Tap') : hint)
+  const line = said || (cur ? (cur.quote ? MARKUP.quote : cur.picture ? MARKUP.picture : cur.w || cur.h ? MARKUP.area : MARKUP.spot) : notes.length ? MARKUP.more.replace(/^Click/, device === 'desktop' ? 'Click' : 'Tap') : hint)
   const drawn = press?.moved ? box(press) : null
   const keys = (e: React.KeyboardEvent, enter: () => void, esc: () => void) => {
     if (sendsNow(e, getState().ui.keyboard)) {
@@ -244,15 +261,32 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
         if (!press) return
         const s = press.moved ? box(press) : { x: press.x0, y: press.y0, w: 0, h: 0 }
         setPress(null)
-        // on a recipe: the blocks under it, from the recipe drawn beneath the layer
+        // on a recipe: the picture it is on, named with the spot in it (SHEP-114), else the blocks under it, from the
+        // recipe drawn beneath the layer
         const layer = ref.current!
-        const on = layer.parentElement ? noteOnPage(layer.parentElement, layer.getBoundingClientRect(), shownRecipe(recipeKey(art.id, v, art.machine)), s) : null
-        setNotes([...notes, { ...toFrac(s, size), text: '', ...(on ? { on } : {}) }])
+        const recipe = shownRecipe(recipeKey(art.id, v, art.machine)), origin = layer.getBoundingClientRect()
+        const pic = layer.parentElement && recipe ? pictureUnder(picturesOnPage(layer.parentElement, origin, recipe), s) : null
+        const on = !pic && layer.parentElement ? noteOnPage(layer.parentElement, origin, recipe, s) : null
+        setNotes([...notes, { ...toFrac(s, size), text: '', ...(on ? { on } : {}), ...(pic ? { picture: { ...pic.picture, spot: pic.spot } } : {}) }])
         pick(notes.length)
       }}
     >
       {notes.map((n, i) => {
         const s = fromFrac(n, size)
+        // selected words: highlighted where they are, the number at their start
+        if (n.quote?.rects.length) {
+          const first = fromFrac(n.quote.rects[0], size)
+          return (
+            <span key={i}>
+              {n.quote.rects.map((r, j) => {
+                const b = fromFrac(r, size)
+                return <span key={j} data-quote-mark="" className={clsx('pointer-events-none absolute rounded-[2px]', sel === i ? 'bg-[color-mix(in_srgb,var(--focus)_32%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]')}
+                  style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />
+              })}
+              <MarkBadge x={first.x} y={first.y} n={i + 1} on={sel === i} onPick={() => pick(i)} />
+            </span>
+          )
+        }
         return (
           <span key={i}>
             {s.w || s.h ? (
@@ -295,6 +329,8 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
               {notes.map((n, i) => (
                 <li key={i} className={clsx('flex items-start gap-1.5 rounded-row px-0.5 py-0.5', sel === i ? 'bg-hover' : '')}>
                   <span className="mt-1.5 grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full bg-focus px-[5px] text-[0.6875rem] font-semibold text-white tabular-nums phone:mt-3 phone:h-[22px] phone:min-w-[22px] phone:text-[0.8125rem]">{i + 1}</span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                  {aboutOf(n) ? <span data-about="" className="truncate px-1.5 pt-0.5 text-[0.75rem] text-fg2 phone:text-[0.8125rem]">{aboutOf(n)}</span> : null}
                   {sel === i ? (
                     <TextBox
                       label={`Note ${i + 1}`}
@@ -318,6 +354,7 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
                       {n.text.trim() || MARKUP.notePlaceholder}
                     </button>
                   )}
+                  </div>
                   <IconButton label={`${MARKUP.remove} ${i + 1}`} className="shrink-0 rounded-full!" onClick={() => remove(i)}>
                     <XIcon className={ic} />
                   </IconButton>
@@ -365,6 +402,103 @@ function MarkupLayer({ art, v, onEnd }: { art: Artifact; v: number; onEnd: () =>
         </div>
       )}
     </div>
+  )
+}
+
+/** The area under an artifact's bar (the panel's, the viewer's): the artifact, Mark up laid over it while marking, and
+ *  otherwise Comment beside selected words or on a picture of a recipe, which opens Mark up with that note started
+ *  (SHEP-114). can: Mark up can show here (not in a page-filling full screen). */
+function Marked({ art, v, marking, can = true, onMark, onEnd, children }: { art: Artifact; v: number; marking: boolean; can?: boolean; onMark: () => void; onEnd: () => void; children: ReactNode }) {
+  const host = useRef<HTMLDivElement>(null)
+  const [seed, setSeed] = useState<Seed | null>(null)
+  return (
+    <div ref={host} className="relative min-h-0 flex-1">
+      {children}
+      {can && !marking ? <CommentChip host={host} art={art} v={v} onSeed={(s) => { setSeed(s); onMark() }} /> : null}
+      {can && marking ? <MarkupLayer key={`${art.id}:${v}`} art={art} v={v} seed={seed} onSeeded={() => setSeed(null)} onEnd={onEnd} /> : null}
+    </div>
+  )
+}
+
+/** the words selected in a recipe under host, as quoteSeed reads them; null when none are */
+function selectedIn(host: HTMLElement) {
+  const sel = getSelection()
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null
+  const r = sel.getRangeAt(0)
+  const elOf = (n: Node) => (n.nodeType === 1 ? (n as Element) : n.parentElement)
+  const start = elOf(r.startContainer)?.closest('[data-rp]') ?? null, end = elOf(r.endContainer)?.closest('[data-rp]') ?? null
+  if (!start || !end || !host.contains(start) || !host.contains(end)) return null
+  // the text of the selection's block before it, and of the block it ends in after it
+  const before = document.createRange(), after = document.createRange()
+  before.selectNodeContents(start)
+  before.setEnd(r.startContainer, r.startOffset)
+  after.selectNodeContents(end)
+  after.setStart(r.endContainer, r.endOffset)
+  return { text: r.toString(), prefix: before.toString(), rest: after.toString(), rects: Array.from(r.getClientRects()), start, end, last: r.getBoundingClientRect() }
+}
+
+/** Comment: a small button next to selected words of a recipe (below them, out of the way of a phone's own menu), or
+ *  on a picture the pointer is over; it starts a note on them in Mark up. */
+function CommentChip({ host, art, v, onSeed }: { host: React.RefObject<HTMLDivElement | null>; art: Artifact; v: number; onSeed: (s: Seed) => void }) {
+  const [chip, setChip] = useState<{ x: number; y: number; pic: PicEl | null } | null>(null)
+  const recipe = () => shownRecipe(recipeKey(art.id, v, art.machine))
+  useEffect(() => {
+    const el = host.current
+    if (!el) return
+    const words = () => {
+      const s = selectedIn(el)
+      if (!s || !recipe() || !s.text.trim()) return setChip((c) => (c && !c.pic ? null : c))
+      const o = el.getBoundingClientRect()
+      setChip({ x: Math.max(100, Math.min(o.width - 8, s.last.right - o.left)), y: Math.min(o.height - 40, s.last.bottom - o.top + 6), pic: null })
+    }
+    // a picture under a pointer that can hover (a touch screen comments on one in Mark up)
+    const over = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return
+      const t = e.target as Element | null
+      if (t?.closest?.('[data-comment]')) return
+      const img = t?.closest?.('img[data-pic]') as HTMLImageElement | null
+      if (img && recipe() && el.contains(img)) {
+        const r = img.getBoundingClientRect(), o = el.getBoundingClientRect()
+        return setChip((c) => (c && !c.pic ? c : { x: r.right - o.left - 8, y: Math.max(8, r.top - o.top + 8), pic: img }))
+      }
+      setChip((c) => (c?.pic ? null : c))
+    }
+    const scrolled = () => setChip(null)
+    document.addEventListener('selectionchange', words)
+    el.addEventListener('pointerover', over)
+    el.addEventListener('scroll', scrolled, true)
+    return () => {
+      document.removeEventListener('selectionchange', words)
+      el.removeEventListener('pointerover', over)
+      el.removeEventListener('scroll', scrolled, true)
+    }
+  }, [art.id, v])
+  if (!chip) return null
+  const go = () => {
+    const el = host.current
+    if (!el) return
+    const o = el.getBoundingClientRect()
+    const s = chip.pic ? pictureSeed(chip.pic, o, recipe()) : (() => { const x = selectedIn(el); return x ? quoteSeed(x, o, recipe()) : null })()
+    setChip(null)
+    if (!s) return
+    getSelection()?.removeAllRanges()
+    onSeed(s)
+  }
+  return (
+    <button
+      type="button"
+      data-comment={chip.pic ? 'picture' : 'words'}
+      // pressing it must not drop the selection it comments on
+      onPointerDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={go}
+      className={clsx('press-dim absolute z-10 flex h-7 items-center gap-1 rounded-full bg-fg pr-2.5 pl-2 text-[0.8125rem] font-medium whitespace-nowrap text-bg shadow-dialog phone:h-10 phone:pr-3.5 phone:pl-3 phone:text-[0.9375rem]',
+        '-translate-x-full')}
+      style={{ left: chip.x, top: chip.y }}
+    >
+      <ChatIcon className={ic} />
+      {chip.pic ? MARKUP.commentPicture : MARKUP.comment}
+    </button>
   )
 }
 
@@ -494,12 +628,11 @@ function PanelArtifact({ art, onBack }: { art: Artifact; onBack: () => void }) {
         <MarkUpButton on={marking} onClick={() => setMarking(!marking)} />
         <FullButton on={full.on} onClick={full.toggle} />
       </div>
-      <div className="relative min-h-0 flex-1">
+      <Marked art={art} v={shown} marking={marking} onMark={() => setMarking(true)} onEnd={() => setMarking(false)}>
         <div className="absolute inset-0">
           <ArtifactFrame art={art} v={shown} full fullScreen={full.on} />
         </div>
-        {marking ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarking(false)} /> : null}
-      </div>
+      </Marked>
     </div>
   )
 }
@@ -902,12 +1035,11 @@ function Viewer() {
           </IconButton>
         </div>
         )}
-        <div className="relative min-h-0 flex-1">
+        <Marked art={art} v={shown} marking={markup} can={full.how !== 'page'} onMark={() => setMarkup(true)} onEnd={() => setMarkup(false)}>
           <div className="absolute inset-0">
             <ArtifactFrame art={art} v={shown} full fullScreen={full.on} />
           </div>
-          {markup && full.how !== 'page' ? <MarkupLayer key={`${art.id}:${shown}`} art={art} v={shown} onEnd={() => setMarkup(false)} /> : null}
-        </div>
+        </Marked>
       </div>
       )}
     </ViewerShell>

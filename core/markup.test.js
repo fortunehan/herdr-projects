@@ -196,7 +196,7 @@ test("the window's boxes: kept as the pointer crosses them, gone after a scroll"
   sawBox("panel", "0", { x: 100, y: 100, width: 600, height: 30 }, { x: 150, y: 110 });
   expect(seenBoxes("panel", { x: 100, y: 100 }, true).nodes.map((n) => n.key)).toEqual(["0"]);
   expect(seenBoxes("panel", { x: 100, y: 100 }, false).nodes.map((n) => n.key).sort()).toEqual(["0", "3", "3/rows.1"]);
-  expect(seenBoxes("viewer", { x: 0, y: 0 }, false)).toEqual({ recipe: null, nodes: [] });
+  expect(seenBoxes("viewer", { x: 0, y: 0 }, false)).toEqual({ recipe: null, nodes: [], pics: [] });
   layoutMoved("panel");
   expect(seenBoxes("panel", { x: 100, y: 100 }, false).nodes).toEqual([]);
   sawBox("panel", "x", undefined, { x: 1, y: 1 });
@@ -265,4 +265,19 @@ test("Send all: a quote goes with its block and no px spot; a picture by its nam
   expect(all.notes[2]).toEqual({ text: "Crop it", spot: "picture “login.png”", picture: { file: "login.png", path: "blocks[3]" } });
   // drafts keep both kinds, the quote's highlight boxes too
   expect(readDraft(draftText([quoted, pic, whole], "")).notes).toEqual([quoted, pic, whole]);
+});
+
+test("the window's picture boxes: named from the recipe, with the size the view read", async () => {
+  const { sawPicture } = await import("./markup.js");
+  const r = { blocks: [{ type: "image", src: "shots/login.png", caption: "Sign-in" }, { type: "text", md: "x" }] };
+  setLayoutRecipe("viewer", r);
+  layoutMoved("viewer");
+  sawPicture("viewer", "0", { x: 100, y: 100, width: 640, height: 400 }, { x: 120, y: 120 }, { w: 1280, h: 800 });
+  sawPicture("viewer", "1", { x: 100, y: 600, width: 10, height: 10 }, { x: 101, y: 601 });
+  // a drag sees every picture box since the last scroll; the text isn't a picture
+  expect(seenBoxes("viewer", { x: 100, y: 100 }, false).pics).toEqual([{ key: "0", x: 0, y: 0, w: 640, h: 400, file: "login.png", path: "blocks[0]", caption: "Sign-in", width: 1280, height: 800 }]);
+  // a click only the box under the pointer's last move
+  expect(seenBoxes("viewer", { x: 100, y: 100 }, true).pics).toEqual([]);
+  layoutMoved("viewer");
+  expect(seenBoxes("viewer", { x: 0, y: 0 }, false).pics).toEqual([]);
 });

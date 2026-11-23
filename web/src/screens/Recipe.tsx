@@ -225,7 +225,7 @@ function Pic({ src, file, alt, w, h }: { src: string; file: string; alt: string;
   useEffect(() => setTries(0), [src])
   const retry = () => { if (tries < 3) setTimeout(() => setTries((n) => n + 1), 1000 * 2 ** tries) }
   const url = tries ? `${src}${src.includes('?') ? '&' : '?'}retry=${tries}` : src
-  const pic = <img src={url} alt={alt} width={w} height={h} onError={retry} className="h-auto max-w-full rounded-box shadow-box" loading="lazy" />
+  const pic = <img src={url} alt={alt} width={w} height={h} data-pic={file} onError={retry} className="h-auto max-w-full rounded-box shadow-box" loading="lazy" />
   const place = picturePlace(full)
   if (!open) return <div className={place}>{pic}</div>
   return (
