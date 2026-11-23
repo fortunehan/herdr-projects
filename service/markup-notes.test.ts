@@ -51,3 +51,18 @@ test("notes on a recipe carry their blocks to herdr-artifact", async () => {
   expect(calls[0]).toEqual(["say", "abc", 2, "Bigger", "the point at x 1, y 2", undefined, { blocks: [row] }]);
   expect(calls[1]).toEqual(["notes", "abc", 2, [{ text: "A", spot: "x", blocks: [row, { ...row, text: "y".repeat(120) }], more: 4 }, { text: "B", spot: "y" }], ""]);
 });
+
+// SHEP-114: a note on selected words carries its quote, one on a picture the picture; the service passes them on
+test("notes on selected words and on a picture carry the quote and the picture to herdr-artifact", async () => {
+  const { calls, compat } = stub();
+  const text = { path: "blocks[1]", kind: "text", text: "The plan is that we ship on Friday" };
+  const quote = { text: "ship on Friday", before: "The plan is that we ", after: " after the review." };
+  const picture = { file: "login.png", path: "blocks[4]", caption: "Sign-in", width: 1280, height: 800, spot: "the point at x 896, y 120 (near the top right)" };
+  await act({} as never, { type: "artifact-note", place: "p", artifact: "abc", v: 2, note: "Say Monday", target: "", blocks: [text], more: 0, quote }, compat);
+  await act({} as never, {
+    type: "artifact-note", place: "p", artifact: "abc", v: 2, text: "Thanks",
+    notes: [{ note: "Too dark", target: "the point … of picture “login.png” (1280×800)", picture }, { note: "x", target: "", quote: { text: " " }, picture: { file: 3 } }],
+  }, compat);
+  expect(calls[0]).toEqual(["say", "abc", 2, "Say Monday", "", undefined, { blocks: [text], quote }]);
+  expect(calls[1]).toEqual(["notes", "abc", 2, [{ text: "Too dark", spot: "the point … of picture “login.png” (1280×800)", picture }, { text: "x", spot: "" }], "Thanks"]);
+});

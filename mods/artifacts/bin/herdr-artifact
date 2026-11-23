@@ -1540,15 +1540,58 @@ def read_blocks(d):
     return out[:BLOCKS_MAX], min(more, 999)
 
 
+def read_kind(d):
+    """What a note on selected words or on a picture carries (SHEP-114): (quote, picture), each None when absent.
+    quote: {"text", "before", "after"} (the words, and a little of the block's text on each side); picture: {"file",
+    "path", "caption", "alt", "width", "height", "spot"} (spot: where in it, in the picture's own px)."""
+    if not isinstance(d, dict):
+        return None, None
+    q, pic = d.get("quote"), d.get("picture")
+    quote = None
+    if isinstance(q, dict) and isinstance(q.get("text"), str) and q["text"].strip():
+        quote = {"text": q["text"].strip()[:1000], "before": str(q.get("before") or "")[-82:], "after": str(q.get("after") or "")[:82]}
+    picture = None
+    if isinstance(pic, dict) and isinstance(pic.get("file"), str) and pic["file"].strip():
+        picture = {"file": pic["file"].strip()[:120]}
+        for k in ("path", "caption", "alt", "spot"):
+            if isinstance(pic.get(k), str) and pic[k].strip():
+                picture[k] = pic[k].strip()[:200 if k == "spot" else 120]
+        w, h = pic.get("width"), pic.get("height")
+        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            picture["width"], picture["height"] = w, h
+    return quote, picture
+
+
+def picture_lines(p):
+    """A note on a picture: 'On the picture “login.png” (1280×800) at blocks[3]: “Sign-in”', then where in it."""
+    size = f" ({p['width']}×{p['height']})" if p.get("width") else ""
+    words = p.get("caption") or p.get("alt")
+    line = f"On the picture “{p['file']}”{size}" + (f" at {p['path']}" if p.get("path") else "") + (f": “{words}”" if words else "")
+    return [line] + ([f"Spot in it: {p['spot']}"] if p.get("spot") else [])
+
+
+def quote_lines(q):
+    """Selected words: the quote, then where it sits in its block's text."""
+    lines = [f"Selected: “{q['text']}”"]
+    if q["before"] or q["after"]:
+        lines.append(f"In context: “{q['before']}«{q['text']}»{q['after']}”")
+    return lines
+
+
 def block_line(b):
     """One block a note is on, in words: 'the heading at blocks[0]: “Release plan”', 'the image at blocks[4]:
     “Sign-in” (login.png)'."""
     return f"the {b['kind']} at {b['path']}" + (f": “{b['text']}”" if b["text"] else "") + (f" ({b['file']})" if b.get("file") else "")
 
 
-def where_lines(spot, blocks, more):
+def where_lines(spot, blocks, more, quote=None, picture=None):
     """Where a note is: the blocks it is on (each its path in recipe.json, its kind and a short excerpt), then its spot
-    in px as a fallback; only the spot on a custom panel."""
+    in px as a fallback; only the spot on a custom panel. On a picture: the picture and the spot in it; on selected
+    words: the block, the quote and its context (SHEP-114)."""
+    if picture:
+        return picture_lines(picture)
+    if quote:
+        return where_lines("", blocks, more) + quote_lines(quote)
     if not blocks:
         return []
     n = len(blocks) + more
@@ -1576,7 +1619,9 @@ def read_notes(v):
         text = str(n.get("text") or "").strip()[:4000]
         spot = str(n.get("spot") or "").strip()[:300]
         blocks, more = read_blocks(n)
-        out.append({"text": text, "spot": spot, **({"blocks": blocks, "more": more} if blocks else {})})
+        quote, picture = read_kind(n)
+        out.append({"text": text, "spot": spot, **({"blocks": blocks, "more": more} if blocks else {}),
+                    **({"quote": quote} if quote else {}), **({"picture": picture} if picture else {})})
     return out
 
 
@@ -1586,7 +1631,7 @@ def note_lines(notes, general):
     lines = [f"{len(notes)} notes, numbered as marked on it:"]
     for i, n in enumerate(notes, 1):
         words = n["text"] or "(no words: just this spot)"
-        on = where_lines(n["spot"], n.get("blocks") or [], n.get("more") or 0)
+        on = where_lines(n["spot"], n.get("blocks") or [], n.get("more") or 0, n.get("quote"), n.get("picture"))
         if on:
             lines.append(f"{i}. " + "\n".join(on) + f"\n{words}")
             continue
@@ -1602,12 +1647,15 @@ def cmd_note(o):
     (--notes) go as one message; one note without --text is sent as a single note, as before."""
     notes = read_notes(o.notes) if o.notes is not None else []
     text, spot = (o.text or "").strip(), o.spot
-    blocks, more = read_blocks(json_arg(o.blocks, "--blocks")) if o.blocks else ([], 0)
+    given = json_arg(o.blocks, "--blocks") if o.blocks else None
+    blocks, more = read_blocks(given) if given is not None else ([], 0)
+    quote, picture = read_kind(given)
     if len(notes) == 1 and not text:
         one = notes[0]
         text, spot, notes = one["text"], one["spot"] or o.spot, []
         if one.get("blocks"):
             blocks, more = one["blocks"], one["more"]
+        quote, picture = one.get("quote") or quote, one.get("picture") or picture
     if not text and not notes:
         raise Fail("Nothing to send: give --text or --notes.")
     image = o.image
@@ -1633,7 +1681,8 @@ def cmd_note(o):
     if o.machine:
         args = ["note", o.id, "--json"] + (["--text", text] if text else []) + (["--version", str(o.version)] if o.version else []) \
             + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else []) \
-            + (["--blocks", json.dumps({"blocks": blocks, "more": more}, ensure_ascii=False)] if blocks and not notes else [])
+            + (["--blocks", json.dumps({"blocks": blocks, "more": more, **({"quote": quote} if quote else {}), **({"picture": picture} if picture else {})}, ensure_ascii=False)]
+               if (blocks or quote or picture) and not notes else [])
         if o.answer:
             args += ["--answer", o.answer, "--value", o.value or "null", "--by", o.by or "window"]
         if image:
@@ -1667,7 +1716,7 @@ def cmd_note(o):
     else:
         on = f' on="{attr(spot)}"' if spot else ""
         # on a recipe: the blocks it is on, before the words (the spot stays in on=)
-        lines = (where_lines("", blocks, more) if blocks else []) + [text]
+        lines = where_lines("", blocks, more, quote, picture) + [text]
         if lines[:-1]:
             lines = ["\n".join(lines)]
     if v != a["version"]:
@@ -2639,12 +2688,14 @@ def main():
     c.add_argument("id")
     c.add_argument("--text", help="what the person wrote (with --notes: their words about all of it, optional)")
     c.add_argument("--notes", help='several numbered notes sent as one message: a JSON list of {"text": …, "spot": …, '
-                   '"blocks": […], "more": n} (spot: where on it, in words; blocks and more: on a recipe, as --blocks), '
-                   "as JSON, @file or - for stdin")
+                   '"blocks": […], "more": n, "quote": {…}, "picture": {…}} (spot: where on it, in words; blocks, more, quote '
+                   "and picture: on a recipe, as --blocks), as JSON, @file or - for stdin")
     c.add_argument("--version", type=int, help="the version they were looking at (default: the latest)")
     c.add_argument("--spot", help="where on it, in words")
     c.add_argument("--blocks", help='a single note on a recipe: what it is on, {"blocks": [{"path": "blocks[3].rows[1]", '
-                   '"kind": "table row 2", "text": "…", "file": "…"}], "more": 0} as JSON, @file or -')
+                   '"kind": "table row 2", "text": "…", "file": "…"}], "more": 0} as JSON, @file or -; selected words add '
+                   '"quote": {"text", "before", "after"}, a picture "picture": {"file", "path", "caption", "width", "height", '
+                   '"spot"}')
     c.add_argument("--image", help="a picture of it, a path the agent can read")
     c.add_argument("--shot", help="a window shot (herdr-app shot) to cut the panel from; removed after")
     c.add_argument("--panel", help="the panel in the shot, logical px: x,y,w,h")

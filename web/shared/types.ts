@@ -1288,6 +1288,9 @@ export interface Snapshot {
   sections?: Section[]
 }
 
+/** what a Mark up note on a recipe is on: its blocks (SHEP-113), selected words' quote or the picture (SHEP-114) */
+export type NoteOn = { blocks?: unknown[]; more?: number; quote?: unknown; picture?: unknown }
+
 export type Action =
   | { type: 'plugin'; plugin: string; method: string; input?: unknown; cid: string }
   /** read every machine's plan limits again, unless they were read a moment ago */
@@ -1312,9 +1315,9 @@ export type Action =
   /** an artifact's page sent something, you noted on it, or wrote about it in its viewer: to its keeper. By its place,
       so another machine's goes there */
   | { type: 'artifact-send'; place: string; artifact: string; v: number; text: string }
-  | { type: 'artifact-note'; place: string; artifact: string; v: number; note: string; target?: string }
+  | ({ type: 'artifact-note'; place: string; artifact: string; v: number; note: string; target?: string } & NoteOn)
   /** Mark up's Send all (SHEP-88): numbered notes, each its words and its spot in words, and the words about all of it */
-  | { type: 'artifact-note'; place: string; artifact: string; v: number; notes: { note: string; target?: string }[]; text?: string }
+  | { type: 'artifact-note'; place: string; artifact: string; v: number; notes: ({ note: string; target?: string } & NoteOn)[]; text?: string }
   | { type: 'artifact-say'; place: string; artifact: string; v: number; text: string }
   | { type: 'artifact-delete'; place: string; artifact: string }
   /** Mark up's notes from the shared browser, sent together into the task's chat */

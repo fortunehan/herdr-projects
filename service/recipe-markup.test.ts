@@ -69,7 +69,8 @@ function keys(where: string) {
 
 test("every block and its parts keep their box under their place in the recipe", () => {
   given = {};
-  const all = keys("panel").map(([, k]) => k);
+  // a picture keeps its box apart (SHEP-114): not among the blocks
+  const all = keys("panel").map(([, k]) => k).filter((k) => k !== undefined);
   for (const k of ["0", "1", "2", "2/columns.0", "2/columns.1", "2.c0.0", "2.c1.0", "2.c1.0/items.1", "3", "3/columns", "3/rows.0", "3/rows.1", "4", "5/items.0", "6/options.1", "7/before", "7/after"]) {
     expect(all).toContain(k);
   }
@@ -91,7 +92,7 @@ test("a click on a table row and a drag over the heading and picture name them, 
   // markup.js's own blocksUnder, run as written with the window's place and the layer's origin
   const src = readFileSync(join(import.meta.dir, "../mods/artifacts/markup.js"), "utf8");
   const body = src.slice(src.indexOf("function blocksUnder("), src.indexOf("function select("));
-  const blocksUnder = new Function("seenBoxes", "noteOn", "where", `${body}; return blocksUnder;`)(M.seenBoxes, M.noteOn, () => "panel");
+  const blocksUnder = new Function("seenBoxes", "noteOn", "pictureUnder", "where", `${body}; return blocksUnder;`)(M.seenBoxes, M.noteOn, M.pictureUnder, () => "panel");
   const m = { origin: { x: 200, y: 100 } };
   expect(blocksUnder(m, { x: 100, y: 180, w: 0, h: 0 }, true)).toEqual({ on: { blocks: [{ path: "blocks[3].rows[1]", kind: "table row 2", text: "Beta | 9" }], more: 0 } });
   expect(blocksUnder(m, { x: 0, y: 0, w: 700, h: 520 }, false).on.blocks.map((b: any) => b.kind)).toEqual(["heading", "table", "image"]);
@@ -114,7 +115,38 @@ test("the viewer's copy keeps its own boxes", () => {
 
 test("Mark up sends a single note's blocks with --blocks, and several notes' inside --notes", () => {
   const src = readFileSync(join(import.meta.dir, "../mods/artifacts/markup.js"), "utf8");
-  expect(src).toContain('args.push("--blocks", JSON.stringify({ blocks: out.blocks, more: out.more ?? 0 }))');
+  expect(src).toContain('args.push("--blocks", JSON.stringify({ blocks: out.blocks ?? [], more: out.more ?? 0, ...(out.picture ? { picture: out.picture } : {}) }))');
   expect(src).toContain('args.push("--notes", JSON.stringify(out.notes))');
   expect(src).toContain("...blocksUnder(m, s, !p.moved)");
+});
+
+// SHEP-114: GPUI's TextView can't tell a script what words are selected (gpui-kit.d.ts: selectable() and nothing to
+// read it), so the window has no notes on selected words; a Mark up note on a picture names the picture and the spot
+// in it, from the picture's box the pointer crossed.
+test("a click or a drag on a picture in the window's Mark up names the picture and the spot in it", () => {
+  given = {};
+  const v = new RecipeView();
+  v.init({}, cx);
+  built.length = 0;
+  v.render(cx);
+  const pic = (src: string) => built.find((e) => e.calls.some(([n, a]: Call) => n === "id" && a[0] === `pic-${src}`));
+  M.layoutMoved("panel");
+  // the layer at (200, 100); the image block's picture drawn 400×250 at (216, 400), the pair's before 300×200 below
+  handler(pic("login.png"), "on_mouse_move")!({ position: { x: 300, y: 450 }, bounds: { x: 216, y: 400, width: 400, height: 250 } });
+  handler(pic("a.png"), "on_mouse_move")!({ position: { x: 300, y: 700 }, bounds: { x: 216, y: 680, width: 300, height: 200 } });
+  const src = readFileSync(join(import.meta.dir, "../mods/artifacts/markup.js"), "utf8");
+  const body = src.slice(src.indexOf("function blocksUnder("), src.indexOf("function select("));
+  const blocksUnder = new Function("seenBoxes", "noteOn", "pictureUnder", "where", `${body}; return blocksUnder;`)(M.seenBoxes, M.noteOn, M.pictureUnder, () => "panel");
+  const m = { origin: { x: 200, y: 100 } };
+  // a click on the last move's picture: the pair's before, its spot in it
+  expect(blocksUnder(m, { x: 166, y: 630, w: 0, h: 0 }, true)).toEqual({ picture: { file: "a.png", path: "blocks[7].before", spot: { x: 0.5, y: 0.25, w: 0, h: 0 } } });
+  // a drag over the image block's top right quarter: its spot in it, sent in percent (no size known here)
+  const note = blocksUnder(m, { x: 216, y: 300, w: 200, h: 125 }, false);
+  expect(note).toEqual({ picture: { file: "login.png", path: "blocks[4]", caption: "Sign-in screen", spot: { x: 0.5, y: 0, w: 0.5, h: 0.5 } } });
+  const out = M.outgoing([{ ...M.toFrac({ x: 216, y: 300, w: 200, h: 125 }, { width: 800, height: 900 }), text: "Too dark", ...note }], "", { width: 800, height: 900 });
+  expect(out).toEqual({ kind: "note", text: "Too dark", spot: "the area from 50% to 100% across, 0% to 50% down (the top right quarter) of picture “login.png”",
+    picture: { file: "login.png", path: "blocks[4]", caption: "Sign-in screen", spot: "the area from 50% to 100% across, 0% to 50% down (the top right quarter)" } });
+  // off the pictures: blocks as before
+  expect(blocksUnder(m, { x: 700, y: 10, w: 0, h: 0 }, true)).toEqual({});
+  expect(src).toContain("cur.picture ? MARKUP.picture");
 });
