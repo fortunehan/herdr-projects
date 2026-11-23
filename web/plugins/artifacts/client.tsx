@@ -418,7 +418,7 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
 function NoteMark({ at, n = 0, on, onPick, sent }: { at: Spot & { rects: Spot[] }; n?: number; on?: boolean; onPick?: () => void; sent?: boolean }) {
   const first = at.rects[0] ?? at
   const badge = sent ? (
-    <span data-sent-mark="" className="absolute grid size-[18px] place-items-center rounded-full bg-fg3 text-bg phone:size-[22px]" style={{ left: first.x - 9, top: first.y - 9 }}>
+    <span data-sent-mark="" className="absolute grid size-[18px] place-items-center rounded-full bg-fg2 text-bg phone:size-[22px]" style={{ left: first.x - 9, top: first.y - 9 }}>
       <CheckIcon className="size-3" />
     </span>
   ) : (
@@ -426,7 +426,7 @@ function NoteMark({ at, n = 0, on, onPick, sent }: { at: Spot & { rects: Spot[] 
   )
   if (at.rects.length)
     return (
-      <span className={sent ? 'opacity-60' : undefined}>
+      <span className={sent ? 'opacity-80' : undefined}>
         {at.rects.map((r, j) => (
           <span key={j} data-quote-mark="" className={clsx('absolute rounded-[2px]', on ? 'bg-[color-mix(in_srgb,var(--focus)_32%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]')}
             style={{ left: r.x, top: r.y, width: r.w, height: r.h }} />
@@ -435,9 +435,9 @@ function NoteMark({ at, n = 0, on, onPick, sent }: { at: Spot & { rects: Spot[] 
       </span>
     )
   return (
-    <span className={sent ? 'opacity-60' : undefined}>
+    <span className={sent ? 'opacity-80' : undefined}>
       {at.w || at.h ? (
-        <span data-note-box="" className={clsx('absolute rounded-[4px] border-2', sent ? 'border-dashed border-fg3' : 'border-focus', on ? 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_10%,transparent)]')}
+        <span data-note-box="" className={clsx('absolute rounded-[4px] border-2', sent ? 'border-dashed border-fg2' : 'border-focus', on ? 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_10%,transparent)]')}
           style={{ left: at.x, top: at.y, width: at.w, height: at.h }} />
       ) : null}
       {badge}
