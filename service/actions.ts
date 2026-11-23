@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag } from "../core/send.js";
 import { kindOf } from "../core/chat-reader.js";
 import { WORDS } from "../core/chat-view.js";
-import { NOTES_MAX, cleanBlocks } from "../core/markup.js";
+import { NOTES_MAX, cleanBlocks, cleanPicture, cleanQuote } from "../core/markup.js";
 import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
@@ -177,12 +177,15 @@ async function addedMachines() {
 const task = async (args: string[], folder: string, machine: string | null) =>
   settle((a: string[]) => run(["herdr-task", ...a]), await run(["herdr-task", ...(machine ? ["--on", machine] : []), ...args, "--folder", folder, "--json"]));
 
-/** What a Mark up note on a recipe is on (SHEP-113): its blocks, well-formed and cut short, and how many more; {} for none. */
-function onOf(n: any): { blocks?: unknown[]; more?: number } {
-  const blocks = cleanBlocks(n?.blocks);
-  if (!blocks.length) return {};
+/** What a Mark up note on a recipe is on (SHEP-113): its blocks, well-formed and cut short, and how many more; on
+ *  selected words their quote, on a picture the picture (SHEP-114); {} for none. */
+function onOf(n: any): { blocks?: unknown[]; more?: number; quote?: unknown; picture?: unknown } {
+  const blocks = cleanBlocks(n?.blocks), quote = cleanQuote(n?.quote), picture = cleanPicture(n?.picture);
+  const spot = picture && typeof n.picture.spot === "string" && n.picture.spot.trim() ? { spot: n.picture.spot.trim().slice(0, 200) } : {};
+  const kind = { ...(quote ? { quote } : {}), ...(picture ? { picture: { ...picture, ...spot } } : {}) };
+  if (!blocks.length) return kind;
   const more = Number.isInteger(n?.more) && n.more > 0 ? Math.min(n.more, 999) : 0;
-  return { blocks, ...(more ? { more } : {}) };
+  return { blocks, ...(more ? { more } : {}), ...kind };
 }
 
 function str(v: unknown, max = 100_000) {

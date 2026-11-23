@@ -107,6 +107,11 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
   `- the image at blocks[4]: “Sign-in” (login.png)` line each (at most 5, then `- and 2 more`),
   then `Spot:` with where it was in px. Paths follow the JSON: `blocks[2].columns[1][0]` in a
   column, `blocks[5].tabs[0].blocks[1]` in a tab, `blocks[6].blocks[0]` in details.
+  Two more kinds of note (the web viewer; the window has picture notes only): on **selected
+  words**, the block line, then `Selected: “the words”` and `In context: “…before «the words»
+  after…”` (no px spot); on a **picture**, `On the picture “login.png” (1280×800) at blocks[4]:
+  “Sign-in”`, then, when they marked a spot in it, `Spot in it: the 640×400 px area at x
+  640–1280, y 0–400 (the top right quarter)` in the picture's own px.
   Change it and `update`.
 - Don't repeat the title inside it: the viewer shows it right above. Start with the content (a
   one-line summary, the numbers, the picture). No emojis. Data goes in the recipe; it isn't read

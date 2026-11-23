@@ -16,7 +16,7 @@ import * as fs from "fs/promises";
 import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_M } from "./artifact.js";
 import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
-import { sawBox, layoutMoved, setLayoutRecipe } from "./core/markup.js";
+import { sawBox, sawPicture, layoutMoved, setLayoutRecipe } from "./core/markup.js";
 import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, FULL_TEXT, fullWide, imageSize, isDiff, isLink, mdParts, mediaKind, pictureMax, pictures, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
@@ -126,10 +126,13 @@ export default class RecipeView extends View {
     if (shared(HOLDER)?.who === ME) setShared(HOLDER, null);
   }
 
-  // A picture: a click opens it in the picture viewer, at its place among the recipe's pictures.
-  picture(src, el, b = null) {
+  // A picture: a click opens it in the picture viewer, at its place among the recipe's pictures. Its box is kept under
+  // its tag (key) as the pointer crosses it, so a Mark up note on it names the picture (SHEP-114).
+  picture(src, el, b = null, key = null) {
     const max = isFull() ? pictureMax(b, this.sizes?.get(src)) : null;
-    return div().id(`pic-${src}`).w_full().min_w(0).when(Boolean(max), (e) => e.max_w(max)).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.openPicture(src, cx); }).child(el);
+    return div().id(`pic-${src}`).w_full().min_w(0).when(Boolean(max), (e) => e.max_w(max)).cursor_pointer()
+      .when(key !== null, (e) => e.on_mouse_move((ev) => sawPicture(where(), key, ev.bounds, ev.position, this.sizes?.get(src))))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openPicture(src, cx); }).child(el);
   }
 
   // The window's picture viewer (mods/chat-image) over the whole window, on every picture in the recipe from this one:
@@ -370,12 +373,12 @@ export default class RecipeView extends View {
       case "audio": return this.withTr(this.media(b, t, "♪", "Sound", null), b, "caption", t);
       case "pdf": return this.withTr(this.media(b, t, "PDF", "PDF", null), b, "caption", t);
       case "image": return v_flex().gap(4).when(isFull(), (e) => e.w_full().items_center())
-        .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border), b))
+        .child(this.picture(b.src, image(asset(b.src)).w_full().when(!!b.w && !!b.h, (e) => e.max_w(b.w)).rounded(6).border_1().border_color(t.border), b, p))
         .when(!!b.caption, (e) => e.child(div().text_size(12).text_color(t.muted).whitespace_normal().child(b.caption)))
         .when(Boolean(this.tr(b, "caption", t)), (e) => e.child(this.tr(b, "caption", t)));
       case "pair": return h_flex().flex_wrap().gap(10).when(isFull(), (e) => e.w_full().justify_center()).children([["Before", b.before], ["After", b.after]].map(([w, x]) => tag(v_flex().flex_1().min_w(240).gap(4), `${p}/${w.toLowerCase()}`).when(isFull(), (e) => e.items_center())
         .child(mediaKind(x.src) === "video" ? this.media(x, t, "▶", "Clip", x.poster ?? null)
-          : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border), x))
+          : this.picture(x.src, image(asset(x.src)).w_full().rounded(6).border_1().border_color(t.border), x, `${p}/${w.toLowerCase()}`))
         .child(this.withTr(div().text_size(12).text_color(t.muted).child(x.caption ?? w), b, w === "Before" ? "before" : "after", t))));
       case "code": return isDiff(b) ? this.diff(b, t) : this.code(b.id, b.text, t);
       case "check": return this.withTr(this.withTr(this.check(b, t), b, "summary", t), b, "caption", t);

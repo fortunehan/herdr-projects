@@ -188,6 +188,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - `herdr-artifact preview` of a real artifact with a branch's viewer: a scratch HOME needs the store record renamed to
   the folder's slug outside HOME (`Users-<user>-<path>.json`) plus `files/<id>`; the preview viewer takes `?full=1`
   for the full-screen layout.
+- Web tests that render screens/Recipe.tsx need kernel.ts page globals and mock.module of web/plugins/chat/markdown.tsx
+  (DOMPurify needs a DOM): see web/plugins/artifacts/spots.test.tsx.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
