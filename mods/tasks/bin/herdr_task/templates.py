@@ -110,6 +110,7 @@ ASK_OLD = "Anything else: ask the person in one short message. Then run ready ag
 ASK_RULE = ("Anything else: ask the person with your CLI's question tool, as below (a question in plain text reaches "
             "nobody while the task is Ready). Then run ready again.")
 WORKER_MD_BEFORE_LOGIN = WORKER_MD_BEFORE_ASK.replace(ASK_OLD, ASK_RULE)
+WORKER_MD_BEFORE_WAIT = WORKER_MD_BEFORE_LOGIN  # upstream's name for the same text
 # Reviewer commands carry the same login environment as task launches.
 LOGIN_RULE = ("its command exactly as the Reviewer line gives it, including its `sh -c` login-environment wrapper around "
               "`codex --no-daemon --sandbox read-only …` or `claude --permission-mode plan …` (never")
@@ -132,7 +133,14 @@ LANGUAGE_RULE = ("- Language, as the Settings block's Language line says (SHEP-1
                  'messages, branch names, pull request titles and `--agents-md` lines stay in English.\n')
 LANGUAGE_AT = "- Commit as you go,"
 LANGUAGE_EXPLAIN = ("in the language the person writes in: `--explain", "in the Settings block's language: `--explain")
-WORKER_MD = WORKER_MD_BEFORE_LANGUAGE.replace(LANGUAGE_AT, LANGUAGE_RULE + LANGUAGE_AT, 1).replace(*LANGUAGE_EXPLAIN)
+WORKER_MD_BEFORE_DONTASK = WORKER_MD_BEFORE_LANGUAGE.replace(LANGUAGE_AT, LANGUAGE_RULE + LANGUAGE_AT, 1).replace(*LANGUAGE_EXPLAIN)
+# Since a helper stuck on a startup dialog is read and answered, not waited on for 20 minutes (#1191), and a Claude
+# reviewer runs in don't-ask mode, never plan mode (#1181); in the fork's words, inside its login wrapper.
+WAIT_OLD = "(again on a timeout, or while it says turn 0: it hadn't started)"
+WAIT_RULE = ('(again on a timeout; still at turn 0 after one, `hc read <its name>` to see why: a startup dialog such as "Allow external CLAUDE.md imports?" or "Trust this folder?" waits for an answer, which you give with `hc keys <its name> enter` (or `down enter`), then wait again)')
+PLAN_OLD = '`claude --permission-mode plan …` (never'
+PLAN_RULE = '`env … claude --permission-mode dontAsk …` (never'
+WORKER_MD = WORKER_MD_BEFORE_DONTASK.replace(WAIT_OLD, WAIT_RULE).replace(PLAN_OLD, PLAN_RULE)
 # The fork's worker.md before upstream's #1000 ask rule: the login wrapper on the older text.
 WORKER_MD_LOGIN_BEFORE_ASK = WORKER_MD_BEFORE_ASK.replace(COMMAND_RULE, LOGIN_RULE)
 
@@ -155,12 +163,15 @@ REVIEWER_SANDBOX = ("- A check that can't run in a read-only sandbox (Codex's): 
                     "window or writes outside the folder. Don't run or wait on those: list them in your findings under \"Not run "
                     "in my sandbox:\", and your worker runs them and checks the output.\n")
 REVIEWER_MD_BEFORE_LANGUAGE = REVIEWER_MD_BEFORE_SANDBOX + REVIEWER_SANDBOX
+REVIEWER_MD_BEFORE_CLAUDE = REVIEWER_MD_BEFORE_LANGUAGE  # upstream's name for the same text
 # Since findings are in the Settings block's Language (SHEP-101).
 REVIEWER_LANGUAGE = ("- Language: write your findings in the brief's Settings block Language (the language it names; when it "
                      "follows the person, the language of the person's last typed message, else the brief's). Code, file "
                      'names, identifiers and quoted output stay as they are; any fix you suggest for code, comments or commits'
                      ' is in English.\n')
-REVIEWER_MD = REVIEWER_MD_BEFORE_LANGUAGE + REVIEWER_LANGUAGE
+REVIEWER_MD_BEFORE_DONTASK = REVIEWER_MD_BEFORE_LANGUAGE + REVIEWER_LANGUAGE
+# Since a Claude reviewer runs in don't-ask mode, which refuses any command that isn't read-only (#1181).
+REVIEWER_MD = REVIEWER_MD_BEFORE_DONTASK.replace("- A check that can't run in a read-only sandbox (Codex's):", "- A check that can't run in a read-only sandbox (Codex's, or Claude's don't-ask mode, which refuses any command that isn't read-only, tests too):")
 
 
 # Earlier worker defaults: a file still saying one, unedited, gets today's.
@@ -173,7 +184,7 @@ OLD_WORKER_READY = """You work on one Herdr task. Stay within the task's scope a
 - When the work is finished, run the `herdr-task ready` command given at the end of your brief, with a short summary. That puts the task in Ready for the person, who accepts it. Never mark a task done yourself.
 """
 OLD_WORKER_MD = OLD_WORKER_READY.split("- When the work is finished")[0]
-OLD_WORKERS = (WORKER_MD_BEFORE_LANGUAGE, WORKER_MD_BEFORE_EXPLAIN, WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
+OLD_WORKERS = (WORKER_MD_BEFORE_DONTASK, WORKER_MD_BEFORE_LANGUAGE, WORKER_MD_BEFORE_EXPLAIN, WORKER_MD_LOGIN_BEFORE_ASK, WORKER_MD_BEFORE_LOGIN, WORKER_MD_BEFORE_ASK, WORKER_MD_BEFORE_OFTEN, WORKER_MD_BEFORE_SUGGEST, WORKER_MD_BEFORE_COMMAND, WORKER_MD_BEFORE_FEEDBACK, WORKER_MD_BEFORE_SUBAGENTS, WORKER_MD_BEFORE_LEFT, WORKER_MD_BEFORE_DETAILS, WORKER_MD_BEFORE_CUT, WORKER_MD_BEFORE_ESTIMATE, WORKER_MD_BEFORE_SUMMARY, WORKER_MD_BEFORE_GATE, WORKER_MD_BEFORE_TEMPLATES, WORKER_MD_BEFORE_NEWS, OLD_WORKER_READY, OLD_WORKER_MD, OLD_WORKER_MD.replace(OLD_WORKER_MD.split("\n")[0], OLD_WORKER_FIRST), OLD_WORKER_REVIEW)
 
 
 TEMPLATE_HEADS = {
@@ -207,7 +218,8 @@ def instructions(role):
         text = None
     if body is None or (role == "worker" and body.strip() in [x.strip() for x in OLD_WORKERS]) \
             or (role == "reviewer" and body.strip() in (REVIEWER_MD_BEFORE_SUBAGENT.strip(), REVIEWER_MD_BEFORE_FEEDBACK.strip(),
-                                                    REVIEWER_MD_BEFORE_SANDBOX.strip(), REVIEWER_MD_BEFORE_LANGUAGE.strip())):
+                                                    REVIEWER_MD_BEFORE_SANDBOX.strip(), REVIEWER_MD_BEFORE_LANGUAGE.strip(),
+                                                    REVIEWER_MD_BEFORE_DONTASK.strip())):
         body = WORKER_MD if role == "worker" else REVIEWER_MD
     new = head + body.strip() + "\n"
     if text is None or new.strip() != text.strip():

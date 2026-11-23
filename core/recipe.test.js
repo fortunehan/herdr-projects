@@ -1,6 +1,7 @@
 // SHEP-79: a button may carry a plain https link (href), alone or with a reply; buttons sit side by side
 import { expect, test } from "bun:test";
-import { problems, blockName, preview, mediaKind, mdParts } from "./recipe.js";
+import { problems, blockName, preview, mediaKind, mdParts, cellMd, fieldStart, formReply, chartLabels } from "./recipe.js";
+import { marked } from "marked";
 
 const one = (b) => problems({ recipe: 1, blocks: [b] });
 
@@ -125,4 +126,54 @@ test("a kept answer says when: today's time, else its day", () => {
   expect(answerOf({ ship: { value: "Ship", at: 1 } }, "ship")).toEqual({ value: "Ship", at: 1 });
   expect(answerOf({ ship: { at: 1 } }, "ship")).toBe(null);
   expect(answerOf(null, "ship")).toBe(null);
+});
+
+// SHEP-268: a table cell's links, bold and code show as such on both sides, but a cell never becomes a block, nor HTML
+test("cellMd: a table cell is inline Markdown", () => {
+  const html = (c) => marked.parse(cellMd(c), { async: false, gfm: true }).trim();
+  expect(html("[PR #12](https://github.com/x/y/pull/12) is **merged**")).toBe('<p><a href="https://github.com/x/y/pull/12">PR #12</a> is <strong>merged</strong></p>');
+  expect(html("run `a<b`")).toBe("<p>run <code>a&lt;b</code></p>");
+  // block marks at the start stay words
+  expect(html("1. Fix")).toBe("<p>1. Fix</p>");
+  expect(html("- a")).toBe("<p>- a</p>");
+  expect(html("# h")).toBe("<p># h</p>");
+  expect(html("> q")).toBe("<p>&gt; q</p>");
+  expect(html("---")).toBe("<p>---</p>");
+  expect(html("```js")).toBe("<p>```js</p>");
+  expect(html("    four spaces")).toBe("<p>four spaces</p>");
+  expect(html("two\nlines")).toBe("<p>two lines</p>");
+  // raw HTML is shown as text, an escaped one too
+  expect(html("<b>x</b><img src=x onerror=alert(1)>")).not.toContain("<b>");
+  expect(html("<img src=x onerror=alert(1)>")).not.toContain("<img");
+  expect(html("\\<b>x")).not.toContain("<b>");
+  // plain values stay as they were
+  expect(cellMd(42)).toBe("42");
+  expect(cellMd(null)).toBe("");
+  expect(cellMd("1.5")).toBe("1.5");
+  expect(cellMd("-5")).toBe("-5");
+  expect(cellMd("**bold** start")).toBe("**bold** start");
+});
+
+// GitHub #1212: a form field may start on a chosen value; untouched, it replies with it
+test("a form field's value: its start and its untouched reply", () => {
+  const form = { type: "form", title: "Review", fields: [
+    { name: "a", label: "A", kind: "select", options: ["x", "y"], value: "y" },
+    { name: "b", label: "B", kind: "checkbox", value: true },
+    { name: "c", label: "C", kind: "text", value: "keep" },
+    { name: "d", label: "D", kind: "select", options: ["x", "y"] }] };
+  expect(one(form)).toEqual([]);
+  expect(form.fields.map(fieldStart)).toEqual(["y", true, "keep", ""]);
+  expect(formReply(form, {})).toBe("Review\nA: y\nB: yes\nC: keep\nD: (empty)");
+  // what the person changed wins
+  expect(formReply(form, { a: "x", b: false, c: "" })).toBe("Review\nA: x\nB: no\nC: (empty)\nD: (empty)");
+  // a value that doesn't fit is refused
+  expect(one({ type: "form", fields: [{ name: "a", kind: "select", options: ["x"], value: "z" }] })[0]).toContain("one of its options");
+  expect(one({ type: "form", fields: [{ name: "b", kind: "checkbox", value: "yes" }] })[0]).toContain("true or false");
+});
+
+test("a line chart's labels sit under their points; the ends anchor inward so they aren't cut off (GitHub #1148)", () => {
+  const l = chartLabels({ kind: "line", labels: ["09:00", "10:00", "11:00"], series: [{ values: [1, 2, 3] }] });
+  expect(l.map((x) => [x.x, x.anchor])).toEqual([[0, "start"], [0.5, "middle"], [1, "end"]]);
+  expect(chartLabels({ kind: "line", labels: ["only"] })).toEqual([{ text: "only", x: 0.5, anchor: "middle" }]);
+  expect(chartLabels({ kind: "bar", labels: ["a", "b"] }).map((x) => [x.x, x.anchor])).toEqual([[0.25, "middle"], [0.75, "middle"]]);
 });

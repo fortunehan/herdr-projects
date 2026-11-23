@@ -32,6 +32,21 @@ export type Keep = { key: string; value: unknown };
  *  picture it is on (SHEP-114, core/markup.js cleanQuote, cleanPicture) */
 export type On = { blocks?: unknown[]; more?: number; quote?: unknown; picture?: unknown };
 const KEY = /^[\w.-]{1,120}$/;
+/** herdr-artifact --json's error as plain words (#1213: the page showed {"error": "{\"error\":{...}}"}): its last line's
+ *  "error", unwrapped from any JSON it came in (hc's {"error": {"message"}} too); "" when there's none. */
+export function plainError(out: string): string {
+  let s: unknown = out.trim().split("\n").pop() ?? "";
+  for (let i = 0; i < 6; i++) {
+    if (typeof s === "string") {
+      if (!s.trim().startsWith("{")) break;
+      try { s = JSON.parse(s); } catch { break; }
+    } else if (s && typeof s === "object") {
+      const o = s as Record<string, unknown>;
+      s = "error" in o ? o.error : o.message ?? "";
+    } else break;
+  }
+  return typeof s === "string" ? s.trim() : "";
+}
 
 export type Art = { id: string; title: string; version: number; folder: string; publisher?: string; task?: string | null; at: number; files: string[]; versions: { v: number; at: number; publisher?: string; note?: string }[]; machine?: string; folderName?: string };
 
@@ -191,7 +206,7 @@ export class Artifacts {
     if (machine && !MACHINE.test(machine)) throw new Error("Not a machine.");
     const args = [...(machine ? ["--on", machine] : []), "note", id, "--notes", JSON.stringify(notes), "--version", String(v), "--json", ...(general ? ["--text", general] : [])];
     const r = await run(args);
-    if (r.code !== 0) throw new Error((r.err || r.out).trim().split("\n").pop() || "It didn't go through.");
+    if (r.code !== 0) throw new Error(plainError(r.out) || r.err.trim().split("\n").pop() || "It didn't go through.");
     try { return JSON.parse(r.out.trim().split("\n").pop() ?? "{}"); } catch { return {}; }
   }
 }

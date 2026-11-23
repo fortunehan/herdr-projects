@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACCEPT, acceptLabel, busyLabel, cardTitle, hasChanges, hasChecks, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle, canAccept } from "./accept.js";
+import { ACCEPT, acceptLabel, busyLabel, cardTitle, docOpen, docsMore, hasChanges, hasChecks, words, readable, whereNow, commitsLine, filesLine, moreLine, proofTitle, canAccept } from "./accept.js";
 import { nothingToMerge } from "./tasks.js";
 
 const root = join(import.meta.dir, "..");
@@ -143,4 +143,26 @@ test("plain labels: What to check, then Technical details folded", () => {
       expect(web).not.toContain(q + w);
     }
   }
+});
+
+test("its documents: a Markdown-only task opens its first, both cards draw them, more says how many more", () => {
+  const list = [{ path: "a.md" }, { path: "b.md" }];
+  expect([docOpen({ only: true, list }, 0), docOpen({ only: true, list }, 1)]).toEqual([true, false]);
+  expect(docOpen({ only: false, list }, 0)).toBe(false); // a code task's notes stay folded
+  expect(docOpen(null, 0)).toBe(false);
+  expect(docsMore({ count: 7, list })).toBe(5);
+  expect(docsMore(undefined)).toBe(0);
+  const mod = read("mods/accept-card/main.js"), web = read("web/src/screens/Accept.tsx");
+  expect(mod).toContain("ACCEPT.documents");
+  expect(web).toContain("A.ACCEPT.documents");
+});
+
+test("the window draws a document's tables and quotes, and its words as written", () => {
+  const src = read("mods/accept-card/main.js");
+  const mdBlocks = new Function(`${src.slice(src.indexOf("function mdBlocks"), src.indexOf("const capital"))}; return mdBlocks;`)();
+  expect(mdBlocks("| A | B |\n| --- | --- |\n| 1 | 2 |\n\n> keep it\n> short\n\n<script>x</script>")).toEqual([
+    { kind: "code", text: "| A | B |\n| 1 | 2 |", table: true },
+    { kind: "quote", text: "keep it short" },
+    { kind: "para", text: "<script>x</script>" }, // text, never markup: the window has no HTML
+  ]);
 });

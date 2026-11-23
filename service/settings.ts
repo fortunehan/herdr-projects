@@ -3,7 +3,7 @@
 // keeping everything else in it. The window's settings read the file when they open; herdr-task reads it each time.
 // Levels as the window's scopes: Everywhere ("everywhere"), a space ("spaces"[its id], with its repo folder, which is
 // how herdr-task finds it), and for the Machines page each machine ("machines"[its name, "local" here]).
-import { existsSync, readFileSync, renameSync, watch, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { HOME, settingsFile, where, writableSettings } from "./paths.ts";
 import * as C from "../core/settings.js";
@@ -15,7 +15,7 @@ import * as APc from "../core/autopilot.js";
 import * as TRc from "../core/translate.js";
 import type { SettingRow, SettingSection } from "../web/shared/types.ts";
 
-const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, LANGUAGE, languageChoices, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, MACHINES, OLD_NAMES, SECTIONS,
+const { TASK_ROWS, DEFAULTS, wordFor, valueFor, ROLES: CORE_ROLES, NOTES: CORE_NOTES, ABOUT, BACKUP, REACTIONS, SUGGESTIONS, LANGUAGE, languageChoices, FEEDBACK, feedbackRepo, upgradeReactions, BASE, BRANCH, branchPattern, SLUG_MAX, slugMax, FLAGS, flagWords, MACHINES, OLD_NAMES, SECTIONS,
   WEB, modelLabel, roleSel, otherCli, otherCliWords, backupProblem, homeAbout, webState, fromWord, LOADING_AGENTS, RESET, machineLabel } = C as any;
 const AP = APc as any;
 const TR = TRc as any;
@@ -39,7 +39,7 @@ const readJson = (f: string) => { try { return JSON.parse(readFileSync(f, "utf8"
 export type Scope = { id: string; name: string; machine: string | null; folder?: string | null };
 
 export const ROLES: { id: string; title: string; about: string; file: string; told: string }[] = CORE_ROLES;
-const NOTES: { id: string; title: string; about: string; example: string }[] = CORE_NOTES;
+const NOTES: { id: string; field: string; mono?: boolean; title: string; about: string; example: string }[] = CORE_NOTES;
 // Machines: when new tasks wait (each a percent; CPU as a share of all cores), and how task agents run
 const LIMIT_STEPS: Record<string, { min: number; max: number; step: number; scale: number }> = {
   start_memory: { min: 10, max: 100, step: 5, scale: 1 },
@@ -99,12 +99,26 @@ export class Settings {
 
   start() {
     this.read();
-    // the file's own name: settings.json in Shepherdr's folders, shepherdr.json in ~/.herdr on an older machine
-    if (existsSync(dirname(settingsFile()))) watch(dirname(settingsFile()), (_e, name) => { if (name === basename(settingsFile())) this.read(); });
+    // the file by the name it has now (SHEP-263: this still waited for "shepherdr.json", its name before SHEP-141, so a
+    // change made in the window's Settings never reached the service: an Assistant started from the web ran on what
+    // Settings said when the service started). A writer renames a temporary file onto it, so any name that starts
+    // with the file's counts, and one the watcher can't name too.
+    const file = settingsFile();
+    if (existsSync(dirname(file))) watch(dirname(file), (_e, name) => { if (!name || String(name).startsWith(basename(file))) this.read(); });
+  }
+
+  /** The file changed since it was read (its time or size): read again. Asked before a start reads a role, so one
+   *  never runs on settings a missed watch event left stale. */
+  private stamp = "";
+  private fresh() {
+    let now = "";
+    try { const st = statSync(settingsFile()); now = `${st.mtimeMs}:${st.size}`; } catch {}
+    if (now !== this.stamp) this.read();
   }
 
   private read() {
     let next: any = {};
+    try { const st = statSync(settingsFile()); this.stamp = `${st.mtimeMs}:${st.size}`; } catch { this.stamp = ""; }
     try { next = upgradeReactions(JSON.parse(readFileSync(settingsFile(), "utf8")) ?? {}); } catch {}
     if (JSON.stringify(next) === JSON.stringify(this.file)) return;
     this.file = next;
@@ -127,6 +141,7 @@ export class Settings {
   /** The agent a role runs in a space (null: Everywhere's), as the window's chat starts it (lib/coordinator.js
    *  shepherdrFor): { agent, model, effort, fast, perm }, or null when none is set (the template's own command). */
   role(scope: string | null, role: string): any {
+    this.fresh();
     const v = this.pick(scope, role, null).value;
     return v && typeof v === "object" && v.agent ? v : null;
   }
@@ -306,9 +321,17 @@ export class Settings {
       rows.splice(at + 1, 0, { label: SLUG_MAX.title, key: "tasks.slug_max", value: word(n.value), hint: SLUG_MAX.about,
         steps: range(SLUG_MAX.min, SLUG_MAX.max, SLUG_MAX.step, String), stepFrom: String(SLUG_MAX.default), ...this.follows(s, n, word, "tasks", "slug_max") });
     }
+    // Extra flags (#1222), one box per CLI: Everywhere's or a space's own; a list (none: [] says "none")
+    for (const [cli, label] of FLAGS.rows) {
+      const p = this.pick(scope, "tasks", `${cli}_flags`);
+      const words = (v: any) => (Array.isArray(v) ? (v.length ? flagWords(v) : FLAGS.none) : "");
+      const at = rows.findIndex((r) => r.key === "automations.enabled");
+      rows.splice(at, 0, { label, key: `tasks.${cli}_flags`, value: words(p.value), text: true, hint: FLAGS.about(label.replace(/ flags$/, "")),
+        placeholder: FLAGS.example[cli], ...this.follows(s, p, (v) => words(v) || FLAGS.none, "tasks", `${cli}_flags`) });
+    }
     for (const n of NOTES) {
-      const p = this.pick(scope, "tasks", `${n.id}_notes`);
-      rows.push({ label: n.title, key: `tasks.${n.id}_notes`, value: p.value ?? "", multiline: true, hint: n.about, placeholder: n.example, ...this.follows(s, p, (v) => v ?? "", "tasks", `${n.id}_notes`) });
+      const p = this.pick(scope, "tasks", n.field);
+      rows.push({ label: n.title, key: `tasks.${n.field}`, value: p.value ?? "", multiline: true, ...(n.mono ? { mono: true } : {}), hint: n.about, placeholder: n.example, ...this.follows(s, p, (v) => v ?? "", "tasks", n.field) });
     }
     return { name: title("tasks"), level: scope ?? "all", rows };
   }
@@ -480,6 +503,14 @@ export class Settings {
       // a space's own (the service checked the branch is there first); empty: back to the folder's branch
       if (!space) throw new Error("A base branch is set per space.");
       put("tasks", "base", word?.trim() ? word.trim() : null);
+    } else if (key === "tasks.claude_flags" || key === "tasks.codex_flags") {
+      // herdr-task's own list (service/main.ts asked `herdr-task flags` first); null: back to the level above
+      let v: unknown = null;
+      if (word !== null && word.trim()) {
+        try { v = JSON.parse(word); } catch { throw new Error("Not a list of flags."); }
+        if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x.startsWith("-"))) throw new Error("Not a list of flags.");
+      }
+      put("tasks", field, v);
     } else if (key === "tasks.branch") {
       // a pattern herdr-task can fill in (core/settings.js branchPattern); empty: back to the level above
       const v = word?.trim() ?? "";
@@ -491,7 +522,7 @@ export class Settings {
       const n = word === null ? null : Number(word.trim());
       if (n !== null && (!Number.isInteger(n) || n < SLUG_MAX.min || n > SLUG_MAX.max)) throw new Error(`Pick ${SLUG_MAX.min} to ${SLUG_MAX.max}.`);
       put("tasks", "slug_max", n);
-    } else if (section === "tasks" && /^(start|finish)_notes$/.test(field)) {
+    } else if (section === "tasks" && NOTES.some((n) => n.field === field)) {
       put("tasks", field, word === null ? null : word.slice(0, 8000));
     } else if (section === "role" && ROLES.some((r) => r.id === field)) {
       // a role's agent: { agent, model, effort, fast } as the window's model button keeps it
@@ -511,7 +542,7 @@ export class Settings {
         const previous = this.pick(space, field, null).value;
         if (launcher && launcher !== (previous?.launcher ?? "direct") && !v.model) v = (C as any).chooseLauncher({ ...v, launcher: previous?.launcher }, launcher);
         if (launcher === "magpie" && !v.model) v.model = (C as any).chooseLauncher({ ...v, launcher: "direct" }, "magpie").model;
-        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}), ...(field === "worker" && v.argv ? { argv: v.argv } : {}) };
+        v = { agent: v.agent, model: v.model ?? null, effort: v.effort ?? null, fast: v.fast === "ultrafast" && v.agent === "codex" ? "ultrafast" : !!v.fast, perm: v.perm ?? null, ...(launcher ? { launcher } : {}), ...(field === "worker" && v.argv ? { argv: v.argv } : {}) };
       }
       put(field, null, v);
     } else if (section === "autopilot" && AP.FIELDS.includes(field)) {

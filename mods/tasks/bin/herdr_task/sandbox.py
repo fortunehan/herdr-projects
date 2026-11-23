@@ -12,6 +12,7 @@ fix. The answer is kept until Codex, bwrap, the AppArmor switch or its profiles 
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -70,27 +71,26 @@ def _key(codex):
 
 
 def probe(codex):
-    """(ok, the error's first bwrap line or '') from a real `codex sandbox -- true`."""
+    """(ok, the error's first bwrap line or '', sure) from a real `codex sandbox -- true`. sure: False when it didn't
+    answer (too slow, couldn't start): no word now, and nothing kept (#1108: such a run was kept as a success for days)."""
     try:
         r = subprocess.run([codex, "sandbox", "--", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=PROBE_TIMEOUT, cwd=os.path.expanduser("~"))
-    except subprocess.TimeoutExpired:
-        return True, ""   # slow, not refused: no word
-    except OSError:
-        return True, ""
+    except (subprocess.TimeoutExpired, OSError):
+        return True, "", False   # slow or not started, not refused: no word, asked again next time
     if r.returncode == 0:
-        return True, ""
+        return True, "", True
     lines = [x.strip() for x in (r.stderr or "").splitlines() if x.strip()]
     said = next((x for x in lines if "bwrap" in x or "namespace" in x.lower() or "RTM_NEWADDR" in x), None)
     # Only the sandbox refusing counts: an older codex without `sandbox`, or another failure, says nothing.
-    return (False, said[:300]) if said else (True, "")
+    return (False, said[:300], True) if said else (True, "", True)
 
 
 def check(fresh=False):
     """None when Codex's sandbox starts here (or isn't used here: not Linux, no codex), else
     {"error": what bwrap said, "bwrap": its path, "userns": whether AppArmor's switch is on, "at"}.
     Asked once and kept (CACHE) until what it depends on changes."""
-    if os.uname().sysname != "Linux":
+    if platform.system() != "Linux":
         return None
     codex = shutil.which("codex")
     if not codex:
@@ -103,8 +103,10 @@ def check(fresh=False):
         kept = None
     if not fresh and isinstance(kept, dict) and kept.get("key") == key and time.time() - kept.get("at", 0) < KEEP:
         return kept.get("broken")
-    ok, said = probe(codex)
+    ok, said, sure = probe(codex)
     broken = None if ok else {"error": said, "bwrap": key["bwrap"], "userns": key["userns"] == "1", "at": int(time.time())}
+    if not sure:
+        return broken
     try:
         os.makedirs(os.path.dirname(CACHE), exist_ok=True)
         tmp = CACHE + ".tmp"
@@ -155,7 +157,7 @@ def cmd_sandbox(args):
     from .output import say
     b = check(fresh=bool(args.check))
     if not b:
-        say(args, {"ok": True}, "Codex's sandbox starts on this machine." if shutil.which("codex") and os.uname().sysname == "Linux"
+        say(args, {"ok": True}, "Codex's sandbox starts on this machine." if shutil.which("codex") and platform.system() == "Linux"
             else "Nothing to check: no Codex sandbox on this machine.")
         return 0
     say(args, {"ok": False, **b, "notice": notice(b)}, notice(b))

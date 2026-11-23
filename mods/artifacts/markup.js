@@ -415,7 +415,8 @@ function deliver(m, out, shot, cx) {
       m.sel = null;
       m.input.set_value("");
       m.note.set_value("");
-      m.said = markupSent(keeperName(res.to));
+      // held for an agent on a question (#1213): herdr-artifact's own plain line
+      m.said = res.said || markupSent(keeperName(res.to));
       saveDraft(m);
     }
     cx.notify();

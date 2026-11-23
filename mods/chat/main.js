@@ -36,7 +36,7 @@ import { words, howAnswered, codexOnScreen, codexSteps } from "./core/asks.js";
 // The rows' words and rules the web app's chat draws by too (core/chat-view.js).
 import { WORDS, clock, bgGroups, subagentsOf, subagentWord, senderName, briefLabel, firstUser, firstKeys, literal, fromName, sentTo, selfName, initialOf, newsWords, resolveArtifacts, unsigned, ownWords, fitThumbs, bandActs, bandOrder, imagesLine, questionsBelow, notSent, published, artifactLine, videoLine, mediaIn, elapsed, reportMsg, doingWords, LOST, lostMessage, shellWord, sessionStarted, sessionFailed } from "./core/chat-view.js";
 // Sending the person's words, as the web app does (core/send.js).
-import { refusal, taskTag, messageBody, replyInstead, steerNow, reactionLine, mentionedIn, sendTyped, SETTLE } from "./core/send.js";
+import { refusal, taskTag, messageBody, replyInstead, steerNow, reactionLine, mentionedIn, sendTyped, SETTLE, markSaid } from "./core/send.js";
 // hc whose send goes as the person, with no caller: never "Another agent" on another machine (SHEP-3, core/person.js).
 import { asPerson } from "./core/person.js";
 import { AskCards, linkCtl } from "./cards.js";
@@ -51,7 +51,7 @@ import { taskDot, ownProgress, pie } from "./dot.js";
 import * as attach from "./attach.js";
 import * as slash from "./slash.js";
 import * as mentions from "./core/mentions.js";
-import { SH } from "./core/paths.js";
+import { SH, TEMPLATES_SH } from "./core/paths.js";
 import * as links from "./core/chat-links.js";
 import { settle } from "./core/pending.js";
 import { dirs, dirsReady } from "./dirs.js";
@@ -60,6 +60,7 @@ import * as TR from "./core/translate.js";
 import * as agent from "./agent.js";
 import { cleanCommand } from "./core/clean-env.js";
 import * as choices from "./settings.js";
+import { CHOICE_KEY, choiceOf, sameChoice, withChoice } from "./core/agents.js";
 import { Dictation, BUN_PATH, warmAudio } from "./dictate.js";
 
 // Writing down after Done this long says it's taking longer than usual (SHEP-63).
@@ -106,8 +107,9 @@ const COLUMN = 1100;
 const BUBBLE = 0.9;
 const KINDS = { "claude-code": "claude", claude: "claude", "claude-magpie": "claude", "claude-cdnd": "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-// The role templates' folder on the machine a command runs on (sh -c prefix: $dir).
-const TEMPLATE = 'dir="$HOME/.config/herdr-core/templates"; ';
+// The role templates' folder on the machine a command runs on (sh -c prefix: $dir), where herdr-core reads them
+// there ($XDG_CONFIG_HOME's when set: #1182).
+const TEMPLATE = TEMPLATES_SH + 'dir="$SHEP_TEMPLATES"; ';
 // Whether a machine's layout is here now (it's connected); this computer always is.
 const online = (machine) => !machine || machines().find((m) => m.name === machine)?.layout === "ready";
 const same = (a, b) => norm(a) === norm(b);
@@ -387,12 +389,13 @@ export default class Chat extends View {
         cx.spawn(async (cx) => { const f = await attach.textFile(pasted); if (f) { this.addFiles([f]); this.saveSoon(cx); cx.notify(); } });
         return;
       }
-      // Copied files pasted as text (file:// lines) become attachments.
+      // Copied files pasted as text (file:// lines) become attachments, as does a macOS screenshot's fleeting path (#1095).
       const v = this.box.value();
-      if (/^file:\/\/\S/m.test(v)) {
-        const found = v.split("\n").filter((l) => /^file:\/\/\S+$/.test(l.trim())).map((l) => decodeURIComponent(l.trim().slice(7)));
-        this.addFiles(attach.paths(found));
-        this.box.set_value(v.split("\n").filter((l) => !/^file:\/\/\S+$/.test(l.trim())).join("\n"));
+      if (/^file:\/\/\S/m.test(v) || v.split("\n").some(attach.fleetingPath)) {
+        const isFile = (l) => /^file:\/\/\S+$/.test(l.trim()) || attach.fleetingPath(l);
+        const found = v.split("\n").filter(isFile).map((l) => l.trim().startsWith("file://") ? decodeURIComponent(l.trim().slice(7)) : l.trim());
+        this.attachFiles(attach.paths(found), cx);
+        this.box.set_value(v.split("\n").filter((l) => !isFile(l)).join("\n"));
       }
       this.slashSel = 0;
       // Editing a recalled message makes it a new one: arrows move in it again.
@@ -404,7 +407,7 @@ export default class Chat extends View {
     // A paste with no text: the clipboard's image or copied files become attachments.
     this.box.on("paste_other", (_e, cx) => cx.spawn(async (cx) => {
       const got = await attach.fromClipboard().catch((e) => { this.error = String(e?.message ?? e); cx.notify(); return []; });
-      if (got.length) { this.error = null; this.addFiles(got); this.saveSoon(cx); cx.notify(); }
+      if (got.length) { this.error = null; this.attachFiles(got, cx); this.saveSoon(cx); cx.notify(); }
     }));
     this.wasFocused = false;
     // Up/Down/Tab/Escape reach the textarea first, which keeps them. While the "/" list shows
@@ -483,7 +486,6 @@ export default class Chat extends View {
     this.secretCards = new SecretCards();
     // Kept or declined here: its quiet line, where its card was.
     this.secretCards.onEnd = (ask, how) => this.secretEnded(ask, how);
-    for (const c of [this.cards, this.workerCards, this.codexCards, this.secretCards]) c.onField = (box, shown) => this.keepField(box, shown);
     // Cards' controls by id: their drawn widths, for which one a press was on (strips.js hit()).
     this.cardW = new Map();
     this.readingAsks = new Set();
@@ -722,6 +724,12 @@ export default class Chat extends View {
     this.typing = on && addr ? { addr, at } : null;
     if (was && was.addr && was.addr !== this.typing?.addr) hc(["label", was.addr, "herdr.typing="]).catch(() => {});
     if (this.typing) hc(["label", addr, `herdr.typing=${at}`]).catch(() => {});
+  }
+
+  // Files from a drop, a paste or the picker: macOS's fleeting TemporaryItems ones copied first (attach.keep, #1095).
+  attachFiles(list, cx) {
+    if (!list.some(attach.fleeting)) { this.addFiles(list); return; }
+    cx.spawn(async (cx) => { this.addFiles(await attach.keep(list)); this.saveSoon(cx); cx.notify(); });
   }
 
   addFiles(list) {
@@ -1144,7 +1152,7 @@ export default class Chat extends View {
     const named = /^([a-z][a-z0-9]*)-(\d+)(?:-|$)/.exec(t.name ?? "");
     const ref = this.workerTasks().get(t.address)?.ref ?? (t.labels?.["herdr.task"] && named ? `${named[1].toUpperCase()}-${named[2]}` : null);
     // An Assistant's role is in its first message (its template): it gets that again.
-    const template = assistant(t) && !t.address.includes("/") ? await readTextFile(`${home()}/.config/herdr-core/templates/assistant.md`).catch(() => null) : null;
+    const template = assistant(t) && !t.address.includes("/") ? await readTextFile(`${(await dirsReady()).templates}/assistant.md`).catch(() => null) : null;
     const msg = lostMessage({ ref, template });
     const mine = t.address === this.addr;
     if (mine) { this.note = { id: `note-${Date.now()}`, text: WORDS.sessionGone }; cx.notify(); }
@@ -1257,6 +1265,9 @@ export default class Chat extends View {
     // Not in its session yet (no report, no turn): perhaps on its own start screen, which
     // shows as a card under an empty chat.
     if (!path && starting(t)) path = "pending";
+    // Codex opens its log with its first message: past those screens and idle, with no message yet, it has none
+    // (core/chat-reader.js, the web's: the same rule).
+    if (!path && kind === "codex" && t.state === "live" && !(t.turn > 1) && t.status?.state !== "blocked") path = "pending";
     if (path === "pending") {
       // A Claude Code that hasn't written its first line yet has no file: an empty chat.
       if (this.phase === "finding") { this.kind = kind; this.conv = new Conversation(kind); this.start = 0; this.set("ready", cx); }
@@ -1452,7 +1463,9 @@ export default class Chat extends View {
         const k = this.ownTerminal();
         if (k && (starting(k) || openCard(this.addr))) { await this.screens.tick(this.addr, k); cx.notify(); }
         // The first message hc couldn't hand over (startAgent): once the agent is idle with no screen to answer.
-        if (this.firstSend && k?.turn > 0) this.firstSend = null;
+        // It took a turn already: nothing to send. A turn counts only once its log is there: Codex counts one for
+        // coming up, before any message, and past its own screens its first message was dropped (SHEP-263).
+        if (this.firstSend && k?.turn > 0 && this.path) this.firstSend = null;
         if (this.firstSend && k?.status?.state === "idle" && !openCard(this.addr)) {
           const text = this.firstSend;
           this.firstSend = null;
@@ -1518,6 +1531,7 @@ export default class Chat extends View {
   // Enter: now (while the agent works, it takes it mid-turn). Ctrl+Enter while it
   // works: held, and sent by itself once it is free.
   send(cx, hold = false) {
+    this.pickError = null;
     // A picked "#space" goes as its mention, which names its target (core/mentions.js).
     const text = mentions.expandTasks(mentions.expand(this.box.value().trim(), this.picked), this.pickedTasks);
     this.picked = [];
@@ -1603,6 +1617,7 @@ export default class Chat extends View {
         p.sent = [body, ...paths].filter(Boolean).join("\n\n");
         // (a message with pictures: its Enter again if Claude Code lost it, sendTyped(); one that stayed in its box
         // last time gets only its Enter now, never typed twice)
+        markSaid(this.sendIo(cx), this.addr);
         r = await sendTyped(this.sendIo(cx), this.addr, this.kind, p.sent, SETTLE, !!msg.stuck);
         msg.stuck = !!r.stuck;
         // Its own dialog is open in its terminal (a question or a permission with no card
@@ -1884,7 +1899,8 @@ export default class Chat extends View {
       // template's command under sh -c, and where sh is dash (Debian, Ubuntu) the shell would stay
       // the terminal's program, so the chat wouldn't know its CLI.
       let launch = template, oneOff = null, words = "";
-      const st = this.choice?.sel ?? props()?.settings;
+      // (the choice kept for the space first: a pick in the web app's model menu this chat hasn't drawn yet)
+      const st = choiceOf(shared(CHOICE_KEY), space?.id) ?? this.choice?.sel ?? props()?.settings;
       const on = machine ? { on: machine } : {};
       const there = !machine || !st?.agent || agent.choiceKey(st) !== agent.agentKey(st.agent) ? true : (await knownAgents(on).catch(() => []))
         .some((a) => (a.key === st.agent || (a.run ?? [])[0] === st.agent) && a.installed !== false);
@@ -1945,6 +1961,8 @@ export default class Chat extends View {
       }
       this.addr = machine && !out.address.includes("/") ? `${machine}/${out.address}` : out.address;
       this.machine = this.addr.includes("/") ? this.addr.split("/")[0] : null;
+      // It started on the choice kept for its space: that choice is spent (the next start is Settings' again).
+      if (space && choiceOf(shared(CHOICE_KEY), space.id)) setShared(CHOICE_KEY, withChoice(shared(CHOICE_KEY), space.id, null));
       await this.flag();
       this.phase = "finding";
       this.wasFocused = false;
@@ -1976,9 +1994,14 @@ export default class Chat extends View {
         const data = await choices.loadChoices(space?.machine ?? null);
         let kept = null;
         try { kept = JSON.parse(localStorage.getItem(`choice:${this.slot}`) ?? "null"); } catch {}
-        const st = kept?.agent ? kept : props()?.settings;
+        // The choice kept for its space wins (core/agents.js CHOICE_KEY, SHEP-263): this chat's own pick, or one made
+        // in the web app's model menu. A pick kept here before choices were shared is told once (tell), so the web
+        // app's model button and a start from there say and use it too.
+        const spaceId = space?.id ?? props()?.space ?? this.slotRec()?.space ?? null;
+        const told = spaceId ? shared(CHOICE_KEY)?.[spaceId] ?? null : null;
+        const st = choiceOf({ x: told }, "x") ?? (kept?.agent ? kept : props()?.settings);
         const sel = st?.agent && data.menus[st.agent] ? { perm: data.permDefault[st.agent], effort: null, fast: false, ...st } : { ...data.defaults };
-        this.choice = { sel, data, key: this.choice.key };
+        this.choice = { sel, data, key: this.choice.key, space: spaceId, toldAt: told?.at ?? null, tell: !told && Boolean(kept?.agent) };
       } catch { this.choice = null; }
       cx.notify();
     });
@@ -2381,18 +2404,21 @@ export default class Chat extends View {
   restartAssistant(cx) {
     const mine = this.myPane() ?? this.lastPane;
     if (this.restarting || !mine || !this.addr) return;
+    // what it restarts, read now (#1108): "Start a new one" pressed while hc answers empties the chat, and that wins
+    const addr = this.addr, kind = this.kind, path = this.path;
     this.restarting = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await hc(["get", this.addr, "--json"]);
+        const r = await hc(["get", addr, "--json"]);
+        if (this.addr !== addr || this.phase === "fresh") { this.restarting = false; cx.notify(); return; }
         let t = null;
         try { t = JSON.parse(r.stdout || "null"); } catch {}
         if (!t || t.error) throw new Error("Its old terminal is gone. Start a new Assistant instead.");
         // A magpie or cdnd launcher's Assistant resumes through its launcher, not the bare claude under it.
         const launched = agent.launchArgv(t);
         const via = launched.includes("herdr-magpie") || agent.launcherOf(launched) !== "direct" ? launched : null;
-        const argv = agent.resumeArgv(this.kind, via ?? this.argv ?? t.argv ?? [this.kind], agent.sessionOf(this.kind, this.path));
+        const argv = agent.resumeArgv(kind, via ?? this.argv ?? t.argv ?? [kind], agent.sessionOf(kind, path));
         this.swapping = true;
         const next = await agent.restart(t, { argv, resume: true, base: argv }, mine);
         this.endedAssistant = false;
@@ -3089,8 +3115,8 @@ export default class Chat extends View {
           menus[selected.agent] = { ...menus[selected.agent], models: [agent.typedModel(selected.agent, selected.model), ...menus[selected.agent].models] };
         // As tall as the menu can get (chat-models' sizes): border and padding, another machine's
         // offline line, agent tabs, search, the list (it scrolls past 8 rows), separator, Reasoning header
-        // and levels, Fast, Permissions, the new conversation's two lines, Restart (two lines).
-        const W = 340, H = 2 + 10 + 20 + 68 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31 + 40 + 50;
+        // and levels, Fast, Ultrafast, Permissions, the new conversation's two lines, Restart (two lines).
+        const W = 340, H = 2 + 10 + 20 + 68 + 36 + 8 * 31 + 9 + 26 + 34 + 31 + 31 + 31 + 40 + 50;
         openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H,
           at: at ? { x: Math.max(8, at.x - W + 90), y: Math.max(8, at.y - H - 10) } : "pointer",
           props: { pane: this.pickKey(), offline, width: W, height: H, select: name ? findModel(menus, name) : null,
@@ -4107,7 +4133,9 @@ export default class Chat extends View {
     const jobs = this.bgJobs;
     if (jobs.due(this.kind, this.conv) && await jobs.look((s, a) => this.runThere(s, a), this.kind, pid, this.conv)) cx.notify();
     const open = this.jobs().find((j) => j.id === this.jobOpen);
-    if (this.jobOpen && !open) { this.jobOpen = null; cx.notify(); }
+    // #1103: an open subagent row (c:<address>) is no job: it stays open while its subagent is listed.
+    const kid = String(this.jobOpen ?? "").startsWith("c:") && subagentsOf(terminals(), this.addr, Date.now()).some((k) => `c:${k.address}` === this.jobOpen);
+    if (this.jobOpen && !open && !kid) { this.jobOpen = null; cx.notify(); }
     if (open?.path) {
       const text = await jobs.output((s, a) => this.runThere(s, a), open);
       if (text !== null && text !== this.jobOut.get(open.id)) { this.jobOut.set(open.id, text); cx.notify(); }
@@ -4490,10 +4518,11 @@ export default class Chat extends View {
   // the message as tiles, as a drop or a paste makes them.
   pickFiles(cx) {
     cx.spawn(async (cx) => {
-      const { code, paths: list } = await attach.pick();
-      if (code !== 0) this.error = "Couldn't open the file picker.";
+      const { code, paths: list, why } = await attach.pick();
+      // said beside the + button (#1225), not at the pane's edge
+      this.pickError = code !== 0 ? `Couldn't open the file picker${why ? `: ${why}` : "."}` : null;
       if (!list.length) { cx.notify(); return; }
-      this.addFiles(attach.paths(list));
+      this.attachFiles(attach.paths(list), cx);
       this.saveSoon(cx);
       this.box.focus();
       cx.notify();
@@ -4535,7 +4564,7 @@ export default class Chat extends View {
     const c = this.current();
     // Sized to its words, never cut: a narrow chat drops "· 1M" first.
     const model = String(c?.label ?? agent.modelName(c?.model) ?? "");
-    const pick = [(this.width ?? 600) < 460 ? model.replace(/\s*·?\s*1M$/, "") : model, agent.levelName(c?.effort), c?.fast ? "Fast" : null].filter(Boolean).join(" · ") || agent.NAMES[this.kind] || "Agent";
+    const pick = [(this.width ?? 600) < 460 ? model.replace(/\s*·?\s*1M$/, "") : model, agent.levelName(c?.effort), agent.speedName(c?.fast)].filter(Boolean).join(" · ") || agent.NAMES[this.kind] || "Agent";
     // How full its context window is, once its log says, before the model and apart from it (the picker
     // leaves it be): a pie and the tokens in use, in the theme's working amber past 80%.
     const ctx = agent.contextUse(c);
@@ -4634,9 +4663,24 @@ export default class Chat extends View {
   freshPick(t, cx) {
     // A pick lands in this.choice.sel just after a render (settings.js applyReply), which then
     // redraws: a changed one is kept per slot here.
-    const now = JSON.stringify(this.choice.sel);
-    if (this.choice.saved !== undefined && now !== this.choice.saved && this.slot) try { localStorage.setItem(`choice:${this.slot}`, now); } catch {}
-    this.choice.saved = now;
+    const c = this.choice, all = c.space ? shared(CHOICE_KEY) : null, told = c.space ? all?.[c.space] ?? null : null;
+    // A pick made elsewhere for this space since (the web app's model menu): this chat follows it.
+    if (told?.at && told.at !== c.toldAt) {
+      c.toldAt = told.at;
+      const st = choiceOf(all, c.space);
+      if (st && c.data?.menus?.[st.agent] && !sameChoice(st, c.sel)) c.sel = { ...st };
+    }
+    const now = JSON.stringify(c.sel);
+    const changed = c.saved !== undefined && now !== c.saved;
+    if (changed && this.slot) try { localStorage.setItem(`choice:${this.slot}`, now); } catch {}
+    // This chat's pick goes where the web app's model button and a start from there read it.
+    if (c.space && cx && (changed || c.tell) && !sameChoice(c.sel, told)) {
+      const at = Date.now(), space = c.space, sel = { ...c.sel };
+      c.toldAt = at;
+      cx.timer.after(0, () => setShared(CHOICE_KEY, withChoice(shared(CHOICE_KEY), space, sel, at)));
+    }
+    c.tell = false;
+    c.saved = now;
     return choices.modelButton(t, this.choice, {}, cx);
   }
 
@@ -4688,7 +4732,7 @@ export default class Chat extends View {
         cx.stop_propagation();
         this.enter(cx, Boolean(m.control || m.platform));
       })
-      .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); })
+      .on_drop((e, cx) => { this.attachFiles(attach.paths(e.paths ?? []), cx); this.saveSoon(cx); this.box.focus(); cx.notify(); })
       // Where the box is in the window, for a typed /model's picker (modelCommand()).
       .on_mouse_move((e) => { if (e.bounds) this.composerAt = e.bounds; })
       .border_color(this.focused ? t.accent : t.input).bg(t.background)
@@ -4716,7 +4760,7 @@ export default class Chat extends View {
       .when(rec === "idle", (el) => el.child(h_flex().h(36).pl(6).pr(6).gap(4).items_center()
         // Attach on the left, as ChatGPT and Claude have it: the desktop's file picker.
         .child(this.round("chat-attach", "mods/chat/plus.svg", t, "ghost", (cx) => this.pickFiles(cx)))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.blocked).child(rec === "idle" ? this.dict.error ?? "" : ""))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.blocked).child(rec === "idle" ? this.dict.error ?? this.pickError ?? "" : ""))
         .when(Boolean(this.addr), (el) => el.children(this.pickParts(t, true)))
         .when(!this.addr && this.phase === "fresh" && Boolean(this.choice?.sel) && Boolean(cx), (el) => el.child(this.freshPick(t, cx)))
         .when(addonOn("voice"), (el) => el.child(this.round("chat-mic", "mods/chat/mic.svg", t, "ghost", (cx) => this.toggleDictation(cx))))
@@ -4816,16 +4860,17 @@ export default class Chat extends View {
     // Never over a text selection (GitHub #916, SHEP-192): a drag over the messages selects them, and the box taking the
     // keyboard then made Ctrl+C copy nothing. The timers check again when they fire: a drag can start after they're set.
     // Nor while a field in an overlay holds it (the artifact viewer's Mark up, a recipe's form: keysOver(), SHEP-9), nor
-    // one in this chat (a card's Other..., find, a secret's box: keepField(), SHEP-23).
+    // one in this chat: a card's own box (a question's Other…, a secret's masked box: cardKeys(), GitHub #1224), or find
+    // (keepField()).
     const dialog = () => dialogHolds(shared(KEY_HOLDER)) || keysOver(shared(KEY_HOLDER), this.areaKey());
-    const free = () => !this.pressMoved && !dialog() && !this.fieldHolds();
+    const free = () => !this.pressMoved && !dialog() && !this.fieldHolds() && !this.cardKeys();
     // The pane focused again (a command, a click on its header) can leave the box without the
     // keyboard: give it back, unless the person just pressed something inside the chat.
     // Not while the keyboard is somewhere else in the window that isn't a pane (#633): a task's chat, the list or its
     // search in the Tasks panel (shared "keyboard.holder", keyHolder()); Herdr still counts this pane as focused then.
     const how = boxRefocus({
       paneFocused, showsBox, entered: !this.wasFocused || !this.hadBox, dialog: dialog(), pressMoved: this.pressMoved,
-      field: this.fieldHolds(), call: Boolean(this.call), boxFocused: this.focused ?? null,
+      field: this.fieldHolds() || this.cardKeys(), call: Boolean(this.call), boxFocused: this.focused ?? null,
       elsewhere: keysElsewhere(liveHolder(shared(KEY_HOLDER)), this.areaKey()),
       pressAt: this.press?.at ?? 0, refocusAt: this.refocusAt ?? 0,
     });
@@ -4852,8 +4897,8 @@ export default class Chat extends View {
 
 
 
-  // A text field in the chat besides its box (find, a card's Other..., a secret's box): while it has the keyboard,
-  // refocus() leaves it there (SHEP-23). shown: whether it is still on screen (one taken away keeps no blur to say so).
+  // A text field in the chat besides its box and its cards' (find): while it has the keyboard, refocus() leaves it
+  // there (SHEP-23; a card's own box: cardKeys()). shown: whether it is still on screen (one taken away keeps no blur to say so).
   keepField(state, shown = () => true) {
     state.on("focus", () => { this.field = { state, shown }; });
     state.on("blur", () => { if (this.field?.state === state) this.field = null; });
@@ -4862,6 +4907,11 @@ export default class Chat extends View {
   fieldHolds() {
     if (this.field && !this.field.shown()) this.field = null;
     return Boolean(this.field);
+  }
+
+  // Whether a card's own box (Other…, a secret's) has the keyboard.
+  cardKeys() {
+    return [this.cards, this.workerCards, this.codexCards, this.secretCards].some((c) => c?.holdsKeys?.());
   }
 
   // A copy in a tab the window doesn't show (another space or tab) isn't drawn, so the wasFocused of its last draw
@@ -4974,7 +5024,7 @@ export default class Chat extends View {
       .on_mouse_down("left", (e) => { this.notePress(e); holdKeys(this.areaKey()); this.pressWin = e.position; this.keepIcons = null; this.pressing = true; this.pressMoved = false; if (e.bounds) this.noteArea(e.bounds); })
       .on_mouse_up("left", () => { this.pressing = false; })
       // Files dropped anywhere on the chat go with the next message.
-      .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); })
+      .on_drop((e, cx) => { this.attachFiles(attach.paths(e.paths ?? []), cx); this.saveSoon(cx); this.box.focus(); cx.notify(); })
       .child(this.reviewBanner(t));
 
     // Starting (or the new agent's log not there yet): the person's message shows at once.

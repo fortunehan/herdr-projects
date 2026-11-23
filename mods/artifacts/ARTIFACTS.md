@@ -48,7 +48,7 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
 | `heading` | `text`, `level` 1-3 |
 | `text` | `md` (Markdown: bold, links, `code`, lists) |
 | `list` | `items` (Markdown each), `ordered` |
-| `table` | `columns` (labels, or `{ label, align }`), `rows` (lists of cells) |
+| `table` | `columns` (labels, or `{ label, align }`), `rows` (lists of cells; a cell may hold links, **bold** and `code`) |
 | `chart` | `kind` bar, line or pie, `labels`, `series` [{ `name`, `values` (numbers) }] |
 | `stats` | `items` [{ `label`, `value`, `note` }]: a row of big numbers |
 | `image` | `src` (a picture beside recipe.json), `caption`, `w`, `h` |
@@ -64,7 +64,7 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
 | `details` | `summary`, `blocks`: folded until opened |
 | `divider` | nothing |
 | `choice` | `question`, `options` [{ `label`, `description` }]: the person picks one |
-| `form` | `fields` [{ `name`, `label`, `kind` text, textarea, select or checkbox, `options` }], `submit` |
+| `form` | `fields` [{ `name`, `label`, `kind` text, textarea, select or checkbox, `options`, `value` (optional: what it starts with and replies untouched; one of a select's options, true or false for a checkbox) }], `submit` |
 | `button` | `label`, `reply`: a press sends `reply` |
 
 - **Pictures**: PNG, JPEG, GIF, WebP or SVG files in the folder, named in `src` (no paths up or

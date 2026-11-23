@@ -10,7 +10,7 @@ import { taskChatId, type AgentContext, type AgentLimits, type AgentUsage, type 
 import { act, setUI, taskOf, useSnap, useStore, useUI } from './kernel.ts'
 import { Dialog } from './rowmenu.tsx'
 import { Pick, shown, Switch, TextValue } from './Settings.tsx'
-import { CheckIcon, DownIcon, EffortIcon, ic, Menu, MenuItem, ModelIcon, ModeIcon, NextIcon, Primary, RestartIcon, SearchIcon, SpeedIcon, Tab, Tabs } from './ui.tsx'
+import { CheckIcon, DownIcon, EffortIcon, ic, Menu, MenuItem, ModelIcon, ModeIcon, NextIcon, Primary, RestartIcon, SearchIcon, SpeedIcon, Tab, Tabs, TermIcon } from './ui.tsx'
 
 /* ---------- the sheet ---------- */
 
@@ -224,10 +224,13 @@ function SpeedWords({ speed }: { speed: Worn }) {
 
 /* ---------- the window's model button and menu (mods/chat pickParts, mods/chat-models) ---------- */
 
-export type MenuModel = { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean }
+export type MenuModel = { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean; ultrafast?: boolean }
 export type AgentMenu = { name: string; models: MenuModel[]; perms?: { id: string; label: string }[] }
-type MenuPick = { agent: string; launcher?: string; model: string | null; effort: string | null; fast: boolean; perm: string | null }
-type MenuData = { current: MenuPick; menus: Record<string, AgentMenu>; permDefault: Record<string, string>; picks?: Picks; offline?: string | null }
+/** fast: true (Fast), false (standard) or 'ultrafast' (Codex's Ultrafast tier, SHEP-258) */
+type MenuPick = { agent: string; launcher?: string; model: string | null; effort: string | null; fast: boolean | 'ultrafast'; perm: string | null }
+type MenuData = { current: MenuPick; menus: Record<string, AgentMenu>; permDefault: Record<string, string>; picks?: Picks; offline?: string | null
+  /** an Assistant that hasn't started (SHEP-263): the choice is what its first message starts it on, and a pick only changes it */
+  fresh?: boolean }
 /** a stretch of the model list (core/agents.js modelSections): Pinned, Recent, All models, or an agent's matches */
 type Picks = { pinned: string[]; recent: string[] }
 type Section = { key: string; title: string | null; agent: string; rows: (MenuModel & { agent: string; pinned: boolean; typed?: boolean })[]; more: number }
@@ -378,7 +381,7 @@ const ModelMenu = memo(function ModelMenu({ chat, typed }: { chat: string; typed
   const choose = (d: MenuData, was: MenuPick, m: MenuModel & { agent: string }): MenuPick => {
     const next = { ...was, agent: m.agent, model: m.id }
     if (next.effort && !m.efforts.includes(next.effort)) next.effort = null
-    if (!m.fast) next.fast = false
+    next.fast = AGc.speedFor(m, next.fast)
     if (m.agent !== was.agent) {
       delete next.launcher
       if (m.agent === 'claude') next.launcher = 'direct'
@@ -402,13 +405,23 @@ const ModelMenu = memo(function ModelMenu({ chat, typed }: { chat: string; typed
   }, [chat, typed])
   const model = (s: MenuPick) => data?.menus[s.agent]?.models.find((m) => m.id === s.model) ?? null
   const level = (s: MenuPick) => s.effort ?? model(s)?.defaultEffort ?? null
+  // an Assistant that hasn't started: each pick is kept at once, as the window's model button before the first message
+  // (nothing runs yet, so there is nothing to switch or restart, and no button)
+  useEffect(() => {
+    if (!data?.fresh || !sel || JSON.stringify(sel) === JSON.stringify(data.current)) return
+    setData({ ...data, current: sel })
+    setError(null)
+    act({ type: 'restart', chat, kind: sel.agent, model: sel.model ?? '', effort: sel.effort ?? '', speed: AGc.speedWordOf(sel.fast), perm: sel.perm ?? '' } as never)
+      .then((r) => { if ((r as { ok?: boolean }).ok === false) setError((r as { error?: string }).error || "It wasn't kept.") })
+      .catch((e: Error) => setError(e.message))
+  }, [sel, data, chat])
   const changes = () => {
     if (!data || !sel) return []
     const w = data.current, out: string[] = []
     if (sel.agent !== w.agent) out.push(data.menus[sel.agent]?.name ?? sel.agent)
     if (sel.agent !== w.agent || sel.model !== w.model) out.push(model(sel)?.name ?? sel.model ?? '')
     if (level(sel) && level(sel) !== level(w)) out.push(LEVEL[level(sel)!] ?? level(sel)!)
-    if (sel.fast !== w.fast) out.push(sel.fast ? 'Fast' : 'Standard')
+    if (sel.fast !== w.fast) out.push(AGc.speedName(sel.fast) ?? 'Standard')
     if (sel.perm && sel.perm !== w.perm) out.push(data.menus[sel.agent]?.perms?.find((x) => x.id === sel.perm)?.label ?? sel.perm)
     return out
   }
@@ -417,7 +430,7 @@ const ModelMenu = memo(function ModelMenu({ chat, typed }: { chat: string; typed
     setBusy(true)
     setError(null)
     // live: the model, level or Fast change in place (SHEP-181); another agent or permission mode restarts it
-    const r = await act({ type: 'restart', live: true, chat, kind: AGc.choiceKey(sel), model: sel.model ?? '', effort: level(sel) ?? '', speed: sel.fast ? 'fast' : 'normal', perm: sel.perm ?? '' } as never).catch((e: Error) => ({ ok: false, error: e.message }))
+    const r = await act({ type: 'restart', live: true, chat, kind: AGc.choiceKey(sel), model: sel.model ?? '', effort: level(sel) ?? '', speed: AGc.speedWordOf(sel.fast), perm: sel.perm ?? '' } as never).catch((e: Error) => ({ ok: false, error: e.message }))
     setBusy(false)
     if ((r as { ok?: boolean }).ok === false) return setError((r as { error?: string }).error || (restarts ? "The agent didn't restart." : "It didn't switch."))
     close()
@@ -475,16 +488,17 @@ const ModelMenu = memo(function ModelMenu({ chat, typed }: { chat: string; typed
                   </div>
                 </>
               ) : null}
-              {m?.fast ? (
-                <button type="button" role="menuitemcheckbox" aria-checked={sel.fast} className={row} onClick={() => setSel({ ...sel, fast: !sel.fast })}>
+              {/* Fast, and Codex's Ultrafast where the model has it (SHEP-258): one speed, so turning one on turns the other off */}
+              {([['fast', true, !!m?.fast], ['ultrafast', 'ultrafast', !!m?.ultrafast]] as const).map(([key, value, has]) => has ? (
+                <button key={key} type="button" role="menuitemcheckbox" aria-checked={sel.fast === value} className={row} onClick={() => setSel({ ...sel, fast: sel.fast === value ? false : value })}>
                   <SpeedIcon className="size-3.5 shrink-0 text-fg3" />
-                  <span className="flex-1">Fast</span>
+                  <span className="flex-1">{key === 'fast' ? 'Fast' : 'Ultrafast'}</span>
                   {/* a switch as wide as two thumbs, a touch bigger for a finger */}
-                  <span aria-hidden className={clsx('inline-flex h-4 w-7 shrink-0 rounded-full p-0.5 transition-colors coarse:h-5 coarse:w-9 phone:h-5 phone:w-9', sel.fast ? 'bg-accent' : 'bg-line2')}>
-                    <span className={clsx('aspect-square h-full rounded-full bg-bg shadow-soft transition-transform', sel.fast && 'translate-x-full')} />
+                  <span aria-hidden className={clsx('inline-flex h-4 w-7 shrink-0 rounded-full p-0.5 transition-colors coarse:h-5 coarse:w-9 phone:h-5 phone:w-9', sel.fast === value ? 'bg-accent' : 'bg-line2')}>
+                    <span className={clsx('aspect-square h-full rounded-full bg-bg shadow-soft transition-transform', sel.fast === value && 'translate-x-full')} />
                   </span>
                 </button>
-              ) : null}
+              ) : null)}
               {menu?.perms?.length ? (
                 <button type="button" aria-haspopup="menu" aria-expanded={perms} className={clsx(row, perms && 'bg-hover')} onClick={() => setPerms(!perms)}>
                   <ModeIcon className="size-3.5 shrink-0 text-fg3" />
@@ -545,6 +559,8 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   const words = useStore((s) => s.chats[chatKey]?.agent?.words)
   const ctx = useStore((s) => s.chats[chatKey]?.agent?.context)
   const limits = useStore((s) => s.chats[chatKey]?.agent?.limits)
+  // #1222: the extra flags it was started with, after the model (they give way first)
+  const flags = useStore((s) => s.chats[chatKey]?.agent?.flags)?.join(' ') ?? ''
   const open = useMenuOpen()
   const phone = useUI((u) => u.device === 'phone')
   if (!words) return <OldAgentLine chatKey={chatKey} cli={cli} />
@@ -556,9 +572,11 @@ export function AgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
       {ctx ? <ContextUse ctx={ctx} /> : null}
       {limits ? <UsageUse limits={limits} /> : null}
       <button type="button" data-agent-line aria-haspopup="menu" aria-expanded={open?.chat === chatKey}
+        aria-label={flags ? `${shown} · ${flags}` : undefined}
         onClick={() => setMenuOpen(open?.chat === chatKey ? null : { chat: chatKey })}
         className={agentPick}>
-        <span className="min-w-0 truncate">{shown}</span>
+        <span className={clsx(flags ? 'shrink-0' : 'min-w-0 truncate')}>{shown}</span>
+        {flags ? <span data-agent-flags className="min-w-0 shrink-[50] truncate">{'\u00a0·\u00a0'}<span className="font-mono text-[0.6875rem]">{flags}</span></span> : null}
         <DownIcon className="size-3 shrink-0" />
       </button>
       {open?.chat === chatKey ? <ModelMenu key={`${chatKey}|${open.typed ?? ''}`} chat={chatKey} typed={open.typed} /> : null}
@@ -620,7 +638,9 @@ function OldAgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
   // Shepherdr 3: labels start with a capital ("Opus 5.5 · 1M · High")
   const bits = [model, effort, speed?.text === 'Normal' && !speed.requested ? undefined : speed].filter((w): w is Worn => !!w)
   const seen = bits.filter((w) => !w.requested), requested = bits.filter((w) => w.requested)
-  const words = planned ?? ([...seen.map((w) => w.text), requested.length ? `Asked for: ${requested.map((w) => w.text).join(' · ')}` : ''].filter(Boolean).join(' · ') || `${cli} · Not known yet`)
+  // #1222: its extra flags after them (they give way first)
+  const flags = agent?.flags?.length ? agent.flags.join(' ') : ''
+  const words = [planned ?? ([...seen.map((w) => w.text), requested.length ? `Asked for: ${requested.map((w) => w.text).join(' · ')}` : ''].filter(Boolean).join(' · ') || `${cli} · Not known yet`), flags].filter(Boolean).join(' · ')
   // a long model id is what gives way: effort and speed stay in view
   const part = (w: Worn, i: number) => (
     <span key={w.text} className={clsx(w === model ? 'min-w-0 truncate' : 'shrink-0', w.requested && 'italic')}>
@@ -638,6 +658,7 @@ function OldAgentLine({ chatKey, cli }: { chatKey: string; cli: string }) {
       className={agentPick}
     >
       {planned ? <span className="min-w-0 truncate italic">{planned}</span> : bits.length ? [...seen, ...requested].map(part) : <span className="min-w-0 truncate">{`${cli} · Not known yet`}</span>}
+      {flags ? <span data-agent-flags className="min-w-0 shrink-[50] truncate">{'\u00a0·\u00a0'}<span className="font-mono text-[0.6875rem]">{flags}</span></span> : null}
       <DownIcon className="size-3 shrink-0" />
     </button>
   )
@@ -652,7 +673,8 @@ export function AgentControls({ chatKey, cli }: { chatKey: string; cli: string }
     openRestart(chatKey, taskChatId(chatKey) ?? 'this space', true)
   }
   return <div data-agent-controls>
-    {([['Agent', agent ? cli : `${cli} · unknown`, ModeIcon], ['Model', inMenu(model), ModelIcon], ['Effort', inMenu(effort), EffortIcon], ['Speed', inMenu(speed), SpeedIcon]] as const).map(([label, value, Icon]) =>
+    {([['Agent', agent ? cli : `${cli} · unknown`, ModeIcon], ['Model', inMenu(model), ModelIcon], ['Effort', inMenu(effort), EffortIcon], ['Speed', inMenu(speed), SpeedIcon],
+      ...(agent?.flags?.length ? [['Flags', agent.flags.join(' '), TermIcon] as const] : [])] as const).map(([label, value, Icon]) =>
       <MenuItem key={label} icon={<Icon className={ic} />} aria-label={`${label}: ${value}. Select and restart`} onClick={open}>
         <span className="flex min-w-0 items-center justify-between gap-4">
           <span>{label}</span>

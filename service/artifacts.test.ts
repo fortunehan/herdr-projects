@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { artifactOf, artifactStore } from "./compat.ts";
+import { plainError } from "./artifacts.ts";
 
 test("a space's artifact store is herdr-artifact's: the repo's main folder, named as the window's Artifacts header", () => {
   expect(artifactStore({ folder: "/h/u" }, "/h/u")).toEqual({ folder: "/h/u", key: "|/h/u", name: "~" });
@@ -38,4 +39,11 @@ test("answers: another machine's are read there, beside the version; none, unrea
   expect(calls.length).toBe(3);
   // this machine's: none kept for an artifact it doesn't have
   expect(await a.answers("no-such-artifact-shep87", 1)).toEqual({});
+});
+
+test("a note's error is plain words, never JSON in JSON (#1213)", () => {
+  const hc = JSON.stringify({ error: { hint: "typing would answer its dialog", kind: "blocked", message: "t7 is blocked (question)" } });
+  expect(plainError(JSON.stringify({ error: hc }))).toBe("t7 is blocked (question)");
+  expect(plainError(JSON.stringify({ error: "The agent that made this artifact has ended." }))).toBe("The agent that made this artifact has ended.");
+  expect(plainError("")).toBe("");
 });

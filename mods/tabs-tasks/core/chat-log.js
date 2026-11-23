@@ -2,8 +2,11 @@
 // app read agents' logs with it. bin/sync-shared copies it into mods/chat/core/. Edit it here, never a copy.
 // Finding an agent's own session log and reading it as a conversation.
 // Claude Code: ~/.claude/sessions/<pid>.json names the session its process writes, so the
-// log is ~/.claude/projects/*/<sessionId>.jsonl. Codex keeps its rollout file open, so the
-// file is whatever rollout-*.jsonl its process (or a child) holds. Both are exact: no
+// log is ~/.claude/projects/*/<sessionId>.jsonl; a process run with its own CLAUDE_CONFIG_DIR (a profile, a dev
+// container's /app/claude: GitHub #1120) keeps both in that folder, read from the process's environment. Codex keeps its rollout file open, so the
+// file is whatever rollout-*.jsonl its process (or a child) holds, skipping the rollouts of its own
+// subagents (the approval reviewer, "guardian", and spawned helpers: their session_meta's source is
+// {"subagent":…}), which the same process also holds open (GitHub #1201). Both are exact: no
 // guessing by folder or time, so two agents in one folder never get mixed up.
 
 // Prints the log's path on the agent's machine, or nothing. Args: kind, pid. The processes under pid come
@@ -14,20 +17,26 @@ import { codexQuestions } from "./asks.js";
 export const FIND = `
 kind="$1"; pid="$2"
 procs() { if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk '{ p = $1; sub(/.*\\) /, ""); print p, $2 }'; else ps -axo pid=,ppid= 2>/dev/null; fi; }
+# The first open rollout that is not a subagent's: its first line (session_meta) names the source.
+main() { while IFS= read -r r; do head -n 1 "$r" 2>/dev/null | grep -q '"source":{"subagent"' || { echo "$r"; return; }; done; }
 kids() { procs | sort -n | awk -v r="$1" 'function walk(p,  c, m, j) { m = split(k[p], c, " "); for (j = 1; j <= m; j++) if (!(c[j] in s)) { s[c[j]] = 1; print c[j]; walk(c[j]) } } { k[$2] = k[$2] " " $1 } END { s[r] = 1; walk(r) }'; }
+# Claude Code's config folder of process $1 when it was given its own (CLAUDE_CONFIG_DIR), else nothing.
+cdir() { if [ -r "/proc/$1/environ" ]; then tr '\\000' '\\n' < "/proc/$1/environ" 2>/dev/null; elif [ ! -d /proc/self ]; then ps -wwE -o command= -p "$1" 2>/dev/null | tr ' ' '\\n'; fi | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n 1; }
 for p in "$pid" $(kids "$pid"); do
   if [ "$kind" = claude ]; then
-    j="$HOME/.claude/sessions/$p.json"
-    [ -f "$j" ] || continue
+    c="$HOME/.claude"
+    [ -f "$c/sessions/$p.json" ] || c=$(cdir "$p")
+    j="$c/sessions/$p.json"
+    [ -n "$c" ] && [ -f "$j" ] || continue
     id=$(sed -n 's/.*"sessionId":"\\([0-9a-fA-F-]*\\)".*/\\1/p' "$j")
     [ -n "$id" ] || continue
-    for f in "$HOME"/.claude/projects/*/"$id".jsonl; do [ -f "$f" ] && { echo "$f"; exit 0; }; done
+    for f in "$c"/projects/*/"$id".jsonl; do [ -f "$f" ] && { echo "$f"; exit 0; }; done
     echo "pending"; exit 0
   else
     if [ -d "/proc/$p/fd" ]; then
-      f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$' | head -1)
+      f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$' | main)
     else
-      f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$' | head -1)
+      f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$' | main)
     fi
     [ -n "$f" ] && { echo "$f"; exit 0; }
   fi
@@ -78,7 +87,8 @@ BEGIN { pos = base; first = base; msgs = 0 }
     # A helper (or job) launched to run on its own: its result came at once, it is not done yet.
     if (index(line, "Async agent launched") || index(line, "running in background")) ids = ids " ASYNC"
     # A shell or watcher left running in the background (or moved there mid-run): its task id.
-    if (match(line, /"(backgroundTaskId|taskId)":"[^"]+"/)) { m = substr(line, RSTART, RLENGTH); sub(/^"[A-Za-z]*":"/, "", m); sub(/"$/, "", m); ids = ids " TASK=" m }
+    # An agent launched to run on its own (#1101): its agentId, which its end note names by <task-id> alone.
+    if (match(line, /"(backgroundTaskId|taskId|agentId)":"[^"]+"/)) { m = substr(line, RSTART, RLENGTH); sub(/^"[A-Za-z]*":"/, "", m); sub(/"$/, "", m); ids = ids " TASK=" m }
     print off "\tR\t" ids
     # An answer to a question, or words that declined a request: read whole (answers()).
     if (length(line) <= 262144 && ((claude && index(line, "\"answers\":{") && index(line, "\"questions\":[")) || index(line, "wrote in the chat instead: "))) print off "\tJ\t" line
@@ -795,6 +805,8 @@ export class Conversation {
   // A background job ended (by its call id or its task id): a shell, a watcher, a helper.
   ended(id, task) {
     if (id) { const h = this.helpers.get(id); if (h) h.done = true; }
+    // #1101: a background agent's end note may name it by its task id alone.
+    if (task) for (const h of this.helpers.values()) if (h.task === task) h.done = true;
     this.bg = this.bg.filter((j) => !(id && j.id === id) && !(task && j.task === task));
   }
 
@@ -902,6 +914,7 @@ export class Conversation {
           // A helper that answered (not one launched to run on its own) is done.
           const h = this.helpers.get(id);
           if (h && !async) h.done = true;
+          if (h && task) h.task = task;
           this.done(id, r.off);
         }
         continue;
@@ -1090,7 +1103,7 @@ export class Conversation {
       // its settings as applied: at start, and on a /model or /fast in place (SHEP-181)
       const t = p.thread_settings;
       this.meta = { ...this.meta, model: t.model ?? this.meta.model, effort: t.reasoning_effort ?? this.meta.effort,
-        ...(t.service_tier !== undefined ? { speed: ["fast", "priority"].includes(t.service_tier) ? "fast" : "standard" } : {}), at: time(l.timestamp) };
+        ...(t.service_tier !== undefined ? { speed: t.service_tier === "ultrafast" ? "ultrafast" : ["fast", "priority"].includes(t.service_tier) ? "fast" : "standard" } : {}), at: time(l.timestamp) };
     } else if (l.type === "turn_context") {
       this.meta = { ...this.meta, model: p.model ?? this.meta.model, effort: p.effort ?? p.reasoning_effort ?? this.meta.effort, at: time(l.timestamp) };
     } else if (p.type === "token_count") {

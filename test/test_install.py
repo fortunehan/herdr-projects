@@ -68,7 +68,7 @@ class Install(unittest.TestCase):
         out = run("install", "--root", self.root, "--yes").stdout
         self.assertRegex(out, r"files: \d+ new\n")
         rec = json.load(open(self.p(APP, "data/shepherdr/installed.json")))
-        self.assertEqual(rec["version"], "3.1.42")
+        self.assertEqual(rec["version"], "3.1.46")
         self.assertTrue(os.path.isfile(self.p(APP, "mods/tasks/bin/herdr-task")))
         self.assertTrue(os.path.isfile(self.p(APP, "layouts/shepherdr.json")))
         self.assertEqual(os.path.realpath(self.p(".local/bin/herdr-task")), os.path.realpath(self.p(APP, "mods/tasks/bin/herdr-task")))
@@ -460,6 +460,22 @@ class Install(unittest.TestCase):
         self.assertIn("Checks: read", out[0])
         self.assertNotIn("Commit statuses", out[0])
 
+    def test_worktrees_folder_gets_a_plain_package_json(self):
+        """#1132: our package.json (type: module) sits above the task worktrees: an install puts a plain one in that
+        folder so a worktree's repo with none of its own runs as CommonJS, as in its main checkout."""
+        wt = self.p(".local/share/shepherdr/worktrees")
+        os.makedirs(os.path.join(wt, "repo", "task-1"))
+        run("install", "--root", self.root, "--yes")
+        if not os.path.isfile(self.p(".local/share/shepherdr/package.json")):
+            self.skipTest("no service installed here")
+        with open(os.path.join(wt, "package.json")) as f:
+            self.assertNotIn("type", json.load(f))
+        with open(os.path.join(wt, "package.json"), "w") as f:
+            f.write('{"mine": 1}')
+        run("update", "--root", self.root, "--yes")
+        with open(os.path.join(wt, "package.json")) as f:
+            self.assertEqual(json.load(f), {"mine": 1})
+
     def test_service_answers(self):
         """doctor and install trust only Shepherdr's own service on its port: the id it wrote in service.json, not
         another app answering health there (GitHub #635)."""
@@ -498,6 +514,30 @@ class Install(unittest.TestCase):
             for s in (ours, other):
                 s.shutdown()
                 s.server_close()
+
+    def test_the_artifact_viewer_goes_with_the_artifacts_mod(self):
+        """GitHub #1214: herdr-artifact preview looks beside itself first; the built viewer is installed there with the
+        artifacts mod, so a machine without the Web add-on (or a sync) still previews. Not built: nothing to ship."""
+        from importlib.machinery import SourceFileLoader
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        src = tempfile.mkdtemp(prefix="shepherdr-src-")
+        try:
+            for top in ("lib", "mods", "core", "templates", "bin"):
+                shutil.copytree(os.path.join(ROOT, top), os.path.join(src, top), ignore=shutil.ignore_patterns("node_modules", "__pycache__"))
+            shutil.copy(os.path.join(ROOT, "package.json"), src)
+            want = (".config/herdr-app/mods/artifacts/viewer.html")
+            self.assertNotIn(want, [rel for _, rel, _ in sh.source_items(src)[2]])
+            os.makedirs(os.path.join(src, "web", "dist"))
+            page = os.path.join(src, "web", "dist", "artifact-viewer.html")
+            with open(page, "w") as f:
+                f.write("<!doctype html><title>viewer</title>")
+            got = [(g, path) for g, rel, path in sh.source_items(src)[2] if rel == want]
+            self.assertEqual(got, [("artifacts", page)])
+            # where herdr-artifact looks first: beside its bin/
+            art = open(os.path.join(ROOT, "mods/artifacts/bin/herdr-artifact"), encoding="utf-8").read()
+            self.assertIn('os.path.join(HERE, "..", "viewer.html")', art)
+        finally:
+            shutil.rmtree(src, ignore_errors=True)
 
     def test_web_only(self):
         """install --web: the service, the web app, herdr-task and the helpers under .local/share/shepherdr, linked from
@@ -1294,6 +1334,33 @@ class AgentBrowser(unittest.TestCase):
         # next time: no install
         p = self.hbr("--task", "a#1", "snapshot")
         self.assertNotIn("installing", p.stderr)
+
+    def test_help_answers_at_once_without_installing(self):
+        # GitHub #1173: --help with an off-pin agent-browser waited on a download, saying nothing
+        old = self.on_path("0.31.1")
+        for args in (("--help",), ("-h",), ("help",), ("--task", "a#1", "--help")):
+            p = self.hbr(*args, path=old)
+            self.assertEqual(p.returncode, 0, (args, p.stderr))
+            self.assertIn("this task's own browser", p.stdout)
+            self.assertIn("this machine has 0.31.1", p.stdout)
+            self.assertNotIn("installing", p.stderr)
+            self.assertFalse(os.path.exists(self.mine), args)
+        # with a usable one, agent-browser's own help follows
+        p = self.hbr("--help", path=self.on_path("0.41.1"))
+        self.assertIn("path --help", p.stdout)
+
+    def test_a_slow_download_says_how_far_it_got(self):
+        # GitHub #1173: a slow network took minutes with no word; now it says the MB so far as it goes
+        slow = os.path.join(self.tmp, "slowbin")
+        os.makedirs(slow)
+        with open(os.path.join(slow, "curl"), "w") as f:
+            f.write('#!/bin/sh\nout=; while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done\n'
+                    'head -c 2097152 /dev/zero > "$out"; sleep 3; cp "%s" "$out"\n' % os.path.join(self.rel, "agent-browser-linux-x64"))
+        os.chmod(os.path.join(slow, "curl"), 0o755)
+        p = self.hbr("--install", path=slow, HERDR_BROWSER_PROGRESS_EVERY="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("downloading agent-browser 0.41.1: 2.0 MB after", p.stderr)
+        self.assertIn("is ready", p.stdout)
 
     def test_herdrs_own_views_never_install(self):
         p = self.hbr("--own", "--task", "a#1", "session", "list")

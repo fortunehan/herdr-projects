@@ -6,7 +6,7 @@
 //
 // Blocks (each may carry an "id", which markup notes and answers point at; one is given when it has none):
 //   heading  { text, level: 1-3 }                       text     { md }  (Markdown)
-//   list     { items: [md], ordered }                   table    { columns: [label | { label, align }], rows: [[cell]] }
+//   list     { items: [md], ordered }                   table    { columns: [label | { label, align }], rows: [[cell]] }  (a cell: inline Markdown)
 //   chart    { kind: bar | line | pie, labels: [], series: [{ name, values: [] }] }
 //   stats    { items: [{ label, value, note }] }        image    { src, caption, w, h }  (src: a file beside it)
 //   video    { src, poster, caption, loop, muted, autoplay }   a clip: mp4, webm or mov (poster: a picture beside it)
@@ -20,7 +20,9 @@
 //   columns  { columns: [[blocks]] }                    tabs     { tabs: [{ label, blocks }] }
 //   details  { summary, blocks }                        divider  {}
 //   choice   { question, options: [{ label, description }] }   one pick, sent to the agent as a reply
-//   form     { fields: [{ name, label, kind: text | textarea | select | checkbox, options }], submit }
+//   form     { fields: [{ name, label, kind: text | textarea | select | checkbox, options, value }], submit }
+//            value (optional): what the field starts with, and replies when left untouched: one of a select's options,
+//            true or false for a checkbox, words for text (GitHub #1212)
 //   button   { label, reply, href, quiet }              a press sends `reply` to the agent; with href (https only) it
 //                                                       opens that page in the person's browser too; quiet: the softer look
 //   buttons  { items: [button] }                        buttons side by side (the first not quiet is the one to press)
@@ -103,7 +105,9 @@ export function problems(recipe, files = null) {
       case "tabs": need(arr(b.tabs) && b.tabs.every((t) => str(t?.label) && arr(t?.blocks)), "tabs need a label and blocks"); if (arr(b.tabs)) b.tabs.forEach((t, j) => arr(t?.blocks) && walk(t.blocks, `${where}.${j + 1}.`)); break;
       case "details": need(str(b.summary) && arr(b.blocks), "needs a summary and blocks"); if (arr(b.blocks)) walk(b.blocks, `${where}.`); break;
       case "choice": need(str(b.question) && arr(b.options) && b.options.every((o) => str(o?.label)), "needs a question and options with labels"); break;
-      case "form": need(arr(b.fields) && b.fields.every((f) => str(f?.name) && FIELDS.includes(f.kind ?? "text")), `fields need a name and a kind (${FIELDS.join(", ")})`); break;
+      case "form": need(arr(b.fields) && b.fields.every((f) => str(f?.name) && FIELDS.includes(f.kind ?? "text")), `fields need a name and a kind (${FIELDS.join(", ")})`);
+        if (arr(b.fields)) for (const f of b.fields) if (f?.value != null) need(fieldValueOk(f), `field ${f.name}'s value must be ${f.kind === "select" ? "one of its options" : f.kind === "checkbox" ? "true or false" : "words"}`);
+        break;
       case "button": buttonProblem(b, need); break;
       case "buttons": need(arr(b.items) && b.items.length > 0 && b.items.length <= 4, "items must be 1 to 4 buttons"); if (arr(b.items)) b.items.forEach((x) => buttonProblem(x ?? {}, need)); break;
     }
@@ -180,9 +184,34 @@ export const answerOf = (answers, key) => {
 
 // The reply a choice or a form sends to its agent: plain words, as the person would write them.
 export function choiceReply(b, label) { return `${b.question}: ${label}`; }
+// A form field's starting value (its value, when it has a fitting one): what it shows first and replies untouched.
+export function fieldValueOk(f) {
+  const v = f?.value;
+  if (f?.kind === "checkbox") return typeof v === "boolean";
+  if (f?.kind === "select") return typeof v === "string" && (f.options ?? []).includes(v);
+  return typeof v === "string";
+}
+export function fieldStart(f) {
+  return f?.value != null && fieldValueOk(f) ? f.value : f?.kind === "checkbox" ? false : "";
+}
 export function formReply(b, values) {
-  const lines = (b.fields ?? []).map((f) => `${f.label ?? f.name}: ${f.kind === "checkbox" ? (values[f.name] ? "yes" : "no") : String(values[f.name] ?? "").trim() || "(empty)"}`);
+  const lines = (b.fields ?? []).map((f) => {
+    const v = values[f.name] ?? fieldStart(f);
+    return `${f.label ?? f.name}: ${f.kind === "checkbox" ? (v ? "yes" : "no") : String(v ?? "").trim() || "(empty)"}`;
+  });
   return [b.title ?? b.submit ?? "Form", ...lines].join("\n");
+}
+
+// A table cell as inline Markdown, the same on both sides: links, **bold**, *italic* and `code` show as such, but a cell
+// never turns into a block (a heading, a list, a quote, a rule or a code block): its lines join into one, and a mark
+// at its start that would open a block is escaped ("1. Fix" stays "1. Fix"). Raw HTML shows as the text it is: each
+// "<" is escaped (but in `code`). A number or null is its plain text.
+export function cellMd(c) {
+  const s = String(c ?? "").replace(/\s*\n\s*/g, " ").trim()
+    .replace(/(`+)[\s\S]*?\1|(\\*)</g, (m, tick, bs) => (tick ? m : bs.length % 2 ? m : `${bs}\\<`));   // in `code`: its own
+  if (/^([-*_])( *\1){2,} *$/.test(s)) return `\\${s}`;   // --- *** ___ : a rule
+  if (/^([-+*]|#{1,6})( |$)/.test(s) || /^(>|`{3}|~{3})/.test(s)) return `\\${s}`;
+  return s.replace(/^(\d{1,9})([.)])( |$)/, "$1\\$2$3");
 }
 
 // Markdown cut at its fenced code blocks (``` or ~~~, indented too, as in a list item), in order: { md } for the
@@ -221,6 +250,18 @@ export function chartShapes(b) {
   const groups = labels.length || Math.max(0, ...series.map((s) => s.values.length));
   const per = series.length || 1, slot = 1 / Math.max(1, groups), bw = (slot * 0.7) / per;
   return { max, bars: series.flatMap((s, si) => s.values.map((v, i) => ({ series: si, label: labels[i] ?? "", value: v, x: i * slot + slot * 0.15 + si * bw, w: bw, h: Math.max(0, v) / max }))) };
+}
+
+// Where a chart's labels go along its bottom (GitHub #1148): a line chart's under their points, which run edge to
+// edge, so the first is anchored at its start and the last at its end (centred, they'd be cut off); a bar chart's
+// centred under their group. [{ text, x: 0..1, anchor: "start" | "middle" | "end" }]
+export function chartLabels(b) {
+  const labels = arr(b?.labels) ? b.labels : [], n = labels.length;
+  if (b?.kind === "line") return labels.map((l, i) => ({
+    text: String(l ?? ""), x: n > 1 ? i / (n - 1) : 0.5,
+    anchor: n > 1 && i === 0 ? "start" : n > 1 && i === n - 1 ? "end" : "middle",
+  }));
+  return labels.map((l, i) => ({ text: String(l ?? ""), x: (i + 0.5) / Math.max(1, n), anchor: "middle" }));
 }
 
 // What an artifact's card in the chat shows of it before it opens (SHEP-142): its key pictures (the cover it names,
