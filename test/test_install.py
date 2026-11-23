@@ -14,6 +14,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHEPHERDR = os.path.join(ROOT, "bin", "shepherdr")
 APP = ".config/herdr-app"
 CI = os.environ.get("CI") == "true"
+# the installs' `bun install` (the service's packages): one throwaway cache for the run, never the real ~/.bun
+os.environ.setdefault("BUN_INSTALL_CACHE_DIR", tempfile.mkdtemp(prefix="shepherdr-test-bun-cache-"))
 
 
 def run(*args, ok=True, build=False):
@@ -255,8 +257,8 @@ class Install(unittest.TestCase):
         # every relative import the installed service runs resolves inside what was installed (bun can start it)
         share = self.p(".local/share/shepherdr")
         for d, _, files in os.walk(share):
-            # the built page, and the helpers' files kept beside it (herdr-artifact's, run by Herdr, never by bun)
-            if "/web/dist" in d or "/mods/" in d:
+            # the built page, the helpers' files kept beside it (herdr-artifact's, run by Herdr, never by bun), packages
+            if "/web/dist" in d or "/mods/" in d or "/node_modules" in d:
                 continue
             for f in files:
                 if not f.endswith((".ts", ".js")):
@@ -270,6 +272,51 @@ class Install(unittest.TestCase):
         run("uninstall", "--root", self.root)
         self.assertFalse(os.path.exists(unit))
         self.assertFalse(os.path.exists(self.p(".local/share/shepherdr/service/main.ts")))
+
+    def test_service_packages_installed(self):
+        """SHEP-118: the installed service resolves every import from its own node_modules (the lockfile's versions),
+        never through Bun's auto-install from its global cache, where parse5 once found no entities/escape and the
+        service stopped at start. Each script bun runs there bundles with an empty cache; uninstall takes them away."""
+        out = run("install", "--root", self.root, "--yes").stdout
+        if "needs bun" in out:
+            self.skipTest("bun isn't installed here")
+        self.assertNotIn("couldn't install the service's packages", out)
+        share = self.p(".local/share/shepherdr")
+        for pkg in ("parse5", "marked", "entities"):
+            self.assertTrue(os.path.isfile(os.path.join(share, "node_modules", pkg, "package.json")), pkg)
+        self.assertFalse(os.path.isdir(os.path.join(share, "node_modules", "react")), "web-only packages stay out")
+        empty, outdir = tempfile.mkdtemp(prefix="shepherdr-no-cache-"), tempfile.mkdtemp(prefix="shepherdr-bundle-")
+        try:
+            env = {**os.environ, "BUN_INSTALL_CACHE_DIR": empty}
+            svc = os.path.join(share, "service")
+            for f in ("main.ts", "serve-from.ts", "secrets-move.ts"):
+                p = subprocess.run(["bun", "build", "--target", "bun", os.path.join(svc, f), "--outdir", outdir],
+                                   capture_output=True, text=True, env=env, cwd=share)
+                self.assertEqual(p.returncode, 0, f"service/{f} doesn't resolve from the installed copy:\n{p.stderr}")
+            self.assertEqual(os.listdir(empty), [], "nothing came from Bun's global cache")
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+            shutil.rmtree(outdir, ignore_errors=True)
+        run("uninstall", "--root", self.root)
+        self.assertFalse(os.path.exists(os.path.join(share, "node_modules")))
+
+    def test_start_error(self):
+        """SHEP-118: a service that stops at start says why in doctor (the last error since its last good start), not
+        only that it hasn't started."""
+        from importlib.machinery import SourceFileLoader
+        sh = SourceFileLoader("shepherdr_cli", SHEPHERDR).load_module()
+        os.makedirs(os.path.dirname(sh.service_file(self.root, "service.log")), exist_ok=True)
+        err = "error: Cannot find module 'entities/escape' from '/x/parse5/dist/serializer/index.js'"
+        with open(sh.service_file(self.root, "service.log"), "w") as f:
+            f.write(f"error: an old one\nShepherdr 3.1.42 on http://127.0.0.1:7788 (data /d)\nworking\n{err}\n\nBun v1.4.4 (macOS arm64)\n{err}\n\nBun v1.4.4\n")
+        ok, why = sh.service_answers(self.root)
+        self.assertFalse(ok)
+        self.assertIn("stops at start", why)
+        self.assertIn("entities/escape", why)
+        with open(sh.service_file(self.root, "service.log"), "a") as f:
+            f.write("Shepherdr 3.1.43 on http://127.0.0.1:7788 (data /d)\n")
+        self.assertIsNone(sh.start_error(self.root), "a good start since: no start error")
+        self.assertIn("hasn't started", sh.service_answers(self.root)[1])
 
     def test_port(self):
         """install --port (GitHub #635): the unit starts the service on it, the record keeps it for updates, 7788 puts the
