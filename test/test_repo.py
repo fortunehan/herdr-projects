@@ -43,7 +43,8 @@ class Repo(unittest.TestCase):
         for m in os.listdir(J("mods")):
             self.assertTrue(os.path.isfile(J("mods", m, "mod.json")), m)
             json.load(open(J("mods", m, "mod.json")))
-            self.assertTrue(os.path.isfile(J("mods", m, "main.js")), m)
+            # a view (main.js), or only a terminal link handler (link.js, Herdr 0.1.17)
+            self.assertTrue(os.path.isfile(J("mods", m, "main.js")) or os.path.isfile(J("mods", m, "link.js")), m)
 
     def test_addon_needs_exist(self):
         ids = {a["id"] for a in self.addons["addons"]}

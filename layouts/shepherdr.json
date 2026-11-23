@@ -354,5 +354,8 @@
   "traffic_lights": [
     12,
     16
+  ],
+  "link_handlers": [
+    "open-paths"
   ]
 }
