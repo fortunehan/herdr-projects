@@ -773,11 +773,13 @@
       "addon": "chat",
       "title": "Links and paths in a reply",
       "core": [
-        "chat-links"
+        "chat-links",
+        "link-click"
       ],
       "herdr": {
         "mods": [
-          "chat"
+          "chat",
+          "open-paths"
         ]
       },
       "web": {
@@ -786,7 +788,7 @@
         ]
       },
       "forms": {
-        "herdr": "URLs in an agent's reply are links, opened in the default browser; its Paths action lists the reply's paths and opens the picked one (browser, Finder), this machine's agent only",
+        "herdr": "URLs in an agent's reply are links, opened in the default browser; its Paths action lists the reply's paths and opens the picked one (browser, Finder), this machine's agent only; a Ctrl/Cmd-clicked path in a terminal opens the same way (open-paths, the layout's link handler)",
         "desktop": "URLs are links; paths are words (the file is on the agent's machine)",
         "tablet": "Same as desktop",
         "phone": "Same as desktop"
