@@ -123,7 +123,8 @@ def cmd_add(args):
         # The person's setting wins: worktrees off for this repo means in the folder, --worktree or not.
         mode = "here" if args.here or not worktrees_on(s) else "worktree"
         t = s.new(args.title.strip(), prompt, mode)
-        space = bare(args.space) if args.space else (space_for_folder(s.loc["folder"], caller_space()) or caller_space())
+        # SHEP-78: a "null" --space is none
+        space = bare(args.space) or space_for_folder(s.loc["folder"], caller_space()) or caller_space()
         set_opts(t, args, s, space, launcher=worker_pick(s, t, space).get("launcher"))
         set_base(s, t, args.base, space, new=True)
         set_branch(s, t, getattr(args, "branch", None))
@@ -535,8 +536,8 @@ def cmd_start(args):
         take_pr(s, t, getattr(args, "pr", None))
         q = t.get("queue") or {}
         # --space, the one it was queued with, its repo's own space (#1209: its news go to that space's Assistant), the caller's
-        space = bare(args.space) if args.space else (bare(q.get("space")) or space_for_folder(s.loc["folder"], caller_space())
-                                                     or default_space(s.loc["folder"], parent=args.parent or q.get("parent")))
+        space = (bare(args.space) or bare(q.get("space")) or space_for_folder(s.loc["folder"], caller_space())
+                 or default_space(s.loc["folder"], parent=args.parent or q.get("parent")))
         changed = any(getattr(args, k, None) is not None for k in ("launcher", "model", "effort", "flags", "set"))
         if changed:
             set_opts(t, args, s, space, launcher=worker_pick(s, t, space).get("launcher"))

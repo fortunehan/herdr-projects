@@ -1675,9 +1675,10 @@ def note_lines(notes, general):
 def cmd_note(o):
     """The person's note on an artifact (the viewer's Mark up), sent to the agent that keeps it. Several numbered notes
     (--notes) go as one message; one note without --text is sent as a single note, as before."""
-    notes = read_notes(o.notes) if o.notes is not None else []
+    notes = read_notes(o.notes) if getattr(o, "notes", None) is not None else []
     text, spot = (o.text or "").strip(), o.spot
-    given = json_arg(o.blocks, "--blocks") if o.blocks else None
+    blocks_arg = getattr(o, "blocks", None)
+    given = json_arg(blocks_arg, "--blocks") if blocks_arg else None
     blocks, more = read_blocks(given) if given is not None else ([], 0)
     quote, picture = read_kind(given)
     if len(notes) == 1 and not text:
@@ -1713,7 +1714,7 @@ def cmd_note(o):
             + (["--spot", spot] if spot and not notes else []) + (["--notes", json.dumps(notes, ensure_ascii=False)] if notes else []) \
             + (["--blocks", json.dumps({"blocks": blocks, "more": more, **({"quote": quote} if quote else {}), **({"picture": picture} if picture else {})}, ensure_ascii=False)]
                if (blocks or quote or picture) and not notes else [])
-        if o.answer:
+        if getattr(o, "answer", None):
             args += ["--answer", o.answer, "--value", o.value or "null", "--by", o.by or "window"]
         if image:
             rel = f".herdr/artifacts/notes/{os.path.basename(image)}"
@@ -1736,7 +1737,7 @@ def cmd_note(o):
     with Store(loc, write=False) as s:
         a = s.find(o.id)
     v = o.version or a["version"]
-    if o.answer:
+    if getattr(o, "answer", None):
         # kept first (SHEP-87): the answer stays with the version even when its agent is gone
         keep_answer(a["id"], v, o.answer, o.value, o.by)
     to, why = keeper(a, loc["folder"])

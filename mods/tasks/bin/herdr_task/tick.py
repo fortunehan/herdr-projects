@@ -18,6 +18,7 @@ from .agents import (
 from .provider import NUDGE, provider_cut, provider_error, PROVIDER_WAITS
 from .sessions import find_lost_logs, refresh_sessions, session_of
 from . import ado, ado_flow
+from .github import PR_CLOSED
 from .github import (already_merged, BEHIND, CHECKS_NEVER, checks_missing, checks_since, drop_branch, merge_checks, expected_checks, finish, github, heal_closed, merged_here, needs_approval, note_checks, pr_for_branch, pr_merged, pr_pending, pr_problem,
                      pr_view, pr_wait, queue_dropped_why, queue_entry, queue_merge, queue_refusal, unqueue, remote_of, tidy_done, tidy_due, update_main, watch_main)
 from .launch import default_space
@@ -151,7 +152,7 @@ def closed_why(s, t):
     if ok and not out:
         return (f"The pull request was closed: its base {base} is gone. Move it to a new base with "
                 f"herdr-task edit {s.ref(t)} --base <branch> --folder {main}, then its agent rebases and runs ready.")
-    return "The pull request was closed."
+    return PR_CLOSED
 
 
 def facts(s, t, report):
@@ -215,10 +216,12 @@ def facts(s, t, report):
         expect = None if ado.owns(pr["repo"]) else expected_checks(s, t, v.get("headRefOid"))
         # #1044, #1018: no checks yet (at its newest commit) while some will come is never "all passed".
         missing = checks_missing(v, since, expect)
-        # A draft merges only through the person's Accept, which publishes it first.
-        t["_pr_fresh"] = not problem and not pr_pending(v) and not needs_approval(v) and not missing and not v.get("isDraft")
+        # An Azure DevOps draft merges only through the person's Accept, which publishes it first (ado_flow.accept()); a
+        # GitHub one as upstream's merge_now() takes it (#1155).
+        ado_draft = bool(v.get("isDraft")) and ado.owns(pr["repo"])
+        t["_pr_fresh"] = not problem and not pr_pending(v) and not needs_approval(v) and not missing and not ado_draft
         # Read just now with nothing in the way of an Accept (an Azure DevOps merge policy's, below).
-        t["_pr_seen"] = not problem and not v.get("isDraft")
+        t["_pr_seen"] = not problem and not ado_draft
         # Ready only once its checks are done and its forge knows it can merge (SHEP-175): Working till then.
         if (v.get("mergeable") or "").upper() == "MERGEABLE" and v.get("headRefOid"):
             pr["mergeable_head"] = v["headRefOid"]  # #1151: its later brief UNKNOWNs are no wait

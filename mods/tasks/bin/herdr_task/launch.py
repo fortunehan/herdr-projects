@@ -213,7 +213,7 @@ def own_command(path, text, sandboxed=False):
     if sandboxed and "$" in text:
         # #1228: the reviewer's PATH as the brief writes it (its CLI's own folders, then $PATH), only exactly that;
         # #1131: a Claude reviewer's the worker's own CLAUDE_CONFIG_DIR too (CLAUDE_PROFILE)
-        for who in REVIEWERS:
+        for who in ("codex", "claude"):  # reviewer_command()'s CLIs; a launcher runs on claude's env
             pre = cli_env(who)
             for env in ((pre or "env ") + CLAUDE_PROFILE,) if who == "claude" else (pre,):
                 # the fork's login wrapper (SHEP-67) comes between the env and the CLI: helper_hc() checks it
@@ -1046,8 +1046,10 @@ def launch(s, task, argv, space, message=None, parent=None, resume=None, role=No
         cmd = magpie_argv(cmd)
     if setup and not role:
         cmd = setup_argv(s, task, setup, cmd)
-    labels = ["--label", f"herdr.task={key}", "--label", f"herdr.task.space={bare(space)}",
-              "--label", f"herdr.agent={agent_key(argv)}"]
+    labels = ["--label", f"herdr.task={key}", "--label", f"herdr.agent={agent_key(argv)}"]
+    if bare(space):
+        # SHEP-78: never a "null" space label
+        labels += ["--label", f"herdr.task.space={bare(space)}"]
     ctab = coordinator_tab(parent)
     if ctab:
         labels += ["--label", f"herdr.coordinator={ctab}"]

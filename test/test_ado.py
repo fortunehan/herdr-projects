@@ -173,7 +173,7 @@ class Viewing(Base):
         self.fake(self.routes(pr(mergeStatus="conflicts")))
         self.assertEqual(github.pr_problem(github.pr_view({"pr": {"number": 7, "repo": REPO}})), "It conflicts with the base branch.")
         self.fake(self.routes(pr(status="abandoned")))
-        self.assertEqual(github.pr_problem(github.pr_view({"pr": {"number": 7, "repo": REPO}})), "The pull request was closed.")
+        self.assertEqual(github.pr_problem(github.pr_view({"pr": {"number": 7, "repo": REPO}})), github.PR_CLOSED)
 
     def test_refused_credentials_need_the_person_and_clear_once_it_answers(self):
         t = {"pr": {"number": 7, "repo": REPO}}
@@ -453,7 +453,7 @@ class Accepting(Base):
 
     def accept(self, code=0):
         said = []
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+        with mock.patch.object(commands, "open_store", lambda args, write=True, **kw: self.store), \
                 mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
                 mock.patch.object(commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}), \
                 mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))), \
@@ -468,7 +468,7 @@ class Accepting(Base):
 
     def accept_worker(self):
         """The detached worker of a background Accept (herdr-task accept --worker)."""
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+        with mock.patch.object(commands, "open_store", lambda args, write=True, **kw: self.store), \
                 mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
                 mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None):
             commands.cmd_accept(argparse.Namespace(id="SHEP-1", json=False, folder=None, worker=True))
@@ -537,7 +537,7 @@ class Accepting(Base):
         """The slow part (the completion, its 12 s wait, the pull) is the worker's: the answer comes before any of it."""
         f = self.azure([pr()])
         started = []
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+        with mock.patch.object(commands, "open_store", lambda args, write=True, **kw: self.store), \
                 mock.patch.object(commands, "busy_again", lambda *a: False), mock.patch.object(commands, "live_agents", lambda k: []), \
                 mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), mock.patch.object(commands, "say", lambda *a: None), \
                 mock.patch.object(commands.subprocess, "Popen", lambda argv, **kw: started.append(argv)):
@@ -558,7 +558,7 @@ class Accepting(Base):
         # a policy refusing it (rejectedByPolicy) too
         self.task.pop("merge_wait")
         self.azure([pr(), pr(mergeStatus="rejectedByPolicy", mergeFailureMessage="policies not met")], self.auto_complete_kept)
-        self.assertEqual(commands.merge_now(self.store, self.task, publish=True), ado_flow.WAITS)
+        self.assertEqual(commands.merge_now(self.store, self.task, accept=True), ado_flow.WAITS)
 
     def test_auto_complete_that_cant_be_turned_on_needs_you_and_accept_retries(self):
         def refuse(url, body):
@@ -579,13 +579,13 @@ class Accepting(Base):
         # Azure DevOps answering without keeping it
         self.task.pop("merge_wait")
         self.azure([pr()], {}, BUILT + REVIEWERS)
-        self.assertEqual(commands.merge_now(self.store, self.task, publish=True),
+        self.assertEqual(commands.merge_now(self.store, self.task, accept=True),
                          "Couldn't turn on auto-complete in Azure DevOps: Azure DevOps didn't keep it")
 
     def test_a_problem_on_accept_needs_you_and_stops_waiting(self):
         self.task["merge_wait"] = 1
         self.azure([pr(mergeStatus="conflicts")])
-        self.assertEqual(commands.merge_now(self.store, self.task, publish=True), "It conflicts with the base branch.")
+        self.assertEqual(commands.merge_now(self.store, self.task, accept=True), "It conflicts with the base branch.")
         self.assertNotIn("merge_wait", self.task)
 
     def test_accept_publishes_a_draft_and_it_waits_to_merge(self):
@@ -614,7 +614,7 @@ class Accepting(Base):
     def test_merge_waits_to_merge_too(self):
         self.azure([pr()], self.auto_complete_kept, BUILT + REVIEWERS)
         said = []
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+        with mock.patch.object(commands, "open_store", lambda args, write=True, **kw: self.store), \
                 mock.patch.object(commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}), \
                 mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
             commands.cmd_merge(argparse.Namespace(id="SHEP-1", json=False, folder=None))
@@ -771,7 +771,7 @@ class WaitingToMerge(Base):
         # herdr-task list says it; dismiss takes it away
         self.assertIn("Needs you: The main checkout couldn't pull main", output.line({**self.task, "ref": "SHEP-1", "status": "done", "status_text": "Done"}))
         said = []
-        with mock.patch.object(commands, "open_store", lambda args, write=True: self.store), \
+        with mock.patch.object(commands, "open_store", lambda args, write=True, **kw: self.store), \
                 mock.patch.object(commands, "view", lambda s, t, live=None: dict(t)), \
                 mock.patch.object(commands, "say", lambda args, data, text: said.append((data, text))):
             ado_flow.cmd_dismiss(argparse.Namespace(id="SHEP-1", json=True, folder=None))
@@ -945,7 +945,7 @@ class OpenedOnAccept(Base):
         done = lambda s, t, even_if_busy=False: t.update(state="done")
         for mod, name, value in (
                 (ado_flow, "finish", done), (ado_flow, "watch_main", lambda *a: None),
-                (commands, "open_store", lambda args, write=True: self.store), (commands, "live_agents", lambda k: []),
+                (commands, "open_store", lambda args, write=True, **kw: self.store), (commands, "live_agents", lambda k: []),
                 (commands, "view", lambda s, t, live=None: {**t, "why": agents.task_status(t, [])[2]}),
                 (commands, "merge_policy", lambda s, t: "ask"), (commands, "own_path", lambda: "herdr-task"),
                 (news, "send_or_hold", lambda address, text, how="send": self.sent.append((address, text)) or True),

@@ -2170,57 +2170,6 @@ class BackToWork(unittest.TestCase):
         self.assertNotIn("attention", t)  # Ready, its Accept back
         self.assertNotIn("merge_failed_head", t)
 
-    # SHEP-4: a draft pull request is published by the person's Accept, then merges once its checks
-    # pass; a merge policy alone never takes it out of draft.
-    def drafting(self, views):
-        import herdr_task.github as github
-        views, calls = list(views), []
-
-        def fake(*a, **k):
-            calls.append(a)
-            return True, "", ""
-        for mod, name, value in ((github, "gh", fake), (self.commands, "gh", fake), (self.commands, "pr_view", lambda t: views.pop(0))):
-            p = self.mock.patch.object(mod, name, value)
-            p.start()
-            self.addCleanup(p.stop)
-        return calls
-
-    def test_accept_publishes_a_draft_and_it_merges_once_its_checks_pass(self):
-        t = self.pr_task()
-        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
-        calls = self.drafting([draft])
-        self.commands.cmd_accept(self.args())
-        self.assertEqual(calls, [("pr", "ready", "593", "--repo", "o/r")])
-        self.assertEqual((t["state"], t["auto_merge"]), ("ready", "checks"))
-        self.assertNotIn("attention", t)
-        # SHEP-81: its checks' clock (#1044) starts at the publish, not at its earlier Ready, also on the next poll
-        import herdr_task.github as github
-        published = t["pr"]["head_at"]
-        self.assertGreaterEqual(published, t.get("ready_at") or 0)
-        self.assertEqual(github.checks_since(self.store, t, draft), max(published, t.get("ready_at") or 0))
-        self.assertEqual(t["pr"]["head_at"], published)
-
-    def test_a_merge_policy_never_publishes_a_draft(self):
-        t = self.pr_task()
-        calls = self.drafting([{"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}])
-        self.assertIn("draft", self.commands.merge_now(self.store, t))
-        self.assertEqual((calls, t["state"]), ([], "ready"))
-        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
-        t["pr"]["checked"] = 0
-        with self.mock.patch.object(self.tick, "pr_view", lambda t: draft), self.mock.patch.object(self.tick, "pr_news", lambda *a: None):
-            self.tick.facts(self.store, t, {"attention": [], "done": []})
-        self.assertFalse(t["_pr_fresh"])  # the tick's auto-merge leaves it be
-
-    def test_a_draft_that_wont_publish_needs_the_person(self):
-        t = self.pr_task()
-        import herdr_task.github as github
-        draft = {"state": "OPEN", "isDraft": True, "mergeable": "MERGEABLE", "statusCheckRollup": [], "headRefOid": "abc"}
-        with self.mock.patch.object(github, "gh", lambda *a, **k: (False, "", "not allowed")), \
-                self.mock.patch.object(self.commands, "pr_view", lambda t: draft):
-            self.assertEqual(self.commands.merge_now(self.store, t, publish=True),
-                             "The merge didn't go through: couldn't publish the draft: not allowed")
-        self.assertEqual(t["merge_failed_head"], "abc")
-
     def test_gh_is_asked_whether_it_is_a_draft(self):
         import herdr_task.github as github
         asked = []
@@ -5007,7 +4956,8 @@ class FastOffIsSaid(unittest.TestCase):
         self.assertEqual(a, ["codex", "--no-daemon", "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="low"',
                              "-c", 'service_tier="ultrafast"'])
         self.assertIn('service_tier="fast"', argv_for({"agent": "codex", "model": "gpt-6.2-astra", "fast": True}))
-        self.assertIn('{"fastMode": true}', argv_for({"agent": "claude", "fast": "ultrafast"}))
+        cl = argv_for({"agent": "claude", "fast": "ultrafast"})
+        self.assertTrue(json.loads(cl[cl.index("--settings") + 1])["fastMode"])  # beside the fork's statusLine
 
 
 class AcceptCardArtifacts(unittest.TestCase):
@@ -6209,7 +6159,7 @@ class AssistantSettings(unittest.TestCase):
         # nothing differs from Herdr's default: no line says who set it
         self.assertNotIn("; set for", note)
         self.assertNotIn("; your setting", note)
-        self.assertEqual(len(note.split("\n")), 15)  # head, 13 lines (Suggested next message and Output language included), the Reactions guide
+        self.assertEqual(len(note.split("\n")), 16)  # head, 14 lines (Suggested next message, Output language and Before the agent starts included), the Reactions guide
         self.assertIn("- Suggested next message: on (end each reply", note)
 
     def test_the_block_for_a_space_with_its_own(self):
@@ -9585,7 +9535,7 @@ class StackedTasks(unittest.TestCase):
         args = argparse.Namespace(id="SHEP-2", json=False, folder=None, title=None, prompt=None, prompt_file=None, base=base,
                                   after=None, at=None, in_=None, here=False, worktree=False, branch=None, agent=None,
                                   launcher=None, model=None, effort=None, start_notes=None, finish_notes=None)
-        self.patch(self.commands, "set_opts", lambda t, args, launcher=None: None)
+        self.patch(self.commands, "set_opts", lambda t, args, *a, launcher=None: None)
         self.patch(self.commands, "worker_pick", lambda s, t, space: {})
         self.commands.cmd_edit(args)
         return said[-1]
@@ -10417,8 +10367,8 @@ class CodexBatch278(unittest.TestCase):
         self.assertIn("--dangerously-skip-permissions", self.worker({"agent": "codex", "perm": "full"}, "claude"))
         # a custom argv's mode is read off it
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", self.worker({"argv": ["claude", "--dangerously-skip-permissions"]}))
-        # Claude's Ask has no Codex match: Codex's own default (Auto)
-        self.assertEqual(self.worker({"agent": "claude", "perm": "manual"})[-4:], ["-s", "workspace-write", "-a", "on-request"])
+        # Claude's Ask has no Codex match: Codex's own default (Auto: the fork asks for nothing inside the sandbox)
+        self.assertEqual(self.worker({"agent": "claude", "perm": "manual"})[-4:], ["-s", "workspace-write", "-a", "never"])
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", self.settings.argv_for({"agent": "codex", "perm": "bypassPermissions"}))
 
     # ---- #1228 -----------------------------------------------------------------------------------
@@ -10437,7 +10387,9 @@ class CodexBatch278(unittest.TestCase):
     def test_reviewer_command_brings_nvm_s_folder(self):
         bin_dir = self.nvm()
         cmd = self.settings.reviewer_command("codex")
-        self.assertTrue(cmd.startswith(f'env "PATH={bin_dir}:$PATH" codex --no-daemon --sandbox read-only'), cmd)
+        # the fork's login wrapper (SHEP-67) sits between the PATH and the CLI
+        self.assertTrue(cmd.startswith(f'env "PATH={bin_dir}:$PATH" sh -c '), cmd)
+        self.assertIn(" herdr-clean codex --no-daemon --sandbox read-only", cmd)
         # as hc run starts it: a bare PATH. The brief's command starts; the bare name doesn't.
         bare = {"PATH": "/usr/bin:/bin", "HOME": self.dir}
         ok = subprocess.run(["sh", "-c", cmd.replace("--sandbox", "x --sandbox", 1).split(" --no-daemon")[0] + " --version"],
@@ -10448,8 +10400,9 @@ class CodexBatch278(unittest.TestCase):
 
     def test_claude_in_the_system_folders_needs_nothing(self):
         self.patch(self.settings.shutil, "which", lambda name: f"/usr/bin/{name}")
-        self.assertEqual(self.settings.reviewer_command("claude"),
-                         'env ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"} claude --permission-mode dontAsk --tools=Read,Grep,Glob,Bash')
+        cmd = self.settings.reviewer_command("claude")
+        self.assertTrue(cmd.startswith('env ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"} sh -c '), cmd)
+        self.assertTrue(cmd.endswith(" herdr-clean claude --permission-mode dontAsk --tools=Read,Grep,Glob,Bash"), cmd)
 
     # ---- #1131 #1181 -----------------------------------------------------------------------------
     def test_a_claude_reviewer_gets_the_workers_profile_never_plan_mode(self):
