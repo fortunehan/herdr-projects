@@ -236,7 +236,9 @@ test("Ultrafast shows where Codex's catalog offers it, and starts Codex on that 
   // a fork keeps it
   expect(forkArgv("codex", argv, "S")).toContain('service_tier="ultrafast"');
   // Claude Code has no Ultrafast: it reads as Fast
-  expect(argvFor({ agent: "claude", model: "opus", fast: "ultrafast" }, { agent: "claude", argv: ["claude"] }).argv).toContain('{"fastMode":true}');
+  // (the fork's --settings also carries its status line: STATUS_LINE)
+  const cl = argvFor({ agent: "claude", model: "opus", fast: "ultrafast" }, { agent: "claude", argv: ["claude"] }).argv;
+  expect(JSON.parse(cl[cl.indexOf("--settings") + 1]).fastMode).toBe(true);
 });
 
 test("a model without Ultrafast falls back to Fast, one without Fast to standard", () => {

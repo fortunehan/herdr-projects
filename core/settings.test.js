@@ -132,7 +132,8 @@ test("Feedback offers and the repo they file to", () => {
 test("a fresh chat starts on the choice when its agent is on offer there, else on the first installed CLI's own", () => {
   const choices = S.choicesFrom({ claude: { model: "opus[1m]", mode: "auto" }, codex: { models: [{ id: "gpt-6.2-sol", label: "GPT-6.2 Sol", efforts: ["low"], fast: true, ultrafast: true }] } });
   const sol = { agent: "codex", model: "gpt-6.2-sol", fast: "ultrafast" };
-  expect(S.freshSel(sol, choices)).toEqual({ perm: "auto", effort: null, fast: "ultrafast", agent: "codex", model: "gpt-6.2-sol" });
+  // the fork's Codex default is Full access (SHEP-85: Codex's sandbox broke the task browser on a Mac)
+  expect(S.freshSel(sol, choices)).toEqual({ perm: "full", effort: null, fast: "ultrafast", agent: "codex", model: "gpt-6.2-sol" });
   expect(S.modelLabel(choices.menus, S.freshSel(sol, choices))).toBe("GPT-6.2 Sol · Ultrafast");
   expect(S.freshSel(null, choices)).toEqual(choices.defaults);
   // Codex isn't installed there: the defaults, as the start falls back to the template's own

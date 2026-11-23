@@ -17,7 +17,13 @@ import { kindOf } from "../core/chat-reader.js";
 import * as LS from "../core/live-switch.js";
 import * as SC from "../core/settings.js";
 
-const { DEFAULTS, parseDefaults, USAGE_FILE, parseUsage, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent, choiceMenus, choiceKey, launcherOf, launchArgv, normalizePick, viewPick, speedOf, speedWordOf } = AG as any;
+const { DEFAULTS, parseDefaults, USAGE_FILE, parseUsage, current, menuFor, rowFor, argvFor, sessionOf, NAMES, line, PICKS_FILE, parsePicks, pickKey, withPin, withRecent, choiceMenus, choiceKey, launcherOf, launchArgv, normalizePick, viewPick, speedOf, speedWordOf, MAGPIE_MODEL, typedModel } = AG as any;
+/** What an unstarted Assistant starts on (core/settings.js freshSel), in the menu's words (a launcher's own key), the
+ *  fork's magpie launcher on its own default model and effort when none was picked (core/agents.js argvFor). */
+function freshPick(pick: any, offer: any) {
+  const sel = (SC as any).freshSel(viewPick(normalizePick(pick)), offer);
+  return sel.agent === "claude-magpie" ? { ...sel, model: sel.model ?? MAGPIE_MODEL, effort: sel.effort ?? "high" } : sel;
+}
 /** a chat's speed as kept: false, true (Fast) or "ultrafast" */
 const fastOf = (f: unknown) => (f === "ultrafast" ? "ultrafast" : !!f);
 /** the speeds a CLI's models offer: normal, then fast and ultrafast where one has them (SHEP-258) */
@@ -113,7 +119,7 @@ export class Agents {
    *  words the button's ("GPT-6.2 Sol · High · Ultrafast"). Until the machine's CLIs were read, the pick as it is. */
   fresh(machine: string | null, pick: any) {
     const offer = this.offer(machine) ?? (SC as any).choicesFrom({}, { claude: true, codex: true });
-    const sel = (SC as any).freshSel(viewPick(normalizePick(pick)), offer);
+    const sel = freshPick(pick, offer);
     const m = offer.menus?.[sel.agent]?.models?.find((x: any) => x.id === sel.model) ?? null;
     return { sel, words: (SC as any).modelLabel(offer.menus, sel) as string, label: (m?.name ?? sel.model ?? null) as string | null, effort: (sel.effort ?? m?.defaultEffort ?? null) as string | null };
   }
@@ -121,8 +127,12 @@ export class Agents {
   /** The model menu for an Assistant that hasn't started: the same menu, its choice what it will start on. */
   async freshMenu(machine: string | null, pick: any) {
     const offer = await this.readOffer(machine);
-    const sel = (SC as any).freshSel(viewPick(normalizePick(pick)), offer);
-    return { current: { agent: sel.agent, model: sel.model ?? null, effort: sel.effort ?? null, fast: fastOf(sel.fast), perm: sel.perm ?? null }, menus: offer.menus,
+    const sel = freshPick(pick, offer);
+    // a model typed by hand (a launcher's own) stays on its list
+    const menus = { ...offer.menus };
+    const list = menus[sel.agent];
+    if (list && sel.model && !list.models.some((m: any) => m.id === sel.model)) menus[sel.agent] = { ...list, models: [typedModel(sel.agent, sel.model), ...list.models] };
+    return { current: { agent: sel.agent, model: sel.model ?? null, effort: sel.effort ?? null, fast: fastOf(sel.fast), perm: sel.perm ?? null }, menus,
       permDefault: offer.permDefault, picks: this.picks(), offline: machine && !(await this.reachable(machine)) ? machine : null, fresh: true };
   }
 
