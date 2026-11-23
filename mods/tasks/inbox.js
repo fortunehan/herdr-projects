@@ -237,13 +237,17 @@ function readTasks() {
 async function readTasksNow() {
   const r = await exec("sh", ["-c", SH + 'ls "$SHEP_TASKS/.remote" 2>/dev/null; true']).catch(() => null);
   const where = [null, ...(r?.stdout ?? "").split("\n").filter(Boolean)];
-  const tasks = [], autos = [], running = [], statuses = [];
+  const tasks = [], autos = [], running = [], statuses = [], working = [];
   for (const machine of where) {
     const on = machine ? ["--on", machine] : [];
     const list = await json(CLI(), [...on, "list", "--all", "--json"]);
     for (const g of Array.isArray(list) ? list : []) for (const x of g.tasks ?? []) {
       // Derived by herdr-task, including Ready work on checks, helpers, or a resumed turn.
       statuses.push({ key: JSON.stringify([machine, g.folder, x.ref ?? `#${x.id}`]), status: x.status, archived: Boolean(x.archived) });
+      // Every task with a live agent, item or not (SHEP-116: a Ready task whose agent asks has none): an agent's ask
+      // or wait carries its task (items()), so it is that task's one row.
+      if (x.live?.length) working.push({ machine, folder: g.folder, name: g.name, ref: x.ref ?? `#${x.id}`, key: x.key ?? null, title: x.title,
+        space: pre(machine, x.space), live: x.live.map((a) => pre(machine, a.address)) });
       // Running ones, with herdr-task's status: the sidebar counts those at work per space (core/spaces.js workingIn).
       // A Ready one still waiting on its checks or its merge (SHEP-175) is at work too, as the web app's rows count it.
       if (x.state === "running" || (x.state === "ready" && x.status === "working")) running.push({ machine, folder: g.folder, ref: x.ref ?? `#${x.id}`, space: pre(machine, x.space), status: x.status ?? null, archived: Boolean(x.archived) });
@@ -271,6 +275,7 @@ async function readTasksNow() {
   put("inbox.tasks", tasks);
   put("inbox.running", running);
   put("inbox.statuses", statuses);
+  put("inbox.agents", working);
   put("inbox.autos", autos);
   await readRetries();
 }
@@ -314,14 +319,19 @@ async function json(cmd, args) {
 // A task is one item (SHEP-93, as the web app's needsYou()): an agent's ask or wait carries its
 // task (machine, folder, ref, name, space), and stands for it; a second agent's, or the task's own item
 // (inbox.tasks is read every 20 s, so it can still say "waiting" while its agent asks), is left out.
+// An agent is one item too (SHEP-116): a second request it waits on for the same question is left out.
 export function items() {
   const asks = shared("inbox.asks") ?? [];
   const asking = new Set(asks.map((a) => a.terminal));
   const all = terminals();
   const tasks = shared("inbox.tasks") ?? [];
-  const taskOf = agentTasks(all, tasks);
-  const out = [], taken = new Set();
+  const taskOf = agentTasks(all, [...tasks, ...(shared("inbox.agents") ?? [])]);
+  const out = [], taken = new Set(), agents = new Set();
   const add = (it) => {
+    if (it.terminal) {
+      if (agents.has(it.terminal)) return;
+      agents.add(it.terminal);
+    }
     const t = it.terminal ? taskOf(it.terminal) : null;
     const x = t ? { ...it, machine: t.machine ?? null, folder: t.folder, ref: t.ref, name: t.name, title: t.title, space: t.space ?? null } : it;
     if (x.kind !== "pull" && x.folder && x.ref) {

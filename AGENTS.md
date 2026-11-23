@@ -193,6 +193,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Mark up messages end to end: run service/actions.ts act() with a real Artifacts instance and HERDR_APP_HOME pointing
   at a scratch mods/artifacts/bin/herdr-artifact wrapper that loads the branch CLI with STORE patched and run()
   capturing hc send.
+- agent-browser's mouse wheel always lands at the page's top left (whatever mouse move said): test a wheel handler
+  with a dispatched WheelEvent, and scroll by setting scrollTop for screenshots.
 - Viewer CSS: `web/src/styles.css` must list `./screens` (`@source`) or the artifact viewer build drops `Recipe.tsx`
   classes such as `@lg:`.
 - Before/after web screenshots: build main's version of the changed files into a scratch dist (`git checkout main --
