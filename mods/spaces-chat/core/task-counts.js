@@ -1,4 +1,4 @@
-import { isWorkingTask, taskInSpace } from "./spaces.js";
+import { homeSpace, isWorkingTask, keptSpace } from "./spaces.js";
 
 // Task list totals for consumers without space rows.
 export function taskCounts(needs = [], tasks = []) {
@@ -41,13 +41,17 @@ export function spaceTaskCounts({ spaces = [], needs = [], ready = [], running =
   };
   const byItemTab = (item) => {
     const tab = tabOf(item), space = byTab.get(tab);
+    if (space) return { space };
+    // its space closed (SHEP-112): its folder's live space, as its working count goes
+    const kept = keptSpace(item), moved = !tab && kept && !bySpace.has(kept) ? homeSpace(item, unique) : null;
+    if (moved) return { space: moved };
     return { space, reason: tab ? "Tab is no longer in a space" : item.space && !bySpace.has(item.space)
       ? "Space is unavailable" : "No tab in a space" };
   };
   if (red) count(needs, "need", byItemTab);
   if (green) count(ready, "ready", byItemTab);
   count(running.filter(isWorkingTask), "working", (item) => ({
-    space: unique.find((s) => taskInSpace(item, s))?.id,
+    space: homeSpace(item, unique) ?? undefined,
     reason: item.space ? "Space is unavailable" : "No space matches the task folder",
   }));
   const total = empty();

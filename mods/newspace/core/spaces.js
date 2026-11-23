@@ -55,9 +55,23 @@ export function isThinking(k) {
 
 // The space a task counts in: the one whose Assistant started it (herdr-task keeps it), else the space in its folder
 // on its machine. t: { space, machine, folder }, space ids as the spaces' ("<machine>/<id>" for another machine's).
-export function taskInSpace(t, s) {
+// spaces (every space known): a kept space no longer among them closed (Herdr drops a closed space's id, and its
+// folder opened again is a new space: SHEP-112), so the task counts in its folder's space, as herdr-task re-homes it.
+export function taskInSpace(t, s, spaces = null) {
+  if (spaces) return homeSpace(t, spaces) === s.id;
   if (t?.space) return t.space === s.id;
   return (t?.machine ?? null) === (s.machine ?? null) && !!t?.folder && t.folder === s.folder;
+}
+const atFolder = (t, s) => (t?.machine ?? null) === (s.machine ?? null) && !!t?.folder && String(t.folder).replace(/\/+$/, "") === String(s.folder ?? "").replace(/\/+$/, "");
+// The space id herdr-task kept on a task ("null" and "undefined" were written by mistake once: none).
+export const keptSpace = (t) => (t?.space && !/^(null|undefined)$/.test(String(t.space)) ? String(t.space) : null);
+// The id of the space a task counts in among `spaces` (taskInSpace), or null.
+export function homeSpace(t, spaces) {
+  const list = Array.isArray(spaces) ? spaces : [], kept = keptSpace(t);
+  if (kept && list.some((s) => s.id === kept)) return kept;
+  // a kept space on a machine not listed now (offline) isn't known closed: it stays where it was
+  if (kept && machineOf(kept) && !list.some((s) => (s.machine ?? null) === machineOf(kept))) return null;
+  return list.find((s) => atFolder(t, s))?.id ?? null;
 }
 
 // A task at work: herdr-task's status (its list's `status`, core/tasks.js place()'s `section`) is working, and it
@@ -65,7 +79,7 @@ export function taskInSpace(t, s) {
 export const isWorkingTask = (t) => !!t && !t.archived && (t.section ?? t.status) === "working";
 
 // How many of a space's tasks are at work: the dim count with a turning ring before its red and green badge.
-export const workingIn = (s, tasks) => (Array.isArray(tasks) ? tasks : []).filter((t) => isWorkingTask(t) && taskInSpace(t, s)).length;
+export const workingIn = (s, tasks, spaces = null) => (Array.isArray(tasks) ? tasks : []).filter((t) => isWorkingTask(t) && taskInSpace(t, s, spaces)).length;
 
 // Every terminal a layout node shows: a terminal block's, or a chat block's agent.
 function terminalsIn(node, out = []) {
