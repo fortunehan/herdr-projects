@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag } from "../core/send.js";
 import { kindOf } from "../core/chat-reader.js";
 import { WORDS } from "../core/chat-view.js";
-import { NOTES_MAX } from "../core/markup.js";
+import { NOTES_MAX, cleanBlocks } from "../core/markup.js";
 import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
@@ -176,6 +176,14 @@ async function addedMachines() {
 // still running there after a slow or dropped link: its real result, followed (core/pending.js, SHEP-227)
 const task = async (args: string[], folder: string, machine: string | null) =>
   settle((a: string[]) => run(["herdr-task", ...a]), await run(["herdr-task", ...(machine ? ["--on", machine] : []), ...args, "--folder", folder, "--json"]));
+
+/** What a Mark up note on a recipe is on (SHEP-113): its blocks, well-formed and cut short, and how many more; {} for none. */
+function onOf(n: any): { blocks?: unknown[]; more?: number } {
+  const blocks = cleanBlocks(n?.blocks);
+  if (!blocks.length) return {};
+  const more = Number.isInteger(n?.more) && n.more > 0 ? Math.min(n.more, 999) : 0;
+  return { blocks, ...(more ? { more } : {}) };
+}
 
 function str(v: unknown, max = 100_000) {
   if (typeof v !== "string" || v.length > max) throw new Error("bad input");
@@ -663,7 +671,8 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     if (b.type === "artifact-note" && Array.isArray(b.notes)) {
       // Mark up's Send all (SHEP-88): numbered notes, each its words and its spot in words, plus words about all of it
       if (!b.notes.length || b.notes.length > NOTES_MAX) throw new Error(`Send 1 to ${NOTES_MAX} notes.`);
-      const notes = b.notes.map((n: any) => ({ text: str(n?.note ?? n?.text ?? "", 4000).trim(), spot: str(n?.target ?? n?.spot ?? "", 300).trim() }));
+      // on a recipe, each note also names the blocks it is on (SHEP-113)
+      const notes = b.notes.map((n: any) => ({ text: str(n?.note ?? n?.text ?? "", 4000).trim(), spot: str(n?.target ?? n?.spot ?? "", 300).trim(), ...onOf(n) }));
       const general = str(b.text ?? "", 4000).trim();
       if (!general && !notes.some((n: { text: string }) => n.text)) throw new Error("Nothing to send.");
       return compat.artifacts.notes(str(b.artifact, 100), Number(b.v) || 1, notes, general);
@@ -673,7 +682,7 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     // an answer is kept with its version (answers.json) before its words go: a block's key and its value, at most 4000 characters as JSON
     const keep = b.type === "artifact-send" && typeof b.answer === "string" && b.answer && JSON.stringify(b.value ?? null).length <= 4000
       ? { key: b.answer.slice(0, 120), value: b.value ?? null } : undefined;
-    return compat.artifacts.say(str(b.artifact, 100), Number(b.v) || 1, text, typeof b.target === "string" ? b.target.slice(0, 300) : undefined, keep);
+    return compat.artifacts.say(str(b.artifact, 100), Number(b.v) || 1, text, typeof b.target === "string" ? b.target.slice(0, 300) : undefined, keep, onOf(b));
   }
   switch (b?.type) {
     case "send": {

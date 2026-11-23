@@ -101,6 +101,12 @@ Blocks, top to bottom (each may carry an `"id"`; the person's notes point at blo
   sometimes with a path to a picture of it. Several spots at once come as one message
   `<hc from="artifact" … notes="3">`: numbered notes (`1. On <where>:` then the words, the same
   numbers drawn on the picture when there is one), then `About all of it:` when they wrote that.
+  On a recipe each note also names what it is on, so you needn't look at the picture: the block's
+  kind, its path in your recipe.json and a short excerpt, e.g. `On the table row 2 at
+  blocks[3].rows[1]: “Beta | 9 | late”` or, for a drag over several, `On 3 blocks:` and one
+  `- the image at blocks[4]: “Sign-in” (login.png)` line each (at most 5, then `- and 2 more`),
+  then `Spot:` with where it was in px. Paths follow the JSON: `blocks[2].columns[1][0]` in a
+  column, `blocks[5].tabs[0].blocks[1]` in a tab, `blocks[6].blocks[0]` in details.
   Change it and `update`.
 - Don't repeat the title inside it: the viewer shows it right above. Start with the content (a
   one-line summary, the numbers, the picture). No emojis. Data goes in the recipe; it isn't read

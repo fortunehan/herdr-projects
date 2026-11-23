@@ -6,7 +6,8 @@
 // each a numbered note with its own words (the card lists them: pick one to edit it, × deletes it),
 // write about all of it if you like, and Send all gives everything to the agent that keeps the
 // artifact as one message (`herdr-artifact note --notes`, SHEP-88) with the version, each spot in
-// words and one picture of the panel with every numbered mark on it. One note alone goes as the
+// words and one picture of the panel with every numbered mark on it. On a recipe each note also names the blocks it is
+// on (SHEP-113: the recipe view keeps their boxes as the pointer crosses them, core/markup.js sawBox). One note alone goes as the
 // single note it always was. The notes are kept per version on this computer until they went
 // (closing Mark up keeps them). Esc closes the note being written, then ends.
 // Its words, the spots in words and the drafts are core/markup.js (shared with the web app; copied
@@ -18,7 +19,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, props, exec, appHome, agents, readTextFile, checking } from "herdr";
 import * as A from "./artifact.js";
 import { dirs } from "./dirs.js";
-import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing } from "./core/markup.js";
+import { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, noteOn, seenBoxes } from "./core/markup.js";
 
 const KEY = "artifacts.markup";
 const MOD = A.dir.slice("mods/".length);
@@ -182,14 +183,22 @@ function box(p) {
   return { x: Math.min(p.x0, p.x1), y: Math.min(p.y0, p.y1), w: Math.abs(p.x1 - p.x0), h: Math.abs(p.y1 - p.y0) };
 }
 
-// Released: a new numbered note (a point for a click, else the area), its box ready for words.
+// Released: a new numbered note (a point for a click, else the area), its box ready for words; on a recipe, with the
+// blocks under it.
 function pick(m, cx) {
   const p = m.press;
   if (!p) return;
   m.press = null;
-  m.notes.push({ ...toFrac(p.moved ? box(p) : { x: p.x0, y: p.y0, w: 0, h: 0 }, m.size), text: "" });
+  const s = p.moved ? box(p) : { x: p.x0, y: p.y0, w: 0, h: 0 };
+  m.notes.push({ ...toFrac(s, m.size), text: "", ...blocksUnder(m, s, !p.moved) });
   select(m, m.notes.length - 1, cx);
   saveSoon(m, cx);
+}
+
+function blocksUnder(m, s, click) {
+  const seen = seenBoxes(where(), m.origin, click);
+  const on = noteOn(seen.recipe, seen.nodes, s);
+  return on ? { on } : {};
 }
 
 function select(m, i, cx) {
@@ -322,6 +331,7 @@ function deliver(m, out, shot, cx) {
     if (out.text) args.push("--text", out.text);
   } else args.push("--text", out.text);
   if (out.kind === "note") args.push("--spot", out.spot);
+  if (out.kind === "note" && out.blocks) args.push("--blocks", JSON.stringify({ blocks: out.blocks, more: out.more ?? 0 }));
   if (shot && m.origin && m.size) {
     const o = m.origin;
     args.push("--shot", shot, "--panel", [o.x, o.y, m.size.width, m.size.height].join(","));

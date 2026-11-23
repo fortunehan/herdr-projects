@@ -4,7 +4,8 @@
 // (mods/artifacts/recipe-view.js). The answer is kept with the version (answers.json, SHEP-87): reopened, the chosen
 // option shows picked with when, and a choice or a form can be changed (sent again). Mark up lays its own layer over
 // the whole recipe (plugins/artifacts). A tap on a picture opens it large, with the recipe's other pictures beside it
-// (Pictures.tsx, SHEP-90).
+// (Pictures.tsx, SHEP-90). Each block and its parts carry their place in the recipe (data-rp, core/markup.js), so a
+// Mark up note can name what it is on (SHEP-113).
 import clsx from 'clsx'
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { PictureViewer } from './Pictures.tsx'
@@ -93,16 +94,16 @@ function Answered({ kind, a }: { kind: string; a: Answer | null }) {
   return a ? <p className="text-fg3" data-answered>{answerLine(kind, a.at)}</p> : null
 }
 
-function Choice({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer | null }) {
+function Choice({ b, rp, reply, answer }: { b: Block; rp?: string; reply?: Reply; answer: Answer | null }) {
   const [busy, setBusy] = useState(false)
   const chosen = answer ? String(answer.value) : null
   return (
     <fieldset className="flex flex-col gap-2">
       <legend className="mb-1 font-medium">{b.question}</legend>
-      {b.options.map((o: any) => {
+      {b.options.map((o: any, i: number) => {
         const on = chosen === o.label
         return (
-          <button key={o.label} type="button" aria-pressed={on} disabled={on || busy || !reply}
+          <button key={o.label} type="button" data-rp={`${rp}/options.${i}`} aria-pressed={on} disabled={on || busy || !reply}
             onClick={async () => { setBusy(true); try { await reply?.(choiceReply(b, o.label), { key: b.id, value: o.label }) } finally { setBusy(false) } }}
             className={clsx('press-dim flex items-center gap-3 rounded-box px-3.5 py-2.5 text-left enabled:hover:bg-hover disabled:cursor-default', on ? 'bg-sel shadow-[inset_0_0_0_1.5px_var(--fg2)]' : 'shadow-box')}>
             <span className="flex min-w-0 flex-1 flex-col items-start">
@@ -118,7 +119,7 @@ function Choice({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer 
   )
 }
 
-function Form({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer | null }) {
+function Form({ b, rp, reply, answer }: { b: Block; rp?: string; reply?: Reply; answer: Answer | null }) {
   const kept = answer && typeof answer.value === 'object' ? (answer.value as Record<string, unknown>) : null
   const [v, setV] = useState<Record<string, unknown>>(() => kept ?? {})
   const [busy, setBusy] = useState(false)
@@ -128,8 +129,8 @@ function Form({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer | 
   const field = 'w-full rounded-[var(--row-radius)] bg-bg px-3 py-2 shadow-[inset_0_0_0_1px_var(--line2)] outline-none focus:shadow-[inset_0_0_0_1px_var(--fg3)]'
   return (
     <form className="flex flex-col gap-3" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await reply?.(formReply(b, v), { key: b.id, value: v }) } finally { setBusy(false) } }}>
-      {b.fields.map((f: any) => (
-        <label key={f.name} className={clsx('flex gap-2', f.kind === 'checkbox' ? 'items-center' : 'flex-col')}>
+      {b.fields.map((f: any, i: number) => (
+        <label key={f.name} data-rp={`${rp}/fields.${i}`} className={clsx('flex gap-2', f.kind === 'checkbox' ? 'items-center' : 'flex-col')}>
           {f.kind === 'checkbox' ? <input type="checkbox" checked={!!v[f.name]} onChange={(e) => setV({ ...v, [f.name]: e.target.checked })} className="size-4" /> : null}
           <span className="text-fg2">{f.label ?? f.name}</span>
           {f.kind === 'textarea' ? <textarea rows={3} className={field} placeholder={f.label ?? f.name} value={String(v[f.name] ?? '')} onChange={(e) => setV({ ...v, [f.name]: e.target.value })} />
@@ -148,13 +149,13 @@ function Form({ b, reply, answer }: { b: Block; reply?: Reply; answer: Answer | 
 /** a press sends its reply, once: "<label> · Sent" (kept: so it stays after a reopen, its time under it). With
  *  an href (https only) it opens that page in a new tab each press, as a plain link: the person acts there
  *  themselves. quiet: the softer look, beside the one to press. */
-function Button({ b, k, reply, answers: kept, className }: { b: Block; k: string; reply?: Reply; answers?: Answers; className?: string }) {
+function Button({ b, k, rp, reply, answers: kept, className }: { b: Block; k: string; rp?: string; reply?: Reply; answers?: Answers; className?: string }) {
   const a = answerOf(kept, k) as Answer | null
   const sent = !!a
   const link = isLink(b.href) ? (b.href as string) : null
   const answers = typeof b.reply === 'string'
   return (
-    <Primary soft={!!b.quiet} disabled={!link && (sent || !reply)} className={clsx(link && 'pr-3', className)}
+    <Primary data-rp={rp} soft={!!b.quiet} disabled={!link && (sent || !reply)} className={clsx(link && 'pr-3', className)}
       onClick={async () => {
         if (link) window.open(link, '_blank', 'noopener,noreferrer')
         if (answers && !sent && reply) await reply(b.reply, { key: k, value: b.label })
@@ -236,7 +237,7 @@ function Pic({ src, file, alt, w, h }: { src: string; file: string; alt: string;
 }
 
 /** before and after side by side: a picture or a clip each; two clips play together (one's play, pause and seek are the other's) */
-function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; under?: (side: 'before' | 'after') => ReactNode }) {
+function Pair({ b, rp, asset, under }: { b: Block; rp?: string; asset: (src: string) => string; under?: (side: 'before' | 'after') => ReactNode }) {
   const left = useRef<HTMLVideoElement>(null), right = useRef<HTMLVideoElement>(null)
   const sides = [['Before', b.before, left, right], ['After', b.after, right, left]] as const
   const clips = R.mediaKind(b.before?.src) === 'video' && R.mediaKind(b.after?.src) === 'video'
@@ -254,26 +255,26 @@ function Pair({ b, asset, under }: { b: Block; asset: (src: string) => string; u
         // each side's caption translation under its own caption (SHEP-102)
         const side = w === 'Before' ? 'before' : 'after'
         return kind === 'video' ? (
-          <div key={w} className="flex min-w-0 flex-col">
+          <div key={w} data-rp={`${rp}/${side}`} className="flex min-w-0 flex-col">
             <Clip src={x.src} poster={x.poster} caption={x.caption ?? w} asset={asset} videoRef={mine} label={`${w}: ${x.caption ?? w}`}
               events={clips ? follow(mine, theirs) : undefined} />
             {under?.(side)}
           </div>
         ) : (
-          <figure key={w} className={clsx('flex min-w-0 flex-col gap-1.5', full && 'items-center')}><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}{under?.(side)}</figcaption></figure>
+          <figure key={w} data-rp={`${rp}/${side}`} className={clsx('flex min-w-0 flex-col gap-1.5', full && 'items-center')}><Pic src={asset(x.src)} file={x.src} alt={x.caption ?? w} /><figcaption className="text-fg2">{x.caption ?? w}{under?.(side)}</figcaption></figure>
         )
       })}
     </div>
   )
 }
 
-function Tabs({ b, render, T }: { b: Block; render: (bs: Block[]) => ReactNode; T?: (field: string) => string | undefined }) {
+function Tabs({ b, rp, render, T }: { b: Block; rp?: string; render: (bs: Block[]) => ReactNode; T?: (field: string) => string | undefined }) {
   const [on, setOn] = useState(0)
   return (
     <div className="flex flex-col gap-3">
       <div role="tablist" className="scroll-x inline-flex max-w-full gap-0.5 self-start rounded-full bg-hover p-0.5">
         {b.tabs.map((t: any, i: number) => (
-          <button key={i} role="tab" aria-selected={on === i} type="button" onClick={() => setOn(i)} className={clsx('h-7 shrink-0 rounded-full px-3 phone:h-9', on === i ? 'bg-seg-on shadow-seg' : 'text-fg2')}>{t.label}{T?.(`tab.${i}`) ? <span data-tr className="text-fg3"> · {T(`tab.${i}`)}</span> : null}</button>
+          <button key={i} data-rp={`${rp}/tabs.${i}`} role="tab" aria-selected={on === i} type="button" onClick={() => setOn(i)} className={clsx('h-7 shrink-0 rounded-full px-3 phone:h-9', on === i ? 'bg-seg-on shadow-seg' : 'text-fg2')}>{t.label}{T?.(`tab.${i}`) ? <span data-tr className="text-fg3"> · {T(`tab.${i}`)}</span> : null}</button>
         ))}
       </div>
       {render(b.tabs[on]?.blocks ?? [])}
@@ -359,41 +360,42 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr, fullScr
     return r
   })
   const one = (b: Block): ReactNode => {
+    const rp = paths.get(b)
     switch (b.type) {
       case 'heading': { const H = (`h${Math.min(3, Math.max(1, b.level ?? 2)) + 1}`) as 'h2'; return <><H className={clsx('font-semibold text-balance', (b.level ?? 2) <= 1 ? 'text-xl' : 'text-base')}>{b.text}</H>{T(b, 'text')}</> }
       case 'text': return <div className={prose}>{md(b, 'md', b.md)}</div>
-      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', prose, b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i}><Markdown text={x} />{T(b, `items.${i}`)}</li>)}</L> }
+      case 'list': { const L = b.ordered ? 'ol' : 'ul'; return <L className={clsx('flex flex-col gap-1 pl-5', prose, b.ordered ? 'list-decimal' : 'list-disc')}>{b.items.map((x: string, i: number) => <li key={i} data-rp={`${rp}/items.${i}`}><Markdown text={x} />{T(b, `items.${i}`)}</li>)}</L> }
       case 'table': return (
         <div className="overflow-x-auto rounded-box shadow-box">
           <table className="w-full border-collapse">
-            <thead><tr>{b.columns.map((c: any, i: number) => <th key={i} className={clsx('border-b border-line px-3 py-2 text-left font-medium text-fg2', (c.align ?? '') === 'right' && 'text-right')}>{c.label ?? c}{T(b, `col.${i}`)}</th>)}</tr></thead>
-            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}>{String(c ?? '')}{T(b, `cell.${i}.${j}`)}</td>)}</tr>)}</tbody>
+            <thead><tr data-rp={`${rp}/columns`}>{b.columns.map((c: any, i: number) => <th key={i} className={clsx('border-b border-line px-3 py-2 text-left font-medium text-fg2', (c.align ?? '') === 'right' && 'text-right')}>{c.label ?? c}{T(b, `col.${i}`)}</th>)}</tr></thead>
+            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} data-rp={`${rp}/rows.${i}`} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}>{String(c ?? '')}{T(b, `cell.${i}.${j}`)}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )
       case 'chart': return <><Chart b={b} T={words(b)} />{failedIn(b)}</>
-      case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
+      case 'stats': return <dl className="grid grid-cols-2 gap-3 @lg:grid-cols-4">{b.items.map((x: any, i: number) => <div key={i} data-rp={`${rp}/items.${i}`} className="rounded-box bg-well p-3 shadow-soft"><dt className="text-fg2">{x.label}{T(b, `label.${i}`)}</dt><dd className="text-xl font-semibold tabular-nums">{String(x.value)}</dd>{x.note ? <dd className="text-fg3">{x.note}{T(b, `note.${i}`)}</dd> : null}</div>)}</dl>
       case 'image': return <figure className={clsx('flex flex-col gap-1.5', fullScreen && 'items-center')}><Pic src={asset(b.src)} file={b.src} alt={b.caption ?? ''} w={b.w} h={b.h} />{b.caption ? <figcaption className={clsx('text-fg2', fullScreen && 'text-center text-pretty')} style={fullScreen ? { maxWidth: FULL_TEXT } : undefined}>{b.caption}{T(b, 'caption')}</figcaption> : null}</figure>
       case 'video': return <><Clip src={b.src} poster={b.poster} caption={b.caption} loop={b.loop} muted={b.muted} autoplay={b.autoplay} asset={asset} />{T(b, 'caption')}</>
       case 'audio': return <><Sound src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
       case 'pdf': return <><Pdf src={b.src} caption={b.caption} asset={asset} />{T(b, 'caption')}</>
-      case 'pair': return <Pair b={b} asset={asset} under={(side) => T(b, side)} />
+      case 'pair': return <Pair b={b} rp={rp} asset={asset} under={(side) => T(b, side)} />
       case 'code': return <Code b={b} />
       case 'check': return <><Check b={b} />{T(b, 'summary')}{T(b, 'caption')}</>
       case 'callout': return <div className={clsx('rounded-box p-3.5', TONE[b.tone ?? 'info'])}>{b.title ? <p className="font-medium">{b.title}</p> : null}{T(b, 'title')}{b.md ? md(b, 'md', b.md) : null}</div>
-      case 'columns': return <div className="grid gap-4 @2xl:grid-flow-col @2xl:auto-cols-fr">{b.columns.map((c: Block[], i: number) => <div key={i} className="flex min-w-0 flex-col gap-4">{c.map(wrap)}</div>)}</div>
-      case 'tabs': return <>{failedIn(b)}<Tabs b={b} T={words(b)} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} /></>
+      case 'columns': return <div className="grid gap-4 @2xl:grid-flow-col @2xl:auto-cols-fr">{b.columns.map((c: Block[], i: number) => <div key={i} data-rp={`${rp}/columns.${i}`} className="flex min-w-0 flex-col gap-4">{c.map(wrap)}</div>)}</div>
+      case 'tabs': return <>{failedIn(b)}<Tabs b={b} rp={rp} T={words(b)} render={(bs) => <div className="flex flex-col gap-4">{bs.map(wrap)}</div>} /></>
       case 'details': return <details className="group rounded-box shadow-box"><summary className="cursor-pointer px-3.5 py-2.5 font-medium">{b.summary}{T(b, 'summary')}</summary><div className="flex flex-col gap-4 px-3.5 pb-3.5">{b.blocks.map(wrap)}</div></details>
       case 'divider': return <hr className="border-line" />
-      case 'choice': return <>{T(b, 'question')}<Choice b={b} reply={reply} answer={answerOf(answers, b.id)} /></>
-      case 'form': return <Form b={b} reply={reply} answer={answerOf(answers, b.id)} />
+      case 'choice': return <>{T(b, 'question')}<Choice b={b} rp={rp} reply={reply} answer={answerOf(answers, b.id)} /></>
+      case 'form': return <Form b={b} rp={rp} reply={reply} answer={answerOf(answers, b.id)} />
       case 'button': return <div className="flex flex-col items-start gap-1.5"><Button b={b} k={b.id} reply={reply} answers={answers} /><Answered kind="button" a={answerOf(answers, b.id)} /></div>
       case 'buttons': {
         // the newest press among them, under the row
         const pressed = b.items.map((_: Block, i: number) => answerOf(answers, `${b.id}-${i}`) as Answer | null).filter(Boolean).sort((x: Answer, y: Answer) => y.at - x.at)[0] ?? null
         return (
           <div className="flex flex-col items-start gap-1.5">
-            <div className="flex flex-wrap items-center gap-2">{b.items.map((x: Block, i: number) => <Button key={i} b={x} k={`${b.id}-${i}`} reply={reply} answers={answers} />)}</div>
+            <div className="flex flex-wrap items-center gap-2">{b.items.map((x: Block, i: number) => <Button key={i} b={x} k={`${b.id}-${i}`} rp={`${rp}/items.${i}`} reply={reply} answers={answers} />)}</div>
             <Answered kind="button" a={pressed} />
           </div>
         )
@@ -404,7 +406,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr, fullScr
   const wrap = (b: Block) => {
     const f = fullStyle(b, fullScreen)
     return (
-      <section key={b.id} data-block={b.id} className={clsx('min-w-0', f.className)} style={f.style}>
+      <section key={b.id} data-block={b.id} data-rp={paths.get(b)} className={clsx('min-w-0', f.className)} style={f.style}>
         {one(b)}
       </section>
     )
