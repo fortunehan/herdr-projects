@@ -4,7 +4,7 @@
 // No window runs here: the view is installed as herdr-artifact installs it (recipe-view.js, recipe.js, recipe-data.js
 // and a stub artifact.js in one folder), gpui and herdr are stand-ins, and a click runs the button's real handler.
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { copyFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHerdr } from "./fake-herdr";
@@ -32,6 +32,9 @@ copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir, "recipe.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(dir, "translate.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(dir, "paths.js"));
+// what Mark up reads its boxes from (SHEP-113), as herdr-artifact installs it
+mkdirSync(join(dir, "core"), { recursive: true });
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/markup.js"), join(dir, "core", "markup.js"));
 writeFileSync(join(dir, "recipe-data.js"), `export default ${JSON.stringify(RECIPE)};\n`);
 writeFileSync(join(dir, "artifact.js"), "export const id = \"x\"; export const version = 1; export const machine = null; export const asset = (s) => s; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n");
 const { default: RecipeView } = await import(join(dir, "recipe-view.js"));
@@ -107,6 +110,9 @@ copyFileSync(join(import.meta.dir, "../mods/artifacts/recipe-view.js"), join(dir
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(dir2, "recipe.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(dir2, "translate.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(dir2, "paths.js"));
+// what Mark up reads its boxes from (SHEP-113), as herdr-artifact installs it
+mkdirSync(join(dir2, "core"), { recursive: true });
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/markup.js"), join(dir2, "core", "markup.js"));
 writeFileSync(join(dir2, "recipe-data.js"), `export default ${JSON.stringify(RECIPE2)};\n`);
 writeFileSync(join(dir2, "artifact.js"), `export const id = "y"; export const version = 1; export const machine = null; export const asset = (s) => s;
 export const sent = [];

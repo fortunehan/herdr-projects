@@ -3,7 +3,7 @@
 // a failure's Retry asks again through the same key. Installed as herdr-artifact installs it (recipe-view.js, recipe.js,
 // translate.js, paths.js, recipe-data.js and a stub artifact.js), with gpui and herdr stand-ins.
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { copyFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHerdr } from "./fake-herdr";
@@ -29,6 +29,8 @@ const RECIPE = {
 const dir = mkdtempSync(join(tmpdir(), "recipe-translate-"));
 for (const f of ["recipe-view.js"]) copyFileSync(join(import.meta.dir, "../mods/artifacts", f), join(dir, f));
 for (const f of ["recipe.js", "translate.js", "paths.js"]) copyFileSync(join(import.meta.dir, "../mods/artifacts/core", f), join(dir, f));
+mkdirSync(join(dir, "core"), { recursive: true });
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/markup.js"), join(dir, "core", "markup.js"));
 writeFileSync(join(dir, "recipe-data.js"), `export default ${JSON.stringify(RECIPE)};\n`);
 writeFileSync(join(dir, "artifact.js"), 'export const id = "art1"; export const version = 2; export const machine = null; export const asset = (s) => s; export const reply = async () => true; export const answer = async () => true; export const answers = async () => ({});\n');
 const { default: RecipeView } = await import(join(dir, "recipe-view.js"));
