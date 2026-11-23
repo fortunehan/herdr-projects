@@ -68,7 +68,7 @@ class Notes(unittest.TestCase):
 
     def note(self, **k):
         base = dict(id=self.aid, text=None, version=None, spot=None, image=None, shot=None, panel=None, area=None,
-                    machine=None, json=True, answer=None, value=None, by=None, notes=None)
+                    machine=None, json=True, answer=None, value=None, by=None, notes=None, blocks=None)
         o = types.SimpleNamespace(**{**base, **k})
 
         def run(argv, **_):
@@ -137,7 +137,7 @@ class Notes(unittest.TestCase):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, json.dumps({"to": "t3", "why": "made it", "version": 1, "image": None, "notes": 2}) + "\n", "")
         o = types.SimpleNamespace(id=self.aid, text="All good", version=1, spot=None, image=None, shot=None, panel=None, area=None,
-                                  machine="vm", json=True, answer=None, value=None, by=None, notes=json.dumps(NOTES[:2]))
+                                  machine="vm", json=True, answer=None, value=None, by=None, notes=json.dumps(NOTES[:2]), blocks=None)
         out = io.StringIO()
         with mock.patch.object(A, "run", side_effect=run), mock.patch("sys.stdout", out):
             A.cmd_note(o)
@@ -162,3 +162,71 @@ class Notes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# SHEP-113: on a recipe each note names the blocks it is on (Mark up reads them from the recipe as drawn)
+HEADING = {"path": "blocks[0]", "kind": "heading", "text": "Release plan"}
+ROW = {"path": "blocks[3].rows[1]", "kind": "table row 2", "text": "Beta | 9 | late"}
+IMAGE = {"path": "blocks[4]", "kind": "image", "text": "Sign-in screen", "file": "login.png"}
+
+
+class NotesOnBlocks(unittest.TestCase):
+    """Notes whose blocks are named: each block's kind, its path in recipe.json and a short excerpt, the spot kept."""
+    setUp, tearDown, note = Notes.setUp, Notes.tearDown, Notes.note
+
+    def test_several_notes_name_their_blocks(self):
+        notes = [{**NOTES[0], "blocks": [HEADING]}, {**NOTES[1], "blocks": [ROW, IMAGE], "more": 2}, NOTES[2]]
+        self.note(notes=json.dumps(notes))
+        self.assertEqual(self.sent[0][1], (
+            f'<hc from="artifact" id="{self.aid}" version="1" title="Plan" notes="3">\n'
+            "3 notes, numbered as marked on it:\n\n"
+            "1. On the heading at blocks[0]: \u201cRelease plan\u201d\n"
+            f"Spot: {NOTES[0]['spot']}\nMake this bigger\n\n"
+            "2. On 4 blocks:\n"
+            "- the table row 2 at blocks[3].rows[1]: \u201cBeta | 9 | late\u201d\n"
+            "- the image at blocks[4]: \u201cSign-in screen\u201d (login.png)\n"
+            "- and 2 more\n"
+            f"Spot: {NOTES[1]['spot']}\nRed, not green\n\n"
+            f"3. On {NOTES[2]['spot']}:\n(no words: just this spot)\n"
+            "</hc>"))
+
+    def test_a_single_note_names_its_block_before_the_words(self):
+        self.note(text="Shorter", spot=NOTES[1]["spot"], blocks=json.dumps({"blocks": [HEADING], "more": 0}))
+        self.note(notes=json.dumps([{"text": "Shorter", "spot": NOTES[1]["spot"], "blocks": [HEADING]}]))
+        self.assertEqual(self.sent[0], self.sent[1])
+        self.assertIn(f'on="{NOTES[1]["spot"]}">\nOn the heading at blocks[0]: \u201cRelease plan\u201d\nShorter\n</hc>', self.sent[0][1])
+
+    def test_bad_blocks_are_dropped_and_too_many_counted(self):
+        blocks = [{"path": "blocks[0]"}, "x", None] + [dict(HEADING, path=f"blocks[{i}]") for i in range(7)]
+        self.note(notes=json.dumps([{"text": "a", "blocks": blocks}, {"text": "b", "blocks": "junk"}]))
+        body = self.sent[0][1]
+        self.assertIn("1. On 7 blocks:", body)
+        self.assertIn("- the heading at blocks[4]", body)
+        self.assertNotIn("blocks[5]", body)
+        self.assertIn("- and 2 more", body)
+        self.assertIn("2. On it:\nb", body)
+        with self.assertRaises(A.Fail):
+            self.note(text="x", blocks="{")
+
+    def test_another_machine_gets_a_single_notes_blocks(self):
+        calls = []
+
+        def run(argv, **_):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"to": "t3", "why": "made it", "version": 1, "image": None}) + "\n", "")
+        o = types.SimpleNamespace(id=self.aid, text=None, version=1, spot=None, image=None, shot=None, panel=None, area=None, machine="vm",
+                                  json=True, answer=None, value=None, by=None, notes=json.dumps([{"text": "Bigger", "spot": "x", "blocks": [ROW]}]), blocks=None)
+        with mock.patch.object(A, "run", side_effect=run), mock.patch("sys.stdout", io.StringIO()):
+            A.cmd_note(o)
+        argv = calls[0]
+        self.assertNotIn("--notes", argv)
+        self.assertEqual(json.loads(argv[argv.index("--blocks") + 1]), {"blocks": [ROW], "more": 0})
+        self.assertEqual(argv[argv.index("--spot") + 1], "x")
+
+    def test_the_guide_explains_the_blocks(self):
+        with open(A.GUIDE) as f:
+            guide = f.read()
+        self.assertIn("blocks[3].rows[1]", guide)
+        r = subprocess.run([sys.executable, BIN, "note", "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                           env={**os.environ, "SHEPHERDR_HANDED_OVER": "1"})
+        self.assertIn("--blocks", r.stdout)

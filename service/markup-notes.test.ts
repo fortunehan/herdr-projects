@@ -27,7 +27,7 @@ test("a single note and a note about all of it go as before", async () => {
   const { calls, compat } = stub();
   await act({} as never, { type: "artifact-note", place: "p", artifact: "abc", v: 2, note: "Bigger", target: "the point at x 1, y 2" }, compat);
   await act({} as never, { type: "artifact-say", place: "p", artifact: "abc", v: 2, text: "Darker" }, compat);
-  expect(calls).toEqual([["say", "abc", 2, "Bigger", "the point at x 1, y 2", undefined], ["say", "abc", 2, "Darker", undefined, undefined]]);
+  expect(calls).toEqual([["say", "abc", 2, "Bigger", "the point at x 1, y 2", undefined, {}], ["say", "abc", 2, "Darker", undefined, undefined, {}]]);
 });
 
 test("Send all refuses nothing to say, and too many notes", async () => {
@@ -37,4 +37,17 @@ test("Send all refuses nothing to say, and too many notes", async () => {
   const many = Array.from({ length: NOTES_MAX + 1 }, () => ({ note: "x", target: "y" }));
   await expect(act({} as never, { type: "artifact-note", place: "p", artifact: "abc", v: 1, notes: many }, compat)).rejects.toThrow();
   expect(calls).toEqual([]);
+});
+
+// SHEP-113: on a recipe each note names the blocks it is on; the service passes them on, well-formed and cut short
+test("notes on a recipe carry their blocks to herdr-artifact", async () => {
+  const { calls, compat } = stub();
+  const row = { path: "blocks[3].rows[1]", kind: "table row 2", text: "Beta | 9" };
+  await act({} as never, { type: "artifact-note", place: "p", artifact: "abc", v: 2, note: "Bigger", target: "the point at x 1, y 2", blocks: [row], more: 0 }, compat);
+  await act({} as never, {
+    type: "artifact-note", place: "p", artifact: "abc", v: 2, text: "",
+    notes: [{ note: "A", target: "x", blocks: [row, { path: 3 }, { ...row, text: "y".repeat(500) }], more: 4 }, { note: "B", target: "y", blocks: "junk" }],
+  }, compat);
+  expect(calls[0]).toEqual(["say", "abc", 2, "Bigger", "the point at x 1, y 2", undefined, { blocks: [row] }]);
+  expect(calls[1]).toEqual(["notes", "abc", 2, [{ text: "A", spot: "x", blocks: [row, { ...row, text: "y".repeat(120) }], more: 4 }, { text: "B", spot: "y" }], ""]);
 });

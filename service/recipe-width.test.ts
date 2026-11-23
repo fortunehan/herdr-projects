@@ -41,6 +41,9 @@ copyFileSync(join(import.meta.dir, "../mods/artifacts/core/recipe.js"), join(mod
 // its Translate lines (SHEP-102), as herdr-artifact installs them beside recipe.js
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/translate.js"), join(mod, "translate.js"));
 copyFileSync(join(import.meta.dir, "../mods/artifacts/core/paths.js"), join(mod, "paths.js"));
+// what Mark up reads its boxes from (SHEP-113), as herdr-artifact installs it
+mkdirSync(join(mod, "core"), { recursive: true });
+copyFileSync(join(import.meta.dir, "../mods/artifacts/core/markup.js"), join(mod, "core", "markup.js"));
 // a PNG's first bytes: its signature and IHDR (width, height), all imageSize reads
 const png = (w: number, h: number) => {
   const b = Buffer.alloc(33);
