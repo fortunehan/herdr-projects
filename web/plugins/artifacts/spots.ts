@@ -43,6 +43,43 @@ export function blockOfNode(node: Tagged | null | undefined, recipe: unknown): T
   return key && recipe ? recipeTarget(recipe, key) : null
 }
 
+// ---- notes stay on what they marked (SHEP-115) ---------------------------------------------------------------------
+// The recipe scrolls under the still Mark up layer: a note keeps its spot as fractions of the whole content and of the
+// tag it starts on (core/markup.js anchorOf), and is drawn where that tag is now (placeNote).
+
+/** the recipe view's scrolling box (RecipeFrame's, data-recipe-scroll): the little of it this needs */
+export type Scroller = { getBoundingClientRect(): Box; scrollTop: number; scrollLeft: number; scrollWidth: number; scrollHeight: number }
+/** where the content is: its top left in px from origin (above it once scrolled) and its whole size */
+export type View = { x: number; y: number; width: number; height: number; page?: boolean }
+
+/** the recipe's whole content seen from the layer (origin: its top left); without a recipe, the layer itself */
+export function contentView(scroller: Scroller | null | undefined, origin: Box): View {
+  if (!scroller) return { x: 0, y: 0, width: origin.width, height: origin.height }
+  const r = scroller.getBoundingClientRect()
+  return { x: r.left - origin.left - scroller.scrollLeft, y: r.top - origin.top - scroller.scrollTop, width: Math.max(r.width, scroller.scrollWidth), height: Math.max(r.height, scroller.scrollHeight), page: true }
+}
+
+/** a tag's box now, in px from origin, or null when the page doesn't draw it (another tab, a closed details) */
+export function tagBox(root: { querySelector(sel: string): Tagged | null }, origin: { left: number; top: number }, key: string): Spot | null {
+  const el = root.querySelector(`[data-rp="${key.replace(/["\\]/g, '')}"]`)
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  return r.width > 0 && r.height > 0 ? { x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height } : null
+}
+
+const { anchorOf, contentFrac } = M as unknown as {
+  anchorOf: (nodes: unknown[], s: Spot, rects?: Spot[]) => Anchor | null
+  contentFrac: (s: Spot, view: View) => Spot
+}
+export type Anchor = { key: string; x: number; y: number; w: number; h: number; rects?: Spot[] }
+
+/** a spot of the layer (px), and the boxes of selected words, as a note keeps them: fractions of the content, and the
+ *  tag it starts on (root: the page under the layer) */
+export function keptSpot(root: Root | null | undefined, origin: Box, view: View, s: Spot, rects?: Spot[]): Spot & { anchor?: Anchor; rects?: Spot[] } {
+  const anchor = root ? anchorOf(tagBoxes(root, origin), s, rects) : null
+  return { ...contentFrac(s, view), ...(anchor ? { anchor } : {}), ...(rects ? { rects: rects.map((r) => contentFrac(r, view)) } : {}) }
+}
+
 /** the recipe each artifact version shows now (RecipeFrame keeps it here), for Mark up laid over it */
 const shown = new Map<string, unknown>()
 export const recipeKey = (id: string, v: number, machine?: string | null) => `${machine ?? ''}|${id}|${v}`

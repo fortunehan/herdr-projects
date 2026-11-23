@@ -7,7 +7,7 @@ import { Recipe, UNREADABLE, type Answers } from '@client/screens/Recipe.tsx'
 import { enterHint, sendsNow } from '@client/enter.ts'
 import * as R from '@core/recipe.js'
 import * as M from '@core/markup.js'
-import { keepRecipe, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, type On, type PicEl, type Picture, type Seed } from './spots.ts'
+import { contentView, keepRecipe, keptSpot, noteAction, noteOnPage, pictureSeed, picturesOnPage, quoteSeed, recipeKey, shownRecipe, tagBox, type Anchor, type On, type PicEl, type Picture, type Scroller, type Seed } from './spots.ts'
 import * as CV from '@core/chat-view.js'
 import { Markdown } from '@plugins/chat/markdown.tsx'
 import { artifactKey, retry as retryTranslate, toggle as toggleTranslate, useShown as useTranslation, useTranslateOn } from '@plugins/chat/translate.ts'
@@ -65,7 +65,7 @@ import { titleInTask } from '@core/task-artifacts.js'
 
 const { withIds, preview } = R as any
 const { WORDS, artifactLine } = CV as any
-const { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, toFrac, fromFrac, draftKey, draftText, readDraft, outgoing, pictureUnder } = M as any
+const { MARKUP, NOTES_MAX, markupHint, markupSent, markupCount, draftKey, draftText, readDraft, outgoing, pictureUnder, placeNote } = M as any
 
 export type Pick = { text: string; selector: string; component?: string; x: number; y: number }
 
@@ -114,10 +114,13 @@ function Stepper({ art, shown, onStep, bar }: { art: Artifact; shown: number; on
 }
 
 type Spot = { x: number; y: number; w: number; h: number }
-/** a numbered note: its spot as fractions of the layer (core/markup.js toFrac), its words and, on a recipe, the blocks
- *  it is on (SHEP-113); on selected words their quote and the boxes they are highlighted in, on a picture the picture
- *  and the spot in it (SHEP-114), as fractions too */
-type Note = Spot & { text: string; on?: On; quote?: { text: string; before: string; after: string; rects: Spot[] }; picture?: Picture & { spot?: Spot } }
+/** a numbered note: its spot as fractions of the whole content and of the tag it starts on (anchor, SHEP-115), its
+ *  words and, on a recipe, the blocks it is on (SHEP-113); on selected words their quote and the boxes they are
+ *  highlighted in, on a picture the picture and the spot in it (SHEP-114), as fractions too */
+type Note = Spot & { text: string; on?: On; anchor?: Anchor; quote?: { text: string; before: string; after: string; rects: Spot[] }; picture?: Picture & { spot?: Spot } }
+
+/** the notes that went this session, by artifact version: they stay drawn, faded, on what they marked (SHEP-115) */
+const sentNotes = new Map<string, Note[]>()
 
 /** what a note is about, in the notes list: the quoted words or the picture's name; none for a spot */
 const aboutOf = (n: Note) => (n.quote ? `“${n.quote.text}”` : n.picture ? `Picture ${n.picture.file}` : '')
@@ -147,20 +150,37 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
   const [general, setGeneral] = useState(draft.general)
   const [sel, setSel] = useState<number | null>(null)
   const [open, setOpen] = useState(true)
-  const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
+  // the content moves under the layer (scrolled, reflowed): each move draws the notes again where it is now
+  const [, moved] = useState(0)
   const [press, setPress] = useState<{ x0: number; y0: number; x1: number; y1: number; moved: boolean } | null>(null)
   const [said, setSaid] = useState('')
   const [failed, setFailed] = useState(false)
   const [sending, setSending] = useState(false)
   const keeper = art.keeper || 'the agent'
   const phone = device === 'phone'
+  const sentKey = recipeKey(art.id, v, art.machine)
+  const sent = sentNotes.get(sentKey) ?? []
+  const page = () => ref.current?.parentElement ?? null
+  const scroller = () => page()?.querySelector<HTMLElement>('[data-recipe-scroll]') ?? null
+  const origin = () => ref.current!.getBoundingClientRect()
   useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const o = new ResizeObserver(() => setSize({ width: el.clientWidth, height: el.clientHeight }))
+    const el = ref.current, host = el?.parentElement
+    if (!el || !host) return
+    const again = () => moved((n) => n + 1)
+    const o = new ResizeObserver(again)
     o.observe(el)
-    setSize({ width: el.clientWidth, height: el.clientHeight })
-    return () => o.disconnect()
+    // the recipe's content may come after the layer (Loading…) and changes height as pictures load
+    const m = new MutationObserver(() => {
+      const c = scroller()?.firstElementChild
+      if (c) o.observe(c)
+      again()
+    })
+    m.observe(host, { childList: true, subtree: true })
+    const c = scroller()?.firstElementChild
+    if (c) o.observe(c)
+    host.addEventListener('scroll', again, true)
+    again()
+    return () => { o.disconnect(); m.disconnect(); host.removeEventListener('scroll', again, true) }
   }, [])
   useEffect(() => { keepDraft(art.id, v, notes, general) }, [art.id, v, notes, general])
   // Comment on selected words or a picture (SHEP-114): Mark up opens with that note started
@@ -168,13 +188,14 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
     const el = ref.current
     if (!seed || !el) return
     onSeeded?.()
-    const sz = { width: el.clientWidth, height: el.clientHeight }
     if (notes.length >= NOTES_MAX) {
       setFailed(true)
       return setSaid(`At most ${NOTES_MAX} notes at once: send these first.`)
     }
-    const quote = seed.quote ? { ...seed.quote, rects: seed.quote.rects.map((r) => toFrac(r, sz)) } : undefined
-    setNotes([...notes, { ...toFrac(seed.spot, sz), text: '', ...(seed.on ? { on: seed.on } : {}), ...(quote ? { quote } : {}), ...(seed.picture ? { picture: seed.picture } : {}) }])
+    const o = el.getBoundingClientRect()
+    const { rects, ...kept } = keptSpot(page(), o, contentView(scroller() as Scroller | null, o), seed.spot, seed.quote?.rects)
+    const quote = seed.quote ? { ...seed.quote, rects: rects ?? [] } : undefined
+    setNotes([...notes, { ...kept, text: '', ...(seed.on ? { on: seed.on } : {}), ...(quote ? { quote } : {}), ...(seed.picture ? { picture: seed.picture } : {}) }])
     pick(notes.length)
   }, [seed])
   const focusGeneral = () => !phone && setTimeout(() => generalRef.current?.focus(), 0)
@@ -200,7 +221,12 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
     setNotes(notes.filter((_, j) => j !== i))
     setSel(sel === null || sel < i ? sel : sel === i ? null : sel - 1)
   }
-  const out = outgoing(notes, general, size)
+  // where the content is now, and each tag's box on it, from the layer's top left
+  const o = ref.current?.getBoundingClientRect() ?? { left: 0, top: 0, width: 0, height: 0 }
+  const view = contentView(scroller() as Scroller | null, o)
+  const host = page()
+  const boxOf = (key: string) => (host ? tagBox(host, o, key) : null)
+  const out = outgoing(notes, general, view)
   const send = async () => {
     if (!out || sending) return
     setSending(true)
@@ -214,6 +240,7 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
       setFailed(true)
       return setSaid(r.error || MARKUP.failed)
     }
+    sentNotes.set(sentKey, [...sent, ...notes])
     setNotes([])
     setGeneral('')
     setSel(null)
@@ -240,6 +267,8 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
     <div
       ref={ref}
       className="@container absolute inset-0 cursor-crosshair touch-none rounded-[inherit] border-2 border-dashed border-focus"
+      // the wheel scrolls the artifact under the layer, its notes with it
+      onWheel={(e) => scroller()?.scrollBy({ left: e.deltaX, top: e.deltaY })}
       onPointerDown={(e) => {
         if (e.button !== 0) return
         if (notes.length >= NOTES_MAX) {
@@ -264,41 +293,20 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
         // on a recipe: the picture it is on, named with the spot in it (SHEP-114), else the blocks under it, from the
         // recipe drawn beneath the layer
         const layer = ref.current!
-        const recipe = shownRecipe(recipeKey(art.id, v, art.machine)), origin = layer.getBoundingClientRect()
-        const pic = layer.parentElement && recipe ? pictureUnder(picturesOnPage(layer.parentElement, origin, recipe), s) : null
-        const on = !pic && layer.parentElement ? noteOnPage(layer.parentElement, origin, recipe, s) : null
-        setNotes([...notes, { ...toFrac(s, size), text: '', ...(on ? { on } : {}), ...(pic ? { picture: { ...pic.picture, spot: pic.spot } } : {}) }])
+        const recipe = shownRecipe(recipeKey(art.id, v, art.machine)), at0 = origin()
+        const pic = layer.parentElement && recipe ? pictureUnder(picturesOnPage(layer.parentElement, at0, recipe), s) : null
+        const on = !pic && layer.parentElement ? noteOnPage(layer.parentElement, at0, recipe, s) : null
+        // kept on the content and the tag under it, so it scrolls and reflows with them (SHEP-115)
+        const kept = keptSpot(recipe ? page() : null, at0, contentView(scroller() as Scroller | null, at0), s)
+        setNotes([...notes, { ...kept, text: '', ...(on ? { on } : {}), ...(pic ? { picture: { ...pic.picture, spot: pic.spot } } : {}) }])
         pick(notes.length)
       }}
     >
-      {notes.map((n, i) => {
-        const s = fromFrac(n, size)
-        // selected words: highlighted where they are, the number at their start
-        if (n.quote?.rects.length) {
-          const first = fromFrac(n.quote.rects[0], size)
-          return (
-            <span key={i}>
-              {n.quote.rects.map((r, j) => {
-                const b = fromFrac(r, size)
-                return <span key={j} data-quote-mark="" className={clsx('pointer-events-none absolute rounded-[2px]', sel === i ? 'bg-[color-mix(in_srgb,var(--focus)_32%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]')}
-                  style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />
-              })}
-              <MarkBadge x={first.x} y={first.y} n={i + 1} on={sel === i} onPick={() => pick(i)} />
-            </span>
-          )
-        }
-        return (
-          <span key={i}>
-            {s.w || s.h ? (
-              <span
-                className={clsx('pointer-events-none absolute rounded-[4px] border-2 border-focus', sel === i ? 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_10%,transparent)]')}
-                style={{ left: s.x, top: s.y, width: s.w, height: s.h }}
-              />
-            ) : null}
-            <MarkBadge x={s.x} y={s.y} n={i + 1} on={sel === i} onPick={() => pick(i)} />
-          </span>
-        )
-      })}
+      {/* the notes on what they marked, clipped to the layer as the content scrolls past it */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]">
+        {sent.map((n, i) => <NoteMark key={`s${i}`} at={placeNote(n, boxOf, view)} sent />)}
+        {notes.map((n, i) => <NoteMark key={i} at={placeNote(n, boxOf, view)} n={i + 1} on={sel === i} onPick={() => pick(i)} />)}
+      </div>
       {drawn ? (
         <span className="pointer-events-none absolute rounded-[4px] border-2 border-focus bg-[color-mix(in_srgb,var(--focus)_12%,transparent)]" style={{ left: drawn.x, top: drawn.y, width: drawn.w, height: drawn.h }} />
       ) : null}
@@ -402,6 +410,38 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
         </div>
       )}
     </div>
+  )
+}
+
+/** A note's mark where it is now (placeNote, px of the layer): selected words highlighted with the number at their
+ *  start, else its area outlined and its number at the top left. A sent note's is faded, with a tick for its number. */
+function NoteMark({ at, n = 0, on, onPick, sent }: { at: Spot & { rects: Spot[] }; n?: number; on?: boolean; onPick?: () => void; sent?: boolean }) {
+  const first = at.rects[0] ?? at
+  const badge = sent ? (
+    <span data-sent-mark="" className="absolute grid size-[18px] place-items-center rounded-full bg-fg2 text-bg phone:size-[22px]" style={{ left: first.x - 9, top: first.y - 9 }}>
+      <CheckIcon className="size-3" />
+    </span>
+  ) : (
+    <span className="pointer-events-auto"><MarkBadge x={first.x} y={first.y} n={n} on={on} onPick={onPick} /></span>
+  )
+  if (at.rects.length)
+    return (
+      <span className={sent ? 'opacity-80' : undefined}>
+        {at.rects.map((r, j) => (
+          <span key={j} data-quote-mark="" className={clsx('absolute rounded-[2px]', on ? 'bg-[color-mix(in_srgb,var(--focus)_32%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]')}
+            style={{ left: r.x, top: r.y, width: r.w, height: r.h }} />
+        ))}
+        {badge}
+      </span>
+    )
+  return (
+    <span className={sent ? 'opacity-80' : undefined}>
+      {at.w || at.h ? (
+        <span data-note-box="" className={clsx('absolute rounded-[4px] border-2', sent ? 'border-dashed border-fg2' : 'border-focus', on ? 'bg-[color-mix(in_srgb,var(--focus)_20%,transparent)]' : 'bg-[color-mix(in_srgb,var(--focus)_10%,transparent)]')}
+          style={{ left: at.x, top: at.y, width: at.w, height: at.h }} />
+      ) : null}
+      {badge}
+    </span>
   )
 }
 
@@ -720,7 +760,7 @@ function RecipeFrame({ art, v, full, fullScreen }: Parameters<typeof PageFrame>[
   if (error) return <p className="p-4 text-fg3">{error}</p>
   if (!recipe) return <p className="p-4 text-fg3">Loading…</p>
   return (
-    <div className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
+    <div data-recipe-scroll="" className={clsx('overflow-y-auto p-4 phone:p-5', full ? 'h-full' : 'max-h-[70dvh]')}>
       <Recipe recipe={recipe} asset={(src) => `api/artifacts/${encodeURIComponent(art.id)}/file/${src.split('/').map(encodeURIComponent).join('/')}?v=${v}${on}`}
         answers={answers} tr={tr} fullScreen={fullScreen}
         reply={(text, keep) => act({ type: 'artifact-send', place: art.place, artifact: art.id, v, text, ...(keep ? { answer: keep.key, value: keep.value } : {}) })} />
