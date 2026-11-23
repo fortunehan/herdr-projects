@@ -155,6 +155,9 @@ LAYOUT_MOVES = [
     # The sidebar's top row: Herdr's own top bar has no voice call button; Shepherdr's has it beside Search (#1032).
     ("shepherdr", "brand", "workspace-chrome", "workspace-chrome-shepherdr", "the voice call button beside Search"),
 ]
+# Terminal link handler mods (Herdr 0.1.17) each Shepherdr layout lists in its root link_handlers. A layout the person
+# changed (kept on update) gets one added once, after their own entries; one they later take out stays out.
+LAYOUT_LINKS = {"shepherdr": ["open-paths"]}
 HOOKS = [  # (file under home, event, entry): the question and permission cards (the "needs" add-on)
     (".claude/settings.json", "SessionStart",
      {"matcher": "^(startup|resume|clear|compact)$", "hooks": [{"type": "command", "command": "sh '{app}/mods/chat/session-note.sh'", "timeout": 10}]}),
@@ -753,6 +756,27 @@ def move_layout_blocks(text, name):
     return json.dumps(d, indent=2, ensure_ascii=False) + "\n", said
 
 
+def add_link_handlers(text, name, done):
+    """A layout's text with LAYOUT_LINKS' mods added to its root link_handlers (the person's own entries kept, first)
+    -> (new text or None, [mods added]). done: the mods an earlier install already added to it (never again)."""
+    want = [m for m in LAYOUT_LINKS.get(name, []) if m not in done]
+    if not want or text is None:
+        return None, []
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return None, []
+    if not isinstance(d, dict):
+        return None, []
+    have = d.get("link_handlers")
+    have = list(have) if isinstance(have, list) else []
+    added = [m for m in want if m not in have]
+    if not added:
+        return None, []
+    d["link_handlers"] = have + added
+    return json.dumps(d, indent=2, ensure_ascii=False) + "\n", added
+
+
 def plan_files(r, rec, items, adopt):
     """For each source file: what to do. -> (actions, clashes). An action: (rel, how, data, mode)
     with how one of new, update, same, adopt, keep (the person's; .new beside it)."""
@@ -1281,10 +1305,17 @@ def cmd_install(a, update=False):
             atomic_write(r.p(rel) + ".new", data, mode)
             r.notes.append(f"kept your {rel}; Shepherdr's is beside it as {os.path.basename(rel)}.new")
             if g == "layout":
-                moved, said = move_layout_blocks(read(r.p(rel)), os.path.basename(rel)[:-len(".json")])
+                name = os.path.basename(rel)[:-len(".json")]
+                moved, said = move_layout_blocks(read(r.p(rel)), name)
                 if moved is not None:
                     atomic_write(r.p(rel), moved.encode(), mode)
                     r.notes.append(f"  in your {rel}: {', '.join(said)} (only that block changed)")
+                done = rec.setdefault("link_handlers", {}).setdefault(name, [])
+                linked, added = add_link_handlers(read(r.p(rel)), name, done)
+                if linked is not None:
+                    atomic_write(r.p(rel), linked.encode(), mode)
+                    r.notes.append(f"  in your {rel}: {', '.join(added)} added to link_handlers (Ctrl/Cmd-clicked paths)")
+                done.extend(m for m in LAYOUT_LINKS.get(name, []) if m not in done)
         elif how == "old":
             dest_b = r.backup(rel)
             atomic_write(r.p(rel), data, mode)
@@ -1301,6 +1332,10 @@ def cmd_install(a, update=False):
     for g, rel, how, data, mode in actions:
         if how != "keep":
             files[rel] = fsha(rel, data)
+            if g == "layout" and not r.dry:  # the shipped copy lists them: a later edit of the person's decides
+                name = os.path.basename(rel)[:-len(".json")]
+                done = rec.setdefault("link_handlers", {}).setdefault(name, [])
+                done.extend(m for m in LAYOUT_LINKS.get(name, []) if m not in done and add_link_handlers(data.decode(), name, [])[0] is None)
     for rel in gone:
         files.pop(rel, None)
     rec["files"] = files
