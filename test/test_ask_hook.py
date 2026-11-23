@@ -139,6 +139,30 @@ class AskHook(unittest.TestCase):
         p.wait()
         p.stdout.close()
 
+    def test_a_worker_resumed_in_a_login_shell_hands_it_over_too(self):
+        # SHEP-116: a resumed worker's terminal runs `zsh -l` and the agent as its foreground process; reading only
+        # .argv, both this copy and the chained one put a card up (two Needs-you rows for APM-1's one question)
+        sys_path = os.path.join(ROOT, "mods", "tasks", "bin")
+        code = f"import sys; sys.path.insert(0, {sys_path!r}); from herdr_task.launch import own_argv; import json; print(json.dumps(own_argv(['claude', '--resume', 's1'])))"
+        argv = json.loads(subprocess.run(["python3", "-c", code], capture_output=True, text=True, check=True).stdout)
+        self.term({"state": "live", "status": "working", "argv": ["/bin/zsh", "-l"], "foreground": {"argv": argv, "cwd": "/tmp/x"}})
+        self.assertEqual(self.out(self.start()), b"")
+        self.assertIsNone(self.waiting(0.2))
+        p = self.start(HERDR_ASK_CHAINED="1")
+        self.assertIsNotNone(self.waiting())
+        p.kill()
+        p.wait()
+        p.stdout.close()
+
+    def test_a_plain_shell_with_a_foreground_agent_still_asks(self):
+        # an agent in a shell without the worker's hook (no _allow anywhere): this copy is its only card
+        self.term({"state": "live", "status": "working", "argv": ["/bin/zsh", "-l"], "foreground": {"argv": ["claude"]}})
+        p = self.start()
+        self.assertIsNotNone(self.waiting())
+        p.kill()
+        p.wait()
+        p.stdout.close()
+
     def test_a_brief_that_names_the_hook_is_no_worker_hook(self):
         # only the --settings that follows the flag counts, not any argument that mentions it
         self.term({"state": "live", "status": "working", "argv": ["claude", "fix ` _allow --command ` in launch.py"]})
