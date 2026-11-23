@@ -12,7 +12,7 @@ const none = async () => ({ code: 1, stdout: "", stderr: "" });
 const tree = { id: "root", children: [{ id: "tasks", children: [{ id: "tasks-list" }, { id: "tasks-thread" }] }] };
 const theme = { foreground: "#fafafa", muted: "#a1a1aa", dim: "#7c7c85", hover: "#ffffff0a", selected: "#ffffff12", border: "#ffffff1f", background: "#111114" };
 
-const MARKET = "/Users/me/Codes/90024-ai-plugins-marketplace", SKILLS = "/Users/me/Codes/my-work-skills";
+const MARKET = "/work/90024-ai-plugins-marketplace", SKILLS = "/work/my-work-skills";
 const skillsSpace = { id: "sp7f", name: "my-work-skills", folder: SKILLS, machine: null, tabs: [{ id: "tbSkills" }] };
 const marketSpace = { id: "spf7", name: "plugins-marketplace", folder: MARKET, machine: null, tabs: [{ id: "tbMarket" }] };
 const assistant = { address: "t14k", state: "live", status: "done",
