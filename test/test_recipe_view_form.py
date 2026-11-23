@@ -64,6 +64,9 @@ def run(recipe):
         shutil.copy(RECIPE, os.path.join(d, "recipe.js"))
         for f in TRANSLATE:
             shutil.copy(f, os.path.join(d, os.path.basename(f)))
+        # the boxes Mark up reads (SHEP-113), as herdr-artifact installs it
+        os.makedirs(os.path.join(d, "core"), exist_ok=True)
+        shutil.copy(os.path.join(ROOT, "core", "markup.js"), os.path.join(d, "core", "markup.js"))
         with open(os.path.join(d, "stub.js"), "w") as f:
             f.write(STUB)
         with open(os.path.join(d, "recipe-data.js"), "w") as f:
