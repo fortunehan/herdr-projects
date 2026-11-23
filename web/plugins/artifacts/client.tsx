@@ -575,12 +575,9 @@ function RecipeFrame({ art, v, full, fullScreen }: Parameters<typeof PageFrame>[
       .then((a) => !gone && a && typeof a === 'object' && setAnswers(a as Answers), () => undefined)
     return () => { gone = true }
   }, [art.id, v, on])
-  // Mark up laid over it names the blocks a note is on from this recipe (SHEP-113)
-  useEffect(() => {
-    const k = recipeKey(art.id, v, art.machine)
-    keepRecipe(k, recipe)
-    return () => keepRecipe(k, null)
-  }, [art.id, v, art.machine, recipe])
+  // Mark up laid over it names the blocks a note is on from this recipe (SHEP-113); a version's recipe never changes,
+  // and the panel and the viewer may both show it, so it stays kept
+  useEffect(() => { if (recipe) keepRecipe(recipeKey(art.id, v, art.machine), recipe) }, [art.id, v, art.machine, recipe])
   if (error) return <p className="p-4 text-fg3">{error}</p>
   if (!recipe) return <p className="p-4 text-fg3">Loading…</p>
   return (
