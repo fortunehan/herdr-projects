@@ -115,24 +115,23 @@ function fakeHub(reply: (argv: string[], on?: string) => { code?: number; stdout
 }
 
 test("unstarted Assistant menus retain a wrapper selection with its default model", async () => {
+  // upstream's fresh Assistant (SHEP-263: offer(), fresh(), freshMenu()), with the fork's launchers on offer
   const agents = new Agents(fakeHub(() => ({})) as never);
   agents.catalog = async () => ({ claude: {}, codex: {}, magpie: magpieModels("  copilot/other    Other  low/high\n") });
+  (agents as any).have = async () => new Set(["claude", "codex"]);
   agents.picks = () => ({ pinned: [], recent: [] });
-  let menu = await agents.freshMenu("p:sp1", null, { agent: "claude", launcher: "magpie" });
+  let menu = await agents.freshMenu(null, { agent: "claude", launcher: "magpie" });
   expect(menu.current).toMatchObject({ agent: "claude-magpie", model: "copilot/claude-sonnet-5.5", effort: "high" });
   expect(Object.keys(menu.menus)).toEqual(["claude", "codex", "claude-magpie", "claude-cdnd"]);
   expect(menu.menus["claude-magpie"].models.some((m: any) => m.id === "copilot/other")).toBe(true);
-  agents.freshPicks.set("p:sp1", { agent: "claude", launcher: "cdnd", model: "typed/model", effort: "max" });
-  menu = await agents.freshMenu("p:sp1", null, { agent: "codex" });
+  const cdnd = { agent: "claude", launcher: "cdnd", model: "typed/model", effort: "max" };
+  menu = await agents.freshMenu(null, cdnd);
   expect(menu.current).toMatchObject({ agent: "claude-cdnd", model: "typed/model", effort: "max" });
   expect(menu.menus["claude-cdnd"].models[0].id).toBe("typed/model");
-  const sent: any[] = [];
-  const live: any = Object.create(Live.prototype);
-  live.pages = new Set([{ data: { keys: ["p:sp1"] }, readyState: 1, send(text: string) { sent.push(JSON.parse(text)); } }]);
-  live.compat = { addrOf: () => null, agents };
-  live.refreshFresh();
-  expect(sent[0].chat.agent).toMatchObject({ kind: "claude", model: "typed/model", effort: "max" });
-  expect(sent[0].chat.working).toBe(false);
+  // the fresh chat's model button says the same (compat.freshChat reads agents.fresh)
+  const f = agents.fresh(null, cdnd);
+  expect(f.sel).toMatchObject({ agent: "claude-cdnd", model: "typed/model", effort: "max" });
+  expect(f.words).toBe("Claude Cdnd · typed/model · Max");
 });
 
 test("task and Assistant changes preflight a missing launcher on the target machine", async () => {

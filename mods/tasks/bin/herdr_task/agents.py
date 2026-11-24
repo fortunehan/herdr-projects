@@ -294,17 +294,50 @@ def ready_turns(live):
 
 
 def busy_again(task, live):
-    """A Ready task whose agent is at work again since it said ready. Not while it merges as
-    asked (the merge is its work), opens its pull request after Accept or fixes its checks while
-    Azure DevOps merges it (SHEP-96: that is its work too), nor a reviewer's turn. A ready said
-    before turns were kept: any work once STARTING_MS have passed."""
+    """A Ready task whose agent is at work again since it said ready, on a message someone sent it
+    (prompted()). Not while it merges as asked (the merge is its work), opens its pull request after Accept or
+    fixes its checks while Azure DevOps merges it (SHEP-96: that is its work too), nor a reviewer's turn. A ready
+    said before turns were kept: any work once STARTING_MS have passed."""
     if task["state"] != "ready" or task.get("merge_requested") or task.get("pr_requested") or task.get("merge_wait"):
         return False
     seen = task.get("ready_turns")
     if seen is None and now() - (task.get("ready_at") or 0) < STARTING_MS:
         return False
     return any(status_word(k) == "working" and (k.get("labels") or {}).get("herdr.role") != "reviewer"
-               and (k.get("turn") or 0) >= (seen or {}).get(k.get("address"), 0) for k in live)
+               and (k.get("turn") or 0) >= (seen or {}).get(k.get("address"), 0) and prompted(task, k) for k in live)
+
+
+def unasked_turn(task, k):
+    """#1082: a Ready task's agent at work on a turn of its own, nobody's message behind it (a compaction, a
+    toast, a background job's notice): no new work yet. Judged once it ends by what it left (tick's back_pass)."""
+    seen = task.get("ready_turns")
+    return task["state"] == "ready" and isinstance(seen, dict) and k.get("address") in seen \
+        and status_word(k) == "working" and (k.get("turn") or 0) >= seen[k["address"]] and not prompted(task, k)
+
+
+# Lines in its log that are no one's message: Claude Code's own (a compaction's summary, a command's output),
+# a background job's notice.
+NOT_A_PROMPT = re.compile(r"^\s*<(task-notification|local-command-\w+|command-name|system-reminder)\b")
+
+
+def prompted(task, k):
+    """Someone wrote to this agent since its task said ready (its session log): the person, its Assistant,
+    news, a fix. True when its log can't be read (as before #1082)."""
+    log = agent_log(task, k.get("address"))
+    rows = log_tail(log, 131072) if log else None
+    if not rows:
+        return True
+    since = task.get("ready_at") or 0
+    for d in reversed(rows):
+        when = _ms(d.get("timestamp")) if d.get("timestamp") else None
+        if when is not None and when < since:
+            return False
+        if d.get("isCompactSummary") or d.get("isMeta") or d.get("isVisibleInTranscriptOnly"):
+            continue
+        words = from_person(d)
+        if words and not NOT_A_PROMPT.match(words):
+            return True
+    return False
 
 
 # ---- Ready only at rest (SHEP-148) --------------------------------------------------------------
@@ -317,7 +350,8 @@ def busy_again(task, live):
 def not_at_rest(task, live):
     """A Ready task's agent still at it: at work in the turn it said ready in, or its own work
     still running (own_work(), its hard signs only: no status line, a question asked doesn't end it)."""
-    if any(status_word(k) == "working" and (k.get("labels") or {}).get("herdr.role") != "reviewer" for k in live):
+    if any(status_word(k) == "working" and (k.get("labels") or {}).get("herdr.role") != "reviewer" and not unasked_turn(task, k)
+           for k in live):
         return True
     return own_work(task, live, ready=True)
 
@@ -642,8 +676,65 @@ def ask_reason(task, address, req=None, kind=None, msg=None):
 HELD_MAX_MS = 31 * 60_000
 
 
+HELD_SETTLE_MS = 3000  # the agent's log written this long after the ask: it went on without an answer
+
+
+def _hook_alive(name):
+    """Whether the hook that left request <terminal>.<time>.<pid>.json still runs (as the chat's
+    readAsks() tells): one killed (its call cancelled, its turn interrupted) holds nothing."""
+    try:
+        os.kill(int(name[:-5].rsplit(".", 1)[1]), 0)
+    except (ValueError, IndexError):
+        return True  # a name without a pid: can't tell
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # alive under another user
+    return True
+
+
+def moved_on(req, at):
+    """#1077 #1097 #1139: the agent went on past the ask its hook made at `at` (ms), the hook still waiting
+    (its log: the request's transcript_path). Codex: its turn ended (task_complete, turn_aborted), or its
+    model answered again after a sampling that ended past the ask (token_count), which it can't while a
+    call waits. Claude: the call asked about has its result, or a newer message of the model follows it."""
+    log = req.get("transcript_path") if isinstance(req, dict) else None
+    if not log:
+        return False
+    rows = log_tail(log, 262144)
+    sampled, use, msg, past = False, None, None, False
+    for d in rows:
+        p = d.get("payload") or {}
+        if d.get("type") in ("event_msg", "response_item"):
+            when = _ms(d.get("timestamp")) if d.get("timestamp") else None
+            if when is None or when < at + HELD_SETTLE_MS:
+                continue
+            if d["type"] == "event_msg" and p.get("type") in ("task_complete", "turn_aborted"):
+                return True
+            if d["type"] == "event_msg" and p.get("type") == "token_count":
+                sampled = True
+            elif sampled and p.get("type") in ("function_call", "custom_tool_call", "message") and p.get("role", "assistant") == "assistant":
+                return True
+            continue
+        if d.get("isSidechain") or d.get("type") not in ("assistant", "user"):
+            continue
+        m = d.get("message") or {}
+        c = m.get("content")
+        blocks = [x for x in c if isinstance(x, dict)] if isinstance(c, list) else []
+        same = [x for x in blocks if x.get("type") == "tool_use" and x.get("name") == req.get("tool_name") and x.get("input") == req.get("tool_input")]
+        if same:  # the call asked about (its latest: a call tried again after a cancel is asked anew)
+            use, msg, past = same[-1].get("id"), m.get("id"), False
+            continue
+        if use and d["type"] == "assistant" and m.get("id") and m.get("id") != msg:
+            past = True
+        if use and any(x.get("type") == "tool_result" and x.get("tool_use_id") == use for x in blocks):
+            past = True
+    return past
+
+
 def held_ask(address):
-    """The ask Herdr's chat hook holds for this terminal (mods/chat/ask-hook.sh), or None."""
+    """The ask Herdr's chat hook holds for this terminal (mods/chat/ask-hook.sh), or None: none once its
+    hook is gone or its agent went on without an answer (a cancelled call: #1077 #1097 #1139 #1140 #1144)."""
     d = os.path.join(HOME, ".config", "herdr-app", "data", "chat-asks", "req")
     try:
         names = sorted(n for n in os.listdir(d) if n.startswith(address + ".") and n.endswith(".json"))
@@ -652,12 +743,15 @@ def held_ask(address):
     for n in reversed(names):
         try:
             p = os.path.join(d, n)
-            if now() - os.path.getmtime(p) * 1000 > HELD_MAX_MS:
+            at = os.path.getmtime(p) * 1000
+            if now() - at > HELD_MAX_MS or not _hook_alive(n):
                 continue
             with open(p) as f:
-                return json.load(f)
+                req = json.load(f)
         except (OSError, ValueError):
             continue
+        if not moved_on(req, at):
+            return req
     return None
 
 
@@ -700,11 +794,14 @@ FG_MAX_MS = 15 * 60000
 BG_HINTS = ("<task-notification>", "task_id", "backgroundTaskId", "timeoutMs", "isAsync", "in background with ID",
             "Monitor started", "Async agent launched", "session_id", "session ID",
             # Codex (SHEP-207): a poll's result without its session id, a wait on a code-mode cell
-            "exit_code", "Process exited", "cell_id", "cell ID", "CommandExecution")
+            "exit_code", "Process exited", "cell_id", "cell ID", "exec_command", "Unknown process id",
+            # Codex 0.163+: its own word that a command ended (#1093)
+            '"item_completed"')
 BG_MAX_MS = 3 * 3600_000  # a background job started longer ago than this no longer counts
 BG_STARTED = re.compile(r"Command running in background with ID: (\w+)|Monitor started \(task (\w+)|Async agent launched[\s\S]*?agentId: (\w+)")
 BG_ENDED = re.compile(r"<task-id>(\w+)</task-id>(?:(?!</task-notification>)[\s\S])*?<status>(\w+)</status>")
 CODEX_RUNNING = re.compile(r"Process running with session ID (\d+)")
+CODEX_GONE = re.compile(r"Unknown process id:? (\d+)", re.I)
 # Codex 0.163+ code mode (SHEP-207): a script starts commands and polls them with tools.exec_command /
 # tools.write_stdin, all inside one exec call. Its output says "Script running with cell ID N" while
 # it waits, and a wait call names that cell; the script's results come as one JSON array, in the order
@@ -785,7 +882,6 @@ def _bg_scan(lines, seen):
     calls open and done are read off the raw line (an image's result is megabytes of JSON)."""
     running, calls, ended = seen["running"], seen["calls"], seen["ended"]
     cells = seen.setdefault("cells", {})  # Codex code-mode cell id -> the session ids its wait polls
-    finished = seen.setdefault("finished", {})
     opened = seen.setdefault("open", {})
     for raw in lines:
         # Claude Code keeps a copy of each request it sends (api-request-blob): every call and
@@ -807,16 +903,6 @@ def _bg_scan(lines, seen):
             if not isinstance(d, dict):
                 continue
             at = _ms(d.get("timestamp")) or now()
-            # Codex's execution event names the session even when a batched poll drops its id.
-            p = d.get("payload") or {}
-            item = p.get("item") or {}
-            if (d.get("type") == "event_msg" and p.get("type") == "item_completed"
-                    and isinstance(item, dict) and item.get("type") == "CommandExecution"
-                    and item.get("process_id") is not None and item.get("status") in ("completed", "failed")):
-                key = "codex:" + str(item["process_id"])
-                if running.pop(key, None) is not None:
-                    ended = max(ended, at)
-                finished[key] = at
             # Claude Code: ended by its notice (in the queue, an attachment or a user line), or stopped.
             if "<task-notification>" in raw and (d.get("type") in ("queue-operation", "attachment") or from_person(d) is not None):
                 for m in BG_ENDED.finditer(raw):
@@ -838,19 +924,34 @@ def _bg_scan(lines, seen):
                 for i in filter(None, ids):
                     running.setdefault(str(i), at)
             # Codex: a process left running has a session id until an output says it exited.
+            p = d.get("payload") or {}
+            # #1093 #1143: Codex says itself when a command ended, whatever polled it (a batch, an id no
+            # longer known): its CommandExecution item, completed or failed, with the session's process id
+            item = p.get("item") if d.get("type") == "event_msg" and p.get("type") == "item_completed" else None
+            if isinstance(item, dict) and item.get("type") == "CommandExecution" and item.get("process_id") is not None \
+                    and item.get("status") in ("completed", "failed", "declined"):
+                if running.pop("codex:" + str(item["process_id"]), None) is not None:
+                    ended = max(ended, at)
+                seen.setdefault("done", {})["codex:" + str(item["process_id"])] = at
+                continue
             if d.get("type") == "response_item" and p.get("type") in ("function_call", "custom_tool_call"):
                 calls[p.get("call_id")] = str(p.get("arguments") or p.get("input") or "")
             elif d.get("type") == "response_item" and p.get("type") in ("function_call_output", "custom_tool_call_output"):
                 call = calls.get(p.get("call_id")) or ""
                 cell = CODEX_CELL_ARG.search(call)  # a wait on a code-mode cell: the sessions it polls
                 polled = cells.get(cell.group(1), []) if cell else _codex_polled(call)
-                if _codex_output(p.get("output"), polled, cells, running, at):
+                before = set(running)
+                if _codex_output(p.get("output"), polled, cells, running, at, seen.get("done")):
                     ended = max(ended, at)
-                # A yielded script can report a session after its completion event was written.
-                for key in list(running):
-                    if key in finished:
-                        running.pop(key)
-                        ended = max(ended, finished[key])
+                if any(k not in before for k in running):  # what each started job runs, for ready to name it (#1093)
+                    what, cmds = seen.setdefault("what", {}), _codex_cmds(call)
+                    results = _codex_results(p.get("output"))
+                    for i, r in enumerate(results if len(results) == len(cmds) else []):
+                        if r.get("session_id") is not None and cmds[i] and "codex:" + str(r["session_id"]) not in before:
+                            what["codex:" + str(r["session_id"])] = cmds[i]
+                    for k in running:
+                        if k not in before and k not in what and len([c for c in cmds if c]) == 1:
+                            what[k] = next(c for c in cmds if c)  # the legacy call: its one command
     seen["ended"] = ended
 
 
@@ -860,13 +961,7 @@ def _codex_polled(call):
     Keep command slots too: an exec_command result must never end a neighbouring poll.
     Unknown JavaScript stays unresolved; never execute an agent's script to read its log.
     """
-    loop = re.compile(r"for\s*\(const\s+(\w+)\s+of\s+\[([\d,\s]+)\]\s*\)\s*\{(.*?)\}\s*\}", re.S)
-    def expand(m):
-        body = m.group(3) + "}"
-        return "\n".join(re.sub(r"session_id\s*:\s*" + re.escape(m.group(1)) + r"\b",
-                                    "session_id:" + sid.strip(), body)
-                         for sid in m.group(2).split(",") if sid.strip())
-    call = loop.sub(expand, call)
+    call = _expand_loops(call)
     slots = []
     for m in re.finditer(r"tools\.(exec_command|write_stdin)\s*\(\s*\{([^{}]*)\}", call):
         sid = CODEX_SESSION_ARG.search(m.group(2) + "}") if m.group(1) == "write_stdin" else None
@@ -878,6 +973,82 @@ def _codex_polled(call):
         return [str(sid)] if isinstance(sid, (int, str)) and str(sid).isdigit() else []
     except (ValueError, AttributeError):
         return []
+
+
+LOOP_HEAD = re.compile(r"for\s*\(\s*(?:const|let|var)\s+(\w+)\s+of\s+\[([\d,\s]+)\]\s*\)\s*\{")
+
+
+def _expand_loops(call):
+    """Each `for (const id of [7, 8]) { … }` written out once per id, whatever its body holds (a try block, one
+    results.push(…) call: #1108), its end found by counting braces outside strings. A loop whose end isn't found
+    stays as it was."""
+    out, i = [], 0
+    while True:
+        m = LOOP_HEAD.search(call, i)
+        if not m:
+            return "".join(out) + call[i:]
+        depth, j, quote = 1, m.end(), None
+        while j < len(call) and depth:
+            c = call[j]
+            if quote:
+                if c == "\\":
+                    j += 1
+                elif c == quote:
+                    quote = None
+            elif c in "'\"`":
+                quote = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+            j += 1
+        if depth:
+            return "".join(out) + call[i:]
+        body = call[m.end():j - 1]
+        name = re.compile(r"session_id\s*:\s*" + re.escape(m.group(1)) + r"\b")
+        out.append(call[i:m.start()])
+        out.append("\n".join(name.sub("session_id:" + sid.strip(), body) for sid in m.group(2).split(",") if sid.strip()))
+        i = j
+
+
+def _codex_cmds(call):
+    """What each tool call in a Codex call runs, in order: an exec_command's cmd string, None for a write_stdin
+    (code mode's script); a legacy exec_command's JSON arguments: its one cmd."""
+    out = []
+    for m in re.finditer(r'tools\.(exec_command|write_stdin)\s*\(', call):
+        c = re.match(r'\s*\{\s*"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"', call[m.end():]) if m.group(1) == "exec_command" else None
+        try:
+            out.append(json.loads('"' + c.group(1) + '"') if c else None)
+        except ValueError:
+            out.append(None)
+    if out:
+        return out
+    try:
+        cmd = json.loads(call).get("cmd")
+    except (ValueError, AttributeError):
+        return []
+    return [" ".join(map(str, cmd)) if isinstance(cmd, list) else str(cmd)] if cmd else []
+
+
+def job_names(log, ids):
+    """Each job's words for the agent: what a Codex job runs ("gh pr checks --watch"), else its id."""
+    what = (_bg_cache.get(log) or {}).get("what") or {}
+    out = []
+    for i in ids:
+        cmd = " ".join(str(what.get(i) or "").split())
+        out.append(f"`{cmd[:60]}{'…' if len(cmd) > 60 else ''}`" if cmd else i.replace("codex:", "Codex session "))
+    return out
+
+
+def own_jobs(task, k):
+    """Its agent's background jobs still running ({id: started ms}, as background_jobs()), Codex's only while
+    a process of its own runs under it (SHEP-207)."""
+    address = k.get("address")
+    log = agent_log(task, address) or agent_log(task)
+    jobs = background_jobs(log)[0] if log else {}
+    if any(i.startswith("codex:") for i in jobs) and not codex_working(k):
+        jobs = {i: t for i, t in jobs.items() if not i.startswith("codex:")}
+    return jobs, log
 
 
 def _codex_results(output):
@@ -904,17 +1075,23 @@ def _codex_results(output):
     return results
 
 
-def _codex_output(output, polled, cells, running, at):
+def _codex_output(output, polled, cells, running, at, done=None):
     """One Codex output's word on the sessions it covers, applied to running ({"codex:<id>": started
     ms}). polled: the session ids the call that made it polled, in order (a code-mode script's
-    calls, or a write_stdin's own). Returns True when a session ended."""
+    calls, or a write_stdin's own). done: sessions Codex said ended ({key: ms}), never counted again by an
+    output written just after. Returns True when a session ended."""
     text = _text(output)
     ended = False
+    done = done or {}
+
+    def start(key):
+        if at - done.get(key, -10**15) > 60000:
+            running.setdefault(key, at)
     results = _codex_results(output)
     # Legacy plain-text output only. Structured command stdout is not tool metadata.
     if not results:
         for m in CODEX_RUNNING.finditer(text):
-            running.setdefault("codex:" + m.group(1), at)
+            start("codex:" + m.group(1))
     cell = CODEX_CELL.search(text)
     if cell:
         cells[cell.group(1)] = polled
@@ -928,7 +1105,10 @@ def _codex_output(output, polled, cells, running, at):
         if d.get("exit_code") is not None:
             ended = running.pop(key, None) is not None or ended
         elif d.get("session_id") is not None:
-            running.setdefault(key, at)
+            start(key)
+    # #1143: a poll of a session Codex no longer knows (its process gone): ended, wherever it sits in a batch
+    for m in CODEX_GONE.finditer(text):
+        ended = running.pop("codex:" + m.group(1), None) is not None or ended
     # a poll of one session whose output says it exited (no session id in it, or the old format's text)
     if len(polled) == 1 and polled[0] is not None and not results and re.search(r"^Process exited with code", text, re.M):
         ended = running.pop("codex:" + str(polled[0]), None) is not None or ended
@@ -1016,12 +1196,10 @@ def own_work(task, live, ready=False):
         key = (k.get("labels") or {}).get("herdr.task")
         if key and any(parent_of(h) == address and status_word(h) in ("working", "blocked") for h in live_helpers(key)):
             return True
-        log = agent_log(task, address) or agent_log(task)
-        jobs, ended = background_jobs(log) if log else ({}, 0)
         # Codex's jobs are only what its process tree shows (SHEP-207): a session the log says is
         # still open, with no process of the agent running, is over.
-        if any(i.startswith("codex:") for i in jobs) and not codex_working(k):
-            jobs = {i: t for i, t in jobs.items() if not i.startswith("codex:")}
+        jobs, log = own_jobs(task, k)
+        ended = background_jobs(log)[1] if log else 0
         if jobs:
             return True
         if not ready and waits_on_own(task, address, ended) and not last_question(task, address):

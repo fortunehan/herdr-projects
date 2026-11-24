@@ -280,7 +280,7 @@ export class Model {
         worker, archived: !!task.archived, pinned: pins.has(taskKey(list, task)),
         scheduled_for: task.state === "scheduled" ? task.scheduled_for ?? null : null,
         started: task.started ?? null, ready_at: task.ready_at ?? null, done_at: task.done_at ?? null,
-        summary: task.summary ?? null, details: task.details ?? null, pr: task.pr ?? null, prompt: String(task.prompt ?? "").slice(0, 500), why: p.why ?? null,
+        summary: task.summary ?? null, details: task.details ?? null, pr: task.pr ?? task.pr_seen ?? null, prompt: String(task.prompt ?? "").slice(0, 500), why: p.why ?? null,
         // SHEP-34: Needs you on what Accept fixes (Review on its row); a Done one's failed pull, a card of its own
         acceptAgain: acceptAgain(p), markDone: nothingToMerge(task), pull: pullCard(task) ? { text: pullCard(task), command: task.pull.command ?? null } : null,
         worktree: task.worktree ?? list.folder, base: task.base ?? null, start: task.start ?? null, branch: task.branch ?? null,

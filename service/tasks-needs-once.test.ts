@@ -57,7 +57,7 @@ function panel({ here = null as null | string, asks = twoAsks as any[], agents =
   if (agents) shared.set("inbox.agents", agents);
   const p: any = Object.create(Tasks.prototype);
   Object.assign(p, { lists: lists(), ready: true, error: null, here: Boolean(here), filter: "all", shutKeys: new Set(), allDone: new Set(),
-    asks: new Map(), reading: new Set(), prefixes: new Map(), archivedOpen: false, width: 360,
+    asks: new Map(), reading: new Set(), prefixes: new Map(), warns: new Map(), archivedOpen: false, width: 360,
     query: { value: () => "", set_value: () => {} }, listFocus: {} });
   const text = words(p.render(cx)).join(" ");
   return { text, rows: text.split(apm1.title).length - 1, chip: text.match(/Needs you (\d+)/)?.[1] ?? null };

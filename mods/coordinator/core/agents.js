@@ -192,13 +192,14 @@ export function parseDefaults(kind, stdout) {
         id: m.slug, label: m.display_name || m.slug,
         efforts: (m.supported_reasoning_levels ?? []).map((l) => l.effort).filter(Boolean),
         fast: (m.service_tiers ?? []).length > 0,
+        ultrafast: (m.service_tiers ?? []).some((t) => t?.id === "ultrafast"),
         defaultEffort: m.default_reasoning_level ?? null,
       }));
     } catch {}
   }
   return kind === "claude"
     ? { model: out.model || null, effort: out.effort || null, fast: Boolean(out.fast), per: parsePer(out.per), mode: out.mode || null, models: parsePicker(out.picker) }
-    : { model: out.model || null, effort: out.model_reasoning_effort || null, fast: ["fast", "priority"].includes(out.service_tier),
+    : { model: out.model || null, effort: out.model_reasoning_effort || null, fast: speedOf(out.service_tier),
       sandbox: out.sandbox_mode || null, approval: out.approval_policy || null, models };
 }
 
@@ -226,7 +227,7 @@ export function current(kind, argv, meta, dflt, born = null) {
     let fast = dflt.fast;
     const s = flag(argv, "--settings");
     if (s && /"fastMode"\s*:\s*(true|false)/.test(s)) fast = /"fastMode"\s*:\s*true/.test(s);
-    if (meta.speed) fast = meta.speed === "fast";
+    if (meta.speed) fast = speedOf(meta.speed) === true;
     // Claude keeps an effort per model (modelSettings), known once the log names the model.
     const per = meta.model ? dflt.per?.[meta.model] ?? dflt.per?.[meta.model.replace(/-\d+$/, "")] : null;
     const perm = argv.includes("--dangerously-skip-permissions") ? "bypassPermissions" : flag(argv, "--permission-mode") ?? dflt.mode ?? "manual";
@@ -242,7 +243,43 @@ export function current(kind, argv, meta, dflt, born = null) {
     : sandbox === "read-only" ? "read-only" : "auto";
   return { agent: "codex", model, label: dflt.models?.find((m) => m.id === model)?.label ?? null, perm,
     effort: meta.effort ?? o.model_reasoning_effort ?? dflt.effort,
-    fast: meta.speed ? meta.speed === "fast" : tier ? ["fast", "priority"].includes(tier) : Boolean(dflt.fast), used: meta.used ?? null, window: meta.window ?? null };
+    fast: meta.speed ? speedOf(meta.speed) : tier ? speedOf(tier) : dflt.fast === "ultrafast" ? "ultrafast" : Boolean(dflt.fast), used: meta.used ?? null, window: meta.window ?? null };
+}
+
+// A chat's speed is its `fast`: false (standard), true (Fast) or "ultrafast" (Codex's Ultrafast tier, SHEP-258).
+// From a word a CLI logs or a config says: Codex's service_tier (priority is what its config calls fast), Claude
+// Code's usage.speed.
+export function speedOf(word) {
+  const w = String(word ?? "").trim().toLowerCase();
+  return w === "ultrafast" ? "ultrafast" : w === "fast" || w === "priority";
+}
+// The service_tier Codex is started on: always said, so Fast off wins over one in config.toml (default: standard).
+export const codexTier = (fast) => (fast === "ultrafast" ? "ultrafast" : fast ? "fast" : "default");
+// The speed as a word the web app and the restart sheet pass: normal, fast or ultrafast.
+export const speedWordOf = (fast) => (fast === "ultrafast" ? "ultrafast" : fast ? "fast" : "normal");
+// The speed as the person reads it, null for standard.
+export const speedName = (fast) => (fast === "ultrafast" ? "Ultrafast" : fast ? "Fast" : null);
+// The speed a model can run on: an Ultrafast it lacks falls back to Fast, a Fast it lacks to standard.
+export const speedFor = (m, fast) => (fast === "ultrafast" ? (m?.ultrafast ? "ultrafast" : m?.fast ? true : false) : Boolean(fast && m?.fast));
+
+// What a space's Assistant starts on, chosen before its first message (SHEP-263): shared "coordinator.choice" =
+// { [space id]: { agent, model, effort, fast, perm, at } }. The window's chat keeps it there when its model button's
+// pick changes (mods/chat freshPick), the web's model menu too (service/actions.ts), and each follows the other.
+// Whoever starts the Assistant (the window's chat, or the service for a first message from the web) starts it on
+// that and forgets it. None kept: what Shepherdr settings say for the space's Assistant.
+export const CHOICE_KEY = "coordinator.choice";
+// A space's choice as { agent, model, effort, fast, perm }, or null when none (or none that names an agent) is kept.
+export function choiceOf(all, space) {
+  const c = space && all && typeof all === "object" ? all[space] : null;
+  if (!c || (c.agent !== "claude" && c.agent !== "codex")) return null;
+  return { agent: c.agent, model: c.model ?? null, effort: c.effort ?? null, fast: c.fast === "ultrafast" ? "ultrafast" : Boolean(c.fast), perm: c.perm ?? null };
+}
+export const sameChoice = (a, b) => JSON.stringify(choiceOf({ x: a }, "x")) === JSON.stringify(choiceOf({ x: b }, "x"));
+// The choices with a space's kept (sel null: forgotten); only the newest 40 stay.
+export function withChoice(all, space, sel, now = Date.now()) {
+  const c = sel ? choiceOf({ x: sel }, "x") : null;
+  const rest = Object.entries(all && typeof all === "object" ? all : {}).filter(([k]) => k !== space);
+  return Object.fromEntries((c ? [[space, { ...c, at: now }], ...rest] : rest).sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0)).slice(0, 40));
 }
 
 // An effort level as the person reads it: "xhigh" -> "Extra high". The CLIs still get the raw value.
@@ -254,7 +291,7 @@ export function levelName(e) {
 // "Claude Code · Opus 5.5 · High · Fast"
 export function line(c) {
   if (!c) return "";
-  return [NAMES[c.agent], c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ");
+  return [NAMES[c.agent], c.label ?? modelName(c.model), levelName(c.effort), speedName(c.fast)].filter(Boolean).join(" · ");
 }
 
 // "116k", "1M", "1.2M"
@@ -320,7 +357,7 @@ export function parseUsage(text) {
 }
 
 // What the model picker (mods/chat-models, the web's restart.tsx) shows for one agent, as plain data:
-// { name, models: [{ id, name, efforts, defaultEffort, fast }], perms }: every model the CLI
+// { name, models: [{ id, name, efforts, defaultEffort, fast, ultrafast }], perms }: every model the CLI
 // offers (Codex: models_cache.json; Claude Code: modelPicker.options, else the built-in list), searched by the picker.
 // `dflt` is that agent's settings (defaults()); `current` its running model, kept in the list.
 export function menuFor(agent, dflt, current = null) {
@@ -338,7 +375,7 @@ export function menuFor(agent, dflt, current = null) {
     return { name: NAMES.claude, perms: PERMS.claude, models };
   }
   const all = (dflt?.models ?? []).map((m) => ({ id: m.id, name: m.label, efforts: m.efforts?.length ? m.efforts : ["low", "medium", "high", "xhigh"],
-    defaultEffort: m.defaultEffort ?? dflt?.effort ?? null, fast: m.fast }));
+    defaultEffort: m.defaultEffort ?? dflt?.effort ?? null, fast: m.fast, ...(m.ultrafast ? { ultrafast: true } : {}) }));
   if (current && !all.some((m) => m.id === current)) all.unshift({ id: current, name: current, efforts: ["low", "medium", "high", "xhigh"], defaultEffort: dflt?.effort ?? null, fast: false });
   return { name: NAMES.codex, perms: PERMS.codex, models: all };
 }
@@ -480,6 +517,23 @@ function kept(kind, argv, acrossLauncher = false) {
   return out.filter((x) => x !== undefined);
 }
 
+// The extra flags a task's agent was started with (#1222: herdr-task's flags.py keeps them one word each,
+// --advisor=opus, or a bare --verbose), for the line under the box: none of what Shepherdr sets itself, a flag's
+// separate value or a first message.
+const OWN_BARE = new Set(["--dangerously-skip-permissions", "--continue", "--fork-session", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox", "--last"]);
+export function extraFlags(kind, argv) {
+  argv = argv ?? [];
+  const at = agentAt(argv);
+  if (at < 0) return [];
+  const value = kind === "claude" ? new Set([...CLAUDE_VALUE, ...CLAUDE_DROP]) : CODEX_VALUE;
+  return argv.slice(at + 1).map(String).filter((a, i, rest) => {
+    if (!a.startsWith("--") || a === "--" || (i > 0 && value.has(rest[i - 1]))) return false;
+    const name = a.split("=")[0];
+    if (a.includes("=")) return !CLAUDE_DROP.has(name) && !(name === "--config" && /^(model|model_reasoning_effort|service_tier|projects|hooks)[=.]/.test(a.slice(9)));
+    return !value.has(a) && !OWN_BARE.has(a);
+  });
+}
+
 // The same agent, model and flags as `argv`, without what resumed a conversation (and without a
 // first message), or null when argv resumed none: for a fresh start once that session is gone.
 export function freshArgv(kind, argv) {
@@ -524,6 +578,9 @@ export const STATUS_LINE = { type: "command", command: '"$HOME/.local/bin/shephe
 export function argvFor(pick, old) {
   pick = normalizePick(pick);
   const same = pick.agent === agentKey(old.agent);
+  // #1219: a mode in the other CLI's words (a switch carries the old agent's) is said in this one's: Claude's full access
+  // is Codex's full access, never its sandbox
+  if (pick.perm) pick = { ...pick, perm: PERM_ACROSS[pick.agent]?.[pick.perm] ?? pick.perm };
   const sameLauncher = (pick.launcher ?? "direct") === (old.launcher ?? launcherOf(old.argv));
   const flags = same ? kept(pick.agent, old.argv ?? [], !sameLauncher) : [];
   if (pick.agent === "claude") {
@@ -543,7 +600,7 @@ export function argvFor(pick, old) {
   if (pick.model) a.push("-m", pick.model);
   if (pick.effort) a.push("-c", `model_reasoning_effort="${pick.effort}"`);
   // always said, so Fast off wins over a service_tier in config.toml (default: the standard tier)
-  a.push("-c", `service_tier="${pick.fast ? "fast" : "default"}"`);
+  a.push("-c", `service_tier="${codexTier(pick.fast)}"`);
   if (pick.perm === "full") a.push("--dangerously-bypass-approvals-and-sandbox");
   else if (pick.perm === "read-only") a.push("-s", "read-only", "-a", "on-request");
   // Auto keeps the sandbox and asks for nothing: a card per unfamiliar command made people give up the

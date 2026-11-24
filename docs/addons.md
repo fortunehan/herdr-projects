@@ -8,12 +8,12 @@ marked below off and on again, at once and on every machine (Everywhere's `off` 
 | Add-on | Switch | What it is | Off means |
 |---|---|---|---|
 | Core | always on | The layout: sidebar (spaces-chat), tab bar (tabs-tasks), pane header (pane-chat), the Files side panel (files-tasks: a file opens as a read-only code tab, code-view), sidebar foot, status bar, toasts, menus and dialogs, Shepherdr settings | — |
-| Tasks | always on in 3.1.42 | The Tasks panel, a task's view (files, changes, pull request), the Changes side panel (my-changes: Uncommitted, Base or Branch; it follows the task open in the Tasks panel), the Accept card, `herdr-task`, worker.md and reviewer.md | — |
-| Assistants | always on in 3.1.42 | An Assistant per space (coordinator, assistant.md), task news. Needs Tasks | — |
-| Chat | always on in 3.1.42 | Agents as a chat, model choice, opened images | — |
-| Questions and permissions | always on in 3.1.42 | Question and permission cards from Claude Code and Codex hooks. Needs Chat | — |
-| Secrets | always on in 3.1.42 | `herdr-secret`, the masked card, Settings → Secrets | — |
-| Keyboard | always on in 3.1.42 | Jump (Ctrl+K), the keys list (Ctrl+Shift+?), Cmd+Shift+L to type in a chat (Next layout moves to Cmd+Alt+L) | — |
+| Tasks | always on in 3.1.46 | The Tasks panel, a task's view (files, changes, pull request), the Changes side panel (my-changes: Uncommitted, Base or Branch; it follows the task open in the Tasks panel), the Accept card, `herdr-task`, worker.md and reviewer.md | — |
+| Assistants | always on in 3.1.46 | An Assistant per space (coordinator, assistant.md), task news. Needs Tasks | — |
+| Chat | always on in 3.1.46 | Agents as a chat, model choice, opened images | — |
+| Questions and permissions | always on in 3.1.46 | Question and permission cards from Claude Code and Codex hooks. Needs Chat | — |
+| Secrets | always on in 3.1.46 | `herdr-secret`, the masked card, Settings → Secrets | — |
+| Keyboard | always on in 3.1.46 | Jump (Ctrl+K), the keys list (Ctrl+Shift+?), Cmd+Shift+L to type in a chat (Next layout moves to Cmd+Alt+L) | — |
 | Artifacts | yes | Agents' reports and draft screens beside the chat, `herdr-artifact` | No Artifacts button in the tab bar |
 | Voice and dictation | yes | Calls with Shepherdr (ElevenLabs), dictation (ElevenLabs speech to text, the same key). Needs Chat | No call or mic buttons; their keys do nothing |
 | Reactions | yes | React to a message with an emoji. Needs Chat | No smiley on messages (agents' own reactions still show) |
@@ -31,7 +31,9 @@ Settings says which.
 - The window's mods read shared `addons.off` through `lib/addons.js` (`on("voice")`), so a flip shows at once.
   `tabs-tasks` loads it from `~/.config/shepherdr/settings.json` when Herdr starts.
 - herdr-task reads Everywhere's `off` (`addon_off()` in `herdr_task/base.py`) for its background work: Autopilot's
-  wake-ups, the task browsers, the sync to other machines.
+  wake-ups, the task browsers, the sync to other machines. `tell-assistant`, `assistants`, `autopilot list` and
+  `shepherdr doctor` say when one they need is off. `herdr-task addons` lists the switches; `herdr-task addons on
+  machines` turns one on (through the service when it runs, so the window follows at once).
 - An off add-on's keys stay in `keys.json` and do nothing, so turning it back on needs no merge.
 - The web app leaves an off add-on's plugins out (its `web` list in `lib/addons.json`); a page open at the flip
   starts again without them.
@@ -39,4 +41,4 @@ Settings says which.
 ## Later
 
 Splitting the always-on add-ons out of the panels they live in (Chat out of the pane, Tasks out of the side panel)
-comes after 3.1.42, with standalone add-on mods listed on herdr.dev.
+comes after 3.1.46, with standalone add-on mods listed on herdr.dev.

@@ -11,8 +11,9 @@ const snap = (tasks: Task[] = []) => ({ tasks, needs: [{ id: 'ask', chat: 'a', p
 test('global totals include unopened spaces and deduplicate task/agent representations', () => {
   const working = task('work', 'work', 'remote', { agent: { status: 'work' }, subagents: [{ status: 'work' }] })
   const s = snap([task('ready', 'ready', 'closed'), working, working, task('archived', 'ready', 'open', { archived: 1 }), task('queued', 'queued')])
-  expect(globalTaskCounts(s)).toEqual({ need: 2, ready: 1, working: 1 })
-  expect(attentionCounts(s, ['open'])).toEqual({ need: 1, ready: 0 })
+  // these needs are no task's: Needs you shows only tasks (upstream SHEP-255), so they count nowhere
+  expect(globalTaskCounts(s)).toEqual({ need: 0, ready: 1, working: 1 })
+  expect(attentionCounts(s, ['open'])).toEqual({ need: 0, ready: 0 })
   const html = renderToStaticMarkup(<TaskStatusBar snap={s} />)
   expect(html).toContain('all spaces and machines')
   expect(html).toContain('text-ready-fg')

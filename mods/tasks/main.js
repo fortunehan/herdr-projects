@@ -31,9 +31,9 @@ import { machinesInOrder, machineOrderOf, chatPane } from "./core/spaces.js";
 import { RANK, STATUS, RANK_OF, ORDER, GROUP_BY, groupBy, groupNow, machineOf, machineName, refOf, taskKey, autoPrefix, place,
   queueReason, reportOf as report, secondLine, leftOf, order, matches, day, ago, capital, short, autoWhere, fromLine, inSpace, holdingItems,
   acceptAgain, dependencies, relationState, linkedToNext, nothingToMerge } from "./core/tasks.js";
-import { READ_LISTS, taskLists } from "./core/tasklists.js";
+import { READ_PANEL, panelArgs, panelLists } from "./core/tasklists.js";
 import { SH } from "./core/paths.js";
-import { settle } from "./core/pending.js";
+import { detach, settle } from "./core/pending.js";
 import { dirs } from "./dirs.js";
 import { TEXT, H, RADIUS, red, green, amber, toast } from "./ui.js";
 import { followSpace, switched } from "./core/thread-space.js";
@@ -42,7 +42,7 @@ const CLI = () => `${appHome()}/mods/tasks/bin/herdr-task`;
 const DONE_SHOWN = 5; // Done rows a group shows before "Show N more"
 // Task ids in monospace, small and dim at the start of a row's second line (Herdr ships JetBrains Mono).
 const ID_FONT = "JetBrains Mono", ID_SIZE = TEXT.id;
-// Every list in ~/.local/share/shepherdr/tasks on a machine is read with READ_LISTS and kept by taskLists (one
+// Every list in ~/.local/share/shepherdr/tasks on a machine is read with READ_PANEL and kept by panelLists (one
 // rule with herdr-task's: tasklists.js).
 // Pinned tasks, as Pinned spaces (mods/spaces-chat): a view choice, never a change to the task.
 // Shared "tasks.pinned" = ["<machine, empty here>:<folder>#<id>"] (shared.json: survives
@@ -72,7 +72,7 @@ const placeName = (list) => spaceOf(list).name;
 // JSON output; rejects with its error.
 async function cli(machine, [command, ...args], folder) {
   // still running there after a slow or dropped link: its real result, followed (core/pending.js)
-  const r = await settle((a) => exec(CLI(), a), await exec(CLI(), [...(machine ? ["--on", machine] : []), command, "--json", "--folder", folder, ...args]));
+  const r = await settle((a) => exec(CLI(), a), await exec(CLI(), detach([...(machine ? ["--on", machine] : []), command, "--json", "--folder", folder, ...args])));
   let out = null;
   try { out = JSON.parse(r.stdout || "null"); } catch {}
   if (r.code !== 0 || !out || out.error) throw new Error(out?.error || r.stderr?.trim() || "herdr-task failed");
@@ -89,6 +89,8 @@ export default class Tasks extends View {
     this.lists = [];       // [{ folder, name, kind, slug, prefix, machine, tasks }]: every machine's
     this.byMachine = new Map(); // "" (this computer) or a machine's name -> its lists, as read
     this.raw = new Map();       // the same -> what was read last, to skip unchanged reads
+    this.files = new Map();     // the same -> its files as read (READ_PANEL sends only the changed ones again)
+    this.warns = new Map();     // the same -> words when its lists came near what Herdr passes back (#1175)
     this.reads = new Map();     // machines being read now -> whether to read again after (a change came meanwhile)
     this.ready = false;         // this computer's lists were read once
     this.error = null;          // why this computer's lists couldn't be read
@@ -177,7 +179,7 @@ export default class Tasks extends View {
   // no longer in machines() takes its lists with it.
   loadRemote(cx) {
     const ms = machines().map((m) => m.name).filter(Boolean);
-    for (const m of [...this.byMachine.keys()]) if (m && !ms.includes(m)) { this.byMachine.delete(m); this.raw.delete(m); this.merge(); cx.notify(); }
+    for (const m of [...this.byMachine.keys()]) if (m && !ms.includes(m)) { this.byMachine.delete(m); this.raw.delete(m); this.files.delete(m); this.warns.delete(m); this.merge(); cx.notify(); }
     for (const m of machines()) if (m.name && m.layout !== "unavailable") cx.spawn(async (cx) => this.load(cx, m.name));
   }
 
@@ -187,7 +189,7 @@ export default class Tasks extends View {
     if (this.reads.has(k)) { this.reads.set(k, true); return; }
     this.reads.set(k, false);
     let text;
-    try { text = (await exec("sh", ["-c", READ_LISTS], { on: machine ?? undefined })).stdout; }
+    try { text = (await exec("sh", ["-c", READ_PANEL, ...panelArgs(this.files.get(k))], { on: machine ?? undefined })).stdout; }
     catch (e) {
       // Another machine out of reach keeps its last lists, quietly.
       if (!machine) { this.error = `Couldn't read the task lists: ${e?.message ?? e}`; this.ready = true; cx.notify(); }
@@ -200,7 +202,10 @@ export default class Tasks extends View {
     if (!machine) { this.ready = true; this.error = null; }
     if (this.raw.get(k) === text) { cx.notify(); return; }
     this.raw.set(k, text);
-    this.byMachine.set(k, taskLists(text)
+    const read = panelLists(text, this.files.get(k));
+    this.files.set(k, read.files);
+    if (read.warn) this.warns.set(k, machine ? `${machineName(machine)}: ${read.warn}` : read.warn); else this.warns.delete(k);
+    this.byMachine.set(k, read.lists
       .map((d) => ({ ...d, machine, prefix: d.prefix || autoPrefix(d.folder), tasks: Array.isArray(d.tasks) ? d.tasks : [] })));
     this.merge();
     cx.notify();
@@ -460,6 +465,9 @@ export default class Tasks extends View {
         .when(Boolean(this.error), (el) => el.child(h_flex().m(6).p(10).gap(8).items_start().rounded(RADIUS.card).bg(t.surface).border_1().border_color(t.border)
           .child(div().size(8).mt(5).flex_none().rounded(4).bg(red()))
           .child(div().flex_1().text_size(TEXT.label).text_color(t.muted).child(this.error))))
+        .children([...this.warns.values()].map((w) => h_flex().m(6).p(10).gap(8).items_start().rounded(RADIUS.card).bg(t.surface).border_1().border_color(t.border)
+          .child(div().size(8).mt(5).flex_none().rounded(4).bg(t.dim))
+          .child(div().flex_1().text_size(TEXT.label).text_color(t.muted).child(w))))
         .when(!this.ready && !this.error, (el) => el.child(div().px(18).py(28).text_center().text_size(TEXT.label).text_color(t.dim).child("Reading tasks…")))
         .children(body));
   }
@@ -1059,7 +1067,7 @@ export default class Tasks extends View {
   // A task not started yet also starts later (SHEP-38): a few times, and a scheduled one Start now and Unschedule
   // (core/menus.js taskMenu; the web's Other time… types any time, here the Assistant does).
   rowMenu(pin) {
-    const items = taskMenu({ pinned: pin.on, status: pin.status }).filter((x) => !x.typed);
+    const items = taskMenu({ pinned: pin.on, status: pin.status }).filter((x) => !x.typed && !x.web);
     // As tasks-menu draws it: a section per line or heading, 4 apart; a heading 28, a row 32.
     let height = 8, first = true;
     for (const x of items) {

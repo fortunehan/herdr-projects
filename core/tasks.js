@@ -82,7 +82,8 @@ export function starting(task, now = Date.now()) {
 // reviewer's turn; a ready said before turns were kept: any work once STARTING_MS have passed.
 export const WORKING_AGAIN = "Working again";
 export function busyAgain(task, live, now = Date.now()) {
-  if (task.state !== "ready" || task.merge_requested || task.pr_requested || task.merge_wait) return false;
+  // #1082: its agent on a turn nobody asked for (a compaction, a toast; herdr-task keeps task.unasked_turn): still Ready.
+  if (task.state !== "ready" || task.merge_requested || task.pr_requested || task.merge_wait || task.unasked_turn) return false;
   const seen = task.ready_turns;
   if (!seen && now - (task.ready_at ?? 0) < STARTING_MS) return false;
   return live.some((a) => a.status === "working" && a.role !== "reviewer" && (a.turn ?? 0) >= (seen?.[a.address] ?? 0));
@@ -214,7 +215,7 @@ export function place(list, task, { live = [], helpers = [], loaded = true, now 
     // Said ready but not at rest yet (SHEP-148, herdr-task's not_at_rest()): still at work in the turn it said ready
     // in, or its own work still running (a background job, a Monitor, a helper: task.own_work, kept by its scheduler).
     // Working until it is, and only then Ready.
-    if (section === "ready" && live.length && (busy || task.own_work || live.some((a) => a.status === "working" && a.role !== "reviewer"))) section = "working";
+    if (section === "ready" && live.length && (busy || task.own_work || (!task.unasked_turn && live.some((a) => a.status === "working" && a.role !== "reviewer")))) section = "working";
   }
   // Its agents' terminals aren't known yet (the machine is loading): no verdict yet.
   else if (states.some((x) => x !== "idle" && x !== "done") || (!live.length && !loaded)) section = "working";
@@ -431,7 +432,17 @@ export function secondLine(p, w, queued = null, now = Date.now()) {
   return section === "needs" || section === "merging" ? p.why : section === "working" ? p.why ?? w?.text ?? null
     : section === "queued" ? queued
     : section === "scheduled" ? startsLine(p.task.scheduled_for, now)
-    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : nothingToMerge(p.task) ? "Ready to mark done" : "Ready to accept") : null;
+    : section === "ready" ? p.why ?? (p.task.ready_at ? `Ready ${ago(p.task.ready_at, true, now)}` : nothingToMerge(p.task) ? "Ready to mark done" : "Ready to accept")
+    : section === "done" ? acceptLine(p.task) : null;
+}
+
+// A Done task whose space's "When a task is accepted" command failed (herdr-task's after_accept.py): said on its row.
+// The task stays Done; its Assistant is told too.
+export function acceptLine(task) {
+  const aa = task.after_accept;
+  if (aa?.state !== "failed") return null;
+  const last = String(aa.tail ?? "").trim().split("\n").pop();
+  return `Cleanup failed${"code" in aa && aa.code == null ? ": still running after 10 min" : aa.code != null ? ` (exit ${aa.code})` : ""}${last ? `: ${last.slice(0, 200)}` : ""}`;
 }
 
 // The minutes left under a working row's dot ("6m"), once its agent gave them; a scheduled one's time until it starts

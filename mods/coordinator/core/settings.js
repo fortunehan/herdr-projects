@@ -3,7 +3,7 @@
 // web app's Settings say the same. herdr-task reads the file (herdr_task/settings.py: settings_for); its defaults are
 // DEFAULTS there and here.
 // Shared core: the source is core/settings.js; bin/sync-shared copies it into the mods in lib/COPIES.
-import { NAMES, CHOICE_NAMES, levelName, current, rowFor, menuFor, permAcross, MAGPIE_MODEL, magpieModels, choiceMenus, normalizePick, viewPick, choiceKey, mergeWorker } from "./agents.js";
+import { NAMES, CHOICE_NAMES, levelName, current, rowFor, menuFor, permAcross, MAGPIE_MODEL, magpieModels, choiceMenus, normalizePick, viewPick, choiceKey, mergeWorker, speedName, speedFor } from "./agents.js";
 export { mergeWorker } from "./agents.js";
 import { SERVE } from "./host.js";
 
@@ -158,13 +158,13 @@ export function backupProblem(checks, m, cli) {
 
 // The model menu's words (mods/chat-models, settings mode) and its button's: "Opus 5.5 · 1M · High".
 // the model list's headings come from core/agents.js modelSections (Pinned, Recent, Models)
-export const MODEL_MENU = { reasoning: "Reasoning", fast: "Fast", permissions: "Permissions" };
+export const MODEL_MENU = { reasoning: "Reasoning", fast: "Fast", ultrafast: "Ultrafast", permissions: "Permissions" };
 const modelOf = (menus, sel) => menus?.[choiceKey(sel)]?.models?.find((m) => m.id === sel.model) ?? null;
 export function modelLabel(menus, sel) {
   const m = modelOf(menus, sel);
   const level = sel?.effort ?? m?.defaultEffort ?? null;
   const key = choiceKey(sel), launcher = key === "claude-magpie" || key === "claude-cdnd" ? CHOICE_NAMES[key] : null;
-  return [launcher, m?.name ?? sel?.model, levelName(level), sel?.fast ? "Fast" : null].filter(Boolean).join(" · ") || "Choose a model";
+  return [launcher, m?.name ?? sel?.model, levelName(level), speedName(sel?.fast)].filter(Boolean).join(" · ") || "Choose a model";
 }
 // What the agents offer, from each CLI's own settings (agents.js parseDefaults) and which are installed:
 // { menus, permDefault, defaults } (defaults: the first installed CLI's own, what an unset role runs).
@@ -184,6 +184,12 @@ export function roleSel(role, own, choices, worker) {
     return { sel: { agent: o, model: choices.menus[o].models[0]?.id ?? null, effort: null, fast: false, perm: choices.permDefault?.[o] ?? null }, unset: true };
   return { sel: choices?.defaults ? { ...choices.defaults } : null, unset: true };
 }
+// What an Assistant's chat starts on before its first message, as its model button says it (the window's chat
+// loadChoice, the web's): the choice kept or set (`st`: { agent, model, effort, fast, perm }) when its agent is on
+// offer there, else the defaults (the first installed CLI's own).
+export function freshSel(st, choices) {
+  return st?.agent && choices?.menus?.[st.agent] ? { perm: choices.permDefault?.[st.agent] ?? null, effort: null, fast: false, ...st } : { ...(choices?.defaults ?? {}) };
+}
 // A model picked in the menu: the effort and speed stay where it has them; another agent brings its own permission
 // modes, the nearest to the one chosen (agents.js permAcross).
 export function chooseModel(menus, permDefault, sel, agent, id) {
@@ -191,7 +197,7 @@ export function chooseModel(menus, permDefault, sel, agent, id) {
   if (!m) return sel;
   const next = { ...sel, agent, model: id };
   if (next.effort && !m.efforts.includes(next.effort)) next.effort = null;
-  if (!m.fast) next.fast = false;
+  next.fast = speedFor(m, next.fast);
   if (agent !== choiceKey(sel)) {
     delete next.launcher;
     if (agent === "claude") next.launcher = "direct";
@@ -214,12 +220,21 @@ export const ABOUT = {
   "tasks.worktrees": "In a git repo, each task gets its own worktree and branch.",
   "automations.enabled": "Tasks an agent set to start on a schedule or an event.",
 };
-// What a task's agent is told to do first and last (tasks.start_notes / finish_notes), each a box under its words.
+// Each a box under its words, saved in tasks.<field>: the shell command run in each new worktree before its agent
+// (tasks.setup, #1197: herdr-task runs it, a failure holds the task), then what a task's agent is told to do first
+// and last (tasks.start_notes / finish_notes), and the command Herdr runs in the repo once a task is done
+// (tasks.accept_command, #1102: herdr-task's after_accept.py). mono: a command, in monospace.
 export const NOTES = [
-  { id: "start", title: "When a task starts", about: "Steps its agent does before the work.",
+  { id: "setup", field: "setup", mono: true, title: "Before the agent starts",
+    about: "A shell command run in each new worktree first. If it fails, the agent doesn't start and the task says why.",
+    example: "bun install" },
+  { id: "start", field: "start_notes", title: "When a task starts", about: "Steps its agent does before the work.",
     example: "Install packages, copy .env from the main folder" },
-  { id: "finish", title: "When a task finishes", about: "Steps its agent does before it says the task is ready.",
+  { id: "finish", field: "finish_notes", title: "When a task finishes", about: "Steps its agent does before it says the task is ready.",
     example: "Stop the dev server you started, delete temp files" },
+  { id: "accept", field: "accept_command", mono: true, title: "When a task is accepted",
+    about: "A command Herdr runs in the repo once it's done, to clean up what it made. $HERDR_TASK_ID, $HERDR_TASK_BRANCH and $HERDR_TASK_WORKTREE say which task.",
+    example: "dropdb --if-exists \"test_$HERDR_TASK_ID\"" },
 ];
 export const SAVED = "Saved";
 // Base branch, a space's only (tasks.base): checked before it's saved.
@@ -250,6 +265,19 @@ export const slugMax = (v) => {
   const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
   return Number.isInteger(n) && n >= SLUG_MAX.min && n <= SLUG_MAX.max ? n : SLUG_MAX.default;
 };
+// Extra flags (tasks.claude_flags, tasks.codex_flags, #1222): a CLI's own launch flags for a space's task agents, such
+// as --advisor opus. herdr-task checks them (`herdr-task flags`, flags.py: real flags only, none Shepherdr sets) and
+// keeps them one word each (--advisor=opus); a task's own (--flags, --set flags=) replace them.
+export const FLAGS = {
+  rows: [["claude", "Claude Code flags"], ["codex", "Codex flags"]],
+  about: (cli) => `Extra flags for ${cli} when it runs a task, as you'd type them. A task can set its own. Empty: the level above's; "none": no extra flags.`,
+  example: { claude: "--advisor opus", codex: "--search" },
+  none: "none",
+};
+// Flags as one line, quoted only where a shell needs it: ["--advisor=opus", "--name=a b"] -> --advisor=opus '--name=a b'.
+export function flagWords(list) {
+  return (Array.isArray(list) ? list : []).map((w) => (/^[\w@%+=:,./-]+$/.test(String(w)) ? String(w) : `'${String(w).replace(/'/g, `'"'"'`)}'`)).join(" ");
+}
 // Why a Branch names pattern can't be used, or "" (herdr-task's branch_pattern_problem says the same).
 export function branchPattern(pattern) {
   const p = String(pattern ?? "").trim();
@@ -326,7 +354,7 @@ export const MACHINES = {
 export const OLD_NAMES = { coordinator: "Assistant", worker: "Workers", reviewer: "Reviewer", backup: "Backup agent",
   automations: "Run automations", merge: "Merge", fix_rounds: "Fix checks", review_rounds: "Review", must_fix: "Must fix", proof: "Proof",
   max_running: "Tasks at once", archive_after: "Archive Done after", worktrees: "Worktrees",
-  start_notes: "When a task starts", finish_notes: "When a task finishes", base: "Base branch", branch: "Branch names", slug_max: "Branch name length", agents: "Reactions" };
+  setup: "Before the agent starts", start_notes: "When a task starts", finish_notes: "When a task finishes", accept_command: "When a task is accepted", base: "Base branch", branch: "Branch names", slug_max: "Branch name length", agents: "Reactions" };
 // Home Assistant's line: on or off, and what herdr-task's home round last found there (~/.local/share/shepherdr/tasks/.home.json).
 export function homeAbout(on, st) {
   return !on ? "Off: nobody watches its disk, load and processes."

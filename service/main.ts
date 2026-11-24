@@ -23,6 +23,7 @@ import { Sync } from "./sync.ts";
 import { Live } from "./live.ts";
 import { Model } from "./model.ts";
 import { checkEvery, runPilot } from "./autopilot.ts";
+import { checkFlags } from "./flags.ts";
 import { windowSection, setWindow, offList, offPlugins } from "./window.ts";
 import { record, deleteAll, note as noteUsage, followSwitch, isOn as insightsOn, logLines } from "./usage.ts";
 import { insightsSummary } from "./voice-data.ts";
@@ -61,6 +62,7 @@ import { folders, newSpace, newSpaceInfo } from "./spaces.ts";
 import { kindOf } from "../core/chat-reader.js";
 import * as SL from "../core/slash.js";
 import * as SCORE from "../core/settings.js";
+import { CHOICE_KEY, choiceOf } from "../core/agents.js";
 const SC = SCORE as any;
 const { SCAN, scanned, commandList, MENU } = SL as any;
 import * as HCORE from "../core/host.js";
@@ -183,6 +185,7 @@ function alertNew(snap: any) {
   alerted = new Set(now.keys());
 }
 compat.agents = new Agents(hub);
+(compat.agents as Agents).onOffer = () => live.refresh();
 // usage insights (service/usage.ts) record while the add-on is on
 followSwitch(() => !offList().includes("insights"));
 const machines = new Machines(hub, () => model.machineNames());
@@ -246,7 +249,9 @@ setInterval(() => {
 }, 30_000);
 const settings = new Settings();
 // a space's Assistant started from the web runs the agent Settings › Agents chooses for it, as the window's (#1051)
-compat.assistantPick = (space) => settings.role(space, "coordinator");
+// unless the person chose in its chat before its first message (the window's model button or the web's model menu:
+// core/agents.js CHOICE_KEY, SHEP-263)
+compat.assistantPick = (space) => choiceOf(model.value(CHOICE_KEY), space) ?? settings.role(space, "coordinator");
 // Settings › Agents' model menu and buttons (core/settings.js choicesFrom), from each CLI's own settings here, read
 // again every ten minutes; a CLI herdr-task's check finds missing here isn't offered
 const readDefaults = async () => {
@@ -700,6 +705,9 @@ async function doAction(body: any): Promise<Response> {
       const home = /^machine\.(makehome|home)@([\w.-]+)$/.exec(body.key);
       if (home && (home[1] === "makehome" || value === "on")) await store.set("home.makereq", { machine: home[2] === "local" ? null : home[2], at: Date.now() });
       if (home?.[1] === "makehome") return json({ ok: true });
+      // Extra flags (#1222): herdr-task checks them and says how it keeps them (a list); "none": none, empty: the level above's
+      const fl = /^tasks\.(claude|codex)_flags$/.exec(body.key);
+      if (fl && value !== null) value = /^\s*none\s*$/i.test(value) ? "[]" : value.trim() ? JSON.stringify(await checkFlags(fl[1], value)) : null;
       // Base branch: checked before it's saved, here or on origin as git last fetched it (the window's words)
       if (body.key === "tasks.base" && value?.trim()) {
         const want = value.trim();
@@ -741,7 +749,6 @@ async function doAction(body: any): Promise<Response> {
   }
   try {
     const r = await act(hub, body, compat);
-    if (body?.type === "restart") live.refreshFresh();
     // a switch flipped: shown at once, on another machine's space too (its file read again there)
     if (body?.type === "mode" && typeof body.place === "string") await model.readPilot(body.place);
     return json(r);

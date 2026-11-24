@@ -3,13 +3,16 @@ the Settings block a task's brief ends with."""
 
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
+import time
 import unicodedata
 
 from .base import Fail, git, HOME, MAX_RUNNING, WHERE, run
+from . import flags as FLAGS
 
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
@@ -49,13 +52,16 @@ def validate_launcher(pick):
 SETTINGS = os.environ.get("HERDR_TASK_SETTINGS") or WHERE.path("settings")
 # The role instructions are herdr-core templates (`hc templates` lists them): assistant.md (the
 # coordinator's), worker.md and reviewer.md. Workers and reviewers used ~/.herdr/instructions.
-TEMPLATES = os.environ.get("HERDR_TASK_TEMPLATES") or os.path.join(HOME, ".config", "herdr-core", "templates")
+# Where herdr-core reads the role templates: $XDG_CONFIG_HOME's when set (absolute), else ~/.config's (#1182).
+TEMPLATES = os.environ.get("HERDR_TASK_TEMPLATES") or os.path.join(
+    os.environ["XDG_CONFIG_HOME"] if os.environ.get("XDG_CONFIG_HOME", "").startswith("/") else os.path.join(HOME, ".config"),
+    "herdr-core", "templates")
 OLD_INSTRUCTIONS = os.path.join(HOME, ".herdr", "instructions")
 ASSISTANT_TEMPLATES = ("assistant", "coordinator")  # "coordinator": Assistants started before the rename
 FIX_ROUNDS = 3  # SHEP-96: failing checks an Azure DevOps pull request's agent fixes before the task needs the person
 DEFAULTS = {"tasks": {"merge": "ask", "review_rounds": 0, "must_fix": "major", "fix_rounds": FIX_ROUNDS, "max_running": MAX_RUNNING, "worktrees": True,
                       "start_notes": "", "finish_notes": "", "archive_after": 7, "proof": True, "base": "", "branch": "",
-                      "slug_max": 40, "worktree_root": ""},
+                      "slug_max": 40, "worktree_root": "", "setup": "", "accept_command": "", "claude_flags": [], "codex_flags": []},
             "automations": {"enabled": True}, "worker": {}, "reviewer": {}, "coordinator": {}, "backup": {},
             "agents": {"reactions": True, "suggestions": True, "feedback": True, "feedback_repo": "eliasstravik/shepherdr",
                        "language": ""}}
@@ -273,12 +279,15 @@ def argv_for(pick):
     argv), as the chat's agent picker builds it (mods/chat/agent.js argvFor). None: no setting."""
     if not pick:
         return None
+    extra = [str(x) for x in pick.get("flags") or []]
     if pick.get("argv"):
-        return [str(x) for x in pick["argv"]]
+        a = [str(x) for x in pick["argv"]]
+        return a[:1] + extra + a[1:]
     agent = pick.get("agent")
     if agent == "claude":
         magpie = pick.get("launcher") == "magpie"
-        a = [LAUNCHER_COMMANDS.get(pick.get("launcher"), "claude")]
+        # #1222: the extra flags first, each one word (flags.py), so what Shepherdr adds after them ends them
+        a = [LAUNCHER_COMMANDS.get(pick.get("launcher"), "claude"), *extra]
         model = pick.get("model") or (MAGPIE_MODEL if magpie else None)
         if model and pick.get("launcher") not in ("magpie", "cdnd") and OTHER_CLI_MODEL.match(str(model)):
             # Another CLI's model on plain Claude (e.g. "codex/gpt-6.1-sol", SHEP-80) would not start: its default model runs.
@@ -289,21 +298,22 @@ def argv_for(pick):
         if effort:
             a += ["--effort", effort]
         a += ["--settings", json.dumps({"fastMode": bool(pick.get("fast")), "statusLine": STATUS_LINE})]
-        perm = pick.get("perm")
+        perm = PERM_ACROSS["claude"].get(pick.get("perm"), pick.get("perm"))
         if perm == "bypassPermissions":
             a.append("--dangerously-skip-permissions")
         elif perm:
             a += ["--permission-mode", "default" if perm == "manual" else perm]
         return a
     if agent == "codex":
-        a = ["codex", "--no-daemon"]
+        a = ["codex", "--no-daemon", *extra]
         if pick.get("model"):
             a += ["-m", pick["model"]]
         if pick.get("effort"):
             a += ["-c", f'model_reasoning_effort="{pick["effort"]}"']
         # always said, so Fast off wins over a service_tier in config.toml (default: the standard tier)
-        a += ["-c", 'service_tier="%s"' % ("fast" if pick.get("fast") else "default")]
-        perm = pick.get("perm")
+        # Ultrafast: Codex's fastest tier (SHEP-258), on models whose catalog offers it
+        a += ["-c", 'service_tier="%s"' % ("ultrafast" if pick.get("fast") == "ultrafast" else "fast" if pick.get("fast") else "default")]
+        perm = PERM_ACROSS["codex"].get(pick.get("perm"), pick.get("perm"))
         if perm == "full":
             a.append("--dangerously-bypass-approvals-and-sandbox")
         elif perm == "read-only":
@@ -316,6 +326,40 @@ def argv_for(pick):
     return [agent] if agent else None
 
 
+# Permission modes as each CLI has them, and a mode carried to the other CLI when a task's agent
+# changes: its nearest mode there, else that CLI's default (core/agents.js PERM_ACROSS, #758, #1219).
+PERMS = {"claude": ("manual", "auto", "acceptEdits", "plan", "bypassPermissions"), "codex": ("read-only", "auto", "full")}
+PERM_ACROSS = {"claude": {"read-only": "plan", "auto": "auto", "full": "bypassPermissions"},
+               "codex": {"plan": "read-only", "auto": "auto", "acceptEdits": "auto", "bypassPermissions": "full"}}
+PERM_DEFAULT = {"codex": "auto"}
+
+
+def perm_across(perm, agent):
+    """A permission mode in `agent`'s words: its match, the same mode when that CLI has it, else its
+    default (None: the CLI's own)."""
+    if perm in PERM_ACROSS.get(agent, {}):
+        return PERM_ACROSS[agent][perm]
+    if perm in PERMS.get(agent, ()):
+        return perm
+    return PERM_DEFAULT.get(agent)
+
+
+def argv_perm(argv):
+    """The permission mode an agent's argv starts with, as argv_for writes it; None when it says none."""
+    argv = [str(a) for a in argv or []]
+    if "--dangerously-skip-permissions" in argv:
+        return "bypassPermissions"
+    if "--dangerously-bypass-approvals-and-sandbox" in argv or "--yolo" in argv:
+        return "full"
+    for i, a in enumerate(argv[:-1]):
+        nxt = argv[i + 1]
+        if a == "--permission-mode":
+            return "manual" if nxt == "default" else nxt
+        if a in ("-s", "--sandbox"):
+            return {"read-only": "read-only", "workspace-write": "auto", "danger-full-access": "full"}.get(nxt)
+    return None
+
+
 def worker_pick(s, task, space=None, agent=None):
     """What a task's agent runs on, {agent, model, effort, fast, perm}: Settings' worker, then the
     task's own --agent / --model / --effort, then `agent` (start --agent). Another CLI than
@@ -324,8 +368,10 @@ def worker_pick(s, task, space=None, agent=None):
     pick = dict(settings_for(s, space)["worker"] or {})
     for key in (task.get("agent"), agent):
         if key and key != pick.get("agent"):
-            # the person's permission mode goes along, as its nearest mode in that CLI (core/agents.js permAcross)
-            perm = perm_across(pick.get("perm"), key)
+            # #1219: the space's permission goes along, in the new CLI's words (full access stays full); none
+            # chosen stays none, so SHEP-85's Codex default below applies
+            src = pick.get("perm") or argv_perm(pick.get("argv"))
+            perm = perm_across(src, key) if src else None
             pick = {"agent": key, **({"perm": perm} if perm else {})}
     if not pick.get("agent") and not pick.get("argv"):
         pick["agent"] = "claude"
@@ -334,19 +380,13 @@ def worker_pick(s, task, space=None, agent=None):
     # blocks the window server, so the task's browser (Chrome) aborted at every start, and much else a task needs.
     if pick.get("agent") == "codex" and not pick.get("argv") and not pick.get("perm"):
         pick["perm"] = "full"
+    # #1222: its CLI's extra flags, the task's own else its space's (Settings › Tasks), those that still pass
+    kind = pick.get("agent") or agent_key(pick.get("argv") or ["claude"])
+    own = (task.get("flags") or {}).get(kind) if isinstance(task.get("flags"), dict) else None
+    extra = FLAGS.clean(kind, own if own is not None else settings_for(s, space)["tasks"].get(f"{kind}_flags") or [])
+    if extra:
+        pick["flags"] = extra
     return pick
-
-
-# A permission mode carried to another CLI: its nearest mode there (core/agents.js PERM_ACROSS), else none.
-PERM_ACROSS = {"claude": {"read-only": "plan", "auto": "auto", "full": "bypassPermissions"},
-               "codex": {"plan": "read-only", "auto": "auto", "acceptEdits": "auto", "bypassPermissions": "full"}}
-PERMS = {"claude": ("manual", "auto", "acceptEdits", "plan", "bypassPermissions"), "codex": ("read-only", "auto", "full")}
-
-
-def perm_across(perm, agent):
-    if not perm:
-        return None
-    return PERM_ACROSS.get(agent, {}).get(perm) or (perm if perm in PERMS.get(agent, ()) else None)
 
 
 def worker_argv(s, task, space=None, agent=None):
@@ -399,7 +439,8 @@ SET_KEYS = {"review": "review", "brief.review": "review", "merge": "merge", "bri
             "language": "language", "lang": "language", "agents.language": "language", "output.language": "language",
             "output_language": "language", "output-language": "language",
             "person_language": "person_language", "person-language": "person_language", "person.language": "person_language",
-            "person": "person_language", "asked_in": "person_language", "asked-in": "person_language"}
+            "person": "person_language", "asked_in": "person_language", "asked-in": "person_language",
+            "flags": "flags", "task.flags": "flags", "extra-flags": "flags", "extra_flags": "flags"}
 # The Proof line (as Shepherdr's skill asks of its task agents), on and off.
 PROOF_WORDS = {"on": "show verifiable proof in one recipe artifact: each proof with a one-line caption, real and from this work now, "
                      "plus a \"Not proven\" list; then say ready with --proof <its id>",
@@ -413,11 +454,15 @@ EFFORTS = {"none", "minimal", "lowest", "low", "medium", "high", "xhigh", "max",
 ONOFF = {"on": "on", "yes": "on", "true": "on", "1": "on", "off": "off", "no": "off", "false": "off", "0": "off"}
 
 
-def set_task(t, key, value):
-    """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'."""
+def set_task(t, key, value, agent=None):
+    """One --set key=value (or flag) on task t; an empty value or "default" goes back to Settings'. agent: the CLI
+    the task's agent runs, whose extra flags `flags` sets (#1222; default: the task's own --agent, else claude)."""
     field = SET_KEYS.get(key.strip().lower())
     if not field:
-        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, language, person_language, agent, launcher, model, effort or reviewer settings, not {key!r}.")
+        raise Fail(f"--set takes review, review.rounds, review.mustFix, merge, fix_rounds, proof, language, person_language, agent, launcher, model, effort, flags or reviewer settings, not {key!r}.")
+    if field == "flags":
+        set_flags(t, agent or t.get("agent") or "claude", value)
+        return
     v = value.strip().strip("\"'").strip()
     sets = t.setdefault("set", {})
     if not v or v.lower() == "default":
@@ -467,19 +512,37 @@ def set_task(t, key, value):
         t.pop("set", None)
 
 
-def set_opts(t, args, launcher=None):
-    """add/edit's --set pairs and --agent, --model, --effort, --reviewer, --reviewer-model,
-    --reviewer-effort, in that order (a --set pair wins over its flag)."""
+def set_flags(t, agent, value):
+    """A task's own extra flags for agent's CLI (#1222), kept per CLI: a task switched to the other CLI gets that one's
+    (its own, else its space's). "" or "default": its space's again; "none": none, whatever its space says."""
+    v = (value if isinstance(value, str) else FLAGS.words(value)).strip()
+    own = dict(t.get("flags") or {}) if isinstance(t.get("flags"), dict) else {}
+    if not v or v.lower() == "default":
+        own.pop(agent, None)
+    else:
+        own[agent] = [] if v.lower() in ("none", "off") else FLAGS.parse(agent, v)
+    if own:
+        t["flags"] = own
+    else:
+        t.pop("flags", None)
+
+
+def set_opts(t, args, s=None, space=None, launcher=None):
+    """add/edit's --set pairs and --agent, --launcher, --model, --effort, --flags, --reviewer, --reviewer-model,
+    --reviewer-effort, in that order (a --set pair wins over its flag). s: the task's store, so its flags are
+    checked against the CLI it will run (its own --agent, else its space's Task agent)."""
     before = dict(t)
-    for flag in ("agent", "launcher", "model", "effort", "reviewer", "reviewer_model", "reviewer_effort"):
+    def cli():
+        return (worker_pick(s, t, space or t.get("space")).get("agent") if s else None) or t.get("agent") or "claude"
+    for flag in ("agent", "launcher", "model", "effort", "flags", "reviewer", "reviewer_model", "reviewer_effort"):
         v = getattr(args, flag, None)
         if v is not None:
-            set_task(t, flag, v)
+            set_task(t, flag, v, cli() if flag == "flags" else None)
     for pair in getattr(args, "set", None) or []:
         if "=" not in pair:
             raise Fail(f"--set takes key=value, not {pair!r}.")
         k, v = pair.split("=", 1)
-        set_task(t, k, v)
+        set_task(t, k, v, cli() if SET_KEYS.get(k.strip().lower()) == "flags" else None)
     model_given = getattr(args, "model", None) is not None or any(
         SET_KEYS.get(pair.split("=", 1)[0].strip().lower()) == "model" for pair in getattr(args, "set", None) or [])
     previous_launcher = before.get("launcher") or launcher or "direct"
@@ -530,6 +593,99 @@ def codex_lacks(model):
     """The models Codex offers here when `model` isn't one of them (it would refuse to start on it), else None."""
     ids = codex_models()
     return ids if model and ids and model not in ids else None
+
+
+# ---- finding a CLI as the person's shell does (#1228, #1190) -------------------------------------
+# hc run starts a program with the core's PATH and gives it a bare one, so an agent CLI the person's shell
+# finds (nvm, mise, npm's prefix, ~/.local/bin) can't start as a helper: "cannot start codex", or with its full
+# path "env: node: No such file or directory". The shell agents start in says where it is.
+BARE_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_cli = {}
+
+
+def shell_which(name):
+    """Where the person's interactive shell (as a task's agent starts in, launch.in_shell) finds `name`, or None."""
+    sh = os.environ.get("SHELL") or "/bin/sh"
+    flag = "-lic" if platform.system() == "Darwin" else "-ic"
+    try:
+        r = subprocess.run([sh, flag, 'printf "\n@herdr@%s@herdr@\n" "$(command -v ' + name + ')"'], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"@herdr@(/[^\n@]*)@herdr@", r.stdout or "")
+    return m.group(1) if m and os.access(m.group(1), os.X_OK) else None
+
+
+def cli_path(name):
+    """A CLI's full path: on this PATH, else the person's shell's (that one kept a few minutes: a long-running
+    scheduler sees an update or an nvm switch)."""
+    found = shutil.which(name)
+    if found or not re.fullmatch(r"[\w.-]+", name):
+        return found
+    key = (name, os.environ.get("PATH"), os.environ.get("SHELL"))
+    if key not in _cli or time.time() - _cli[key][1] > 300:
+        _cli[key] = (shell_which(name), time.time())
+    return _cli[key][0]
+
+
+def cli_dirs(name):
+    """The folders a CLI needs on PATH to start: its own, and node's for an npm script (#!/usr/bin/env node)."""
+    p = cli_path(name)
+    if not p:
+        return []
+    dirs = [os.path.dirname(p)]
+    try:
+        with open(os.path.realpath(p), "rb") as f:
+            head = f.readline(200)
+    except OSError:
+        head = b""
+    if head.startswith(b"#!") and b"node" in head:
+        node = os.path.join(dirs[0], "node")
+        node = node if os.access(node, os.X_OK) else cli_path("node")
+        if node:
+            dirs.append(os.path.dirname(node))
+    return list(dict.fromkeys(dirs))
+
+
+def cli_env(name):
+    """'env "PATH=<its folders>:$PATH" ' before a helper's command so hc run finds the CLI and what it needs, the rest
+    of the worker's PATH kept; "" when it is in the system's own folders or can't be found."""
+    dirs = [d for d in cli_dirs(name) if d not in BARE_DIRS]
+    if not dirs or any(re.search(r'["$`\\:]', d) for d in dirs):
+        return ""
+    return 'env "PATH=' + ":".join(dirs) + ':$PATH" '
+
+
+# --no-daemon is what every Codex Shepherdr starts gets (#745); a Codex without it exits 2 on it (#1190).
+UPDATE_CODEX = "npm install -g @openai/codex@latest, or brew upgrade codex"
+_codex_old = {}
+
+
+def codex_too_old():
+    """'codex-cli 0.144.5 at <path>' when the Codex here has no --no-daemon (too old for Shepherdr), else None
+    (new enough, or unknown: never blocks on a check that couldn't run)."""
+    p = cli_path("codex")
+    if not p:
+        return None
+    try:
+        key = (p, os.stat(p).st_mtime)
+    except OSError:
+        return None
+    if key not in _codex_old:
+        env = {**os.environ, "PATH": ":".join(cli_dirs("codex") + [os.environ.get("PATH") or "/usr/bin:/bin"])}
+        try:
+            h = subprocess.run([p, "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, env=env)
+            v = subprocess.run([p, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        old = h.returncode == 0 and "Usage" in (h.stdout or "") and "--no-daemon" not in h.stdout
+        _codex_old[key] = f"{(v.stdout or '').strip() or 'codex'} at {p}" if old else None
+    return _codex_old[key]
+
+
+def codex_update_words(old):
+    return (f"Codex here is too old for Shepherdr ({old} has no --no-daemon). Update it ({UPDATE_CODEX}), "
+            "then start again.")
 
 
 CLAUDE_MODEL = re.compile(r"^(claude-|opus|sonnet|haiku|fable)", re.I)
@@ -595,7 +751,10 @@ def reviewer_command(who, model=None, effort=None, folder=None, launcher=None):
         a += ["-m", model] if model else []
         a += ["-c", f'model_reasoning_effort="{effort}"'] if effort else []
     elif who == "claude":
-        a = [LAUNCHER_COMMANDS.get(launcher, "claude"), "--permission-mode", "plan"]
+        # #1181: never plan mode (it wrote its report into a plan to approve): don't-ask mode with only the reading tools,
+        # so a write or a command that isn't read-only is refused, never asked. --tools=… as one word: its list would
+        # take the prompt after it as a tool.
+        a = [LAUNCHER_COMMANDS.get(launcher, "claude"), "--permission-mode", "dontAsk", "--tools=" + REVIEW_TOOLS]
         model = model or (MAGPIE_MODEL if launcher == "magpie" else None)
         effort = effort or ("high" if launcher == "magpie" else None)
         a += ["--model", model] if model else []
@@ -603,7 +762,18 @@ def reviewer_command(who, model=None, effort=None, folder=None, launcher=None):
     else:
         return None
     from .launch import clean_env
-    return shlex.join(clean_env(a))
+    if who == "claude":
+        # #1131: hc run gives it hc's environment, not the worker's: the worker's own Claude profile, when it has one
+        return (cli_env(who) or "env ") + CLAUDE_PROFILE + shlex.join(clean_env(a))
+    # #1228: hc run starts it with a bare PATH; its folders (nvm's, with node) go first, the worker's PATH after. Inside,
+    # the fork's login-environment wrapper (SHEP-67: the person's proxy settings) without Claude's session markers.
+    return cli_env(who) + shlex.join(clean_env(a))
+
+
+REVIEW_TOOLS = "Read,Grep,Glob,Bash"
+# The worker's shell expands it: CLAUDE_CONFIG_DIR=<its folder> when the worker has one, nothing when it hasn't (an empty
+# one would not be ~/.claude).
+CLAUDE_PROFILE = '${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"} '
 
 
 def task_settings(s, t, space=None, argv=None, live=False):
@@ -655,6 +825,10 @@ def task_settings(s, t, space=None, argv=None, live=False):
             ok, said = codex_login_now()
             if ok is False:
                 who, rv = agent, {}
+        # #1190: a Codex without --no-daemon exits at once: the worker's own CLI reviews, and the line says to update
+        old = codex_too_old() if who == "codex" and agent != "codex" else None
+        if old:
+            who, rv = agent, {}
         # #948: a model Codex here doesn't offer this account stops it at once: its own default instead, said
         lacks = codex_lacks(rv.get("model")) if who == "codex" else None
         dropped = rv.get("model")
@@ -664,7 +838,10 @@ def task_settings(s, t, space=None, argv=None, live=False):
         if lacks:
             text += (f" (Codex's own default model: Codex here doesn't offer {dropped} "
                      "for the account it is signed in with)")
-        if who != want:
+        if old:
+            text += (f" (your own CLI: Codex here is too old for Shepherdr, {old} has no --no-daemon; the person updates "
+                     f"it ({UPDATE_CODEX}), then asks for the review again)")
+        elif who != want:
             text += (f" (your own CLI: {CLI_NAMES.get(want, want)} isn't signed in here"
                      + (f", `{LOGIN.get(want, want + ' login')} status` says \"{said}\"" if said and not re.match(r"not logged in", said, re.I) else "")
                      + f"; the person runs `{LOGIN.get(want, want + ' login')}` on this machine, then asks for the review again)")
@@ -702,10 +879,14 @@ def task_settings(s, t, space=None, argv=None, live=False):
     text, value, by = language_line(s, sets.get("language"), sets.get("person_language"), space)
     add("Language", text, value, by)
     model, effort = argv_model(argv)
-    text = agent + (f", model {model}" if model else "") + (f", effort {effort}" if effort else "")
-    a_by = "task" if any(t.get(f) for f in ("agent", "model", "effort")) else \
-        by_layer(s, space, "worker", None, bool(cfg.get("worker")), False)
-    add("Agent", text, {"agent": agent, "model": model, "effort": effort}, a_by)
+    extra = FLAGS.extra(agent, argv)
+    text = agent + (f", model {model}" if model else "") + (f", effort {effort}" if effort else "") + \
+        (f", extra flags {FLAGS.words(extra)}" if extra else "")
+    own_flags = agent in (t.get("flags") or {}) if isinstance(t.get("flags"), dict) else False
+    a_by = "task" if any(t.get(f) for f in ("agent", "model", "effort")) or own_flags else \
+        by_layer(s, space, "worker", None, bool(cfg.get("worker")), False) or \
+        (by_layer(s, space, "tasks", f"{agent}_flags", extra, []) if extra else None)
+    add("Agent", text, {"agent": agent, "model": model, "effort": effort, "flags": extra}, a_by)
     # Suggested next message (SHEP-186): the reply ends with the words the person would likely send next (templates/worker.md)
     sug = (cfg.get("agents") or {}).get("suggestions") is not False
     add("Suggested next message", "on (your reply ends with the message you'd likely send next, shown greyed out in the box)" if sug

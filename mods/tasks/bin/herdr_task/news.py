@@ -1,6 +1,7 @@
 """News: what changed in a space's tasks, told to its Assistant."""
 
 import fcntl
+import html
 import json
 import os
 import re
@@ -78,9 +79,23 @@ def news_line(s, t, v, event, words=None):
             "stalled": f"{ref} {words} ({title})",
             "working-again": f"{ref} is working again: {(t.get('back') or {}).get('why') or 'its agent is at work again'} ({title})",
             "backup": f"{ref} backup: {words} ({title})",
+            # Its space's "When a task is accepted" command failed (after_accept.py): the task stays done.
+            "accept-failed": f"{ref} is done, but its \"When a task is accepted\" command failed: {words} ({title})",
             "done": f"{ref} is done" + (": merged" if t.get("merged") else ": nothing to merge" if t.get("nothing_to_merge")
                                         else ": accepted" if t.get("accepted_at") else "") + f" ({title})"}[event]
     return f'<herdr-news task="{attr(ref)}" event="{event}">{text.replace("<", "‹").replace(">", "›")}</herdr-news>'
+
+
+def accept_failed(t):
+    """Its "When a task is accepted" command failed and its Assistant wasn't told yet."""
+    aa = t.get("after_accept") or {}
+    return aa.get("state") == "failed" and not aa.get("told")
+
+
+def accept_failure(t):
+    from .after_accept import failure_words
+    aa = t["after_accept"]
+    return failure_words(aa) + (f". All its output: {aa['log']}" if aa.get("log") else "")
 
 
 def news_state(s, t, live):
@@ -110,7 +125,7 @@ def news_pass(report, folder=None):
         d = read_list(path)
         if not d or not os.path.isdir(d.get("folder") or ""):
             continue
-        active = any(t.get("state") in ("running", "ready") for t in d.get("tasks") or [])
+        active = any(t.get("state") in ("running", "ready") or accept_failed(t) for t in d.get("tasks") or [])
         with Store(locate(d["folder"]), write=active) as s:
             mine = seen.setdefault(s.slug, {})
             # The first look at a list only notes how its tasks are: old news isn't news.
@@ -148,6 +163,14 @@ def news_pass(report, folder=None):
                     else:
                         t.pop("held_ask", None)
                     s.dirty = True
+                # #1082: Ready through a turn nobody asked for (a compaction, a toast): Ready in the Tasks panel too.
+                unasked = v["status"] == "ready" and any(status_word(k) == "working" for k in live)
+                if s.write and bool(t.get("unasked_turn")) != unasked:
+                    if unasked:
+                        t["unasked_turn"] = True
+                    else:
+                        t.pop("unasked_turn", None)
+                    s.dirty = True
                 # Quiet on its own background work (SHEP-53): Working in the Tasks panel too.
                 if s.write and bool(t.get("own_work")) != bool(v.get("own_work")):
                     if v.get("own_work"):
@@ -166,9 +189,16 @@ def news_pass(report, folder=None):
                 if backup:
                     b["told"] = True
                     s.dirty = True
-                if first or t.get("archived") or not t.get("space"):
+                # Its "When a task is accepted" command failed (after_accept.py): told once, even on a first look.
+                failed = s.write and accept_failed(t)
+                if failed:
+                    t["after_accept"]["told"] = True
+                    s.dirty = True
+                if (first and not failed) or t.get("archived") or not t.get("space"):
                     continue
                 lines = [("backup", news_line(s, t, v, "backup", backup_news(t)))] if backup else []
+                if failed:
+                    lines.append(("accept-failed", news_line(s, t, v, "accept-failed", accept_failure(t))))
                 # Taken back to work after it said ready (back_to_work(), busy_again()): told as it happens.
                 # Its agent took up what needed the person (failing checks: on_it()) too.
                 if v["status"] == "working" and ((prev or {}).get("status") in ("ready", "merging")
@@ -181,7 +211,7 @@ def news_pass(report, folder=None):
                 for ev, text in lines:
                     # A newer word on the same task replaces one not sent yet.
                     # A backup's line stands apart: it neither replaces nor is replaced.
-                    outbox[:] = [x for x in outbox if not (x["key"] == key and "backup" not in (ev, x["event"])
+                    outbox[:] = [x for x in outbox if not (x["key"] == key and not {"backup", "accept-failed"} & {ev, x["event"]}
                                                            and (x["event"] == ev or ev != "stalled"))]
                     outbox.append({"key": key, "space": bare(t["space"]), "folder": os.path.basename(s.loc["folder"]), "event": ev, "status": v["status"],
                                    "stall": stall[0] if ev == "stalled" else None, "text": text, "at": now()})
@@ -192,8 +222,8 @@ def news_pass(report, folder=None):
     # Still true? A line whose task moved on since (or was removed) goes unsaid.
     def holds(x):
         c = current.get(x["key"])
-        if (folder and c is None) or x["event"] == "backup":
-            return True  # another folder's task: not looked at this time; a backup's line is news either way
+        if (folder and c is None) or x["event"] in ("backup", "accept-failed"):
+            return True  # another folder's task: not looked at this time; a backup's or failed command's line is news either way
         return bool(c) and (c["stall"] == x["stall"] if x["event"] == "stalled" else c["status"] == x["status"])
     outbox[:] = [x for x in outbox if holds(x) and now() - x["at"] < NEWS_KEEP_MS]
     for space in dict.fromkeys(x["space"] for x in outbox):
@@ -272,19 +302,66 @@ def news_send(address, text, check=True):
     typing()): tried again next time. check=False: typing() was just asked."""
     if check and typing(address):
         return False
+    if codex_busy(hc_json("get", address)):
+        return False
     env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
     guard(["hc"])
     r = subprocess.run(["hc", "send", address, text], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     if r.returncode != 0:
         return False
     k = hc_json("get", address) or {}
-    if (k.get("labels") or {}).get("herdr.agent", "claude") == "claude" and status_word(k) == "working":
+    if is_codex(k):
+        codex_settle(address, text)
+    elif (k.get("labels") or {}).get("herdr.agent", "claude") == "claude" and status_word(k) == "working":
         for i in range(4):
             time.sleep(0.3 if i else 0.15)
             screen = run(["hc", "read", address, "--lines", "40"]).stdout
             if re.search(r"ctrl\+enter to send now", screen, re.I):
                 run(["hc", "keys", address, "ctrl+enter"])
                 break
+    return True
+
+
+# ---- Codex mid-turn (#1227) -------------------------------------------------------------------
+# A message pasted into Codex while it works can sit in its input box unsent ("tab to queue message"), at times
+# missing its first letter, and hc send says nothing of it. So nothing automatic goes to a working Codex: it
+# waits until the turn ends (as Codex's own queue would), and after a send the input box is checked.
+
+def is_codex(k):
+    k, st = k or {}, (k or {}).get("status")
+    return (k.get("labels") or {}).get("herdr.agent") == "codex" or (isinstance(st, dict) and "codex" in str(st.get("app") or ""))
+
+
+def codex_busy(k):
+    """A live Codex in the middle of a turn: what's sent to it now waits."""
+    return bool(k) and is_codex(k) and status_word(k) == "working"
+
+
+def codex_settle(address, text, tries=3):
+    """After a send to Codex: a draft it left for the queue is queued (Tab); one still in its input box (the last
+    › line on, past the conversation) is sent. Never presses anything when the box is empty."""
+    words = re.sub(r"\s+", " ", text).strip()
+    probe = words[1:25].strip()  # past the first letter, which may be the one dropped
+    for i in range(tries):
+        time.sleep(0.4 if i else 0.25)
+        lines = run(["hc", "read", address, "--lines", "30"]).stdout.split("\n")
+        at = max((n for n, ln in enumerate(lines) if ln.lstrip().startswith("›")), default=None)
+        box = " ".join(ln.strip() for ln in lines[at:]) if at is not None else ""
+        if re.search(r"tab to queue", box, re.I):
+            run(["hc", "keys", address, "tab"])
+            return "queued"
+        if probe and probe in box:
+            run(["hc", "keys", address, "enter"])
+            return "sent"
+    return None
+
+
+def plain_send(address, text):
+    """An agent's message (hc send) to `address`; for Codex, its input box checked after (codex_settle)."""
+    if run(["hc", "send", address, text]).returncode != 0:
+        return False
+    if is_codex(hc_json("get", address)):
+        codex_settle(address, text)
     return True
 
 
@@ -299,6 +376,19 @@ def news_send(address, text, check=True):
 
 TYPING = "herdr.typing"
 TYPING_KEEP_MS = 5 * 60000     # unsent words untouched this long hold nothing any more
+# The person's last message to an agent: the chat (window or web) labels its terminal herdr.said=<ms>
+# as it sends (core/send.js markSaid). Autopilot waits while they chat (#1217).
+SAID = "herdr.said"
+CHATTING_MS = 5 * 60000        # a message this recent: the person is chatting with it
+
+
+def chatting(k):
+    """Whether the person wrote to this agent (k: its hc get) in the last CHATTING_MS."""
+    try:
+        at = int(((k or {}).get("labels") or {}).get(SAID) or 0)
+    except ValueError:
+        return False
+    return bool(at) and now() - at < CHATTING_MS
 HELD = os.path.join(STORE, ".held.json")  # {address: [{text, how, at}]}: held_pass sends them
 ESCAPES = re.compile(r"\x1b(?:\[([0-9;:?<=>!]*)[ -/]*([@-~])|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\|[()*+][0-9A-Za-z]|.)"
                      r"|[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]|[\r\n]|[^\x1b\x00-\x1f\x7f]+", re.S)
@@ -405,7 +495,36 @@ def typing(address, k=None, there=None):
         at = 0
     if at and now() - at < TYPING_KEEP_MS:
         return "chat"
-    return "input" if typed_input(screen_raw(address, there)) else None
+    typed = typed_input(screen_raw(address, there))
+    if not typed:
+        return None
+    # #1207: the agent's own suggested next message (<hc suggest="…"/>) sitting in its input is no one typing: held
+    # for it, review-more's message (and any news) waited for good, the agent idle till a person pressed Enter.
+    return None if not there and same_words(typed, suggested(k)) else "input"
+
+
+SUGGEST = re.compile(r"<hc\s+suggest=\"([^\"]*)\"\s*/?>")
+
+
+def same_words(a, b):
+    return bool(a and b) and " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
+def suggested(k):
+    """The next message this agent's newest reply suggests (its last <hc suggest="…"/>), or None: none, or the person
+    wrote since. k: its hc get (its session log from its herdr.resume label)."""
+    try:
+        log = json.loads(((k or {}).get("labels") or {}).get("herdr.resume") or "{}").get("log")
+    except (ValueError, AttributeError):
+        return None
+    for d in reversed(log_tail(log, 65536)):
+        if from_person(d) is not None:
+            return None
+        text = said(d)
+        if text:
+            found = SUGGEST.findall(text)
+            return html.unescape(found[-1]) if found else None
+    return None
 
 
 @contextmanager
@@ -427,8 +546,9 @@ def held_messages():
 
 
 def hold(address, text, how="send"):
-    """Keeps a message for an agent the person is writing to; held_pass sends it once they've
-    stopped. how: "send" (a plain hc send, as an agent's message) or "news" (news_send)."""
+    """Keeps a message for an agent the person is writing to, or one waiting on a question (a Mark up note, #1213);
+    held_pass sends it once they've stopped, or it's answered. how: "send" (a plain hc send, as an agent's message)
+    or "news" (news_send)."""
     with held_messages() as held:
         held.setdefault(address, []).append({"text": text, "how": how, "at": now()})
 
@@ -436,12 +556,12 @@ def hold(address, text, how="send"):
 def send_or_hold(address, text, how="send"):
     """Sends it now, or holds it while the person is writing to that agent. Returns "sent",
     "held", or None when it couldn't go (hc refused it)."""
-    if typing(address):
+    if typing(address) or codex_busy(hc_json("get", address)):
         hold(address, text, how)
         return "held"
     if how == "news":
         return "sent" if news_send(address, text, check=False) else None
-    return "sent" if run(["hc", "send", address, text]).returncode == 0 else None
+    return "sent" if plain_send(address, text) else None
 
 
 def held_pass(report):
@@ -456,14 +576,14 @@ def held_pass(report):
             if not k or k.get("state") != "live":
                 held.pop(addr)
                 continue
-            if typing(addr, k):
-                continue
+            if typing(addr, k) or codex_busy(k) or status_word(k) == "blocked":
+                continue  # blocked: on a question card (#1213), and hc send would answer its dialog
             for how in ("news", "send"):
                 batch = [x for x in items if x.get("how", "send") == how]
                 if not batch:
                     continue
                 text = "\n\n".join(x["text"] for x in batch)
-                ok = news_send(addr, text, check=False) if how == "news" else run(["hc", "send", addr, text]).returncode == 0
+                ok = news_send(addr, text, check=False) if how == "news" else plain_send(addr, text)
                 if ok:
                     items[:] = [x for x in items if x not in batch]
                     report.setdefault("held", []).append({"to": addr, "messages": len(batch)})

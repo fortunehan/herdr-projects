@@ -22,6 +22,10 @@ export const ACCEPT = {
   // SHEP-89: ready's plain-words explanation leads, then what to check; the agent's own details fold below
   toCheck: "What to check",
   details: "Technical details",
+  documents: "Documents",
+  docNew: "New",
+  docChanged: "Changed",
+  docCut: "Cut short here: the rest is in the file.",
   notGit: "Not a git folder.",
   noCommits: "No commits.",
   noFiles: "· Couldn't read the files",
@@ -86,6 +90,12 @@ export const filesLine = (n) => `${plural(n, "file")} changed`;
 export const moreLine = (n) => `And ${n} more`;
 // A proof artifact's title without its task's ref ("HERD-4: Login works" -> "Login works").
 export const proofTitle = (title) => String(title ?? "").replace(/^[A-Z]+-\d+:\s*/, "");
+
+// Its Markdown documents (SHEP-273, #1150: a plan's or an email draft's task), each folded under its path; a task
+// that changed only Markdown opens its first, as that is what the person reviews. docs = evidence.docs.
+export const docOpen = (docs, i) => Boolean(docs?.only && i === 0);
+// "And 2 more" under the ones shown, when it changed more than the card carries.
+export const docsMore = (docs) => Math.max(0, (docs?.count ?? 0) - (docs?.list?.length ?? 0));
 
 // Where a task no longer Ready is now, calmly: x = { state, accepted_at?, status_text? }.
 export function whereNow(x) {

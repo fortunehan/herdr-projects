@@ -234,7 +234,7 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
     setSaid(MARKUP.sending)
     const base = { place: art.place, artifact: art.id, v }
     const msg: Action = noteAction(out, base)
-    const r = (await act(msg).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string }
+    const r = (await act(msg).catch((e: Error) => ({ ok: false, error: e?.message }))) as { ok?: boolean; error?: string; said?: string }
     setSending(false)
     if (r.ok === false) {
       setFailed(true)
@@ -244,7 +244,8 @@ function MarkupLayer({ art, v, onEnd, seed, onSeeded }: { art: Artifact; v: numb
     setNotes([])
     setGeneral('')
     setSel(null)
-    setSaid(markupSent(keeper))
+    // held for an agent on a question (#1213): its own plain line
+    setSaid(r.said || markupSent(keeper))
   }
   // a touch screen taps where the window clicks
   const hint = device === 'desktop' ? markupHint(keeper) : markupHint(keeper).replace(/^Click/, 'Tap')
