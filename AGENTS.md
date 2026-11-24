@@ -31,6 +31,8 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   ~258 items whatever record count the SHEP-109 render harness asks for.
 - Full Tasks-panel render in a bun test: `Object.create(Tasks.prototype)` with lists/query stubs, then `render(cx)`; its
   Needs you reads mods/tasks/inbox.js items() from shared inbox.* (see service/tasks-needs-once.test.ts).
+- A link-only window mod (link.js, no main.js; Herdr 0.1.17 link handlers): `herdr-app check` validates its rules and
+  handleLink export without running it, and core/link-click.test.js tests the click decisions with fake LinkClick objects.
 - Window-mod render cost in QuickJS: `herdr-app check` on a scratch /tmp mod folder (main.js + copied core files) runs
   the window's own engine; its render is interrupted past ~50 ms, and matchAll there recompiles the pattern on every call.
 - Window markdown can't use marked; to check a markdown rewriter, compare marked.lexer code/link tokens before and
