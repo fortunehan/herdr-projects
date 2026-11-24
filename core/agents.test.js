@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { argvFor, claudeWindow, contextUse, current, forkArgv, FORK_LIVE, line, liveTaskAgent, menuFor, modelSections, parseDefaults, parsePicks, pickKey, resumeArgv, rowFor, withPin, withRecent, usageUse, parseUsage, USAGE_FILE, USAGE_STALE, STATUS_LINE } from "./agents.js";
+import * as AGall from "./agents.js";
+import { argvFor, claudeWindow, contextUse, usageUse, parseUsage, USAGE_FILE, USAGE_STALE, STATUS_LINE, current, extraFlags, forkArgv, FORK_LIVE, line, liveTaskAgent, menuFor, modelSections, parseDefaults, parsePicks, pickKey, resumeArgv, rowFor, withPin, withRecent, speedFor, speedOf, codexTier, speedName, speedWordOf } from "./agents.js";
 
 const codex = { models: Array.from({ length: 250 }, (_, i) => ({ id: `gpt-${i}`, label: `GPT ${i}`, efforts: ["low", "high"] })) };
 const menus = { claude: menuFor("claude", {}), codex: menuFor("codex", codex) };
@@ -211,4 +212,92 @@ test("an ended Codex Assistant resumes with codex resume <session>", () => {
 
 test("an Assistant that was itself resumed resumes the session it ran last, once", () => {
   expect(resumeArgv("claude", ["claude", "--resume", "old-id", "--model", "opus"], "new-id")).toEqual(["claude", "--model", "opus", "--resume", "new-id"]);
+});
+
+// SHEP-258: Codex's Ultrafast tier (service_tier="ultrafast"), beside Fast, on the models whose catalog offers it.
+test("Ultrafast shows where Codex's catalog offers it, and starts Codex on that tier", () => {
+  const cache = JSON.stringify({ models: [
+    { slug: "gpt-6.2-sol", display_name: "GPT-6.2-Sol", default_reasoning_level: "low", supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => ({ effort })),
+      service_tiers: [{ id: "priority", name: "Fast" }, { id: "ultrafast", name: "Ultrafast" }] },
+    { slug: "gpt-6.2-astra", display_name: "GPT-6.2-Astra", default_reasoning_level: "low", supported_reasoning_levels: [{ effort: "low" }], service_tiers: [{ id: "priority", name: "Fast" }] }] });
+  const dflt = parseDefaults("codex", `model\tgpt-6.2-sol\nservice_tier\tultrafast\nmodels\t${cache}\n`);
+  expect(dflt.fast).toBe("ultrafast");
+  const menu = menuFor("codex", dflt);
+  expect(menu.models.map((m) => [m.id, m.name, m.fast, !!m.ultrafast])).toEqual([["gpt-6.2-sol", "GPT-6.2-Sol", true, true], ["gpt-6.2-astra", "GPT-6.2-Astra", true, false]]);
+  expect(menu.models[0].efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  // started on it: said on the command line, read back, and in words
+  const { argv } = argvFor({ agent: "codex", model: "gpt-6.2-sol", effort: "high", fast: "ultrafast" }, { agent: "codex", argv: ["codex", "-c", 'service_tier="fast"'] });
+  expect(argv).toEqual(["codex", "--no-daemon", "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="high"', "-c", 'service_tier="ultrafast"']);
+  expect(current("codex", argv, {}, dflt).fast).toBe("ultrafast");
+  expect(line(current("codex", argv, {}, dflt))).toBe("Codex · GPT-6.2-Sol · High · Ultrafast");
+  // the log's word wins, and Fast stays Fast
+  expect(current("codex", argv, { speed: "fast" }, dflt).fast).toBe(true);
+  expect(current("codex", ["codex"], { speed: "ultrafast" }, {}).fast).toBe("ultrafast");
+  // a fork keeps it
+  expect(forkArgv("codex", argv, "S")).toContain('service_tier="ultrafast"');
+  // Claude Code has no Ultrafast: it reads as Fast
+  // (the fork's --settings also carries its status line: STATUS_LINE)
+  const cl = argvFor({ agent: "claude", model: "opus", fast: "ultrafast" }, { agent: "claude", argv: ["claude"] }).argv;
+  expect(JSON.parse(cl[cl.indexOf("--settings") + 1]).fastMode).toBe(true);
+});
+
+test("a model without Ultrafast falls back to Fast, one without Fast to standard", () => {
+  expect(speedFor({ fast: true, ultrafast: true }, "ultrafast")).toBe("ultrafast");
+  expect(speedFor({ fast: true }, "ultrafast")).toBe(true);
+  expect(speedFor({ fast: false }, "ultrafast")).toBe(false);
+  expect(speedFor({ fast: true }, true)).toBe(true);
+  expect(speedFor({}, true)).toBe(false);
+  expect([speedOf("priority"), speedOf("ultrafast"), speedOf("default"), speedOf("standard")]).toEqual([true, "ultrafast", false, false]);
+  expect([codexTier("ultrafast"), codexTier(true), codexTier(false)]).toEqual(["ultrafast", "fast", "default"]);
+  expect([speedName("ultrafast"), speedName(true), speedName(false)]).toEqual(["Ultrafast", "Fast", null]);
+  expect([speedWordOf("ultrafast"), speedWordOf(true), speedWordOf(false)]).toEqual(["ultrafast", "fast", "normal"]);
+});
+
+// SHEP-263: what a space's Assistant starts on, chosen before its first message, kept where the window's chat, the
+// web's model menu and the service's start all read it
+test("a space's choice before the first message: kept whole (Ultrafast too), compared by what it starts, forgotten", () => {
+  const { CHOICE_KEY, choiceOf, sameChoice, withChoice } = AGall;
+  expect(CHOICE_KEY).toBe("coordinator.choice");
+  let all = withChoice(undefined, "sp1", { agent: "codex", model: "gpt-6.2-sol", fast: "ultrafast", perm: "full", extra: 1 }, 10);
+  expect(all).toEqual({ sp1: { agent: "codex", model: "gpt-6.2-sol", effort: null, fast: "ultrafast", perm: "full", at: 10 } });
+  expect(choiceOf(all, "sp1")).toEqual({ agent: "codex", model: "gpt-6.2-sol", effort: null, fast: "ultrafast", perm: "full" });
+  expect(argvFor(choiceOf(all, "sp1"), { agent: null, argv: [] }).argv).toContain('service_tier="ultrafast"');
+  expect(choiceOf(all, "sp2")).toBeNull();
+  expect(choiceOf({ sp1: { agent: "vim" } }, "sp1")).toBeNull();
+  expect(sameChoice(all.sp1, { agent: "codex", model: "gpt-6.2-sol", effort: null, fast: "ultrafast", perm: "full" })).toBe(true);
+  expect(sameChoice(all.sp1, { ...all.sp1, fast: true })).toBe(false);
+  // another machine's space beside it; only the newest 40 stay; a start forgets its own
+  all = withChoice(all, "vm/sp2", { agent: "claude", model: "opus", fast: 1 }, 20);
+  expect(Object.keys(all)).toEqual(["vm/sp2", "sp1"]);
+  expect(all["vm/sp2"].fast).toBe(true);
+  for (let i = 0; i < 60; i++) all = withChoice(all, `s${i}`, { agent: "claude" }, 100 + i);
+  expect(Object.keys(all).length).toBe(40);
+  expect(choiceOf(all, "sp1")).toBeNull();
+  expect(withChoice({ a: { agent: "claude", at: 1 } }, "a", null)).toEqual({});
+});
+
+test("#1222: a task's extra flags show under the box and stay through a restart, a resume and a fork", () => {
+  const argv = ["claude", "--advisor=opus", "--verbose", "--settings", '{"fastMode":false}', "--model", "sonnet", "--effort", "high",
+    "--dangerously-skip-permissions", "--add-dir", "/x", "--resume", "11111111-2222-3333-4444-555555555555", "the brief"];
+  expect(extraFlags("claude", argv)).toEqual(["--advisor=opus", "--verbose"]);
+  expect(extraFlags("claude", ["sh", "-ic", "claude --x", "claude", "--advisor=opus"])).toEqual(["--advisor=opus"]);
+  const codex = ["codex", "-c", "hooks.x=1", "--no-daemon", "--search", "--config=model_verbosity=high", "-m", "gpt-x", "-c", 'service_tier="fast"', "--dangerously-bypass-approvals-and-sandbox"];
+  expect(extraFlags("codex", codex)).toEqual(["--search", "--config=model_verbosity=high"]);
+  // the web's restart on the same CLI keeps them; another CLI drops them
+  expect(argvFor({ agent: "claude", model: "opus" }, { agent: "claude", argv }).argv).toContain("--advisor=opus");
+  expect(argvFor({ agent: "codex" }, { agent: "claude", argv }).argv).not.toContain("--advisor=opus");
+  expect(resumeArgv("claude", argv, "s1")).toContain("--advisor=opus");
+  expect(resumeArgv("claude", argv, "s1").slice(-2)).toEqual(["--resume", "s1"]);
+  expect(forkArgv("claude", argv, "s1")).toContain("--advisor=opus");
+});
+
+test("#1219: a switch carries the old agent's permission in the new CLI's words", () => {
+  // the window's restart passes the Claude agent's mode when the person picked none: Codex gets full access, never its sandbox
+  const codex = argvFor({ agent: "codex", perm: "bypassPermissions" }, { agent: "claude", argv: ["claude", "--dangerously-skip-permissions"] }).argv;
+  expect(codex).toContain("--dangerously-bypass-approvals-and-sandbox");
+  expect(codex).not.toContain("workspace-write");
+  expect(argvFor({ agent: "codex", perm: "plan" }, { agent: "claude", argv: [] }).argv.join(" ")).toContain("-s read-only");
+  const claude = argvFor({ agent: "claude", perm: "full" }, { agent: "codex", argv: [] }).argv;
+  expect(claude).toContain("--dangerously-skip-permissions");
+  expect(argvFor({ agent: "claude", perm: "acceptEdits" }, { agent: "claude", argv: [] }).argv.join(" ")).toContain("--permission-mode acceptEdits");
 });

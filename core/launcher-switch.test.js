@@ -10,8 +10,8 @@ function method(source, name) {
 }
 function composerPick(from, to, model) {
   let request;
-  const methods = new Function("normalizePick", "permAcross", "setShared", "closeOverlay", `return {${method(menuSource, "choose")},${method(menuSource, "restart")}}`)(
-    agent.normalizePick, agent.permAcross, (_key, value) => { request = JSON.parse(JSON.stringify(value)); }, () => {});
+  const methods = new Function("normalizePick", "permAcross", "speedFor", "speedName", "setShared", "closeOverlay", `return {${method(menuSource, "choose")},${method(menuSource, "restart")}}`)(
+    agent.normalizePick, agent.permAcross, agent.speedFor, agent.speedName, (_key, value) => { request = JSON.parse(JSON.stringify(value)); }, () => {});
   const menu = { ...methods, p: { pane: "p1" }, sel: agent.viewPick({ agent: "claude", launcher: from, model: "old", perm: "auto" }), level: () => "high" };
   menu.choose({ agent: agent.LAUNCHER_COMMANDS[to], id: model, efforts: ["high"], fast: false });
   menu.restart({ spawn() {} });
@@ -45,7 +45,7 @@ for (const from of ["cdnd", "magpie", "direct"]) for (const to of ["cdnd", "magp
 
 test("normalized composer choices retain their launcher across serialization", () => {
   let request;
-  const menu = new Function("normalizePick", "setShared", "closeOverlay", `return {${method(menuSource, "restart")}}`)(agent.normalizePick, (_key, value) => { request = JSON.parse(JSON.stringify(value)); }, () => {});
+  const menu = new Function("normalizePick", "speedName", "setShared", "closeOverlay", `return {${method(menuSource, "restart")}}`)(agent.normalizePick, agent.speedName, (_key, value) => { request = JSON.parse(JSON.stringify(value)); }, () => {});
   menu.restart.call({ sel: { agent: "claude", launcher: "magpie", model: agent.MAGPIE_MODEL, perm: "plan" }, p: { pane: "p1" }, level: () => "max" }, { spawn() {} });
   expect(request.pick).toEqual({ agent: "claude", launcher: "magpie", model: agent.MAGPIE_MODEL, perm: "plan", effort: "max" });
 });

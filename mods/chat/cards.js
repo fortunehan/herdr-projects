@@ -35,8 +35,6 @@ export class AskCards {
     this.open = new Set();
     // The questions card the keys go to (the last one pressed).
     this.keyed = null;
-    // Told of each "Other" box made: (box, shown), so the chat leaves the keyboard in it (main.js keepField()).
-    this.onField = null;
   }
 
   // The strips of one ask's card. opts: { who (whose ask: "Claude", "HERD-12"), links (more
@@ -147,6 +145,12 @@ export class AskCards {
     this.host.reply(ask, answers(ask.req, map, annotationsOf(ask.words, map)), cx);
   }
 
+  // Whether one of these cards' own boxes (Other…) has the keyboard: one of a card that's gone counts no more.
+  holdsKeys() {
+    const b = this.typing;
+    return Boolean(b) && [...this.states.values()].some((q) => q.boxes?.includes(b));
+  }
+
   // A press on one of this ask's strips: its card takes the keys (Esc; a questions card's arrows,
   // Tab, digits too).
   pressed(ask) {
@@ -195,9 +199,11 @@ export class AskCards {
     q.other[i] = q.other[i] ?? "";
     if (!ask.words.questions[i].multi) q.picks[i] = new Set();
     if (!q.boxes[i]) {
-      const box = q.boxes[i] = InputState.new({ placeholder: "Your answer" });
-      box.on("change", (_e, cx) => cx.notify());
-      this.onField?.(box, () => this.states.get(ask.id) === q && q.boxes[i] === box && q.other[i] !== null && q.step === i);
+      const b = q.boxes[i] = InputState.new({ placeholder: "Your answer" });
+      b.on("change", (_e, cx) => cx.notify());
+      // which card box holds the keyboard: the chat's refocus() leaves it there (GitHub #1224)
+      b.on("focus", () => { this.typing = b; });
+      b.on("blur", () => { if (this.typing === b) this.typing = null; });
     }
     const box = q.boxes[i];
     cx.timer.after(0, () => box.focus());

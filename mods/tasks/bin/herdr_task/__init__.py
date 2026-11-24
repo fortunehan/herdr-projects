@@ -24,11 +24,14 @@ before it:
   queues       Queues: tasks that come after others, and how many may run at once.
   archive      The archive: done tasks set aside after a while.
   output       Output: a task as JSON and as one line of text.
+  addons       Add-ons: which are off, a switch for each, and the words when one a command needs is off.
   scheduler    Keeps the scheduler (herdr-automations) running on this machine.
   commands     The task commands: add, start, status, ready, accept, merge and the rest.
   news         News: what changed in a space's tasks, told to its Assistant.
   ghnews       GitHub news: a Ready task's pull request news to its agent, and its base branch
                going red after merges, to the Assistant.
+  systemic     One failure behind many tasks (a red base, one check failing many merge-queue
+               groups): the Assistant told once, fix requests held till it is green again.
   tick         Tick: one pass over the tasks (start queued ones, finish merged ones, retry cut
                turns).
   backups      Backups of every machine's spaces, and restoring them.

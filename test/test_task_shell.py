@@ -429,7 +429,8 @@ class EndsWithItsTask(unittest.TestCase):
         with mock.patch.object(github, "end_shells", lambda key: order.append(("shells", key))), \
                 mock.patch.object(github, "mid_turn", lambda *a: False), \
                 mock.patch.object(github, "live_agents", lambda key: []), \
-                mock.patch.object(github, "remove_worktree", lambda *a: order.append(("worktree",))):
+                mock.patch.object(github, "remove_worktree", lambda *a: order.append(("worktree",))), \
+                mock.patch.object(github, "after_accept", lambda *a: None):
             github.finish(s, {"state": "ready", "worktree": self.wt})
         self.assertEqual(order, [("shells", "repo#1"), ("worktree",)])
 

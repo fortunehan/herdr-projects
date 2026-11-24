@@ -6,14 +6,14 @@ import { dirname, join } from "node:path";
 import { appHome, writable } from "./paths.ts";
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag } from "../core/send.js";
+import { sendBody, steerNow, messageBody, refusal, reactionLine, mentionedIn, taskTag, markSaid } from "../core/send.js";
 import { kindOf } from "../core/chat-reader.js";
 import { WORDS } from "../core/chat-view.js";
 import { NOTES_MAX, cleanBlocks, cleanPicture, cleanQuote } from "../core/markup.js";
 import { settle } from "../core/pending.js";
 import * as AGa from "../core/agents.js";
 import { answerCodex } from "./codex-ask.ts";
-const { sessionOf, forkArgv, launchArgv, liveTaskAgent, FORK_LIVE } = AGa as any;
+const { sessionOf, forkArgv, launchArgv, liveTaskAgent, FORK_LIVE, CHOICE_KEY, choiceOf, withChoice, speedOf } = AGa as any;
 import * as SP from "../core/spaces.js";
 const { READ, withMove, withSection, withoutSection, withSectionName, withIcon, withMachineLook, withOrder, withMachineOrder, DELETED, deletedSection, withRestoredSection } = SP as any;
 import type { Compat } from "./compat.ts";
@@ -23,6 +23,7 @@ import { noteFailed, once } from "./send-once.ts";
 import { execTemplate } from "./spaces.ts";
 import * as MA from "../core/machine-add.js";
 import { exec } from "./model.ts";
+import { FIND } from "../core/chat-log.js";
 import { closeSaved, renameSaved, orderSaved, withoutSpace, splitId } from "./saved-spaces.ts";
 
 // The window's own space log (lib/spacelog.js): a space the service closed or renamed with no window is traced there too
@@ -50,6 +51,8 @@ async function sendNow(hub: Hub, b: any, compat: Compat, again = false) {
   const t = hub.terminals.get(a);
   if (!t || t.state !== "live") throw new Error("That agent isn't running.");
   const io = { hc: asPerson(hub), sleep: (ms: number) => Bun.sleep(ms), status: () => (hub.terminals.get(a) as any)?.status?.state ?? null };
+  // the person is chatting with it: Autopilot waits (core/send.js markSaid)
+  markSaid(io, a);
   // files sent with it: their paths after the words, as the window's chat sends them (copied first to another machine)
   const sent: string[] = Array.isArray(b.attachments) ? b.attachments : [];
   // never some of them quietly
@@ -133,15 +136,32 @@ function startWhenBack() {
 
 // An Assistant whose CLI showed a screen of its own (trust this folder) before hc could hand it its first message: the
 // template's words and the task go once it is idle past that screen, as the window's chat does (mods/chat follow()).
-function firstWhenIdle(hub: Hub, addr: string, text: string) {
+// It took a turn already (hc got the message in after all, or the person typed in its terminal): nothing is sent. A turn
+// alone doesn't say so: Codex counts one for coming up, before any message, so past its own screens ("Update
+// available", "Hooks need review") its first message was dropped and it sat idle without its instructions (SHEP-263).
+// A turn counts only once its session log is there (core/chat-log.js FIND: a conversation was written).
+export function firstWhenIdle(hub: Hub, addr: string, text: string, every = 2000) {
   const until = Date.now() + 15 * 60_000;
+  let busy = false;
   const timer = setInterval(async () => {
     const t: any = hub.terminals.get(addr);
-    if (!t || t.state !== "live" || (t.turn ?? 0) > 0 || Date.now() > until) return clearInterval(timer);
-    if (t.status?.state !== "idle") return;
-    clearInterval(timer);
-    await hub.send(addr, text);
-  }, 2000);
+    if (!t || t.state !== "live" || Date.now() > until) return clearInterval(timer);
+    if (t.status?.state !== "idle" || busy) return;
+    busy = true;
+    try {
+      if ((t.turn ?? 0) > 0) {
+        const kind = kindOf(t), pid = t.foreground?.pid;
+        const f = kind && pid ? await exec(hub, ["sh", "-c", FIND, "chat", kind, String(pid)], addr.includes("/") ? addr.split("/")[0] : null).catch(() => null) : null;
+        // (its log couldn't be looked for now: asked again at the next look)
+        if (kind && pid && !f) return;
+        const path = String(f?.stdout ?? "").trim().split("\n").pop() ?? "";
+        if (path && path !== "pending") return clearInterval(timer);
+      }
+      clearInterval(timer);
+      await hub.send(addr, text);
+    } finally { busy = false; }
+  }, every);
+  return timer;
 }
 
 async function run(cmd: string[]) {
@@ -391,25 +411,23 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     // the model menu's star: pinned to the top of its agent's list (core/agents.js PICKS_FILE, as the window's)
     return { ok: true, picks: (compat.agents as any).pin(b.agent, b.model) };
   }
-  if ((b?.type === "restart-info" || b?.type === "model-menu" || b?.type === "restart") && typeof b.chat === "string" && b.chat.startsWith("p:") && !compat.addrOf(b.chat) && compat.agents) {
-    const space = b.chat.slice(2).replace(":", "/"), sp = compat.spaceOf(space);
-    if (!sp) throw new Error("That space isn't here any more.");
-    const agents = compat.agents as any;
-    const menu = await agents.freshMenu(b.chat, sp.machine ?? null, compat.assistantPick?.(sp.id) ?? null);
-    if (b.type === "model-menu") return { ok: true, menu };
-    if (b.type === "restart-info") {
-      const on = { kind: menu.current.agent, model: menu.current.model, effort: menu.current.effort, speed: menu.current.fast ? "fast" : "normal" };
-      return { ok: true, info: { role: "coordinator", onKnown: false, on, want: on, onWords: "Not started", working: false, clis: await agents.choices(sp.machine ?? null) } };
-    }
-    const pick = { ...launcherPick(), model: typeof b.model === "string" && /^[\w./:\[\]-]{1,160}$/.test(b.model) ? b.model : null,
-      effort: typeof b.effort === "string" && /^[\w-]{1,20}$/.test(b.effort) ? b.effort : null, fast: b.speed === "fast", perm: b.perm };
-    await agents.requireLauncher((AGa as any).argvFor(pick, {}).base, sp.machine ?? null);
-    agents.freshPicks.set(b.chat, pick);
-    return { ok: true, live: true };
-  }
   if ((b?.type === "restart-info" || b?.type === "model-menu" || b?.type === "restart") && typeof b.chat === "string" && compat.agents) {
     // the model menu: what it runs on and its choices (model-menu: the window's, mods/chat-models); a restart on
     // another model, effort, speed, permission mode or CLI
+    const fresh = b.type !== "restart-info" && b.chat.startsWith("p:") && !compat.addrOf(b.chat) ? compat.spaceOf(b.chat.slice(2).replace(":", "/")) : null;
+    if (fresh) {
+      // a space's Assistant that hasn't started (SHEP-263): the menu shows what its first message starts it on, and a
+      // pick only changes that choice (nothing runs yet), kept where the window's chat keeps its own (CHOICE_KEY)
+      if (b.type === "model-menu") return { ok: true, menu: await (compat.agents as any).freshMenu(fresh.machine, compat.assistantPick?.(fresh.id) ?? null) };
+      // the fork's launchers too (claude-magpie, claude-cdnd: kept as claude with its launcher, core/agents.js normalizePick)
+      if (!(AGa as any).CHOICES.includes(b.kind)) throw new Error("Pick Claude Code, a Claude launcher or Codex.");
+      const opt = (v: unknown) => (typeof v === "string" && /^[\w./:\[\]-]{1,160}$/.test(v) ? v : null);
+      if (!compat.shared) throw new Error("The choice couldn't be kept.");
+      const sel = (AGa as any).normalizePick({ agent: b.kind, model: opt(b.model), effort: opt(b.effort), fast: speedOf(opt(b.speed)), perm: opt(b.perm) });
+      await (compat.agents as any).requireLauncher((AGa as any).argvFor(sel, {}).base, fresh.machine ?? null);
+      await compat.shared.set(CHOICE_KEY, withChoice(compat.shared.value(CHOICE_KEY), fresh.id, sel));
+      return { ok: true, chosen: true };
+    }
     const a = chat(b.chat), reader = compat.reader?.(a);
     if (b.type === "restart-info") return compat.agents.info(a, reader);
     if (b.type === "model-menu") return { ok: true, menu: await (compat.agents as any).menu(a, reader) };
@@ -616,9 +634,11 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
       ? ["--label", `herdr.chat=${SP.chatLabel(rec.pane)}`, "--label", `herdr.chat.slot=${slot}`, "--label", `herdr.chat.origin=slot:${slot}`, "--label", "herdr.role=coordinator",
         "--label", `herdr.coordinator.space=${bare}`, ...(rec.tab ? ["--label", `herdr.coordinator.tab=${String(rec.tab).split("/").pop()}`] : [])]
       : ["--label", "herdr.role=coordinator", "--label", `herdr.coordinator.space=${bare}`, "--label", `herdr.space=${bare}`];
-    const pick = (compat.agents as any)?.freshPicks?.get(b.chat) ?? compat.assistantPick?.(sp.id) ?? null;
+    const pick = compat.assistantPick?.(sp.id) ?? null;
     const tpl = await execTemplate(hub, "assistant", sp.machine ?? null, pick);
     if (tpl.argv) labels.push("--label", `herdr.agent=${(AGa as any).agentKey(tpl.argv[0])}`, "--label", `herdr.launcher.argv=${JSON.stringify(tpl.argv)}`);
+    // when it began to go in, by this clock: the page knows its message again in the chat by it, as any send's
+    const at = Date.now();
     const r = await hc(["run", "--bg", "--json", "--no-parent", "--keep", ...(sp.machine ? ["--on", sp.machine] : []), ...(sp.folder ? ["--cwd", sp.folder] : []), ...labels, tpl.name, task]);
     tpl.done();
     let out: any = {};
@@ -629,7 +649,12 @@ export async function act(hub: Hub, b: any, compat: Compat): Promise<unknown> {
     const addr = sp.machine && !String(out.address).includes("/") ? `${sp.machine}/${out.address}` : String(out.address);
     if (out.first_message?.sent === false && tpl.words) firstWhenIdle(hub, addr, `${tpl.words}\n\n${task}`);
     try { mkdirSync(first, { recursive: true }); writeFileSync(writable(join(first, `${String(slot ?? addr).replace(/[^\w.-]/g, "_")}.txt`)), text); } catch {}
-    return { ok: true, started: true };
+    // it started on the choice made in its chat (assistantPick): that choice is spent, the next start is Settings' again
+    if (compat.shared && choiceOf(compat.shared.value(CHOICE_KEY), sp.id)) void compat.shared.set(CHOICE_KEY, withChoice(compat.shared.value(CHOICE_KEY), sp.id, null)).catch(() => null);
+    // the page's own id for it (SHEP-263): the chat gives its message back with that id, so the page's pending copy
+    // goes once the log has it (it stayed under the reply, said twice, until it gave up on it two minutes later)
+    if (typeof b.cid === "string") compat.noteSend?.(addr, { cid: b.cid.slice(0, 80), text, files, at });
+    return { ok: true, started: true, at };
   }
   if (b?.type === "send" && typeof b.chat === "string") {
     // what it replies to (2.1 names the message by id) and the tasks it mentions, as the window's chat sends them

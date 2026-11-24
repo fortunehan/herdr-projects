@@ -28,7 +28,7 @@ import { HOME, appHome } from "./paths.ts";
 const { spaceName } = SPc as any;
 import type { Where } from "./worktree.ts";
 import * as AGc from "../core/agents.js";
-const { current, contextUse, usageUse, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
+const { current, contextUse, usageUse, extraFlags, rowFor, menuFor, modelName, levelName, NAMES } = AGc as any;
 import * as NF from "../core/notify.js";
 const { NOTIFY, everywhereOf, spaceLevel, machineLevel, machineOfSpace, spaceOwn, machineOwn } = NF as any;
 // Settings › Notify's words, the window's own (core/settings.js)
@@ -238,6 +238,17 @@ export class Compat {
   /** The model menu and restarts (service/agents.ts), set by main. */
   /** The agent Shepherdr settings choose for a space's Assistant (main.ts: Settings.role), for a start from the web. */
   assistantPick: ((space: string) => any) | null = null;
+  /** A space's Assistant chat with no Assistant yet (SHEP-263): nothing said, and what its first message starts it
+   *  on, as the window's chat says it on its model button before then (the choice kept for the space, else Shepherdr
+   *  settings' Assistant, else the CLI's own), with its CLI. null: the key is no space's, or its Assistant runs. */
+  freshChat(key: string): Chat | null {
+    const s = this.spaceList.find((x) => placeKey(x.id) === key);
+    if (!s || s.assistant || !(this.agents as any)?.fresh) return null;
+    const f = (this.agents as any).fresh(s.machine ?? null, this.assistantPick?.(s.id) ?? null);
+    const kind = f.sel.agent === "codex" ? "codex" : "claude";
+    return { key, fresh: true, messages: [], cli: kind, working: false,
+      agent: { kind, words: f.words, planned: { ...(f.sel.model ? { model: f.sel.model } : {}), ...(f.label ? { modelLabel: f.label } : {}), ...(f.effort ? { effort: f.effort } : {}) } } } as Chat;
+  }
   agents: { info(addr: string, reader: any): Promise<unknown>; restart(addr: string, reader: any, pick: any): Promise<string>; choices(machine: string | null): Promise<unknown>; ownDefaults(): Promise<{ claude: unknown; codex: unknown }> } | null = null;
 
   /** Agents' secret asks (service/secrets.ts), set by main. */
@@ -704,13 +715,15 @@ export class Compat {
       const c = current(kind, t?.foreground?.argv ?? t?.argv ?? [], reader.conv?.meta, dflt, t?.created_ms);
       const row = rowFor(kind, c), label = menuFor(kind, {}).models.find((m: any) => m.id === row)?.name ?? modelName(c.model);
       // the window's model button (mods/chat pickParts): model, level, Fast
-      const words = [c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ") || NAMES[kind] || "Agent";
+      const words = [c.label ?? modelName(c.model), levelName(c.effort), c.fast === "ultrafast" ? "Ultrafast" : c.fast ? "Fast" : null].filter(Boolean).join(" · ") || NAMES[kind] || "Agent";
       const ctx = contextUse(c);
       // the subscription's 5-hour and 7-day windows: Claude's as its status line keeps them, Codex's from its log
       // (only the numbers and reset times: the web app words them in its own time zone, core/agents.js usageUse)
       const limits = kind === "claude" ? (this.agents as any)?.usage?.(machine) : kind === "codex" ? reader.conv?.meta?.limits : null;
       const use = usageUse(limits) ? limits : null;
-      agent = { kind, words, ...(ctx ? { context: ctx } : {}), ...(use ? { limits: use } : {}), ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
+      // #1222: the extra flags it was started with, beside its model and effort
+      const extra = extraFlags(kind, t?.foreground?.argv ?? t?.argv ?? []);
+      agent = { kind, words, ...(extra.length ? { flags: extra } : {}), ...(ctx ? { context: ctx } : {}), ...(use ? { limits: use } : {}), ...(c.model ? { model: c.model, modelLabel: label } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.model ? { runtime: { model: c.model, modelLabel: label, ...(c.effort ? { effort: c.effort } : {}), speed: c.fast === "ultrafast" ? "ultrafast" : c.fast ? "fast" : "normal", source: "session", at: Date.now() } } : {}) };
     } catch {}
     // the first row: the log's very start, or earlier pages to load as it scrolls up
     const head = reader.start === 0 ? { top: true } : reader.start ? { earlier: true } : {};

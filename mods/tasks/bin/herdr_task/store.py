@@ -159,27 +159,6 @@ def open_lock(path):
         return None, False
 
 
-# SHEP-29: a read never waits long on the lock. Every list is saved whole (os.replace), so one read
-# without it is still a whole list: show and list wait this long (s), then read without saving.
-READ_WAIT = 2.0
-
-
-def take(lock, mode, wait=None):
-    """flock(lock, mode), waiting at most `wait` seconds (None: as long as it takes). False: timed out."""
-    if wait is None:
-        fcntl.flock(lock, mode)
-        return True
-    end = time.monotonic() + wait
-    while True:
-        try:
-            fcntl.flock(lock, mode | fcntl.LOCK_NB)
-            return True
-        except BlockingIOError:
-            if time.monotonic() >= end:
-                return False
-            time.sleep(0.05)
-
-
 def stamp(path):
     try:
         st = os.stat(path)
@@ -241,13 +220,14 @@ def merge_tasks(ours, base, theirs):
 class Store:
     """One folder's tasks, locked while open. `with Store(loc) as s: s.data[...]; s.dirty = True`.
     write: True (refused where nothing can be written), False (read only), or "try" (a read that
-    saves what it learns when it can: show, list). A read lets go of the lock once it has read; a
-    change lets go of it around slow calls (base.unlocked()) and merges what others saved then."""
+    saves what it learns when it can: show, list). A read never waits for the lock (#1130); a change
+    lets go of it around slow calls (base.unlocked()) and merges what others saved then."""
 
-    def __init__(self, loc, write=True):
+    def __init__(self, loc, write=True, wait=None):
         self.loc, self.write, self.best_effort = loc, bool(write), write == "try"
         self.slug, self.path = store_path(loc["folder"])
         self.dirty = self.read_only = False
+        self.wait = wait  # seconds a change waits for the lock before it gives up (None: as long as it takes)
 
     def __enter__(self):
         try:
@@ -262,15 +242,14 @@ class Store:
                 raise Fail(f"Can't change the task list here: {STORE} is read-only (a sandbox?). Run this outside it.")
             self.write, self.read_only = False, True
         self.locked = False
-        if self.lock:
-            reading = not self.write or self.best_effort
-            if take(self.lock, fcntl.LOCK_EX if self.write else fcntl.LOCK_SH, READ_WAIT if reading else None):
-                self.locked = True
-            else:
-                # A change holds it: the last saved list, read without it; nothing saved.
-                self.lock.close()
-                self.lock = None
-                self.write, self.read_only = False, True
+        # #1130: a read never waits for the lock. Every save replaces the list whole (os.replace), so a read sees the old
+        # list or the new one, never half: a plain read takes no lock, and one that would save what it learns (show,
+        # list) saves only when the lock is free now; else it reads like any other. A change waits, up to `wait`.
+        if self.lock and not self.write:
+            self.lock.close()
+            self.lock = None
+        elif self.lock:
+            self.take_lock()
         try:
             self.data, self.base, self.seen = self.load()
         except BaseException:
@@ -337,6 +316,46 @@ class Store:
         merge(self.data, self.base, theirs)
         self.base = base
 
+    def take_lock(self):
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.locked = True
+            return
+        except BlockingIOError:
+            pass
+        if self.best_effort:
+            self.lock.close()
+            self.lock, self.write = None, False
+            return
+        if self.wait is None:
+            fcntl.flock(self.lock, fcntl.LOCK_EX)
+            self.locked = True
+            return
+        end = time.time() + self.wait
+        while True:
+            try:
+                fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.locked = True
+                return
+            except BlockingIOError:
+                if time.time() >= end:
+                    self.lock.close()
+                    self.lock = None
+                    raise Fail(f"The task list for {self.loc['name']} is busy: another herdr-task has held it for over "
+                               f"{self.wait:g} s (the scheduler, or a slow command), so nothing was changed. Try again in a minute.")
+                time.sleep(0.2)
+
+    def save(self):
+        if self.write and self.dirty:
+            tmp = f"{self.path}.{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
+                # compact (#1175: the panels read every list through one capped exec; indented, a busy list was
+                # a third spaces); ASCII-escaped still, since readers open it in the locale's encoding
+                json.dump(normalize_spaces(self.data), f, separators=(",", ":"))
+                f.write("\n")
+            os.replace(tmp, self.path)
+            self.dirty = False
+
     @contextmanager
     def released(self):
         """Upstream's #1007 (the lock let go around a long git push, github.released()): base.unlocked() (SHEP-29)
@@ -358,12 +377,8 @@ class Store:
 
     def __exit__(self, kind, *_):
         try:
-            if kind is None and self.write and self.dirty:
-                tmp = f"{self.path}.{os.getpid()}.tmp"
-                with open(tmp, "w") as f:
-                    json.dump(normalize_spaces(self.data), f, indent=2)
-                    f.write("\n")
-                os.replace(tmp, self.path)
+            if kind is None:
+                self.save()
         finally:
             self.unlock()
         if kind is None and self.new_prefix:
@@ -444,7 +459,7 @@ class Store:
             self.dirty = True
 
 
-def open_store(args, write=True):
+def open_store(args, write=True, wait=None):
     """The list a command works on: --folder's, else the one whose prefix the id names (HAT-4
     from anywhere), else the current folder's."""
     folder = getattr(args, "folder", None)
@@ -453,7 +468,7 @@ def open_store(args, write=True):
         m = re.fullmatch(r"([A-Za-z]+[0-9]*)-[Aa]?[0-9]+", str(ref).strip())
         if m:
             folder = prefixes_in_use().get(m.group(1).upper())
-    return Store(locate(folder), write)
+    return Store(locate(folder), write, wait)
 
 
 def is_task_list(d):

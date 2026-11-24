@@ -22,8 +22,6 @@ export class SecretCards {
     this.kept = new Map();
     // Told when an ask is kept or declined here: (ask, how), for its quiet line (main.js).
     this.onEnd = null;
-    // Told of each masked box made: (box, shown), so the chat leaves the keyboard in it (main.js keepField()).
-    this.onField = null;
   }
 
   // What to show for a terminal: its asks, then those just kept.
@@ -50,9 +48,11 @@ export class SecretCards {
         st.box = InputState.new({ placeholder: "Paste the value" });
         st.box.set_masked(true);
         st.box.on("change", (_e, cx) => { st.err = ""; cx.notify(); });
+        // which masked box holds the keyboard: the chat's refocus() leaves it there (GitHub #1224)
+        const b = st.box;
+        b.on("focus", () => { this.typing = b; });
+        b.on("blur", () => { if (this.typing === b) this.typing = null; });
         st.box.on("submit", (_e, cx) => { const [address, name] = k.split("|"); this.save({ address, name }, cx); });
-        const box = st.box;
-        this.onField?.(box, () => this.states.get(k)?.box === box);
       }
       cx.notify();
     });
@@ -80,6 +80,12 @@ export class SecretCards {
       st.busy = false;
       cx.notify();
     });
+  }
+
+  // Whether one of these cards' masked boxes has the keyboard: one of a card that's gone counts no more.
+  holdsKeys() {
+    const b = this.typing;
+    return Boolean(b) && [...this.states.values()].some((st) => st.box === b);
   }
 
   // Whether an ask's masked box is made yet; focus() puts the keyboard in it.

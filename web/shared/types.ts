@@ -900,6 +900,9 @@ export interface Chat {
   blocked?: string
   /** a note at the conversation's end (a lost session being started again) */
   note?: string
+  /** a space's Assistant that hasn't started (SHEP-263): nothing said yet, and `agent` is what its first message
+   *  starts it on (its model menu changes that choice, nothing runs yet) */
+  fresh?: boolean
   /** 3.0's notice instead of the conversation: opening it, not a chat agent, its log not found, its agent ended */
   notice?: 'opening' | 'unsupported' | 'none' | 'ended' | 'gone'
   /** the turn that runs now: how far it got and its step on now, drawn as one quiet line at the end of the chat */
@@ -910,7 +913,8 @@ export interface Chat {
   /** what this CLI lets the + menu change; only what it supports is listed */
   controls?: ChatControls
   /** Recorded launch values, never inferred from Settings. Missing values are CLI defaults, not observed telemetry. */
-  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string; /** how full its context window is (core/agents.js contextUse), once known */ context?: AgentContext; /** the subscription's 5-hour and 7-day windows, as last known (core/agents.js usageUse words them) */ limits?: AgentLimits }
+  agent?: { kind: string; model?: string; modelLabel?: string; effort?: string; speed?: string; runtime?: AgentRuntime; planned?: PlannedAgent; /** the window's model button: "Opus 5.5 · High" */ words?: string; /** how full its context window is (core/agents.js contextUse), once known */ context?: AgentContext; /** the subscription's 5-hour and 7-day windows, as last known (core/agents.js usageUse words them) */ limits?: AgentLimits
+    /** #1222: the extra flags it was started with, one word each ("--advisor=opus") */ flags?: string[] }
   /** Settings for its role now say something else than what its agent runs on: a calm hint offers a restart */
   restart?: RestartHint
 }
@@ -937,7 +941,7 @@ export interface RestartCli {
   efforts?: string[]
   defaultModel?: string
   defaultEffort?: string
-  /** the speeds it can start on: normal, fast */
+  /** the speeds it can start on: normal, fast, ultrafast (Codex, SHEP-258) */
   speeds?: string[]
   /** its permission modes (Settings › Agents), and the one a new agent gets unless picked */
   perms?: { id: string; label: string }[]
@@ -1005,6 +1009,8 @@ export interface SettingRow {
   trigger?: TriggerRow
   /** a whole file's words (a coordinator's HEARTBEAT.md), in a box as wide as the page */
   doc?: boolean
+  /** a command (Tasks › Before the agent starts, When a task is accepted): its box in monospace */
+  mono?: boolean
   /** Complete generated launch settings, plain text after the editable Heartbeat. */
   instructions?: string
   /** read-only row (plugins, machines) */
@@ -1069,12 +1075,13 @@ export interface RoleAgent {
   unset?: boolean
   other?: boolean
 }
-export interface AgentPick { agent: string; launcher?: 'direct' | 'magpie' | 'cdnd'; argv?: string[]; model?: string | null; effort?: string | null; fast?: boolean; perm?: string | null }
+/** fast: true (Fast), false (standard) or 'ultrafast' (Codex's Ultrafast tier) */
+export interface AgentPick { agent: string; launcher?: 'direct' | 'magpie' | 'cdnd'; argv?: string[]; model?: string | null; effort?: string | null; fast?: boolean | 'ultrafast'; perm?: string | null }
 
 /** Settings › Agents' model menu, as the window's (mods/chat-models, settings mode; core/agents.js menuFor) */
 export interface ModelMenus {
   magpie?: ModelMenus['menus'][string]
-  menus: Record<string, { name: string; models: { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean }[]; perms: { id: string; label: string }[] }>
+  menus: Record<string, { name: string; models: { id: string; name: string; efforts: string[]; defaultEffort?: string | null; fast?: boolean; ultrafast?: boolean }[]; perms: { id: string; label: string }[] }>
   permDefault: Record<string, string>
 }
 
@@ -1282,7 +1289,7 @@ export interface Snapshot {
   read?: Record<string, number>
   /** the agents' own alerts (herdr-task alert), one per agent, as the window's toasts say them (service/push.ts
    *  agentAlerts): "HERD-4 · <title>" over its body, its chat, and whether it reaches the person (its space's Notify) */
-  alerts?: { id: string; at: number; title: string; body: string; chat?: string; place?: string; notify: boolean; ended?: true; machine?: string | null; memory?: true }[]
+  alerts?: { id: string; at: number; title: string; body: string; chat?: string; /** the task it is about (SHEP-255): its row shows it; none: no task's, not in Tasks */ task?: string; place?: string; notify: boolean; ended?: true; machine?: string | null; memory?: true }[]
   /** the sidebar's sections, as Slack's, each with its spaces in the human's order: the top ones first (Pinned, id
    *  'pinned', among them), then each machine's, its machine in order (shared/order.ts) */
   sections?: Section[]
@@ -1350,7 +1357,7 @@ export type Action =
   | { type: 'restart-info'; chat: string }
   /** start a coordinator or a task's agent again on this CLI, model and effort (none: the CLI's own; no kind: all as
       Settings say for its role); save: as its space's Settings for its role too */
-  /** speed: normal or fast, '' for the CLI's own; left out keeps what it was started on. It lasts as long as this chat, and save leaves it out of Settings. */
+  /** speed: normal, fast or ultrafast, '' for the CLI's own; left out keeps what it was started on. It lasts as long as this chat, and save leaves it out of Settings. */
   | { type: 'restart'; chat: string; kind?: string; model?: string; effort?: string; speed?: string; save?: boolean }
   /** mark a task done with nothing merged (shepherdr task close); refused (held) while it holds unmerged work, unless force */
   | { type: 'close'; chat: string; force?: boolean }

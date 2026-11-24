@@ -19,7 +19,7 @@ import { asset, answer, answers, id as ART_ID, version as ART_V, machine as ART_
 import { blockPaths, WORDS as TW } from "./translate.js";
 import data from "./recipe-data.js";
 import { sawBox, sawPicture, sawContent, layoutMoved, setLayoutRecipe, marksOn } from "./core/markup.js";
-import { answerLine, answerOf, chartShapes, checkStatus, choiceReply, diffLines, formReply, FULL_TEXT, fullWide, imageSize, isDiff, isLink, mdParts, mediaKind, pictureMax, pictures, withIds } from "./recipe.js";
+import { answerLine, answerOf, cellMd, chartShapes, checkStatus, choiceReply, diffLines, fieldStart, formReply, FULL_TEXT, fullWide, imageSize, isDiff, isLink, mdParts, mediaKind, pictureMax, pictures, withIds } from "./recipe.js";
 
 // A form field holds the keyboard while the person types in it (shared "keyboard.holder", as lib/keyholder.js writes
 // it; this file is copied into each artifact on its own, so it can't import that), or the Assistant chat beside it,
@@ -213,6 +213,13 @@ export default class RecipeView extends View {
     return line ? v_flex().w_full().min_w(0).child(el).child(line) : el;
   }
 
+  // A table cell: inline Markdown (core/recipe.js cellMd) as a TextView only when it has marks to draw (a link, bold,
+  // code), else plain words, so a right-aligned number stays right-aligned.
+  cell(key, md) {
+    if (!/[*_`[\]\\~]|https?:\/\//.test(md)) return md;
+    return TextView.markdown(`md-${key}`, md).selectable(true);
+  }
+
   // A code box: its text, and a Copy button at its top right that puts all of it on the clipboard (the
   // window binds no copy key to a page's selected text, so this is how a command gets out whole). "Copied" a moment.
   code(key, text, t) {
@@ -284,10 +291,16 @@ export default class RecipeView extends View {
   }
 
   // a form field's InputState, made in init() (render only reads it)
+  // A checkbox: as pressed, else as the recipe started it (its value).
+  checked(b, f) {
+    const k = `${b.id}:${f.name}`;
+    return this.checks.has(k) ? !!this.checks.get(k) : !!fieldStart(f);
+  }
+
   input(b, f) {
     const k = `${b.id}:${f.name}`;
     if (!this.inputs.has(k)) {
-      const state = InputState.new({ placeholder: f.label ?? f.name, ...(f.kind === "textarea" ? { multi_line: true } : {}) });
+      const state = InputState.new({ placeholder: f.label ?? f.name, value: String(fieldStart(f)), ...(f.kind === "textarea" ? { multi_line: true } : {}) });
       state.on("focus", () => holdKeys());
       this.inputs.set(k, state);
     }
@@ -365,7 +378,8 @@ export default class RecipeView extends View {
         .child(tag(h_flex().w_full().px(10).py(6).bg(t.surface), `${p}/columns`).children(b.columns.map((c, i) => div().flex_1().min_w(0).text_size(12).font_medium().text_color(t.muted)
           .when((c.align ?? "") === "right", (e) => e.text_right()).child(String(c.label ?? c)).when(Boolean(this.tr(b, `col.${i}`, t)), (e) => e.child(this.tr(b, `col.${i}`, t))))))
         .children(b.rows.map((r, ri) => tag(h_flex().w_full().px(10).py(6).border_t_1().border_color(t.border), `${p}/rows.${ri}`)
-          .children(r.map((c, i) => div().flex_1().min_w(0).text_size(13).whitespace_normal().when(b.columns[i]?.align === "right", (e) => e.text_right()).child(String(c ?? ""))
+          .children(r.map((c, i) => div().flex_1().min_w(0).text_size(13).text_color(t.foreground).whitespace_normal().when(b.columns[i]?.align === "right", (e) => e.text_right())
+            .child(this.cell(`${b.id}-r${ri}-c${i}`, cellMd(c)))
             .when(Boolean(this.tr(b, `cell.${ri}.${i}`, t)), (e) => e.child(this.tr(b, `cell.${ri}.${i}`, t)))))));
       case "chart": return this.withFail(this.chart(b, t), b, t);
       case "stats": return h_flex().flex_wrap().gap(8).children(b.items.map((x, i) => tag(v_flex().min_w(120).flex_1().p(10).gap(2).rounded(8).bg(t.surface), `${p}/items.${i}`)
@@ -430,8 +444,8 @@ export default class RecipeView extends View {
         return v_flex().gap(8)
           .children(b.fields.map((f, i) => f.kind === "checkbox"
             ? tag(h_flex().id(`cb-${b.id}-${f.name}`), `${p}/fields.${i}`).gap(8).items_center().cursor_pointer()
-              .on_click((_e, cx) => { this.checks.set(`${b.id}:${f.name}`, !this.checks.get(`${b.id}:${f.name}`)); cx.notify(); })
-              .child(div().size(14).rounded(3).border_1().border_color(t.border).when(!!this.checks.get(`${b.id}:${f.name}`), (e) => e.bg(t.accent)))
+              .on_click((_e, cx) => { this.checks.set(`${b.id}:${f.name}`, !this.checked(b, f)); cx.notify(); })
+              .child(div().size(14).rounded(3).border_1().border_color(t.border).when(this.checked(b, f), (e) => e.bg(t.accent)))
               .child(div().text_size(13).child(f.label ?? f.name))
             : tag(v_flex().gap(4), `${p}/fields.${i}`).child(div().text_size(12).text_color(t.muted).child(f.label ?? f.name))
               .child(div().px(8).py(5).rounded(6).border_1().border_color(t.border).child(Input.new(this.input(b, f)).w_full().text_size(13)))))
@@ -439,7 +453,7 @@ export default class RecipeView extends View {
             .child(div().id(`fs-${b.id}`).self_start().px(12).py(6).rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(13)
               .when(!busy, (e) => e.cursor_pointer()).on_click((_e, cx) => {
                 if (busy) return;
-                const values = Object.fromEntries(b.fields.map((f) => [f.name, f.kind === "checkbox" ? !!this.checks.get(`${b.id}:${f.name}`) : this.input(b, f).value()]));
+                const values = Object.fromEntries(b.fields.map((f) => [f.name, f.kind === "checkbox" ? this.checked(b, f) : this.input(b, f).value()]));
                 this.send(b.id, values, formReply(b, values), cx);
               }).child(busy ? "Sending…" : kept ? "Send again" : b.submit ?? "Send"))
             .when(!!note, (e) => e.child(note)));

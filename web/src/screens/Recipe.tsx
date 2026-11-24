@@ -32,7 +32,7 @@ type Props = { recipe: { blocks: Block[] }; asset: (src: string) => string; repl
 /** the window's words when a recipe can't be read */
 export const UNREADABLE = "This artifact's recipe can't be read."
 
-const { chartShapes, choiceReply, formReply, isLink, answerLine, answerOf, checkStatus, diffLines, isDiff, pictures } = R as any
+const { cellMd, chartLabels, chartShapes, choiceReply, fieldStart, formReply, isLink, answerLine, answerOf, checkStatus, diffLines, isDiff, pictures } = R as any
 
 /** opens the picture viewer on a picture, by its src in the recipe */
 const OpenPicture = createContext<((src: string) => void) | null>(null)
@@ -75,10 +75,10 @@ function Chart({ b, T }: { b: Block; T?: (field: string) => string | undefined }
         {b.kind === 'line'
           ? s.lines.map((l: any, i: number) => <polyline key={i} fill="none" stroke={PALETTE[i % PALETTE.length]} strokeWidth="2" points={l.points.map((p: any) => `${p.x * (W - 8) + 4},${H - p.y * (H - 8)}`).join(' ')} />)
           : s.bars.map((x: any, i: number) => <rect key={i} x={x.x * W} y={H - x.h * (H - 4)} width={x.w * W} height={x.h * (H - 4)} rx="2" fill={PALETTE[x.series % PALETTE.length]} />)}
-        {(b.labels ?? []).map((l: string, i: number, all: string[]) => (
+        {chartLabels(b).map((l: any, i: number) => (
           <g key={i}>
-            <text x={((i + 0.5) / all.length) * W} y={H + 14} textAnchor="middle" fontSize="10" fill="var(--fg3)">{l}</text>
-            {T?.(`label.${i}`) ? <text data-tr x={((i + 0.5) / all.length) * W} y={H + 28} textAnchor="middle" fontSize="10" fill="var(--fg2)">{T(`label.${i}`)}</text> : null}
+            <text x={b.kind === 'line' ? l.x * (W - 8) + 4 : l.x * W} y={H + 14} textAnchor={l.anchor} fontSize="10" fill="var(--fg3)">{l.text}</text>
+            {T?.(`label.${i}`) ? <text data-tr x={b.kind === 'line' ? l.x * (W - 8) + 4 : l.x * W} y={H + 28} textAnchor={l.anchor} fontSize="10" fill="var(--fg2)">{T(`label.${i}`)}</text> : null}
           </g>
         ))}
       </svg>
@@ -121,7 +121,8 @@ function Choice({ b, rp, reply, answer }: { b: Block; rp?: string; reply?: Reply
 
 function Form({ b, rp, reply, answer }: { b: Block; rp?: string; reply?: Reply; answer: Answer | null }) {
   const kept = answer && typeof answer.value === 'object' ? (answer.value as Record<string, unknown>) : null
-  const [v, setV] = useState<Record<string, unknown>>(() => kept ?? {})
+  // each field starts on its value, when the recipe gave one (GitHub #1212); one answered starts on what was sent
+  const [v, setV] = useState<Record<string, unknown>>(() => kept ?? Object.fromEntries(b.fields.map((f: any) => [f.name, fieldStart(f)])))
   const [busy, setBusy] = useState(false)
   // reopened (or answered on another screen): its values as sent
   useEffect(() => { if (kept) setV(kept) }, [JSON.stringify(kept)])
@@ -134,7 +135,7 @@ function Form({ b, rp, reply, answer }: { b: Block; rp?: string; reply?: Reply; 
           {f.kind === 'checkbox' ? <input type="checkbox" checked={!!v[f.name]} onChange={(e) => setV({ ...v, [f.name]: e.target.checked })} className="size-4" /> : null}
           <span className="text-fg2">{f.label ?? f.name}</span>
           {f.kind === 'textarea' ? <textarea rows={3} className={field} placeholder={f.label ?? f.name} value={String(v[f.name] ?? '')} onChange={(e) => setV({ ...v, [f.name]: e.target.value })} />
-            : f.kind === 'select' ? <select className={field} value={String(v[f.name] ?? '')} onChange={(e) => setV({ ...v, [f.name]: e.target.value })}><option value="" />{(f.options ?? []).map((o: string) => <option key={o}>{o}</option>)}</select>
+            : f.kind === 'select' ? <select className={field} value={String(v[f.name] ?? '')} onChange={(e) => setV({ ...v, [f.name]: e.target.value })}>{fieldStart(f) === '' ? <option value="" /> : null}{(f.options ?? []).map((o: string) => <option key={o}>{o}</option>)}</select>
             : f.kind === 'checkbox' ? null : <input className={field} placeholder={f.label ?? f.name} value={String(v[f.name] ?? '')} onChange={(e) => setV({ ...v, [f.name]: e.target.value })} />}
         </label>
       ))}
@@ -369,7 +370,7 @@ export function Recipe({ recipe, asset, reply: send, answers: given, tr, fullScr
         <div className="overflow-x-auto rounded-box shadow-box">
           <table className="w-full border-collapse">
             <thead><tr data-rp={`${rp}/columns`}>{b.columns.map((c: any, i: number) => <th key={i} className={clsx('border-b border-line px-3 py-2 text-left font-medium text-fg2', (c.align ?? '') === 'right' && 'text-right')}>{c.label ?? c}{T(b, `col.${i}`)}</th>)}</tr></thead>
-            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} data-rp={`${rp}/rows.${i}`} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}>{String(c ?? '')}{T(b, `cell.${i}.${j}`)}</td>)}</tr>)}</tbody>
+            <tbody>{b.rows.map((r: unknown[], i: number) => <tr key={i} data-rp={`${rp}/rows.${i}`} className="border-b border-line last:border-0">{r.map((c, j) => <td key={j} className={clsx('px-3 py-2 align-top', b.columns[j]?.align === 'right' && 'text-right tabular-nums')}><Markdown text={cellMd(c)} />{T(b, `cell.${i}.${j}`)}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )

@@ -269,3 +269,36 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
 - Version bumps are patch only (2.0.0 → 2.0.1) unless the human explicitly asks for a minor or major one.
 - From SHEP-238: headless Chrome with flags herdr-browser ignores (e.g. --autoplay-policy=no-user-gesture-required, fake mic): run ~/.agent-browser/browsers/chrome-*/chrome --headless=new --user-data-dir=<scratch> --screenshot/--dump-dom directly.
 - From SHEP-240: a second visible browser page on the dev VM: run ~/.agent-browser/browsers/chrome-*/chrome --headless=new --remote-debugging-port=<p> <url> in the background and screenshot over CDP (Page.captureScreenshot); herdr-browser's --headers don't reach WebSockets.
+- From SHEP-258: Codex's model list comes from its own catalog: npm i --prefix <scratch> @openai/codex@<ver> and run its codex debug models to see a newer CLI's models and service_tiers without touching the installed one.
+- From SHEP-259: Python's zipimport reopens a zipapp by path on every import: test a swap by starting the zipapp, replacing its file, then importing (test/test_zipapp_swap.py).
+- From SHEP-263: a real service on a throwaway core: HOME=<scratch home> (with ~/.local/share/shepherdr/LAYOUT copied), SHEPHERDR_HC=<wrapper exporting HC_SESSION, exec hc> (the hub drops HC_SESSION: without it the service attaches to the REAL core), fake herdr-task/herdr-app/tailscale first on PATH.
+
+- Run `bun install` in a fresh worktree before `bun test core/`: core tests that import marked fail without it. (from SHEP-268)
+
+- The dev VM's sh is busybox (/exe.dev/bin/sh): its lsof applet ignores a fake lsof on PATH, so test macOS lsof paths under bash. (from SHEP-267)
+
+- Accept card screenshots with real evidence: run herdr_task.proof.evidence on a scratch repo (mock artifacts_of), dump the JSON, and serve it from a stub's /api/action evidence reply. (from SHEP-273)
+
+- A real herdr-task CLI run with HERDR_TASK_STORE=<tmp>, a fake gh via HERDR_TASK_GH and a fake hc on PATH still makes worktrees under the real ~/.local/share/shepherdr/worktrees/<repo folder name>: give the scratch repo a unique name and rm that folder after. (from SHEP-271)
+
+- A real herdr-task start in worktree mode without touching people's tasks: env -i with HERDR_TASK_STORE, HERDR_TASK_SETTINGS (tasks.worktree_root to scratch), SHEPHERDR_NO_MIGRATE=1 and a fake hc exporting HC_SESSION; start --argv '["sh","-c","..."]' stands in for the agent. (from SHEP-272)
+
+- Fake a dropped herdr-core link: hc machine add --via <script> --session b on a throwaway core, make the script fail while a flag file exists, kill the core's `herdr-core connect` child; hc machine login only retries with a terminal (give it a pty). (from SHEP-276)
+
+- Web viewer before/after on the dev VM: `bunx vite build --config web/vite.viewer.config.ts` writes a single-file web/dist/artifact-viewer.html; serve it with a tiny Bun stub answering /api/artifacts/<id> and /recipe. (from SHEP-274)
+
+- herdr-task --detach/_job (window actions as local jobs): test with TMPDIR=<scratch> and HERDR_TASK_ACTION_WAIT to keep job files and waits throwaway (see DetachedActions). (from SHEP-277)
+
+- Real Codex versions for repros: `npm i --prefix <scratch> @openai/codex@<ver>`, then hc run it with env PATH=<scratch>/node_modules/.bin:<node dir>:$PATH (hc run children get a bare PATH and do not inherit the caller's). (from SHEP-278)
+
+- herdr-task's typing() reads a worker's session log from its hc herdr.resume label (log key): fake it with a temp JSONL and patch news.screen_raw (see ReadyAndPrFlow). (from SHEP-283)
+
+- The dev VM has a real hc in /usr/local/bin: a test whose fake hc cannot exec (no shebang) falls through to it if that folder is on PATH (Python's subprocess tries later PATH entries on ENOEXEC). (from SHEP-286)
+
+- Codex sandbox repros without an agent: `codex sandbox -c sandbox_mode='"workspace-write"' [-c sandbox_workspace_write.writable_roots=[...]] -- <cmd>` runs a command in the same bwrap+seccomp a worker gets (unix socket connect is refused there). (from SHEP-285)
+
+- Never pkill -f a pattern that appears in your own command line (e.g. a unittest name): it kills your shell; use TaskStop or kill by pid. (from SHEP-288)
+
+- Window-mod methods that read terminals()/subagentsOf can be tested like chat's refocus(): extract the method from mods/chat/main.js and stub those two (see test/test_chat_jobs.py). (from SHEP-284)
+
+- bin/sync-shared (no --check) can wrongly call a mods/*/core copy "edited by hand" in a worktree: when git diff main shows the copy untouched, cp core/<file> over the copies instead of using --from (that would undo your change). (from SHEP-287)

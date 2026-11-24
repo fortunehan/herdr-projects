@@ -1,6 +1,6 @@
 # Install
 
-Shepherdr 3.1.42 is a layout for the Herdr app plus its mods, helpers and role instructions, and a web app for your tailnet ([Web](web.md)). One script puts them in
+Shepherdr 3.1.46 is a layout for the Herdr app plus its mods, helpers and role instructions, and a web app for your tailnet ([Web](web.md)). One script puts them in
 place, never overwrites what you made yourself, and keeps a backup of anything it replaces.
 
 ## Requirements
@@ -138,7 +138,9 @@ Shepherdr only talks to what you set up yourself. In the background it contacts:
 
 - **Machines you linked** in Herdr (herdr-core's links, `hc machine ls`), over that same link: their spaces, tasks,
   health and artifacts for the sidebar and the web app, the task tick, the tools sync above, and the map of which
-  Assistants each machine reaches (`herdr-task machines reach`). It opens no new connection for any of it.
+  Assistants each machine reaches (`herdr-task machines reach`). It opens no new connection for any of it. A link
+  that can't be reached gets an extra try at once when the map refreshes (every 5 minutes, `machines reach --refresh`)
+  and when this machine's network changes (Tailscale back on, another Wi-Fi), seen from its own routes alone.
 - **GitHub**, through `gh` and git, for your tasks' own repos: their branches, pull requests, checks and merges.
 - **ElevenLabs**, with your key only (Voice add-on): dictation and calls when you use them, its credits now and then.
 - **Your devices' push services** (the browser's), when an alert goes to a device you turned alerts on for.

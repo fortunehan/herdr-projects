@@ -11,7 +11,8 @@ import { HOME } from "./paths.ts";
 import { exec } from "./model.ts";
 import * as NS from "../core/newspace.js";
 import * as SP from "../core/spaces.js";
-import { cleanCommand, commandCheck } from "../core/clean-env.js";
+import { AGENT_PATH, cleanCommand, commandCheck } from "../core/clean-env.js";
+import { TEMPLATES_SH } from "../core/paths.js";
 import { agentKey, argvFor, NAMES } from "../core/agents.js";
 import { rolePick } from "../core/settings.js";
 import { readSettings } from "./settings.ts";
@@ -74,7 +75,7 @@ export async function newSpaceInfo(hub: Hub, machine: string | null, at: string 
  *  words: the template's own words (its first message), when read. Unreadable: the template itself. */
 export async function execTemplate(hub: Hub, name: string, machine: string | null, pick: any = null): Promise<{ name: string; words: string; done: () => void; argv?: string[] }> {
   const plain = { name, words: "", done: () => {} };
-  const DIR = 'dir="$HOME/.config/herdr-core/templates"; ';
+  const DIR = TEMPLATES_SH + 'dir="$SHEP_TEMPLATES"; ';   // where herdr-core reads them there (#1182)
   const src = (await exec(hub, ["sh", "-c", DIR + 'cat "$dir/$1.md"', "x", name], machine).catch(() => null))?.stdout ?? "";
   const head = /^---\n([\s\S]*?)\n---\n?/.exec(src);
   const own = /^command:[ \t]*(.+)$/m.exec(head?.[1] ?? "")?.[1]?.trim();
