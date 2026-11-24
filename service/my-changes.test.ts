@@ -126,6 +126,38 @@ describe("my-changes follows the open task", () => {
     expect(v.files.map((f: any) => f.path)).toEqual(["z.txt"]);
   });
 
+  // SHEP-120: an Azure DevOps task (no pull request record), its worktree in its own folder outside the repo, a branch
+  // named after a work item, nothing committed yet, and its worker's terminal in no pane.
+  test("a worktree outside the repo with only uncommitted changes shows them in Base and Uncommitted", async () => {
+    const ado = join(top, "ado"), outside = join(top, "worktrees", "ado", "feature-ADO-17685753-2-x");
+    mkdirSync(ado); git(ado, "init", "-q", "-b", "main");
+    git(ado, "config", "user.email", "t@example.com"); git(ado, "config", "user.name", "t");
+    writeFileSync(join(ado, "c.swift"), "c\n"); writeFileSync(join(ado, "d.swift"), "d\n");
+    git(ado, "add", "-A"); git(ado, "commit", "-qm", "base");
+    git(ado, "worktree", "add", "-q", "-b", "feature/ADO-17685753-2-x", outside);
+    writeFileSync(join(outside, "c.swift"), "c changed\n"); writeFileSync(join(outside, "d.swift"), "d changed\n");
+    const was = spaceFolder;
+    spaceFolder = ado; tasksActive = "tasks-list";
+    try {
+      store.set("my-changes.target", JSON.stringify({ mode: "uncommitted", ref: "" }));
+      const v: any = new Changes(); v.init({}, cx); await settle(v);
+      expect(v.files).toEqual([]);
+      openTask({ terminal: "t1cz", task: "SDI-2", key: { machine: null, folder: ado, slug: "ado", id: 2 } },
+        { terminal: "t1cz", ref: "SDI-2", folder: outside, machine: null, repo: ado, branch: "feature/ADO-17685753-2-x",
+          base: "main", start: null, pr: null, key: "ado#2", state: "running" });
+      await settle(v);
+      expect(v.mode).toBe("base");
+      expect(v.root).toBe(git(outside, "rev-parse", "--show-toplevel").trim());
+      expect(v.files.map((f: any) => `${f.status} ${f.path}`)).toEqual(["M c.swift", "M d.swift"]);
+      v.target("uncommitted", undefined, cx); await settle(v);
+      expect(v.files.map((f: any) => `${f.status} ${f.path}`)).toEqual(["M c.swift", "M d.swift"]);
+      tasksActive = "tasks-list";
+      await settle(v);
+      expect(v.follow.follow).toBe(false);
+      expect(v.files).toEqual([]);
+    } finally { spaceFolder = was; tasksActive = "tasks-list"; }
+  });
+
   test("a finished task whose worktree is gone: its branch against its base, quietly; no branch: a quiet line", async () => {
     const v: any = new Changes(); v.init({}, cx);
     git(repo, "worktree", "remove", "--force", wt);
