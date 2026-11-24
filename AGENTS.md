@@ -77,6 +77,10 @@ How to run, build and lay out the code: [docs/develop.md](docs/develop.md).
   file's source with stubs via `new Function` instead.
 - herdr-task code that launches agents is tested with SimpleNamespace stores lacking `.loc` (test_review_launch,
   CleanEnv): don't read `s.loc` unconditionally in launch().
+- test_install's test_doctor_leaves_mods_that_are_not_shepherdrs_alone fails in a worktree whose path contains 'art-'
+  (e.g. '...-start-...'): it asserts 'art-' is absent from doctor output, which prints the source path.
+- Upstream sync: test hunks where both sides add tests need a closing '});' or class break between them; a helper script
+  named copy.py next to your scripts shadows Python's stdlib copy module.
 - One test file: `python3 -m unittest discover -s test -p test_ado.py` (add `-k <Class>`).
 - A bare remote for herdr-task git tests: `init --bare` in the tempdir, `remote add origin`, push main; see
   `test_herdr_task.StackedTasks`.
