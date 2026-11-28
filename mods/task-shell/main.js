@@ -14,7 +14,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex } from "gpui-base";
 import { exec, hc, run, theme, terminals, shared, layout } from "herdr";
-import { shown, where, SHELL, shellOf, shellShown, pointShell } from "./taskwhere.js";
+import { shown, where, SHELL, shellOf, shellShown, shellStuck, pointShell } from "./taskwhere.js";
 import { button } from "./ui.js";
 
 const BEAT_MS = 1500;
@@ -68,7 +68,7 @@ export default class TaskShell extends View {
         this.why = why;
         this.key = null;
         // Also one left pointed at from before this copy (a reload): a Done task's ended shell isn't shown.
-        if (this.addr || shellShown(layout())) { this.addr = null; this.repoint(null, cx); }
+        if (this.addr || shellShown(layout()) || shellStuck(layout())) { this.addr = null; this.repoint(null, cx); }
         cx.notify();
       }
       return;

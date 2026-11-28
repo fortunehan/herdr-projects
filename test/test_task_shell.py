@@ -83,9 +83,11 @@ console.log(JSON.stringify({ out, calls, focus, terms: st.terms }));
 TASK = {"terminal": "t1", "ref": "SHEP-25", "folder": "/work/wt-25", "machine": None, "key": "shepherdr#25", "state": "running"}
 
 
-def run_mod(steps, where=TASK, terms=None, folder_there=True, view=None):
+def run_mod(steps, where=TASK, terms=None, folder_there=True, view=None, stuck=False):
     with open(LAYOUT) as f:
         tree = json.load(f)
+    if stuck:  # SHEP-121: the mod's block hidden, its shell's view block gone
+        find(tree, "tasks-thread-shell")["children"][0]["hidden"] = True
     if view:  # left pointed at from before (a reload of the mod)
         col = find(tree, "tasks-thread-shell")
         col["children"][0]["hidden"] = True
@@ -174,6 +176,10 @@ class ShellView(unittest.TestCase):
 
     def test_a_done_tasks_ended_shell_left_in_the_layout_is_not_shown(self):
         r = run_mod([{}], where=dict(TASK, state="done"), view="t40")
+        self.assertEqual((r["out"][-1]["view"], r["out"][-1]["hostHidden"]), (None, False))
+
+    def test_a_done_task_with_the_block_hidden_and_no_shell_shows_the_block(self):
+        r = run_mod([{}], where=dict(TASK, state="done"), stuck=True)
         self.assertEqual((r["out"][-1]["view"], r["out"][-1]["hostHidden"]), (None, False))
 
     def test_another_tasks_shell_left_in_the_layout_is_not_shown_while_starting(self):
@@ -272,7 +278,8 @@ def run_head(steps, where=TASK, terms=None, view="t40", write_fails=False):
         tree = json.load(f)
     col = find(tree, "tasks-thread-shell")
     col["children"][0]["hidden"] = True
-    col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": view}})
+    if view:
+        col["children"].append({"id": "tasks-thread-shell-view", "type": "block", "content": {"terminal": view}})
     inp = {"layout": tree, "where": where, "terms": terms if terms is not None else [], "steps": steps, "writeFails": write_fails}
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "head.mjs")
@@ -333,6 +340,17 @@ class AfterAWindowStart(unittest.TestCase):
         self.assertEqual(len(r["toasts"]), 1)
         self.assertIn("read-only", r["toasts"][0]["body"])
         self.assertTrue(r["logs"] and "read-only" in r["logs"][0], r["logs"])
+
+    def test_the_block_hidden_with_no_shell_shows_again_and_starts_one(self):
+        """SHEP-121: Herdr dropped the ended shell's view block, leaving the mod's block hidden alone: no copy runs."""
+        r = run_head([{}], terms=[], view=None)
+        self.assertEqual(r["errors"], [])
+        self.assertEqual(r["out"][-1], {"view": "t90", "running": True})
+        self.assertEqual(r["toasts"], [])
+
+    def test_the_block_hidden_with_no_shell_shows_again_for_a_done_task(self):
+        r = run_head([{}], where=dict(TASK, state="done"), terms=[], view=None)
+        self.assertEqual(r["out"][-1], {"view": None, "running": True})
 
     def test_one_not_listed_yet_waits_a_read_then_gives_way(self):
         r = run_head([{}, {}], terms=[])

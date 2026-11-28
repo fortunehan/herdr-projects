@@ -39,7 +39,7 @@ import { APPS, COPIES, cantOpen, copyOf, folderOf, openFolder } from "./core/ope
 import { SH } from "./core/paths.js";
 import { followSpace, switched } from "./core/thread-space.js";
 import { dirs } from "./dirs.js";
-import { pointShell, shellFits, shellShown } from "./taskwhere.js";
+import { pointShell, shellFits, shellShown, shellStuck } from "./taskwhere.js";
 
 // The task header's shared left edge, and task ids in the Tasks list's monospace (mods/tasks).
 const EDGE = 12, ID_FONT = "JetBrains Mono";
@@ -172,13 +172,14 @@ export class PanelHost {
   // while a shell shows, and Herdr never starts a copy that never showed: after a window start with another task's
   // shell left in the saved layout, nothing else would ever point it away. Another task's or an ended shell, or a Done
   // task: the column goes back to the mod alone, which then shows, finds or starts the right one. One not in the list
-  // (just started, or gone) only when it's still missing at the next read.
+  // (just started, or gone) only when it's still missing at the next read. The mod's block hidden with no shell at all
+  // (SHEP-121): it shows again too.
   guardShell(w, cx) {
-    const addr = shellShown(layout());
+    const tree = layout(), addr = shellShown(tree);
     const fit = shellFits(addr, w, terminals());
     const miss = fit === "unknown" && this.shellMiss === addr;
     this.shellMiss = fit === "unknown" ? addr : null;
-    if ((fit !== "stale" && !miss) || this.shellBusy) return;
+    if ((fit !== "stale" && !miss && !shellStuck(tree)) || this.shellBusy) return;
     this.shellBusy = true;
     cx.spawn(async (cx) => {
       try {
